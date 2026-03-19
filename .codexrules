@@ -1,16 +1,22 @@
 # OMNIDRIVE VFS - AI AGENT RULES
 
 ## 1. Tooling & MCP (CRITICAL)
+
 - You have access to the `jcodemunch-mcp` server. You MUST prioritize using its tools for codebase exploration.
 - NEVER read an entire file if you only need to inspect a specific struct, enum, or function.
 - ALWAYS use AST-based symbol search, outlines, and targeted retrieval.
 
 ## 2. Context & Token Management (CRITICAL)
+
 - ALWAYS break down large implementations into smaller, incremental chunks.
 - Do not attempt to write hundreds of lines of code in a single response.
 - Complete ONE logical module, verify it compiles (`cargo check`), and STOP. Wait for the user's prompt before proceeding.
 - Keep your output concise. Do not explain the code unless explicitly asked.
+- Perform a atomic GIT COMMIT after completing each logical sub-task or block.
+- Run `cargo check` before each commit to ensure a "green" history.
+- Use descriptive, conventional commit messages (e.g., feat(db): ..., fix(crypto): ...).
 
 ## 3. Code Generation
+
 - We are building a high-performance Rust system. Follow `omnidrive_vfs_technical_spec_v1.md`.
 - Use zero-cost abstractions where possible.
