@@ -33,6 +33,17 @@ pub struct ChunkRecord {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct FileChunkLocation {
+    pub chunk_id: Vec<u8>,
+    pub file_offset: i64,
+    pub size: i64,
+    pub pack_id: String,
+    pub pack_offset: i64,
+    pub encrypted_size: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
 pub struct UploadJob {
     pub id: i64,
     pub pack_id: String,
@@ -53,6 +64,19 @@ pub struct UploadTargetRecord {
     pub object_key: Option<String>,
     pub etag: Option<String>,
     pub version_id: Option<String>,
+    pub last_attempt_at: Option<i64>,
+    pub updated_at: Option<i64>,
+    pub completed_at: Option<i64>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct PackDownloadTarget {
+    pub provider: String,
+    pub bucket: String,
+    pub object_key: String,
+    pub attempts: Option<i64>,
+    pub last_error: Option<String>,
     pub last_attempt_at: Option<i64>,
     pub updated_at: Option<i64>,
     pub completed_at: Option<i64>,
@@ -406,6 +430,32 @@ pub async fn get_file_chunks(
         FROM chunk_refs
         WHERE inode_id = ?
         ORDER BY file_offset ASC
+        "#,
+    )
+    .bind(inode_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_file_chunk_locations(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<Vec<FileChunkLocation>, sqlx::Error> {
+    sqlx::query_as::<_, FileChunkLocation>(
+        r#"
+        SELECT
+            cr.chunk_id,
+            cr.file_offset,
+            cr.size,
+            pl.pack_id,
+            pl.pack_offset,
+            pl.encrypted_size
+        FROM chunk_refs cr
+        INNER JOIN pack_locations pl
+            ON pl.chunk_id = cr.chunk_id
+        WHERE cr.inode_id = ?
+        ORDER BY cr.file_offset ASC
         "#,
     )
     .bind(inode_id)
@@ -834,6 +884,37 @@ pub async fn get_latest_upload_target_for_provider(
     )
     .bind(provider)
     .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_completed_pack_targets(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<Vec<PackDownloadTarget>, sqlx::Error> {
+    sqlx::query_as::<_, PackDownloadTarget>(
+        r#"
+        SELECT
+            ut.provider,
+            ut.bucket,
+            ut.object_key,
+            ut.attempts,
+            ut.last_error,
+            ut.last_attempt_at,
+            ut.updated_at,
+            ut.completed_at
+        FROM upload_jobs uj
+        INNER JOIN upload_job_targets ut
+            ON ut.job_id = uj.id
+        WHERE uj.pack_id = ?
+          AND ut.status = 'COMPLETED'
+          AND ut.bucket IS NOT NULL
+          AND ut.object_key IS NOT NULL
+        ORDER BY COALESCE(ut.completed_at, ut.updated_at, ut.last_attempt_at, 0) DESC, ut.id ASC
+        "#,
+    )
+    .bind(pack_id)
+    .fetch_all(pool)
     .await
 }
 

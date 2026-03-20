@@ -1,5 +1,6 @@
 mod api;
 mod db;
+mod downloader;
 mod packer;
 mod uploader;
 mod watcher;

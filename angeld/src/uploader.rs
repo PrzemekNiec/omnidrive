@@ -53,14 +53,15 @@ enum JobProcessOutcome {
     },
 }
 
-struct ProviderConfig {
-    provider_name: &'static str,
-    endpoint: String,
-    region: String,
-    bucket: String,
-    access_key_id: String,
-    secret_access_key: String,
-    force_path_style: bool,
+#[derive(Clone, Debug)]
+pub(crate) struct ProviderConfig {
+    pub(crate) provider_name: &'static str,
+    pub(crate) endpoint: String,
+    pub(crate) region: String,
+    pub(crate) bucket: String,
+    pub(crate) access_key_id: String,
+    pub(crate) secret_access_key: String,
+    pub(crate) force_path_style: bool,
 }
 
 #[derive(Debug)]
@@ -132,7 +133,9 @@ impl Uploader {
         ])
     }
 
-    async fn from_provider_config(config: ProviderConfig) -> Result<Self, UploaderError> {
+    pub(crate) async fn from_provider_config(
+        config: ProviderConfig,
+    ) -> Result<Self, UploaderError> {
         let provider_name = config.provider_name;
         let operation_timeout = duration_from_env("OMNIDRIVE_UPLOAD_TIMEOUT_MS", 120_000);
         let operation_attempt_timeout =
@@ -418,7 +421,7 @@ impl UploadWorker {
 }
 
 impl ProviderConfig {
-    fn from_r2_env() -> Result<Self, UploaderError> {
+    pub(crate) fn from_r2_env() -> Result<Self, UploaderError> {
         Ok(Self {
             provider_name: "cloudflare-r2",
             endpoint: required_env("OMNIDRIVE_R2_ENDPOINT")?,
@@ -430,7 +433,7 @@ impl ProviderConfig {
         })
     }
 
-    fn from_scaleway_env() -> Result<Self, UploaderError> {
+    pub(crate) fn from_scaleway_env() -> Result<Self, UploaderError> {
         Ok(Self {
             provider_name: "scaleway",
             endpoint: required_env("OMNIDRIVE_SCALEWAY_ENDPOINT")?,
@@ -442,7 +445,7 @@ impl ProviderConfig {
         })
     }
 
-    fn from_b2_env() -> Result<Self, UploaderError> {
+    pub(crate) fn from_b2_env() -> Result<Self, UploaderError> {
         Ok(Self {
             provider_name: "backblaze-b2",
             endpoint: required_env("OMNIDRIVE_B2_ENDPOINT")?,

@@ -1,0 +1,748 @@
+#![allow(dead_code)]
+
+use crate::db;
+use crate::packer::LOCAL_PACK_EXTENSION;
+use crate::uploader::ProviderConfig;
+use aws_config::BehaviorVersion;
+use aws_config::timeout::TimeoutConfig;
+use aws_sdk_s3::Client;
+use aws_sdk_s3::config::{Credentials, Region};
+use omnidrive_core::crypto::{ChunkId, CryptoError, GcmTag, KeyBytes, decrypt_chunk};
+use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, ChunkRecordPrefix};
+use sha2::Digest;
+use sqlx::SqlitePool;
+use std::collections::HashMap;
+use std::env;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use tokio::fs::{self, File};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+pub struct Downloader {
+    pool: SqlitePool,
+    vault_key: KeyBytes,
+    download_spool_dir: PathBuf,
+    providers: HashMap<String, DownloadProvider>,
+    provider_timeout: Duration,
+}
+
+#[derive(Clone)]
+struct DownloadProvider {
+    provider_name: &'static str,
+    client: Client,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RestoredPackSource {
+    pub pack_id: String,
+    pub provider: String,
+    pub bucket: String,
+    pub object_key: String,
+    pub local_path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RestoreResult {
+    pub inode_id: i64,
+    pub output_path: PathBuf,
+    pub bytes_written: u64,
+    pub pack_sources: Vec<RestoredPackSource>,
+}
+
+#[derive(Debug)]
+pub enum DownloaderError {
+    MissingProviderConfig,
+    MissingVaultKey,
+    InvalidEnv(&'static str),
+    Io(std::io::Error),
+    Db(sqlx::Error),
+    Crypto(CryptoError),
+    NumericOverflow(&'static str),
+    NoChunksForInode(i64),
+    NoCompletedPackTargets(String),
+    NoConfiguredProvider(String),
+    PackDownloadFailed {
+        pack_id: String,
+        errors: Vec<String>,
+    },
+    InvalidPackRecord(&'static str),
+}
+
+impl fmt::Display for DownloaderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingProviderConfig => write!(f, "no download providers configured"),
+            Self::MissingVaultKey => write!(f, "missing vault key"),
+            Self::InvalidEnv(key) => write!(f, "invalid environment variable {key}"),
+            Self::Io(err) => write!(f, "i/o error: {err}"),
+            Self::Db(err) => write!(f, "sqlite error: {err}"),
+            Self::Crypto(err) => write!(f, "crypto error: {err}"),
+            Self::NumericOverflow(ctx) => write!(f, "numeric overflow while handling {ctx}"),
+            Self::NoChunksForInode(inode_id) => write!(f, "no chunks found for inode {inode_id}"),
+            Self::NoCompletedPackTargets(pack_id) => {
+                write!(f, "no completed download targets found for pack {pack_id}")
+            }
+            Self::NoConfiguredProvider(provider) => {
+                write!(f, "provider {provider} is not configured for downloads")
+            }
+            Self::PackDownloadFailed { pack_id, errors } => {
+                write!(
+                    f,
+                    "failed to download pack {pack_id}: {}",
+                    errors.join(" | ")
+                )
+            }
+            Self::InvalidPackRecord(reason) => write!(f, "invalid pack record: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for DownloaderError {}
+
+impl From<std::io::Error> for DownloaderError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<sqlx::Error> for DownloaderError {
+    fn from(value: sqlx::Error) -> Self {
+        Self::Db(value)
+    }
+}
+
+impl From<CryptoError> for DownloaderError {
+    fn from(value: CryptoError) -> Self {
+        Self::Crypto(value)
+    }
+}
+
+impl Downloader {
+    pub async fn from_env(pool: SqlitePool) -> Result<Self, DownloaderError> {
+        let _ = dotenvy::dotenv();
+
+        let vault_key = load_vault_key()?;
+        let download_spool_dir =
+            env_path("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", ".omnidrive/download-spool");
+        let provider_timeout = duration_from_env("OMNIDRIVE_DOWNLOAD_TIMEOUT_MS", 120_000);
+
+        let mut configs = Vec::new();
+        if let Ok(config) = ProviderConfig::from_r2_env() {
+            configs.push(config);
+        }
+        if let Ok(config) = ProviderConfig::from_scaleway_env() {
+            configs.push(config);
+        }
+        if let Ok(config) = ProviderConfig::from_b2_env() {
+            configs.push(config);
+        }
+
+        Self::from_provider_configs(
+            pool,
+            vault_key,
+            download_spool_dir,
+            provider_timeout,
+            configs,
+        )
+        .await
+    }
+
+    pub(crate) async fn from_provider_configs(
+        pool: SqlitePool,
+        vault_key: KeyBytes,
+        download_spool_dir: impl Into<PathBuf>,
+        provider_timeout: Duration,
+        configs: Vec<ProviderConfig>,
+    ) -> Result<Self, DownloaderError> {
+        if configs.is_empty() {
+            return Err(DownloaderError::MissingProviderConfig);
+        }
+
+        let download_spool_dir = download_spool_dir.into();
+        fs::create_dir_all(&download_spool_dir).await?;
+
+        let mut providers = HashMap::new();
+        for config in configs {
+            let provider = DownloadProvider::from_provider_config(config).await?;
+            providers.insert(provider.provider_name.to_string(), provider);
+        }
+
+        Ok(Self {
+            pool,
+            vault_key,
+            download_spool_dir,
+            providers,
+            provider_timeout,
+        })
+    }
+
+    pub async fn restore_file(
+        &self,
+        inode_id: i64,
+        output_path: impl AsRef<Path>,
+    ) -> Result<RestoreResult, DownloaderError> {
+        let output_path = output_path.as_ref().to_path_buf();
+        let chunk_locations = db::get_file_chunk_locations(&self.pool, inode_id).await?;
+        if chunk_locations.is_empty() {
+            return Err(DownloaderError::NoChunksForInode(inode_id));
+        }
+
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+
+        let mut output = File::create(&output_path).await?;
+        let mut current_offset = 0u64;
+        let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
+
+        for chunk in chunk_locations {
+            let source = if let Some(existing) = downloaded_packs.get(&chunk.pack_id) {
+                existing.clone()
+            } else {
+                let downloaded = self.download_pack(&chunk.pack_id).await?;
+                downloaded_packs.insert(chunk.pack_id.clone(), downloaded.clone());
+                downloaded
+            };
+
+            let pack_bytes = fs::read(&source.local_path).await?;
+            let plaintext = decrypt_chunk_record(&pack_bytes, &chunk, &self.vault_key)?;
+
+            let desired_offset = to_u64(chunk.file_offset, "file offset")?;
+            if current_offset != desired_offset {
+                output
+                    .seek(std::io::SeekFrom::Start(desired_offset))
+                    .await?;
+                current_offset = desired_offset;
+            }
+
+            output.write_all(&plaintext).await?;
+            current_offset = current_offset
+                .checked_add(plaintext.len() as u64)
+                .ok_or(DownloaderError::NumericOverflow("bytes written"))?;
+        }
+
+        output.flush().await?;
+
+        Ok(RestoreResult {
+            inode_id,
+            output_path,
+            bytes_written: current_offset,
+            pack_sources: downloaded_packs.into_values().collect(),
+        })
+    }
+
+    async fn download_pack(&self, pack_id: &str) -> Result<RestoredPackSource, DownloaderError> {
+        let targets = db::get_completed_pack_targets(&self.pool, pack_id).await?;
+        if targets.is_empty() {
+            return Err(DownloaderError::NoCompletedPackTargets(pack_id.to_string()));
+        }
+
+        let mut candidates = Vec::new();
+        for target in targets {
+            let Some(provider) = self.providers.get(&target.provider) else {
+                continue;
+            };
+
+            let latency = match self
+                .probe_latency(provider, &target.bucket, &target.object_key)
+                .await
+            {
+                Ok(latency) => Some(latency),
+                Err(_) => None,
+            };
+
+            candidates.push((provider, target, latency));
+        }
+
+        if candidates.is_empty() {
+            return Err(DownloaderError::PackDownloadFailed {
+                pack_id: pack_id.to_string(),
+                errors: vec![format!(
+                    "no configured providers available for pack {pack_id}"
+                )],
+            });
+        }
+
+        candidates.sort_by_key(|(_, _, latency)| latency.unwrap_or(Duration::MAX));
+
+        let mut errors = Vec::new();
+        for (provider, target, _) in candidates {
+            match self
+                .download_from_target(pack_id, provider, &target.bucket, &target.object_key)
+                .await
+            {
+                Ok(local_path) => {
+                    return Ok(RestoredPackSource {
+                        pack_id: pack_id.to_string(),
+                        provider: target.provider,
+                        bucket: target.bucket,
+                        object_key: target.object_key,
+                        local_path,
+                    });
+                }
+                Err(err) => errors.push(err),
+            }
+        }
+
+        Err(DownloaderError::PackDownloadFailed {
+            pack_id: pack_id.to_string(),
+            errors,
+        })
+    }
+
+    async fn probe_latency(
+        &self,
+        provider: &DownloadProvider,
+        bucket: &str,
+        object_key: &str,
+    ) -> Result<Duration, DownloaderError> {
+        let start = Instant::now();
+        tokio::time::timeout(
+            self.provider_timeout,
+            provider
+                .client
+                .head_object()
+                .bucket(bucket)
+                .key(object_key)
+                .send(),
+        )
+        .await
+        .map_err(|_| DownloaderError::InvalidPackRecord("provider probe timed out"))?
+        .map_err(|_| DownloaderError::InvalidPackRecord("provider probe failed"))?;
+        Ok(start.elapsed())
+    }
+
+    async fn download_from_target(
+        &self,
+        pack_id: &str,
+        provider: &DownloadProvider,
+        bucket: &str,
+        object_key: &str,
+    ) -> Result<PathBuf, String> {
+        let response = tokio::time::timeout(
+            self.provider_timeout,
+            provider
+                .client
+                .get_object()
+                .bucket(bucket)
+                .key(object_key)
+                .send(),
+        )
+        .await
+        .map_err(|_| format!("{} download timed out", provider.provider_name))?
+        .map_err(|err| {
+            format!(
+                "{} get_object failed: {}",
+                provider.provider_name,
+                format_error_details(&err)
+            )
+        })?;
+
+        let body = response.body.collect().await.map_err(|err| {
+            format!(
+                "{} body read failed: {}",
+                provider.provider_name,
+                format_error_details(&err)
+            )
+        })?;
+
+        let local_path = self
+            .download_spool_dir
+            .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
+        fs::write(&local_path, body.into_bytes())
+            .await
+            .map_err(|err| err.to_string())?;
+
+        Ok(local_path)
+    }
+}
+
+impl DownloadProvider {
+    async fn from_provider_config(config: ProviderConfig) -> Result<Self, DownloaderError> {
+        let provider_name = config.provider_name;
+        let operation_timeout = duration_from_env("OMNIDRIVE_DOWNLOAD_TIMEOUT_MS", 120_000);
+        let operation_attempt_timeout =
+            duration_from_env("OMNIDRIVE_DOWNLOAD_ATTEMPT_TIMEOUT_MS", 90_000);
+        let connect_timeout = duration_from_env("OMNIDRIVE_DOWNLOAD_CONNECT_TIMEOUT_MS", 10_000);
+        let read_timeout = duration_from_env("OMNIDRIVE_DOWNLOAD_READ_TIMEOUT_MS", 90_000);
+        let timeout_config = TimeoutConfig::builder()
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
+            .operation_attempt_timeout(operation_attempt_timeout)
+            .operation_timeout(operation_timeout)
+            .build();
+
+        let shared_config = aws_config::defaults(BehaviorVersion::latest())
+            .region(Region::new(config.region.clone()))
+            .timeout_config(timeout_config.clone())
+            .load()
+            .await;
+
+        let s3_config = aws_sdk_s3::config::Builder::from(&shared_config)
+            .credentials_provider(Credentials::new(
+                config.access_key_id,
+                config.secret_access_key,
+                None,
+                None,
+                provider_name,
+            ))
+            .endpoint_url(config.endpoint)
+            .region(Region::new(config.region))
+            .timeout_config(timeout_config)
+            .force_path_style(config.force_path_style)
+            .build();
+
+        Ok(Self {
+            provider_name,
+            client: Client::from_conf(s3_config),
+        })
+    }
+}
+
+fn decrypt_chunk_record(
+    pack_bytes: &[u8],
+    chunk: &db::FileChunkLocation,
+    vault_key: &KeyBytes,
+) -> Result<Vec<u8>, DownloaderError> {
+    let pack_offset = to_usize(chunk.pack_offset, "pack offset")?;
+    let encrypted_size = to_usize(chunk.encrypted_size, "encrypted size")?;
+    let record_end = pack_offset
+        .checked_add(encrypted_size)
+        .ok_or(DownloaderError::NumericOverflow("record end"))?;
+
+    if record_end > pack_bytes.len() || encrypted_size < ChunkRecordPrefix::SIZE {
+        return Err(DownloaderError::InvalidPackRecord("record bounds"));
+    }
+
+    let record = &pack_bytes[pack_offset..record_end];
+    if record[..4] != CHUNK_RECORD_MAGIC {
+        return Err(DownloaderError::InvalidPackRecord("chunk magic"));
+    }
+
+    let expected_chunk_id = vec_to_chunk_id(&chunk.chunk_id)?;
+    let actual_chunk_id = vec_to_chunk_id(&record[8..40])?;
+    if actual_chunk_id != expected_chunk_id {
+        return Err(DownloaderError::InvalidPackRecord("chunk_id mismatch"));
+    }
+
+    let plain_len = u64::from_be_bytes(
+        record[40..48]
+            .try_into()
+            .map_err(|_| DownloaderError::InvalidPackRecord("plain_len"))?,
+    );
+    let cipher_len = u64::from_be_bytes(
+        record[48..56]
+            .try_into()
+            .map_err(|_| DownloaderError::InvalidPackRecord("cipher_len"))?,
+    );
+    let cipher_len_usize = usize::try_from(cipher_len)
+        .map_err(|_| DownloaderError::NumericOverflow("cipher length"))?;
+    let expected_record_size = ChunkRecordPrefix::SIZE
+        .checked_add(cipher_len_usize)
+        .and_then(|value| value.checked_add(ChunkRecordPrefix::GCM_TAG_SIZE))
+        .ok_or(DownloaderError::NumericOverflow("record size"))?;
+    if expected_record_size != encrypted_size {
+        return Err(DownloaderError::InvalidPackRecord(
+            "encrypted size mismatch",
+        ));
+    }
+
+    let ciphertext_start = ChunkRecordPrefix::SIZE;
+    let ciphertext_end = ciphertext_start + cipher_len_usize;
+    let tag_end = ciphertext_end + ChunkRecordPrefix::GCM_TAG_SIZE;
+    let ciphertext = &record[ciphertext_start..ciphertext_end];
+    let gcm_tag: GcmTag = record[ciphertext_end..tag_end]
+        .try_into()
+        .map_err(|_| DownloaderError::InvalidPackRecord("gcm tag"))?;
+
+    let plaintext = decrypt_chunk(vault_key, &expected_chunk_id, &[], ciphertext, &gcm_tag)?;
+    if plaintext.len() as i64 != chunk.size || plaintext.len() as u64 != plain_len {
+        return Err(DownloaderError::InvalidPackRecord("plain size mismatch"));
+    }
+
+    Ok(plaintext)
+}
+
+fn vec_to_chunk_id(bytes: &[u8]) -> Result<ChunkId, DownloaderError> {
+    bytes
+        .try_into()
+        .map_err(|_| DownloaderError::InvalidPackRecord("chunk id length"))
+}
+
+fn load_vault_key() -> Result<KeyBytes, DownloaderError> {
+    if let Ok(value) = env::var("OMNIDRIVE_VAULT_KEY_HEX") {
+        return parse_hex_key(&value);
+    }
+
+    let vault_id = env::var("OMNIDRIVE_VAULT_ID").map_err(|_| DownloaderError::MissingVaultKey)?;
+    let digest = sha2::Sha256::digest(format!("omnidrive-dev-vault-key:{vault_id}").as_bytes());
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&digest);
+    Ok(key)
+}
+
+fn parse_hex_key(value: &str) -> Result<KeyBytes, DownloaderError> {
+    let trimmed = value.trim();
+    if trimmed.len() != 64 {
+        return Err(DownloaderError::InvalidEnv("OMNIDRIVE_VAULT_KEY_HEX"));
+    }
+
+    let mut bytes = [0u8; 32];
+    for (index, chunk) in trimmed.as_bytes().chunks(2).enumerate() {
+        let hex = std::str::from_utf8(chunk)
+            .map_err(|_| DownloaderError::InvalidEnv("OMNIDRIVE_VAULT_KEY_HEX"))?;
+        bytes[index] = u8::from_str_radix(hex, 16)
+            .map_err(|_| DownloaderError::InvalidEnv("OMNIDRIVE_VAULT_KEY_HEX"))?;
+    }
+
+    Ok(bytes)
+}
+
+fn env_path(key: &str, default: &str) -> PathBuf {
+    env::var(key)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(default))
+}
+
+fn duration_from_env(key: &str, default_ms: u64) -> Duration {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(default_ms))
+}
+
+fn to_usize(value: i64, context: &'static str) -> Result<usize, DownloaderError> {
+    usize::try_from(value).map_err(|_| DownloaderError::NumericOverflow(context))
+}
+
+fn to_u64(value: i64, context: &'static str) -> Result<u64, DownloaderError> {
+    u64::try_from(value).map_err(|_| DownloaderError::NumericOverflow(context))
+}
+
+fn format_error_details(err: &(impl std::error::Error + fmt::Debug)) -> String {
+    let mut details = vec![format!("display={err}"), format!("debug={err:?}")];
+    let mut current = err.source();
+    let mut depth = 0usize;
+    while let Some(source) = current {
+        depth += 1;
+        details.push(format!("source[{depth}]={source}"));
+        current = source.source();
+    }
+    details.join(" | ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
+    use crate::uploader::KNOWN_PROVIDERS;
+    use axum::Router;
+    use axum::body::Bytes;
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::routing::put;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex;
+
+    #[derive(Clone)]
+    struct MockS3State {
+        objects: Arc<Mutex<HashMap<(String, String), Vec<u8>>>>,
+        head_delay_by_bucket: Arc<HashMap<String, Duration>>,
+    }
+
+    #[tokio::test]
+    async fn roundtrip_pack_upload_download_restore_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-downloader-test-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        let upload_spool_dir = test_root.join("upload-spool");
+        let download_spool_dir = test_root.join("download-spool");
+        let source_path = test_root.join("source.bin");
+        let restored_path = test_root.join("restored.bin");
+        let payload = vec![0x5Au8; DEFAULT_CHUNK_SIZE + 777];
+        let vault_key = [0x33; 32];
+
+        fs::create_dir_all(&upload_spool_dir).await?;
+        fs::create_dir_all(&download_spool_dir).await?;
+        fs::write(&source_path, &payload).await?;
+
+        let pool = db::init_db("sqlite::memory:").await?;
+        let inode_id = db::create_inode(
+            &pool,
+            None,
+            "source.bin",
+            "FILE",
+            i64::try_from(payload.len())?,
+        )
+        .await?;
+
+        let packer = Packer::new(
+            pool.clone(),
+            vault_key,
+            PackerConfig::new(&upload_spool_dir),
+        )?;
+        let pack_result = packer.pack_file(inode_id, &source_path).await?;
+        let pack_id = pack_result.pack_id.clone().expect("pack id");
+        let pack_path = pack_result.pack_path.clone().expect("pack path");
+
+        let state = MockS3State {
+            objects: Arc::new(Mutex::new(HashMap::new())),
+            head_delay_by_bucket: Arc::new(HashMap::from([
+                ("bucket-r2".to_string(), Duration::from_millis(80)),
+                ("bucket-scaleway".to_string(), Duration::from_millis(10)),
+                ("bucket-b2".to_string(), Duration::from_millis(40)),
+            ])),
+        };
+        let app = Router::new()
+            .route(
+                "/{*path}",
+                put(mock_put_object)
+                    .get(mock_get_object)
+                    .head(mock_head_object),
+            )
+            .with_state(state.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let configs = vec![
+            ProviderConfig {
+                provider_name: "cloudflare-r2",
+                endpoint: format!("http://{addr}"),
+                region: "auto".to_string(),
+                bucket: "bucket-r2".to_string(),
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".to_string(),
+                force_path_style: true,
+            },
+            ProviderConfig {
+                provider_name: "scaleway",
+                endpoint: format!("http://{addr}"),
+                region: "pl-waw".to_string(),
+                bucket: "bucket-scaleway".to_string(),
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".to_string(),
+                force_path_style: true,
+            },
+            ProviderConfig {
+                provider_name: "backblaze-b2",
+                endpoint: format!("http://{addr}"),
+                region: "eu-central-003".to_string(),
+                bucket: "bucket-b2".to_string(),
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".to_string(),
+                force_path_style: true,
+            },
+        ];
+
+        let job = db::get_next_upload_job(&pool)
+            .await?
+            .expect("queued upload job");
+        db::ensure_upload_targets(&pool, job.id, &KNOWN_PROVIDERS).await?;
+
+        let pack_bytes = fs::read(&pack_path).await?;
+        for config in configs.clone() {
+            let object_key = format!("packs/{pack_id}.{}", LOCAL_PACK_EXTENSION);
+            state.objects.lock().await.insert(
+                (config.bucket.clone(), object_key.clone()),
+                pack_bytes.clone(),
+            );
+            db::mark_upload_target_completed(
+                &pool,
+                job.id,
+                config.provider_name,
+                &config.bucket,
+                &object_key,
+                None,
+                None,
+            )
+            .await?;
+        }
+
+        let downloader = Downloader::from_provider_configs(
+            pool.clone(),
+            vault_key,
+            &download_spool_dir,
+            Duration::from_secs(30),
+            configs,
+        )
+        .await?;
+        let restored = downloader.restore_file(inode_id, &restored_path).await?;
+        let restored_bytes = fs::read(&restored_path).await?;
+
+        assert_eq!(restored_bytes, payload);
+        assert_eq!(restored.bytes_written, payload.len() as u64);
+        assert_eq!(restored.pack_sources.len(), 1);
+        assert_eq!(restored.pack_sources[0].pack_id, pack_id);
+        assert_eq!(restored.pack_sources[0].provider, "scaleway");
+
+        server.abort();
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
+    async fn mock_put_object(
+        State(state): State<MockS3State>,
+        Path(path): Path<String>,
+        body: Bytes,
+    ) -> impl IntoResponse {
+        let (bucket, key) = split_bucket_and_key(&path);
+        state
+            .objects
+            .lock()
+            .await
+            .insert((bucket.to_string(), key.to_string()), body.to_vec());
+        StatusCode::OK
+    }
+
+    async fn mock_head_object(
+        State(state): State<MockS3State>,
+        Path(path): Path<String>,
+    ) -> impl IntoResponse {
+        let (bucket, key) = split_bucket_and_key(&path);
+        if let Some(delay) = state.head_delay_by_bucket.get(bucket) {
+            tokio::time::sleep(*delay).await;
+        }
+
+        let objects = state.objects.lock().await;
+        if let Some(bytes) = objects.get(&(bucket.to_string(), key.to_string())) {
+            (
+                StatusCode::OK,
+                [("content-length", bytes.len().to_string())],
+            )
+                .into_response()
+        } else {
+            StatusCode::NOT_FOUND.into_response()
+        }
+    }
+
+    async fn mock_get_object(
+        State(state): State<MockS3State>,
+        Path(path): Path<String>,
+    ) -> impl IntoResponse {
+        let (bucket, key) = split_bucket_and_key(&path);
+        let objects = state.objects.lock().await;
+        if let Some(bytes) = objects.get(&(bucket.to_string(), key.to_string())) {
+            (StatusCode::OK, bytes.clone()).into_response()
+        } else {
+            StatusCode::NOT_FOUND.into_response()
+        }
+    }
+
+    fn split_bucket_and_key(path: &str) -> (&str, &str) {
+        let trimmed = path.trim_start_matches('/');
+        let mut segments = trimmed.splitn(2, '/');
+        let bucket = segments.next().unwrap_or_default();
+        let key = segments.next().unwrap_or_default();
+        (bucket, key)
+    }
+}
