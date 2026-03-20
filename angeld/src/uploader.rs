@@ -4,18 +4,25 @@ use crate::config::AppConfig;
 use crate::db;
 use crate::db::PackStatus;
 use crate::packer::local_shard_path;
+use async_stream::stream;
 use aws_config::BehaviorVersion;
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
-use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::primitives::{ByteStream, SdkBody};
+use bytes::Bytes;
+use http_body::Frame;
+use http_body_util::StreamBody;
 use sqlx::SqlitePool;
 use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::fs;
-use tokio::time::{sleep, timeout};
+use tokio::fs::{self, File};
+use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex;
+use tokio::time::{Instant, sleep, timeout};
 
 pub const KNOWN_PROVIDERS: [&str; 3] = ["cloudflare-r2", "scaleway", "backblaze-b2"];
 
@@ -38,6 +45,7 @@ pub struct UploadWorker {
     pool: SqlitePool,
     uploaders: Vec<Uploader>,
     app_config: AppConfig,
+    rate_limiter: Arc<UploadRateLimiter>,
     spool_dir: PathBuf,
     poll_interval: Duration,
     provider_timeout: Duration,
@@ -54,6 +62,16 @@ enum JobProcessOutcome {
         failed_shards: Vec<String>,
     },
     Failed,
+}
+
+struct UploadRateLimiter {
+    max_bytes_per_sec: u64,
+    state: Mutex<UploadRateLimiterState>,
+}
+
+struct UploadRateLimiterState {
+    available_bytes: f64,
+    last_refill: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -192,7 +210,7 @@ impl Uploader {
             .and_then(|value| value.to_str())
             .ok_or(UploaderError::InvalidEnv("pack_path.file_name"))?;
         let key = format!("packs/{file_name}");
-        self.upload_file(pack_path, &key, "application/octet-stream")
+        self.upload_file(pack_path, &key, "application/octet-stream", None)
             .await
     }
 
@@ -201,17 +219,23 @@ impl Uploader {
         file_path: impl AsRef<Path>,
         key: &str,
     ) -> Result<UploadedPack, UploaderError> {
-        self.upload_file(file_path.as_ref(), key, "text/plain")
+        self.upload_file(file_path.as_ref(), key, "text/plain", None)
             .await
     }
 
-    pub async fn upload_shard(
+    async fn upload_shard(
         &self,
         shard_path: impl AsRef<Path>,
         object_key: &str,
+        rate_limiter: Option<Arc<UploadRateLimiter>>,
     ) -> Result<UploadedPack, UploaderError> {
-        self.upload_file(shard_path.as_ref(), object_key, "application/octet-stream")
-            .await
+        self.upload_file(
+            shard_path.as_ref(),
+            object_key,
+            "application/octet-stream",
+            rate_limiter,
+        )
+        .await
     }
 
     async fn upload_file(
@@ -219,14 +243,14 @@ impl Uploader {
         file_path: &Path,
         key: &str,
         content_type: &'static str,
+        rate_limiter: Option<Arc<UploadRateLimiter>>,
     ) -> Result<UploadedPack, UploaderError> {
         if !fs::try_exists(file_path).await? {
             return Err(UploaderError::LocalObjectMissing(file_path.to_path_buf()));
         }
 
-        let body = ByteStream::from_path(file_path)
-            .await
-            .map_err(|err| self.sdk_error("read_body", err))?;
+        let file_size = fs::metadata(file_path).await?.len();
+        let body = throttled_byte_stream(file_path.to_path_buf(), rate_limiter);
 
         let response = self
             .client
@@ -234,6 +258,9 @@ impl Uploader {
             .bucket(&self.bucket)
             .key(key)
             .body(body)
+            .content_length(
+                i64::try_from(file_size).map_err(|_| UploaderError::InvalidEnv("file_size"))?,
+            )
             .content_type(content_type)
             .send()
             .await
@@ -253,12 +280,14 @@ impl UploadWorker {
     pub async fn from_env(pool: SqlitePool) -> Result<Self, UploaderError> {
         let _ = dotenvy::dotenv();
 
+        let app_config = AppConfig::from_env();
         let uploaders = Uploader::all_from_env().await?;
 
         Ok(Self {
             pool,
             uploaders,
-            app_config: AppConfig::from_env(),
+            rate_limiter: Arc::new(UploadRateLimiter::new(app_config.clone())),
+            app_config,
             spool_dir: env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool"),
             poll_interval: duration_from_env("OMNIDRIVE_UPLOAD_POLL_INTERVAL_MS", 1_000),
             provider_timeout: duration_from_env("OMNIDRIVE_UPLOAD_TIMEOUT_MS", 120_000),
@@ -399,7 +428,11 @@ impl UploadWorker {
 
             match timeout(
                 self.provider_timeout,
-                uploader.upload_shard(&shard_path, &shard.object_key),
+                uploader.upload_shard(
+                    &shard_path,
+                    &shard.object_key,
+                    Some(self.rate_limiter.clone()),
+                ),
             )
             .await
             {
@@ -514,6 +547,93 @@ impl UploadWorker {
 
         delay.min(self.retry_max_delay)
     }
+}
+
+impl UploadRateLimiter {
+    fn new(app_config: AppConfig) -> Self {
+        let initial_tokens = app_config.max_upload_bytes_per_sec as f64;
+        Self {
+            max_bytes_per_sec: app_config.max_upload_bytes_per_sec,
+            state: Mutex::new(UploadRateLimiterState {
+                available_bytes: initial_tokens,
+                last_refill: Instant::now(),
+            }),
+        }
+    }
+
+    async fn acquire(&self, bytes: usize) {
+        if self.max_bytes_per_sec == 0 || bytes == 0 {
+            return;
+        }
+
+        let requested = bytes as f64;
+        loop {
+            let mut state = self.state.lock().await;
+            let now = Instant::now();
+            let elapsed = now.duration_since(state.last_refill).as_secs_f64();
+            if elapsed > 0.0 {
+                state.available_bytes = (state.available_bytes
+                    + elapsed * self.max_bytes_per_sec as f64)
+                    .min(self.max_bytes_per_sec as f64);
+                state.last_refill = now;
+            }
+
+            if state.available_bytes >= requested {
+                state.available_bytes -= requested;
+                return;
+            }
+
+            let missing = requested - state.available_bytes;
+            drop(state);
+            sleep(Duration::from_secs_f64(
+                (missing / self.max_bytes_per_sec as f64).max(0.001),
+            ))
+            .await;
+        }
+    }
+}
+
+fn throttled_byte_stream(
+    file_path: PathBuf,
+    rate_limiter: Option<Arc<UploadRateLimiter>>,
+) -> ByteStream {
+    let body = SdkBody::retryable(move || {
+        let path = file_path.clone();
+        let limiter = rate_limiter.clone();
+        let stream = stream! {
+            let mut file = match File::open(&path).await {
+                Ok(file) => file,
+                Err(err) => {
+                    yield Err(err);
+                    return;
+                }
+            };
+            let mut buffer = vec![0u8; 64 * 1024];
+
+            loop {
+                let bytes_read = match file.read(&mut buffer).await {
+                    Ok(bytes_read) => bytes_read,
+                    Err(err) => {
+                        yield Err(err);
+                        return;
+                    }
+                };
+                if bytes_read == 0 {
+                    break;
+                }
+
+                if let Some(limiter) = &limiter {
+                    limiter.acquire(bytes_read).await;
+                }
+
+                yield Ok(Frame::data(Bytes::copy_from_slice(&buffer[..bytes_read])));
+            }
+        };
+
+        SdkBody::from_body_1_x(StreamBody::new(stream))
+    });
+
+    ByteStream::new(body)
 }
 
 impl ProviderConfig {

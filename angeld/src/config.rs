@@ -2,10 +2,12 @@ use std::env;
 use std::path::PathBuf;
 
 pub const DEFAULT_MAX_PHYSICAL_BYTES_PER_PROVIDER: u64 = 80_530_636_800;
+pub const DEFAULT_MAX_UPLOAD_BYTES_PER_SEC: u64 = 0;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppConfig {
     pub max_physical_bytes_per_provider: u64,
+    pub max_upload_bytes_per_sec: u64,
     pub default_watch_dir: Option<PathBuf>,
 }
 
@@ -15,6 +17,10 @@ impl AppConfig {
             max_physical_bytes_per_provider: env_u64(
                 "OMNIDRIVE_MAX_PHYSICAL_BYTES_PER_PROVIDER",
                 DEFAULT_MAX_PHYSICAL_BYTES_PER_PROVIDER,
+            ),
+            max_upload_bytes_per_sec: env_u64(
+                "OMNIDRIVE_MAX_UPLOAD_BYTES_PER_SEC",
+                DEFAULT_MAX_UPLOAD_BYTES_PER_SEC,
             ),
             default_watch_dir: env::var("OMNIDRIVE_WATCH_DIR")
                 .ok()

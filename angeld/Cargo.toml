@@ -4,10 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-stream = "0.3"
 axum = "0.8"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+bytes = "1"
 dotenvy = "0.15"
+http-body = "1"
+http-body-util = "0.1"
 notify = "8.1.0"
 omnidrive-core = { path = "../omnidrive-core" }
 reed-solomon-erasure = "6"
