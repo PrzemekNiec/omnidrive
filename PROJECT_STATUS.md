@@ -68,3 +68,25 @@
 - Build the desktop and mobile interface from the approved Google Stitch fintech designs.
 - Connect the UI to the local `axum` API bridge.
 - Surface vault state, transfers, health, and download actions through the frontend.
+
+## FUTURE ROADMAP
+
+### Epic 12: File Versioning
+- Preserve historical file revisions instead of overwriting the active chunk mapping.
+- Store revision metadata and revision-scoped `chunk_refs` for rollback and recovery.
+- Add restore flows to protect against accidental overwrite and ransomware scenarios.
+
+### Epic 13: Chunk-Level Deduplication
+- Avoid re-uploading and re-storing identical chunks that already exist in the vault.
+- Reuse existing chunk references when content matches previously packaged data.
+- Reduce cloud storage usage and transfer cost across repeated or copied data.
+
+### Epic 14: Upload Policies, Scheduling, and Bandwidth Control
+- Add transfer throttling and configurable sync windows such as night-only uploads.
+- Support pause and resume behavior for background transfer workers.
+- Expose sync policy controls through the local API for UI integration.
+
+### Epic 15: Smart Sync / Files On-Demand
+- Introduce placeholder files that download their real content only when accessed.
+- Allow local cache pinning and selective disk-space reclamation.
+- Build toward native desktop-style cloud file behavior on Windows.
