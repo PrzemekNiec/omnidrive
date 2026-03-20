@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::config::AppConfig;
 use crate::db;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::vault::VaultKeyStore;
@@ -16,7 +17,7 @@ use tokio::time::{Instant, sleep_until};
 
 pub struct FileWatcher {
     pool: SqlitePool,
-    watch_dir: PathBuf,
+    watch_roots: Vec<PathBuf>,
     spool_dir: PathBuf,
     packer: Packer,
     debounce_window: StdDuration,
@@ -92,7 +93,7 @@ impl FileWatcher {
     ) -> Result<Self, WatcherError> {
         let _ = dotenvy::dotenv();
 
-        let watch_dir = required_path_env("OMNIDRIVE_WATCH_DIR")?;
+        let app_config = AppConfig::from_env();
         let spool_dir = env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool");
         let chunk_size = env::var("OMNIDRIVE_CHUNK_SIZE_BYTES")
             .ok()
@@ -100,11 +101,29 @@ impl FileWatcher {
             .unwrap_or(DEFAULT_CHUNK_SIZE);
         let debounce_window = duration_from_env("OMNIDRIVE_WATCH_DEBOUNCE_MS", 750);
 
-        let watch_dir = normalize_path(&watch_dir)?;
         let spool_dir = normalize_path(&spool_dir)?;
-
-        fs::create_dir_all(&watch_dir).await?;
         fs::create_dir_all(&spool_dir).await?;
+
+        let mut policies = db::list_sync_policies(&pool).await?;
+        if policies.is_empty() {
+            let watch_dir = app_config
+                .default_watch_dir
+                .ok_or(WatcherError::MissingEnv("OMNIDRIVE_WATCH_DIR"))?;
+            let watch_dir = normalize_path(&watch_dir)?;
+            fs::create_dir_all(&watch_dir).await?;
+            let policy_path = path_to_policy_key(&watch_dir)?;
+            db::upsert_sync_policy(&pool, &policy_path, true, true).await?;
+            policies = db::list_sync_policies(&pool).await?;
+        }
+
+        let mut watch_roots = Vec::new();
+        for policy in policies {
+            let root = normalize_path(Path::new(&policy.path_prefix))?;
+            fs::create_dir_all(&root).await?;
+            if !watch_roots.iter().any(|existing| existing == &root) {
+                watch_roots.push(root);
+            }
+        }
 
         let packer = Packer::new(
             pool.clone(),
@@ -114,7 +133,7 @@ impl FileWatcher {
 
         Ok(Self {
             pool,
-            watch_dir,
+            watch_roots,
             spool_dir,
             packer,
             debounce_window,
@@ -127,10 +146,15 @@ impl FileWatcher {
             let _ = tx.send(result);
         })?;
 
-        watcher.watch(&self.watch_dir, RecursiveMode::Recursive)?;
-        self.scan_existing_files().await?;
+        let watch_roots = self.watch_roots.clone();
+        for root in watch_roots.clone() {
+            watcher.watch(root.as_path(), RecursiveMode::Recursive)?;
+        }
+        let mut processed_files = HashMap::new();
+        for root in watch_roots {
+            self.process_event_path(root, &mut processed_files).await?;
+        }
         let mut pending_paths: HashMap<PathBuf, Instant> = HashMap::new();
-        let mut processed_files: HashMap<PathBuf, FileFingerprint> = HashMap::new();
 
         loop {
             if let Some(next_due) = next_due_instant(&pending_paths) {
@@ -158,8 +182,12 @@ impl FileWatcher {
 
     async fn scan_existing_files(&self) -> Result<(), WatcherError> {
         let mut processed_files = HashMap::new();
-        self.process_event_path(self.watch_dir.clone(), &mut processed_files)
-            .await
+        let watch_roots = self.watch_roots.clone();
+        for root in watch_roots {
+            self.process_event_path(root.clone(), &mut processed_files)
+                .await?;
+        }
+        Ok(())
     }
 
     fn handle_event(
@@ -256,9 +284,10 @@ impl FileWatcher {
             return Ok(());
         }
 
-        let relative = file_path
-            .strip_prefix(&self.watch_dir)
-            .map_err(|_| WatcherError::InvalidEnv("OMNIDRIVE_WATCH_DIR"))?;
+        let policy_path = path_to_policy_key(&file_path)?;
+        let policy = db::find_sync_policy_for_path(&self.pool, &policy_path)
+            .await?
+            .ok_or(WatcherError::InvalidEnv("sync_policy_for_path"))?;
         let mtime = metadata
             .modified()
             .ok()
@@ -277,7 +306,16 @@ impl FileWatcher {
 
         let size = i64::try_from(metadata.len())
             .map_err(|_| WatcherError::InvalidEnv("file_size_overflow"))?;
-        let inode_id = ensure_inode_path(&self.pool, relative, size, mtime).await?;
+        let inode_id =
+            ensure_inode_path_from_db_path(&self.pool, &policy_path, size, mtime).await?;
+
+        if policy.enable_versioning == 0
+            && db::get_current_file_revision(&self.pool, inode_id)
+                .await?
+                .is_some()
+        {
+            db::delete_file_chunks(&self.pool, inode_id).await?;
+        }
 
         let pack_result = self.packer.pack_file(inode_id, &file_path).await?;
         processed_files.insert(file_path.clone(), fingerprint);
@@ -295,15 +333,7 @@ impl FileWatcher {
     ) -> Result<(), WatcherError> {
         processed_files.remove(path);
 
-        let relative = match path.strip_prefix(&self.watch_dir) {
-            Ok(relative) => relative,
-            Err(_) => return Ok(()),
-        };
-        if relative.as_os_str().is_empty() {
-            return Ok(());
-        }
-
-        let db_path = relative_path_to_db_path(relative)?;
+        let db_path = path_to_policy_key(path)?;
         let Some(inode_id) = db::resolve_path(&self.pool, &db_path).await? else {
             return Ok(());
         };
@@ -349,6 +379,30 @@ async fn ensure_inode_path(
     parent_id.ok_or(WatcherError::InvalidEnv("relative_path"))
 }
 
+async fn ensure_inode_path_from_db_path(
+    pool: &SqlitePool,
+    db_path: &str,
+    file_size: i64,
+    file_mtime: Option<i64>,
+) -> Result<i64, WatcherError> {
+    let mut parent_id = None;
+    let mut segments = db_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .peekable();
+
+    while let Some(name) = segments.next() {
+        let is_last = segments.peek().is_none();
+        let kind = if is_last { "FILE" } else { "DIR" };
+        let size = if is_last { file_size } else { 0 };
+        let mtime = if is_last { file_mtime } else { None };
+        let inode_id = db::upsert_inode(pool, parent_id, name, kind, size, mtime).await?;
+        parent_id = Some(inode_id);
+    }
+
+    parent_id.ok_or(WatcherError::InvalidEnv("db_path"))
+}
+
 async fn collect_files_recursively(root: PathBuf) -> Result<Vec<PathBuf>, WatcherError> {
     let mut files = Vec::new();
     let mut stack = vec![root];
@@ -374,13 +428,6 @@ fn is_relevant_event(kind: &EventKind) -> bool {
         kind,
         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
     )
-}
-
-fn required_path_env(key: &'static str) -> Result<PathBuf, WatcherError> {
-    match env::var(key) {
-        Ok(value) if !value.trim().is_empty() => Ok(PathBuf::from(value)),
-        _ => Err(WatcherError::MissingEnv(key)),
-    }
 }
 
 fn env_path(key: &str, default: &str) -> PathBuf {
@@ -420,13 +467,16 @@ fn unix_timestamp_ms(time: SystemTime) -> Result<i64, WatcherError> {
     i64::try_from(millis).map_err(|_| WatcherError::InvalidEnv("timestamp_overflow"))
 }
 
-fn relative_path_to_db_path(path: &Path) -> Result<String, WatcherError> {
-    let segments: Vec<String> = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+fn path_to_policy_key(path: &Path) -> Result<String, WatcherError> {
+    let absolute = normalize_path(path)?;
+    let normalized = absolute.to_string_lossy().replace('\\', "/");
+    let segments: Vec<String> = normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
         .collect();
     if segments.is_empty() {
-        return Err(WatcherError::InvalidEnv("relative_path"));
+        return Err(WatcherError::InvalidEnv("path_to_policy_key"));
     }
 
     Ok(segments.join("/"))

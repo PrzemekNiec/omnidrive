@@ -128,6 +128,11 @@ impl RepairWorker {
                 continue;
             };
 
+            if !db::pack_requires_healthy(&self.pool, &pack.pack_id).await? {
+                sleep(self.poll_interval).await;
+                continue;
+            }
+
             match self.repair_pack(&pack).await {
                 Ok(()) => {
                     println!("repair worker restored pack {} to healthy", pack.pack_id);

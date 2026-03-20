@@ -1,4 +1,5 @@
 mod api;
+mod config;
 mod db;
 mod downloader;
 mod gc;
@@ -129,14 +130,14 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let mut upload_task = tokio::spawn(async move { worker.run().await });
     let mut repair_task = tokio::spawn(async move { repair_worker.run().await });
     let mut gc_task = tokio::spawn(async move { gc_worker.run().await });
-    let mut watcher_task = tokio::spawn(async move { watcher.run().await });
     let mut api_task = tokio::spawn(async move { api.run().await });
+    let watcher_future = watcher.run();
+    tokio::pin!(watcher_future);
 
     tokio::select! {
         result = &mut upload_task => {
             repair_task.abort();
             gc_task.abort();
-            watcher_task.abort();
             api_task.abort();
             let outcome = result??;
             Ok(outcome)
@@ -144,7 +145,6 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         result = &mut repair_task => {
             upload_task.abort();
             gc_task.abort();
-            watcher_task.abort();
             api_task.abort();
             let outcome = result??;
             Ok(outcome)
@@ -152,24 +152,22 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         result = &mut gc_task => {
             upload_task.abort();
             repair_task.abort();
-            watcher_task.abort();
             api_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
-        result = &mut watcher_task => {
+        result = &mut watcher_future => {
             upload_task.abort();
             repair_task.abort();
             gc_task.abort();
             api_task.abort();
-            let outcome = result??;
+            let outcome = result?;
             Ok(outcome)
         }
         result = &mut api_task => {
             upload_task.abort();
             repair_task.abort();
             gc_task.abort();
-            watcher_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
@@ -178,7 +176,6 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             upload_task.abort();
             repair_task.abort();
             gc_task.abort();
-            watcher_task.abort();
             api_task.abort();
             println!("shutdown signal received");
             Ok(())

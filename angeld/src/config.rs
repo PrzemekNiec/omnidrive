@@ -1,0 +1,32 @@
+use std::env;
+use std::path::PathBuf;
+
+pub const DEFAULT_MAX_PHYSICAL_BYTES_PER_PROVIDER: u64 = 80_530_636_800;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppConfig {
+    pub max_physical_bytes_per_provider: u64,
+    pub default_watch_dir: Option<PathBuf>,
+}
+
+impl AppConfig {
+    pub fn from_env() -> Self {
+        Self {
+            max_physical_bytes_per_provider: env_u64(
+                "OMNIDRIVE_MAX_PHYSICAL_BYTES_PER_PROVIDER",
+                DEFAULT_MAX_PHYSICAL_BYTES_PER_PROVIDER,
+            ),
+            default_watch_dir: env::var("OMNIDRIVE_WATCH_DIR")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
+        }
+    }
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}

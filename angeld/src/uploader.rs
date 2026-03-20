@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::config::AppConfig;
 use crate::db;
 use crate::db::PackStatus;
 use crate::packer::local_shard_path;
@@ -36,6 +37,7 @@ pub struct UploadedPack {
 pub struct UploadWorker {
     pool: SqlitePool,
     uploaders: Vec<Uploader>,
+    app_config: AppConfig,
     spool_dir: PathBuf,
     poll_interval: Duration,
     provider_timeout: Duration,
@@ -256,6 +258,7 @@ impl UploadWorker {
         Ok(Self {
             pool,
             uploaders,
+            app_config: AppConfig::from_env(),
             spool_dir: env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool"),
             poll_interval: duration_from_env("OMNIDRIVE_UPLOAD_POLL_INTERVAL_MS", 1_000),
             provider_timeout: duration_from_env("OMNIDRIVE_UPLOAD_TIMEOUT_MS", 120_000),
@@ -335,6 +338,30 @@ impl UploadWorker {
                 .iter()
                 .find(|uploader| uploader.provider_name() == shard.provider.as_str())
                 .ok_or(UploaderError::InvalidEnv("pack_shards.provider"))?;
+
+            let current_usage =
+                db::get_physical_usage_for_provider(&self.pool, &shard.provider).await?;
+            let shard_size = u64::try_from(shard.size)
+                .map_err(|_| UploaderError::InvalidEnv("pack_shards.size"))?;
+            let projected_usage = current_usage.saturating_add(shard_size);
+            if projected_usage > self.app_config.max_physical_bytes_per_provider {
+                let message = format!(
+                    "quota exceeded for provider {}: projected={} limit={}",
+                    shard.provider,
+                    projected_usage,
+                    self.app_config.max_physical_bytes_per_provider
+                );
+                eprintln!("{message}");
+                db::mark_pack_shard_failed(&self.pool, &job.pack_id, shard.shard_index, &message)
+                    .await?;
+                db::mark_upload_target_failed(&self.pool, job.id, &shard.provider, &message)
+                    .await?;
+                failed_shards.push(format!(
+                    "{} shard {}: {}",
+                    shard.provider, shard.shard_index, message
+                ));
+                continue;
+            }
 
             let shard_path = local_shard_path(
                 &self.spool_dir,

@@ -89,6 +89,15 @@ pub struct FileRevisionRecord {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct SyncPolicyRecord {
+    pub policy_id: i64,
+    pub path_prefix: String,
+    pub require_healthy: i64,
+    pub enable_versioning: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
 pub struct FileChunkLocation {
     pub chunk_id: Vec<u8>,
     pub file_offset: i64,
@@ -252,6 +261,19 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
             size INTEGER NOT NULL,
             is_current INTEGER NOT NULL DEFAULT 0,
             immutable_until INTEGER
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS sync_policies (
+            policy_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path_prefix TEXT NOT NULL UNIQUE,
+            require_healthy INTEGER NOT NULL DEFAULT 1,
+            enable_versioning INTEGER NOT NULL DEFAULT 1
         )
         "#,
     )
@@ -649,6 +671,70 @@ pub async fn create_file_revision(
 }
 
 #[allow(dead_code)]
+pub async fn upsert_sync_policy(
+    pool: &SqlitePool,
+    path_prefix: &str,
+    require_healthy: bool,
+    enable_versioning: bool,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO sync_policies (path_prefix, require_healthy, enable_versioning)
+        VALUES (?, ?, ?)
+        ON CONFLICT(path_prefix) DO UPDATE SET
+            require_healthy = excluded.require_healthy,
+            enable_versioning = excluded.enable_versioning
+        "#,
+    )
+    .bind(path_prefix)
+    .bind(if require_healthy { 1 } else { 0 })
+    .bind(if enable_versioning { 1 } else { 0 })
+    .execute(pool)
+    .await?;
+
+    let policy_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT policy_id
+        FROM sync_policies
+        WHERE path_prefix = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(path_prefix)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(policy_id)
+}
+
+#[allow(dead_code)]
+pub async fn list_sync_policies(pool: &SqlitePool) -> Result<Vec<SyncPolicyRecord>, sqlx::Error> {
+    sqlx::query_as::<_, SyncPolicyRecord>(
+        r#"
+        SELECT policy_id, path_prefix, require_healthy, enable_versioning
+        FROM sync_policies
+        ORDER BY LENGTH(path_prefix) DESC, policy_id ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn find_sync_policy_for_path(
+    pool: &SqlitePool,
+    path: &str,
+) -> Result<Option<SyncPolicyRecord>, sqlx::Error> {
+    let normalized_path = normalize_policy_path(path);
+    let policies = list_sync_policies(pool).await?;
+
+    Ok(policies
+        .into_iter()
+        .filter(|policy| path_matches_policy(&normalized_path, &policy.path_prefix))
+        .max_by_key(|policy| policy.path_prefix.len()))
+}
+
+#[allow(dead_code)]
 pub async fn get_current_file_revision(
     pool: &SqlitePool,
     inode_id: i64,
@@ -665,6 +751,28 @@ pub async fn get_current_file_revision(
     )
     .bind(inode_id)
     .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_referencing_inode_ids_for_pack(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<Vec<i64>, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT DISTINCT fr.inode_id
+        FROM packs p
+        INNER JOIN chunk_refs cr
+            ON cr.chunk_id = p.chunk_id
+        INNER JOIN file_revisions fr
+            ON fr.revision_id = cr.revision_id
+        WHERE p.pack_id = ?
+        ORDER BY fr.inode_id ASC
+        "#,
+    )
+    .bind(pack_id)
+    .fetch_all(pool)
     .await
 }
 
@@ -988,6 +1096,27 @@ pub async fn get_vault_health_summary(
     )
     .fetch_one(pool)
     .await
+}
+
+#[allow(dead_code)]
+pub async fn get_physical_usage_for_provider(
+    pool: &SqlitePool,
+    provider_name: &str,
+) -> Result<u64, sqlx::Error> {
+    let total = sqlx::query_scalar::<_, Option<i64>>(
+        r#"
+        SELECT COALESCE(SUM(size), 0)
+        FROM pack_shards
+        WHERE provider = ?
+          AND status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED')
+        "#,
+    )
+    .bind(provider_name)
+    .fetch_one(pool)
+    .await?
+    .unwrap_or(0);
+
+    Ok(u64::try_from(total).unwrap_or(0))
 }
 
 #[allow(dead_code)]
@@ -1356,6 +1485,56 @@ pub async fn get_file_chunks(
     .bind(inode_id)
     .fetch_all(pool)
     .await
+}
+
+#[allow(dead_code)]
+pub async fn get_inode_path(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<Option<String>, sqlx::Error> {
+    let mut names = Vec::new();
+    let mut current = get_inode_by_id(pool, inode_id).await?;
+
+    while let Some(inode) = current {
+        names.push(inode.name);
+        current = match inode.parent_id {
+            Some(parent_id) => get_inode_by_id(pool, parent_id).await?,
+            None => None,
+        };
+    }
+
+    if names.is_empty() {
+        return Ok(None);
+    }
+
+    names.reverse();
+    Ok(Some(names.join("/")))
+}
+
+#[allow(dead_code)]
+pub async fn pack_requires_healthy(pool: &SqlitePool, pack_id: &str) -> Result<bool, sqlx::Error> {
+    let inode_ids = get_referencing_inode_ids_for_pack(pool, pack_id).await?;
+    if inode_ids.is_empty() {
+        return Ok(false);
+    }
+
+    let mut saw_policy = false;
+    for inode_id in inode_ids {
+        let Some(path) = get_inode_path(pool, inode_id).await? else {
+            continue;
+        };
+        match find_sync_policy_for_path(pool, &path).await? {
+            Some(policy) => {
+                saw_policy = true;
+                if policy.require_healthy != 0 {
+                    return Ok(true);
+                }
+            }
+            None => return Ok(true),
+        }
+    }
+
+    Ok(!saw_policy)
 }
 
 #[allow(dead_code)]
@@ -1908,4 +2087,29 @@ async fn ensure_column_exists(
     }
 
     Ok(())
+}
+
+fn normalize_policy_path(path: &str) -> String {
+    let replaced = path.replace('\\', "/");
+    let mut normalized = replaced.trim().trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        normalized.push('/');
+    }
+    normalized
+}
+
+fn path_matches_policy(path: &str, prefix: &str) -> bool {
+    let path = normalize_policy_path(path);
+    let prefix = normalize_policy_path(prefix);
+
+    if prefix == "/" {
+        return true;
+    }
+
+    if path == prefix {
+        return true;
+    }
+
+    path.strip_prefix(&prefix)
+        .is_some_and(|suffix| suffix.starts_with('/'))
 }
