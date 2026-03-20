@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use crate::db;
-use omnidrive_core::crypto::{CryptoError, KeyBytes, encrypt_chunk};
+use crate::vault::{VaultError, VaultKeyStore};
+use omnidrive_core::crypto::{CryptoError, encrypt_chunk};
 use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -39,7 +40,7 @@ impl PackerConfig {
 #[derive(Clone)]
 pub struct Packer {
     pool: SqlitePool,
-    vault_key: KeyBytes,
+    vault_keys: VaultKeyStore,
     config: PackerConfig,
 }
 
@@ -69,6 +70,7 @@ pub enum PackerError {
     Io(std::io::Error),
     Db(sqlx::Error),
     Crypto(CryptoError),
+    Vault(VaultError),
     NumericOverflow(&'static str),
     Clock(std::time::SystemTimeError),
 }
@@ -82,6 +84,7 @@ impl fmt::Display for PackerError {
             Self::Io(err) => write!(f, "i/o error: {err}"),
             Self::Db(err) => write!(f, "sqlite error: {err}"),
             Self::Crypto(err) => write!(f, "crypto error: {err}"),
+            Self::Vault(err) => write!(f, "vault error: {err}"),
             Self::NumericOverflow(ctx) => write!(f, "numeric overflow while handling {ctx}"),
             Self::Clock(err) => write!(f, "system clock error: {err}"),
         }
@@ -108,6 +111,12 @@ impl From<CryptoError> for PackerError {
     }
 }
 
+impl From<VaultError> for PackerError {
+    fn from(value: VaultError) -> Self {
+        Self::Vault(value)
+    }
+}
+
 impl From<std::time::SystemTimeError> for PackerError {
     fn from(value: std::time::SystemTimeError) -> Self {
         Self::Clock(value)
@@ -117,7 +126,7 @@ impl From<std::time::SystemTimeError> for PackerError {
 impl Packer {
     pub fn new(
         pool: SqlitePool,
-        vault_key: KeyBytes,
+        vault_keys: VaultKeyStore,
         config: PackerConfig,
     ) -> Result<Self, PackerError> {
         if config.chunk_size == 0 {
@@ -126,7 +135,7 @@ impl Packer {
 
         Ok(Self {
             pool,
-            vault_key,
+            vault_keys,
             config,
         })
     }
@@ -140,6 +149,7 @@ impl Packer {
         fs::create_dir_all(&self.config.spool_dir).await?;
 
         let created_at_ms = unix_timestamp_ms()?;
+        let vault_key = self.vault_keys.require_key().await?;
         let mut file = File::open(&source_path).await?;
         let mut read_buffer = vec![0u8; self.config.chunk_size];
         let mut pack_bytes = Vec::new();
@@ -154,7 +164,7 @@ impl Packer {
             }
 
             let plaintext = &read_buffer[..bytes_read];
-            let encrypted = encrypt_chunk(&self.vault_key, plaintext, &[])?;
+            let encrypted = encrypt_chunk(&vault_key, plaintext, &[])?;
             let pack_offset = to_i64(pack_bytes.len(), "pack offset")?;
             let record_prefix = ChunkRecordPrefix {
                 record_magic: CHUNK_RECORD_MAGIC,
@@ -289,6 +299,7 @@ async fn read_next_chunk(file: &mut File, buffer: &mut [u8]) -> Result<usize, st
 mod tests {
     use super::*;
     use crate::db;
+    use crate::vault::VaultKeyStore;
     use std::env;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -316,7 +327,9 @@ mod tests {
         )
         .await?;
 
-        let packer = Packer::new(pool.clone(), [0x11; 32], PackerConfig::new(&spool_dir))?;
+        let vault_keys = VaultKeyStore::new();
+        vault_keys.set_key_for_tests([0x11; 32]).await;
+        let packer = Packer::new(pool.clone(), vault_keys, PackerConfig::new(&spool_dir))?;
         let result = packer.pack_file(inode_id, &source_path).await?;
         let chunks = db::get_file_chunks(&pool, inode_id).await?;
         let sizes: Vec<i64> = chunks.iter().map(|chunk| chunk.size).collect();
@@ -327,6 +340,42 @@ mod tests {
             sizes,
             vec![DEFAULT_CHUNK_SIZE as i64, DEFAULT_CHUNK_SIZE as i64, 123]
         );
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejects_packing_when_vault_is_locked() -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-packer-locked-test-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        let spool_dir = test_root.join("spool");
+        let source_path = test_root.join("source.bin");
+        let payload = vec![0xCD; 1024];
+
+        fs::create_dir_all(&spool_dir).await?;
+        fs::write(&source_path, &payload).await?;
+
+        let pool = db::init_db("sqlite::memory:").await?;
+        let inode_id = db::create_inode(
+            &pool,
+            None,
+            "source.bin",
+            "FILE",
+            i64::try_from(payload.len())?,
+        )
+        .await?;
+
+        let vault_keys = VaultKeyStore::new();
+        let packer = Packer::new(pool, vault_keys, PackerConfig::new(&spool_dir))?;
+        let err = packer.pack_file(inode_id, &source_path).await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            PackerError::Vault(crate::vault::VaultError::Locked)
+        ));
 
         let _ = fs::remove_dir_all(&test_root).await;
         Ok(())

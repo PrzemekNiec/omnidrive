@@ -3,13 +3,13 @@
 use crate::db;
 use crate::packer::LOCAL_PACK_EXTENSION;
 use crate::uploader::ProviderConfig;
+use crate::vault::{VaultError, VaultKeyStore};
 use aws_config::BehaviorVersion;
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
 use omnidrive_core::crypto::{ChunkId, CryptoError, GcmTag, KeyBytes, decrypt_chunk};
 use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, ChunkRecordPrefix};
-use sha2::Digest;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::env;
@@ -21,7 +21,7 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 pub struct Downloader {
     pool: SqlitePool,
-    vault_key: KeyBytes,
+    vault_keys: VaultKeyStore,
     download_spool_dir: PathBuf,
     providers: HashMap<String, DownloadProvider>,
     provider_timeout: Duration,
@@ -53,11 +53,11 @@ pub struct RestoreResult {
 #[derive(Debug)]
 pub enum DownloaderError {
     MissingProviderConfig,
-    MissingVaultKey,
     InvalidEnv(&'static str),
     Io(std::io::Error),
     Db(sqlx::Error),
     Crypto(CryptoError),
+    Vault(VaultError),
     NumericOverflow(&'static str),
     NoChunksForInode(i64),
     NoCompletedPackTargets(String),
@@ -73,11 +73,11 @@ impl fmt::Display for DownloaderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingProviderConfig => write!(f, "no download providers configured"),
-            Self::MissingVaultKey => write!(f, "missing vault key"),
             Self::InvalidEnv(key) => write!(f, "invalid environment variable {key}"),
             Self::Io(err) => write!(f, "i/o error: {err}"),
             Self::Db(err) => write!(f, "sqlite error: {err}"),
             Self::Crypto(err) => write!(f, "crypto error: {err}"),
+            Self::Vault(err) => write!(f, "vault error: {err}"),
             Self::NumericOverflow(ctx) => write!(f, "numeric overflow while handling {ctx}"),
             Self::NoChunksForInode(inode_id) => write!(f, "no chunks found for inode {inode_id}"),
             Self::NoCompletedPackTargets(pack_id) => {
@@ -118,11 +118,19 @@ impl From<CryptoError> for DownloaderError {
     }
 }
 
+impl From<VaultError> for DownloaderError {
+    fn from(value: VaultError) -> Self {
+        Self::Vault(value)
+    }
+}
+
 impl Downloader {
-    pub async fn from_env(pool: SqlitePool) -> Result<Self, DownloaderError> {
+    pub async fn from_env(
+        pool: SqlitePool,
+        vault_keys: VaultKeyStore,
+    ) -> Result<Self, DownloaderError> {
         let _ = dotenvy::dotenv();
 
-        let vault_key = load_vault_key()?;
         let download_spool_dir =
             env_path("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", ".omnidrive/download-spool");
         let provider_timeout = duration_from_env("OMNIDRIVE_DOWNLOAD_TIMEOUT_MS", 120_000);
@@ -140,7 +148,7 @@ impl Downloader {
 
         Self::from_provider_configs(
             pool,
-            vault_key,
+            vault_keys,
             download_spool_dir,
             provider_timeout,
             configs,
@@ -150,7 +158,7 @@ impl Downloader {
 
     pub(crate) async fn from_provider_configs(
         pool: SqlitePool,
-        vault_key: KeyBytes,
+        vault_keys: VaultKeyStore,
         download_spool_dir: impl Into<PathBuf>,
         provider_timeout: Duration,
         configs: Vec<ProviderConfig>,
@@ -170,7 +178,7 @@ impl Downloader {
 
         Ok(Self {
             pool,
-            vault_key,
+            vault_keys,
             download_spool_dir,
             providers,
             provider_timeout,
@@ -183,6 +191,7 @@ impl Downloader {
         output_path: impl AsRef<Path>,
     ) -> Result<RestoreResult, DownloaderError> {
         let output_path = output_path.as_ref().to_path_buf();
+        let vault_key = self.vault_keys.require_key().await?;
         let chunk_locations = db::get_file_chunk_locations(&self.pool, inode_id).await?;
         if chunk_locations.is_empty() {
             return Err(DownloaderError::NoChunksForInode(inode_id));
@@ -206,7 +215,7 @@ impl Downloader {
             };
 
             let pack_bytes = fs::read(&source.local_path).await?;
-            let plaintext = decrypt_chunk_record(&pack_bytes, &chunk, &self.vault_key)?;
+            let plaintext = decrypt_chunk_record(&pack_bytes, &chunk, &vault_key)?;
 
             let desired_offset = to_u64(chunk.file_offset, "file offset")?;
             if current_offset != desired_offset {
@@ -470,35 +479,6 @@ fn vec_to_chunk_id(bytes: &[u8]) -> Result<ChunkId, DownloaderError> {
         .map_err(|_| DownloaderError::InvalidPackRecord("chunk id length"))
 }
 
-fn load_vault_key() -> Result<KeyBytes, DownloaderError> {
-    if let Ok(value) = env::var("OMNIDRIVE_VAULT_KEY_HEX") {
-        return parse_hex_key(&value);
-    }
-
-    let vault_id = env::var("OMNIDRIVE_VAULT_ID").map_err(|_| DownloaderError::MissingVaultKey)?;
-    let digest = sha2::Sha256::digest(format!("omnidrive-dev-vault-key:{vault_id}").as_bytes());
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&digest);
-    Ok(key)
-}
-
-fn parse_hex_key(value: &str) -> Result<KeyBytes, DownloaderError> {
-    let trimmed = value.trim();
-    if trimmed.len() != 64 {
-        return Err(DownloaderError::InvalidEnv("OMNIDRIVE_VAULT_KEY_HEX"));
-    }
-
-    let mut bytes = [0u8; 32];
-    for (index, chunk) in trimmed.as_bytes().chunks(2).enumerate() {
-        let hex = std::str::from_utf8(chunk)
-            .map_err(|_| DownloaderError::InvalidEnv("OMNIDRIVE_VAULT_KEY_HEX"))?;
-        bytes[index] = u8::from_str_radix(hex, 16)
-            .map_err(|_| DownloaderError::InvalidEnv("OMNIDRIVE_VAULT_KEY_HEX"))?;
-    }
-
-    Ok(bytes)
-}
-
 fn env_path(key: &str, default: &str) -> PathBuf {
     env::var(key)
         .map(PathBuf::from)
@@ -538,6 +518,7 @@ mod tests {
     use super::*;
     use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
     use crate::uploader::KNOWN_PROVIDERS;
+    use crate::vault::VaultKeyStore;
     use axum::Router;
     use axum::body::Bytes;
     use axum::extract::{Path, State};
@@ -583,9 +564,11 @@ mod tests {
         )
         .await?;
 
+        let vault_keys = VaultKeyStore::new();
+        vault_keys.set_key_for_tests(vault_key).await;
         let packer = Packer::new(
             pool.clone(),
-            vault_key,
+            vault_keys.clone(),
             PackerConfig::new(&upload_spool_dir),
         )?;
         let pack_result = packer.pack_file(inode_id, &source_path).await?;
@@ -670,7 +653,7 @@ mod tests {
 
         let downloader = Downloader::from_provider_configs(
             pool.clone(),
-            vault_key,
+            vault_keys,
             &download_spool_dir,
             Duration::from_secs(30),
             configs,

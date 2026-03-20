@@ -1,11 +1,12 @@
 use crate::db;
 use crate::uploader::KNOWN_PROVIDERS;
+use crate::vault::VaultKeyStore;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::env;
@@ -15,10 +16,12 @@ use std::net::SocketAddr;
 #[derive(Clone)]
 struct ApiState {
     pool: SqlitePool,
+    vault_keys: VaultKeyStore,
 }
 
 pub struct ApiServer {
     pool: SqlitePool,
+    vault_keys: VaultKeyStore,
     bind_addr: SocketAddr,
 }
 
@@ -62,8 +65,19 @@ struct ProviderHealthResponse {
     last_error: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct UnlockRequest {
+    passphrase: String,
+}
+
+#[derive(Serialize)]
+struct UnlockResponse {
+    status: String,
+    initialized: bool,
+}
+
 impl ApiServer {
-    pub fn from_env(pool: SqlitePool) -> Result<Self, ApiError> {
+    pub fn from_env(pool: SqlitePool, vault_keys: VaultKeyStore) -> Result<Self, ApiError> {
         let _ = dotenvy::dotenv();
 
         let bind_addr = env::var("OMNIDRIVE_API_BIND")
@@ -71,14 +85,22 @@ impl ApiServer {
             .parse::<SocketAddr>()
             .map_err(|_| ApiError::InvalidBindAddress("OMNIDRIVE_API_BIND".to_string()))?;
 
-        Ok(Self { pool, bind_addr })
+        Ok(Self {
+            pool,
+            vault_keys,
+            bind_addr,
+        })
     }
 
     pub async fn run(self) -> Result<(), ApiError> {
-        let state = ApiState { pool: self.pool };
+        let state = ApiState {
+            pool: self.pool,
+            vault_keys: self.vault_keys,
+        };
         let app = Router::new()
             .route("/api/transfers", get(get_transfers))
             .route("/api/health", get(get_health))
+            .route("/api/unlock", post(post_unlock))
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
@@ -184,6 +206,34 @@ async fn get_health(State(state): State<ApiState>) -> impl IntoResponse {
     }
 
     (StatusCode::OK, Json(providers)).into_response()
+}
+
+async fn post_unlock(
+    State(state): State<ApiState>,
+    Json(request): Json<UnlockRequest>,
+) -> impl IntoResponse {
+    match state
+        .vault_keys
+        .unlock(&state.pool, &request.passphrase)
+        .await
+    {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(UnlockResponse {
+                status: "UNLOCKED".to_string(),
+                initialized: result.initialized,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "unlock_failed",
+                "message": err.to_string()
+            })),
+        )
+            .into_response(),
+    }
 }
 
 fn provider_connection_status(target_status: &str, has_error: bool) -> String {

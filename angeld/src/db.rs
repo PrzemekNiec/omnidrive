@@ -11,6 +11,17 @@ pub struct VaultRecord {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct VaultConfigRecord {
+    pub id: i64,
+    pub salt: Vec<u8>,
+    pub parameter_set_version: i64,
+    pub memory_cost_kib: i64,
+    pub time_cost: i64,
+    pub lanes: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
 pub struct InodeRecord {
     pub id: i64,
     pub parent_id: Option<i64>,
@@ -101,6 +112,21 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
             master_key_salt BLOB NOT NULL,
             argon2_params TEXT NOT NULL,
             vault_id TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS vault_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            salt BLOB NOT NULL,
+            parameter_set_version INTEGER NOT NULL,
+            memory_cost_kib INTEGER NOT NULL,
+            time_cost INTEGER NOT NULL,
+            lanes INTEGER NOT NULL
         )
         "#,
     )
@@ -230,6 +256,58 @@ pub async fn get_vault_params(pool: &SqlitePool) -> Result<Option<VaultRecord>, 
     )
     .fetch_optional(pool)
     .await
+}
+
+#[allow(dead_code)]
+pub async fn get_vault_config(pool: &SqlitePool) -> Result<Option<VaultConfigRecord>, sqlx::Error> {
+    sqlx::query_as::<_, VaultConfigRecord>(
+        r#"
+        SELECT id, salt, parameter_set_version, memory_cost_kib, time_cost, lanes
+        FROM vault_config
+        WHERE id = 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn set_vault_config(
+    pool: &SqlitePool,
+    salt: &[u8],
+    parameter_set_version: i64,
+    memory_cost_kib: i64,
+    time_cost: i64,
+    lanes: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO vault_config (
+            id,
+            salt,
+            parameter_set_version,
+            memory_cost_kib,
+            time_cost,
+            lanes
+        )
+        VALUES (1, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            salt = excluded.salt,
+            parameter_set_version = excluded.parameter_set_version,
+            memory_cost_kib = excluded.memory_cost_kib,
+            time_cost = excluded.time_cost,
+            lanes = excluded.lanes
+        "#,
+    )
+    .bind(salt)
+    .bind(parameter_set_version)
+    .bind(memory_cost_kib)
+    .bind(time_cost)
+    .bind(lanes)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 #[allow(dead_code)]

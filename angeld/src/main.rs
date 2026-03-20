@@ -3,11 +3,13 @@ mod db;
 mod downloader;
 mod packer;
 mod uploader;
+mod vault;
 mod watcher;
 
 use crate::api::ApiServer;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::uploader::{UploadWorker, Uploader};
+use crate::vault::VaultKeyStore;
 use crate::watcher::FileWatcher;
 use std::env;
 use std::io;
@@ -82,9 +84,11 @@ async fn smoke_test_r2_upload() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
+    let vault_keys = VaultKeyStore::new();
+    let _ = vault_keys.unlock(&pool, "r2-smoke-test-passphrase").await?;
     let packer = Packer::new(
         pool,
-        [0x42; 32],
+        vault_keys,
         PackerConfig::new(&spool_dir).with_chunk_size(chunk_size),
     )?;
     let pack_result = packer.pack_file(inode_id, &sample_path).await?;
@@ -109,9 +113,10 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     let db_url = env::var("OMNIDRIVE_DB_URL").unwrap_or_else(|_| "sqlite:omnidrive.db".to_string());
     let pool = db::init_db(&db_url).await?;
+    let vault_keys = VaultKeyStore::new();
     let worker = UploadWorker::from_env(pool.clone()).await?;
-    let watcher = FileWatcher::from_env(pool.clone()).await?;
-    let api = ApiServer::from_env(pool)?;
+    let watcher = FileWatcher::from_env(pool.clone(), vault_keys.clone()).await?;
+    let api = ApiServer::from_env(pool, vault_keys)?;
 
     println!("upload worker, file watcher, and api server started");
 

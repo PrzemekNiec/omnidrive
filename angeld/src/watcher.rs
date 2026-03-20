@@ -2,9 +2,8 @@
 
 use crate::db;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
+use crate::vault::VaultKeyStore;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use omnidrive_core::crypto::KeyBytes;
-use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::env;
@@ -87,7 +86,10 @@ impl From<tokio::task::JoinError> for WatcherError {
 }
 
 impl FileWatcher {
-    pub async fn from_env(pool: SqlitePool) -> Result<Self, WatcherError> {
+    pub async fn from_env(
+        pool: SqlitePool,
+        vault_keys: VaultKeyStore,
+    ) -> Result<Self, WatcherError> {
         let _ = dotenvy::dotenv();
 
         let watch_dir = required_path_env("OMNIDRIVE_WATCH_DIR")?;
@@ -97,7 +99,6 @@ impl FileWatcher {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(DEFAULT_CHUNK_SIZE);
         let debounce_window = duration_from_env("OMNIDRIVE_WATCH_DEBOUNCE_MS", 750);
-        let vault_key = load_vault_key()?;
 
         let watch_dir = normalize_path(&watch_dir)?;
         let spool_dir = normalize_path(&spool_dir)?;
@@ -107,7 +108,7 @@ impl FileWatcher {
 
         let packer = Packer::new(
             pool.clone(),
-            vault_key,
+            vault_keys,
             PackerConfig::new(&spool_dir).with_chunk_size(chunk_size),
         )?;
 
@@ -334,35 +335,6 @@ async fn collect_files_recursively(root: PathBuf) -> Result<Vec<PathBuf>, Watche
 
 fn is_relevant_event(kind: &EventKind) -> bool {
     matches!(kind, EventKind::Create(_) | EventKind::Modify(_))
-}
-
-fn load_vault_key() -> Result<KeyBytes, WatcherError> {
-    if let Ok(value) = env::var("OMNIDRIVE_VAULT_KEY_HEX") {
-        return parse_hex_key(&value);
-    }
-
-    let vault_id = env::var("OMNIDRIVE_VAULT_ID").unwrap_or_else(|_| "default-vault".to_string());
-    let digest = Sha256::digest(format!("omnidrive-dev-vault-key:{vault_id}").as_bytes());
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&digest);
-    Ok(key)
-}
-
-fn parse_hex_key(value: &str) -> Result<KeyBytes, WatcherError> {
-    let trimmed = value.trim();
-    if trimmed.len() != 64 {
-        return Err(WatcherError::InvalidEnv("OMNIDRIVE_VAULT_KEY_HEX"));
-    }
-
-    let mut bytes = [0u8; 32];
-    for (index, chunk) in trimmed.as_bytes().chunks(2).enumerate() {
-        let hex = std::str::from_utf8(chunk)
-            .map_err(|_| WatcherError::InvalidEnv("OMNIDRIVE_VAULT_KEY_HEX"))?;
-        bytes[index] = u8::from_str_radix(hex, 16)
-            .map_err(|_| WatcherError::InvalidEnv("OMNIDRIVE_VAULT_KEY_HEX"))?;
-    }
-
-    Ok(bytes)
 }
 
 fn required_path_env(key: &'static str) -> Result<PathBuf, WatcherError> {
