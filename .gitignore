@@ -12,3 +12,5 @@ Cargo.lock
 Thumbs.db
 .vscode/
 .idea/
+.obsidian/
+.omnidrive/
