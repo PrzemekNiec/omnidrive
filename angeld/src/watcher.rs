@@ -220,7 +220,10 @@ impl FileWatcher {
 
         let metadata = match fs::metadata(&path).await {
             Ok(metadata) => metadata,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                self.handle_deleted_path(&path, processed_files).await?;
+                return Ok(());
+            }
             Err(err) => return Err(err.into()),
         };
 
@@ -285,6 +288,39 @@ impl FileWatcher {
         Ok(())
     }
 
+    async fn handle_deleted_path(
+        &self,
+        path: &Path,
+        processed_files: &mut HashMap<PathBuf, FileFingerprint>,
+    ) -> Result<(), WatcherError> {
+        processed_files.remove(path);
+
+        let relative = match path.strip_prefix(&self.watch_dir) {
+            Ok(relative) => relative,
+            Err(_) => return Ok(()),
+        };
+        if relative.as_os_str().is_empty() {
+            return Ok(());
+        }
+
+        let db_path = relative_path_to_db_path(relative)?;
+        let Some(inode_id) = db::resolve_path(&self.pool, &db_path).await? else {
+            return Ok(());
+        };
+        let Some(inode) = db::get_inode_by_id(&self.pool, inode_id).await? else {
+            return Ok(());
+        };
+
+        if inode.kind != "FILE" {
+            return Ok(());
+        }
+
+        db::delete_file_chunks(&self.pool, inode_id).await?;
+        db::delete_inode_record(&self.pool, inode_id).await?;
+        println!("watcher removed {} from sqlite", path.display());
+        Ok(())
+    }
+
     fn should_ignore_path(&self, path: &Path) -> bool {
         path.starts_with(&self.spool_dir)
     }
@@ -334,7 +370,10 @@ async fn collect_files_recursively(root: PathBuf) -> Result<Vec<PathBuf>, Watche
 }
 
 fn is_relevant_event(kind: &EventKind) -> bool {
-    matches!(kind, EventKind::Create(_) | EventKind::Modify(_))
+    matches!(
+        kind,
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+    )
 }
 
 fn required_path_env(key: &'static str) -> Result<PathBuf, WatcherError> {
@@ -379,4 +418,16 @@ fn unix_timestamp_ms(time: SystemTime) -> Result<i64, WatcherError> {
         .as_millis();
 
     i64::try_from(millis).map_err(|_| WatcherError::InvalidEnv("timestamp_overflow"))
+}
+
+fn relative_path_to_db_path(path: &Path) -> Result<String, WatcherError> {
+    let segments: Vec<String> = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if segments.is_empty() {
+        return Err(WatcherError::InvalidEnv("relative_path"));
+    }
+
+    Ok(segments.join("/"))
 }

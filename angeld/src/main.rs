@@ -1,13 +1,17 @@
 mod api;
 mod db;
 mod downloader;
+mod gc;
 mod packer;
+mod repair;
 mod uploader;
 mod vault;
 mod watcher;
 
 use crate::api::ApiServer;
+use crate::gc::GcWorker;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
+use crate::repair::RepairWorker;
 use crate::uploader::{UploadWorker, Uploader};
 use crate::vault::VaultKeyStore;
 use crate::watcher::FileWatcher;
@@ -115,17 +119,39 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let pool = db::init_db(&db_url).await?;
     let vault_keys = VaultKeyStore::new();
     let worker = UploadWorker::from_env(pool.clone()).await?;
+    let repair_worker = RepairWorker::from_env(pool.clone()).await?;
+    let gc_worker = GcWorker::from_env(pool.clone()).await?;
     let watcher = FileWatcher::from_env(pool.clone(), vault_keys.clone()).await?;
     let api = ApiServer::from_env(pool, vault_keys)?;
 
-    println!("upload worker, file watcher, and api server started");
+    println!("upload worker, repair worker, gc worker, file watcher, and api server started");
 
     let mut upload_task = tokio::spawn(async move { worker.run().await });
+    let mut repair_task = tokio::spawn(async move { repair_worker.run().await });
+    let mut gc_task = tokio::spawn(async move { gc_worker.run().await });
     let mut watcher_task = tokio::spawn(async move { watcher.run().await });
     let mut api_task = tokio::spawn(async move { api.run().await });
 
     tokio::select! {
         result = &mut upload_task => {
+            repair_task.abort();
+            gc_task.abort();
+            watcher_task.abort();
+            api_task.abort();
+            let outcome = result??;
+            Ok(outcome)
+        }
+        result = &mut repair_task => {
+            upload_task.abort();
+            gc_task.abort();
+            watcher_task.abort();
+            api_task.abort();
+            let outcome = result??;
+            Ok(outcome)
+        }
+        result = &mut gc_task => {
+            upload_task.abort();
+            repair_task.abort();
             watcher_task.abort();
             api_task.abort();
             let outcome = result??;
@@ -133,12 +159,16 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         }
         result = &mut watcher_task => {
             upload_task.abort();
+            repair_task.abort();
+            gc_task.abort();
             api_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
         result = &mut api_task => {
             upload_task.abort();
+            repair_task.abort();
+            gc_task.abort();
             watcher_task.abort();
             let outcome = result??;
             Ok(outcome)
@@ -146,6 +176,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         signal = signal::ctrl_c() => {
             signal?;
             upload_task.abort();
+            repair_task.abort();
+            gc_task.abort();
             watcher_task.abort();
             api_task.abort();
             println!("shutdown signal received");

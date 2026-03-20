@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::db;
-use crate::packer::LOCAL_PACK_EXTENSION;
+use crate::packer::{DATA_SHARDS, LOCAL_PACK_EXTENSION, PARITY_SHARDS, TOTAL_SHARDS};
 use crate::uploader::ProviderConfig;
 use crate::vault::{VaultError, VaultKeyStore};
 use aws_config::BehaviorVersion;
@@ -9,7 +9,8 @@ use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
 use omnidrive_core::crypto::{ChunkId, CryptoError, GcmTag, KeyBytes, decrypt_chunk};
-use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, ChunkRecordPrefix};
+use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix};
+use reed_solomon_erasure::galois_8::ReedSolomon;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::env;
@@ -18,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::fs::{self, File};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use zerocopy::AsBytes;
+use zerocopy::byteorder::big_endian::U64;
 
 pub struct Downloader {
     pool: SqlitePool,
@@ -30,15 +33,14 @@ pub struct Downloader {
 #[derive(Clone)]
 struct DownloadProvider {
     provider_name: &'static str,
+    bucket: String,
     client: Client,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RestoredPackSource {
     pub pack_id: String,
-    pub provider: String,
-    pub bucket: String,
-    pub object_key: String,
+    pub providers: Vec<String>,
     pub local_path: PathBuf,
 }
 
@@ -58,11 +60,13 @@ pub enum DownloaderError {
     Db(sqlx::Error),
     Crypto(CryptoError),
     Vault(VaultError),
+    ErasureCoding(reed_solomon_erasure::Error),
     NumericOverflow(&'static str),
     NoChunksForInode(i64),
-    NoCompletedPackTargets(String),
+    PackMissing(String),
+    NoPackShards(String),
     NoConfiguredProvider(String),
-    PackDownloadFailed {
+    ShardDownloadFailed {
         pack_id: String,
         errors: Vec<String>,
     },
@@ -78,18 +82,18 @@ impl fmt::Display for DownloaderError {
             Self::Db(err) => write!(f, "sqlite error: {err}"),
             Self::Crypto(err) => write!(f, "crypto error: {err}"),
             Self::Vault(err) => write!(f, "vault error: {err}"),
+            Self::ErasureCoding(err) => write!(f, "erasure coding error: {err}"),
             Self::NumericOverflow(ctx) => write!(f, "numeric overflow while handling {ctx}"),
             Self::NoChunksForInode(inode_id) => write!(f, "no chunks found for inode {inode_id}"),
-            Self::NoCompletedPackTargets(pack_id) => {
-                write!(f, "no completed download targets found for pack {pack_id}")
-            }
+            Self::PackMissing(pack_id) => write!(f, "pack {pack_id} is missing from SQLite"),
+            Self::NoPackShards(pack_id) => write!(f, "no shards found for pack {pack_id}"),
             Self::NoConfiguredProvider(provider) => {
                 write!(f, "provider {provider} is not configured for downloads")
             }
-            Self::PackDownloadFailed { pack_id, errors } => {
+            Self::ShardDownloadFailed { pack_id, errors } => {
                 write!(
                     f,
-                    "failed to download pack {pack_id}: {}",
+                    "failed to download enough shards for pack {pack_id}: {}",
                     errors.join(" | ")
                 )
             }
@@ -121,6 +125,12 @@ impl From<CryptoError> for DownloaderError {
 impl From<VaultError> for DownloaderError {
     fn from(value: VaultError) -> Self {
         Self::Vault(value)
+    }
+}
+
+impl From<reed_solomon_erasure::Error> for DownloaderError {
+    fn from(value: reed_solomon_erasure::Error) -> Self {
+        Self::ErasureCoding(value)
     }
 }
 
@@ -242,30 +252,26 @@ impl Downloader {
     }
 
     async fn download_pack(&self, pack_id: &str) -> Result<RestoredPackSource, DownloaderError> {
-        let targets = db::get_completed_pack_targets(&self.pool, pack_id).await?;
-        if targets.is_empty() {
-            return Err(DownloaderError::NoCompletedPackTargets(pack_id.to_string()));
+        let pack = db::get_pack(&self.pool, pack_id)
+            .await?
+            .ok_or_else(|| DownloaderError::PackMissing(pack_id.to_string()))?;
+        let shards = db::get_pack_shards(&self.pool, pack_id).await?;
+        if shards.is_empty() {
+            return Err(DownloaderError::NoPackShards(pack_id.to_string()));
         }
 
         let mut candidates = Vec::new();
-        for target in targets {
-            let Some(provider) = self.providers.get(&target.provider) else {
+        for shard in shards {
+            let Some(provider) = self.providers.get(&shard.provider) else {
                 continue;
             };
 
-            let latency = match self
-                .probe_latency(provider, &target.bucket, &target.object_key)
-                .await
-            {
-                Ok(latency) => Some(latency),
-                Err(_) => None,
-            };
-
-            candidates.push((provider, target, latency));
+            let latency = self.probe_latency(provider, &shard.object_key).await.ok();
+            candidates.push((provider, shard, latency));
         }
 
         if candidates.is_empty() {
-            return Err(DownloaderError::PackDownloadFailed {
+            return Err(DownloaderError::ShardDownloadFailed {
                 pack_id: pack_id.to_string(),
                 errors: vec![format!(
                     "no configured providers available for pack {pack_id}"
@@ -273,37 +279,69 @@ impl Downloader {
             });
         }
 
-        candidates.sort_by_key(|(_, _, latency)| latency.unwrap_or(Duration::MAX));
+        candidates.sort_by_key(|(_, shard, latency)| {
+            (
+                latency.unwrap_or(Duration::MAX),
+                if shard.status == "COMPLETED" { 0 } else { 1 },
+            )
+        });
 
+        let mut shard_bytes: Vec<Option<Vec<u8>>> = vec![None; TOTAL_SHARDS];
+        let mut downloaded_from = Vec::new();
         let mut errors = Vec::new();
-        for (provider, target, _) in candidates {
+
+        for (provider, shard, _) in candidates {
+            let shard_index = usize::try_from(shard.shard_index)
+                .map_err(|_| DownloaderError::NumericOverflow("shard index"))?;
+            if shard_index >= TOTAL_SHARDS || shard_bytes[shard_index].is_some() {
+                continue;
+            }
+
             match self
-                .download_from_target(pack_id, provider, &target.bucket, &target.object_key)
+                .download_shard(pack_id, provider, &shard.object_key, shard_index)
                 .await
             {
                 Ok(local_path) => {
-                    return Ok(RestoredPackSource {
-                        pack_id: pack_id.to_string(),
-                        provider: target.provider,
-                        bucket: target.bucket,
-                        object_key: target.object_key,
-                        local_path,
-                    });
+                    let bytes = fs::read(&local_path).await?;
+                    shard_bytes[shard_index] = Some(bytes);
+                    downloaded_from.push(provider.provider_name.to_string());
+                    if shard_bytes.iter().flatten().count() >= DATA_SHARDS {
+                        break;
+                    }
                 }
-                Err(err) => errors.push(err),
+                Err(err) => {
+                    errors.push(format!(
+                        "{} shard {}: {}",
+                        shard.provider, shard.shard_index, err
+                    ));
+                }
             }
         }
 
-        Err(DownloaderError::PackDownloadFailed {
+        if shard_bytes.iter().flatten().count() < DATA_SHARDS {
+            return Err(DownloaderError::ShardDownloadFailed {
+                pack_id: pack_id.to_string(),
+                errors,
+            });
+        }
+
+        let ciphertext = reconstruct_ciphertext(&pack, &mut shard_bytes)?;
+        let manifest_bytes = build_manifest_bytes(&pack, &ciphertext)?;
+        let local_path = self
+            .download_spool_dir
+            .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
+        fs::write(&local_path, &manifest_bytes).await?;
+
+        Ok(RestoredPackSource {
             pack_id: pack_id.to_string(),
-            errors,
+            providers: downloaded_from,
+            local_path,
         })
     }
 
     async fn probe_latency(
         &self,
         provider: &DownloadProvider,
-        bucket: &str,
         object_key: &str,
     ) -> Result<Duration, DownloaderError> {
         let start = Instant::now();
@@ -312,7 +350,7 @@ impl Downloader {
             provider
                 .client
                 .head_object()
-                .bucket(bucket)
+                .bucket(&provider.bucket)
                 .key(object_key)
                 .send(),
         )
@@ -322,19 +360,19 @@ impl Downloader {
         Ok(start.elapsed())
     }
 
-    async fn download_from_target(
+    async fn download_shard(
         &self,
         pack_id: &str,
         provider: &DownloadProvider,
-        bucket: &str,
         object_key: &str,
+        shard_index: usize,
     ) -> Result<PathBuf, String> {
         let response = tokio::time::timeout(
             self.provider_timeout,
             provider
                 .client
                 .get_object()
-                .bucket(bucket)
+                .bucket(&provider.bucket)
                 .key(object_key)
                 .send(),
         )
@@ -358,7 +396,7 @@ impl Downloader {
 
         let local_path = self
             .download_spool_dir
-            .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
+            .join(format!("{pack_id}.download-shard{shard_index}"));
         fs::write(&local_path, body.into_bytes())
             .await
             .map_err(|err| err.to_string())?;
@@ -404,9 +442,79 @@ impl DownloadProvider {
 
         Ok(Self {
             provider_name,
+            bucket: config.bucket,
             client: Client::from_conf(s3_config),
         })
     }
+}
+
+fn reconstruct_ciphertext(
+    pack: &db::PackRecord,
+    shards: &mut [Option<Vec<u8>>],
+) -> Result<Vec<u8>, DownloaderError> {
+    if shards.len() != TOTAL_SHARDS {
+        return Err(DownloaderError::InvalidPackRecord("shard count mismatch"));
+    }
+
+    let shard_len = to_usize(pack.shard_size, "shard size")?;
+    for shard in shards.iter_mut() {
+        if let Some(bytes) = shard.as_mut() {
+            if bytes.len() != shard_len {
+                return Err(DownloaderError::InvalidPackRecord("shard size mismatch"));
+            }
+        }
+    }
+
+    let reed_solomon = ReedSolomon::new(DATA_SHARDS, PARITY_SHARDS)?;
+    reed_solomon.reconstruct(shards)?;
+
+    let mut ciphertext = Vec::with_capacity(to_usize(pack.cipher_size, "cipher size")?);
+    for shard in shards.iter().take(DATA_SHARDS) {
+        let bytes = shard.as_ref().ok_or(DownloaderError::InvalidPackRecord(
+            "missing data shard after reconstruct",
+        ))?;
+        ciphertext.extend_from_slice(bytes);
+    }
+
+    let cipher_size = to_usize(pack.cipher_size, "cipher size")?;
+    if ciphertext.len() < cipher_size {
+        return Err(DownloaderError::InvalidPackRecord(
+            "reconstructed ciphertext shorter than expected",
+        ));
+    }
+    ciphertext.truncate(cipher_size);
+    Ok(ciphertext)
+}
+
+fn build_manifest_bytes(
+    pack: &db::PackRecord,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, DownloaderError> {
+    let chunk_id = vec_to_chunk_id(&pack.chunk_id)?;
+    let nonce = vec_to_nonce(&pack.nonce)?;
+    let gcm_tag = vec_to_gcm_tag(&pack.gcm_tag)?;
+    let plain_len = u64::try_from(pack.logical_size)
+        .map_err(|_| DownloaderError::NumericOverflow("logical size"))?;
+
+    let prefix = ChunkRecordPrefix {
+        record_magic: CHUNK_RECORD_MAGIC,
+        record_version: u8::try_from(pack.encryption_version)
+            .map_err(|_| DownloaderError::NumericOverflow("encryption version"))?,
+        flags: 0,
+        compression_algo: COMPRESSION_ALGO_NONE,
+        reserved_0: 0,
+        chunk_id,
+        plain_len: U64::new(plain_len),
+        cipher_len: U64::new(ciphertext.len() as u64),
+        nonce,
+        reserved_1: [0u8; 12],
+    };
+
+    let mut bytes = Vec::with_capacity(ChunkRecordPrefix::SIZE + ciphertext.len() + gcm_tag.len());
+    bytes.extend_from_slice(prefix.as_bytes());
+    bytes.extend_from_slice(ciphertext);
+    bytes.extend_from_slice(&gcm_tag);
+    Ok(bytes)
 }
 
 fn decrypt_chunk_record(
@@ -479,6 +587,18 @@ fn vec_to_chunk_id(bytes: &[u8]) -> Result<ChunkId, DownloaderError> {
         .map_err(|_| DownloaderError::InvalidPackRecord("chunk id length"))
 }
 
+fn vec_to_nonce(bytes: &[u8]) -> Result<[u8; 12], DownloaderError> {
+    bytes
+        .try_into()
+        .map_err(|_| DownloaderError::InvalidPackRecord("nonce length"))
+}
+
+fn vec_to_gcm_tag(bytes: &[u8]) -> Result<GcmTag, DownloaderError> {
+    bytes
+        .try_into()
+        .map_err(|_| DownloaderError::InvalidPackRecord("gcm tag length"))
+}
+
 fn env_path(key: &str, default: &str) -> PathBuf {
     env::var(key)
         .map(PathBuf::from)
@@ -517,14 +637,13 @@ fn format_error_details(err: &(impl std::error::Error + fmt::Debug)) -> String {
 mod tests {
     use super::*;
     use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
-    use crate::uploader::KNOWN_PROVIDERS;
     use crate::vault::VaultKeyStore;
     use axum::Router;
     use axum::body::Bytes;
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
-    use axum::routing::put;
+    use axum::routing::{get, head, put};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::net::TcpListener;
@@ -572,15 +691,13 @@ mod tests {
             PackerConfig::new(&upload_spool_dir),
         )?;
         let pack_result = packer.pack_file(inode_id, &source_path).await?;
-        let pack_id = pack_result.pack_id.clone().expect("pack id");
-        let pack_path = pack_result.pack_path.clone().expect("pack path");
 
         let state = MockS3State {
             objects: Arc::new(Mutex::new(HashMap::new())),
             head_delay_by_bucket: Arc::new(HashMap::from([
-                ("bucket-r2".to_string(), Duration::from_millis(80)),
-                ("bucket-scaleway".to_string(), Duration::from_millis(10)),
-                ("bucket-b2".to_string(), Duration::from_millis(40)),
+                ("bucket-r2".to_string(), Duration::from_millis(30)),
+                ("bucket-scaleway".to_string(), Duration::from_millis(200)),
+                ("bucket-b2".to_string(), Duration::from_millis(20)),
             ])),
         };
         let app = Router::new()
@@ -627,28 +744,30 @@ mod tests {
             },
         ];
 
-        let job = db::get_next_upload_job(&pool)
-            .await?
-            .expect("queued upload job");
-        db::ensure_upload_targets(&pool, job.id, &KNOWN_PROVIDERS).await?;
+        for pack_id in &pack_result.pack_ids {
+            let shards = db::get_pack_shards(&pool, pack_id).await?;
+            for shard in shards {
+                if shard.provider == "scaleway" {
+                    continue;
+                }
 
-        let pack_bytes = fs::read(&pack_path).await?;
-        for config in configs.clone() {
-            let object_key = format!("packs/{pack_id}.{}", LOCAL_PACK_EXTENSION);
-            state.objects.lock().await.insert(
-                (config.bucket.clone(), object_key.clone()),
-                pack_bytes.clone(),
-            );
-            db::mark_upload_target_completed(
-                &pool,
-                job.id,
-                config.provider_name,
-                &config.bucket,
-                &object_key,
-                None,
-                None,
-            )
-            .await?;
+                let local_path =
+                    download_spool_dir.join(format!("seed-{}-{}.bin", pack_id, shard.shard_index));
+                let upload_path =
+                    upload_spool_dir.join(format!("{pack_id}.download-shard{}", shard.shard_index));
+                let packer_shard_path =
+                    upload_spool_dir.join(format!("{pack_id}.shard{}", shard.shard_index));
+                let bytes = fs::read(&packer_shard_path).await?;
+                fs::write(&local_path, &bytes).await?;
+                state.objects.lock().await.insert(
+                    (
+                        provider_bucket(&shard.provider).to_string(),
+                        shard.object_key.clone(),
+                    ),
+                    bytes,
+                );
+                let _ = fs::remove_file(&upload_path).await;
+            }
         }
 
         let downloader = Downloader::from_provider_configs(
@@ -664,9 +783,13 @@ mod tests {
 
         assert_eq!(restored_bytes, payload);
         assert_eq!(restored.bytes_written, payload.len() as u64);
-        assert_eq!(restored.pack_sources.len(), 1);
-        assert_eq!(restored.pack_sources[0].pack_id, pack_id);
-        assert_eq!(restored.pack_sources[0].provider, "scaleway");
+        assert_eq!(restored.pack_sources.len(), pack_result.pack_ids.len());
+        assert!(
+            restored
+                .pack_sources
+                .iter()
+                .all(|source| source.providers.len() >= 2)
+        );
 
         server.abort();
         let _ = fs::remove_dir_all(&test_root).await;
@@ -727,5 +850,14 @@ mod tests {
         let bucket = segments.next().unwrap_or_default();
         let key = segments.next().unwrap_or_default();
         (bucket, key)
+    }
+
+    fn provider_bucket(provider: &str) -> &'static str {
+        match provider {
+            "cloudflare-r2" => "bucket-r2",
+            "scaleway" => "bucket-scaleway",
+            "backblaze-b2" => "bucket-b2",
+            _ => "bucket-unknown",
+        }
     }
 }

@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
 use crate::db;
+use crate::db::{PackStatus, ShardRole};
 use crate::vault::{VaultError, VaultKeyStore};
 use omnidrive_core::crypto::{CryptoError, encrypt_chunk};
 use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix};
+use reed_solomon_erasure::galois_8::ReedSolomon;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::fmt;
@@ -16,6 +18,13 @@ use zerocopy::byteorder::big_endian::U64;
 
 pub const DEFAULT_CHUNK_SIZE: usize = 4 * 1024 * 1024;
 pub const LOCAL_PACK_EXTENSION: &str = "odpk";
+pub const LOCAL_SHARD_EXTENSION: &str = "shard";
+pub const DATA_SHARDS: usize = 2;
+pub const PARITY_SHARDS: usize = 1;
+pub const TOTAL_SHARDS: usize = DATA_SHARDS + PARITY_SHARDS;
+pub const EC_SCHEME_RS_2_1: &str = "rs_2_1";
+
+const SHARD_PROVIDERS: [&str; TOTAL_SHARDS] = ["cloudflare-r2", "scaleway", "backblaze-b2"];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackerConfig {
@@ -48,7 +57,9 @@ pub struct Packer {
 pub struct PackResult {
     pub source_path: PathBuf,
     pub pack_id: Option<String>,
+    pub pack_ids: Vec<String>,
     pub pack_path: Option<PathBuf>,
+    pub pack_paths: Vec<PathBuf>,
     pub chunk_count: usize,
     pub logical_size: u64,
     pub encrypted_size: u64,
@@ -56,12 +67,30 @@ pub struct PackResult {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct PreparedChunk {
+struct PreparedPack {
+    pack_id: String,
     chunk_id: [u8; 32],
     file_offset: i64,
-    pack_offset: i64,
     plain_size: i64,
-    encrypted_size: i64,
+    cipher_size: i64,
+    shard_size: i64,
+    manifest_path: PathBuf,
+    manifest_size: i64,
+    manifest_bytes: Vec<u8>,
+    nonce: [u8; 12],
+    gcm_tag: [u8; 16],
+    shards: Vec<PreparedShard>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PreparedShard {
+    shard_index: i64,
+    shard_role: ShardRole,
+    provider: &'static str,
+    object_key: String,
+    local_path: PathBuf,
+    size: i64,
+    checksum: String,
 }
 
 #[derive(Debug)]
@@ -71,6 +100,7 @@ pub enum PackerError {
     Db(sqlx::Error),
     Crypto(CryptoError),
     Vault(VaultError),
+    ErasureCoding(reed_solomon_erasure::Error),
     NumericOverflow(&'static str),
     Clock(std::time::SystemTimeError),
 }
@@ -85,6 +115,7 @@ impl fmt::Display for PackerError {
             Self::Db(err) => write!(f, "sqlite error: {err}"),
             Self::Crypto(err) => write!(f, "crypto error: {err}"),
             Self::Vault(err) => write!(f, "vault error: {err}"),
+            Self::ErasureCoding(err) => write!(f, "erasure coding error: {err}"),
             Self::NumericOverflow(ctx) => write!(f, "numeric overflow while handling {ctx}"),
             Self::Clock(err) => write!(f, "system clock error: {err}"),
         }
@@ -114,6 +145,12 @@ impl From<CryptoError> for PackerError {
 impl From<VaultError> for PackerError {
     fn from(value: VaultError) -> Self {
         Self::Vault(value)
+    }
+}
+
+impl From<reed_solomon_erasure::Error> for PackerError {
+    fn from(value: reed_solomon_erasure::Error) -> Self {
+        Self::ErasureCoding(value)
     }
 }
 
@@ -152,9 +189,9 @@ impl Packer {
         let vault_key = self.vault_keys.require_key().await?;
         let mut file = File::open(&source_path).await?;
         let mut read_buffer = vec![0u8; self.config.chunk_size];
-        let mut pack_bytes = Vec::new();
-        let mut prepared_chunks = Vec::new();
+        let mut prepared_packs = Vec::new();
         let mut logical_size = 0u64;
+        let mut encrypted_size = 0u64;
         let mut file_offset = 0i64;
 
         loop {
@@ -165,49 +202,68 @@ impl Packer {
 
             let plaintext = &read_buffer[..bytes_read];
             let encrypted = encrypt_chunk(&vault_key, plaintext, &[])?;
-            let pack_offset = to_i64(pack_bytes.len(), "pack offset")?;
-            let record_prefix = ChunkRecordPrefix {
-                record_magic: CHUNK_RECORD_MAGIC,
-                record_version: 1,
-                flags: 0,
-                compression_algo: COMPRESSION_ALGO_NONE,
-                reserved_0: 0,
-                chunk_id: encrypted.chunk_id,
-                plain_len: U64::new(bytes_read as u64),
-                cipher_len: U64::new(encrypted.ciphertext.len() as u64),
-                nonce: encrypted.nonce,
-                reserved_1: [0u8; 12],
-            };
+            let manifest_bytes = build_manifest_bytes(
+                encrypted.chunk_id,
+                encrypted.nonce,
+                &encrypted.ciphertext,
+                &encrypted.gcm_tag,
+                bytes_read,
+            )?;
+            let pack_id = hex_sha256(&manifest_bytes);
+            let manifest_path = self
+                .config
+                .spool_dir
+                .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
+            fs::write(&manifest_path, &manifest_bytes).await?;
 
-            pack_bytes.extend_from_slice(record_prefix.as_bytes());
-            pack_bytes.extend_from_slice(&encrypted.ciphertext);
-            pack_bytes.extend_from_slice(&encrypted.gcm_tag);
+            let shards =
+                build_shards(&self.config.spool_dir, &pack_id, &encrypted.ciphertext).await?;
 
             let plain_size = to_i64(bytes_read, "chunk size")?;
-            let encrypted_size = to_i64(
-                ChunkRecordPrefix::SIZE + encrypted.ciphertext.len() + encrypted.gcm_tag.len(),
-                "encrypted chunk size",
-            )?;
+            let cipher_size = to_i64(encrypted.ciphertext.len(), "cipher size")?;
+            let shard_size = shards
+                .first()
+                .map(|shard| shard.size)
+                .ok_or(PackerError::NumericOverflow("missing shard size"))?;
+            let manifest_size = to_i64(manifest_bytes.len(), "manifest size")?;
 
-            prepared_chunks.push(PreparedChunk {
+            prepared_packs.push(PreparedPack {
+                pack_id,
                 chunk_id: encrypted.chunk_id,
                 file_offset,
-                pack_offset,
                 plain_size,
-                encrypted_size,
+                cipher_size,
+                shard_size,
+                manifest_path,
+                manifest_size,
+                manifest_bytes,
+                nonce: encrypted.nonce,
+                gcm_tag: encrypted.gcm_tag,
+                shards,
             });
 
             logical_size += bytes_read as u64;
+            encrypted_size += u64::try_from(manifest_size)
+                .map_err(|_| PackerError::NumericOverflow("manifest size total"))?;
             file_offset = checked_add_i64(file_offset, plain_size, "file offset")?;
         }
 
-        db::delete_file_chunks(&self.pool, inode_id).await?;
+        let revision_id = db::create_file_revision(
+            &self.pool,
+            inode_id,
+            i64::try_from(logical_size)
+                .map_err(|_| PackerError::NumericOverflow("logical size"))?,
+            None,
+        )
+        .await?;
 
-        if prepared_chunks.is_empty() {
+        if prepared_packs.is_empty() {
             return Ok(PackResult {
                 source_path,
                 pack_id: None,
+                pack_ids: Vec::new(),
                 pack_path: None,
+                pack_paths: Vec::new(),
                 chunk_count: 0,
                 logical_size: 0,
                 encrypted_size: 0,
@@ -215,46 +271,153 @@ impl Packer {
             });
         }
 
-        let pack_id = hex_sha256(&pack_bytes);
-        let pack_path = self
-            .config
-            .spool_dir
-            .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
+        let mut pack_ids = Vec::with_capacity(prepared_packs.len());
+        let mut pack_paths = Vec::with_capacity(prepared_packs.len());
 
-        fs::write(&pack_path, &pack_bytes).await?;
-
-        for chunk in &prepared_chunks {
+        for pack in &prepared_packs {
             db::register_chunk(
                 &self.pool,
-                inode_id,
-                &chunk.chunk_id,
-                chunk.file_offset,
-                chunk.plain_size,
+                revision_id,
+                &pack.chunk_id,
+                pack.file_offset,
+                pack.plain_size,
             )
             .await?;
 
             db::link_chunk_to_pack(
                 &self.pool,
-                &chunk.chunk_id,
-                &pack_id,
-                chunk.pack_offset,
-                chunk.encrypted_size,
+                &pack.chunk_id,
+                &pack.pack_id,
+                0,
+                pack.manifest_size,
             )
             .await?;
-        }
 
-        db::queue_pack_for_upload(&self.pool, &pack_id).await?;
+            db::create_pack(
+                &self.pool,
+                &pack.pack_id,
+                &pack.chunk_id,
+                1,
+                EC_SCHEME_RS_2_1,
+                pack.plain_size,
+                pack.cipher_size,
+                pack.shard_size,
+                &pack.nonce,
+                &pack.gcm_tag,
+                PackStatus::Uploading,
+            )
+            .await?;
+
+            for shard in &pack.shards {
+                db::register_pack_shard(
+                    &self.pool,
+                    &pack.pack_id,
+                    shard.shard_index,
+                    shard.shard_role,
+                    shard.provider,
+                    &shard.object_key,
+                    shard.size,
+                    &shard.checksum,
+                    "PENDING",
+                )
+                .await?;
+            }
+
+            db::queue_pack_for_upload(&self.pool, &pack.pack_id).await?;
+            pack_ids.push(pack.pack_id.clone());
+            pack_paths.push(pack.manifest_path.clone());
+        }
 
         Ok(PackResult {
             source_path,
-            pack_id: Some(pack_id),
-            pack_path: Some(pack_path),
-            chunk_count: prepared_chunks.len(),
+            pack_id: pack_ids.first().cloned(),
+            pack_ids,
+            pack_path: pack_paths.first().cloned(),
+            pack_paths,
+            chunk_count: prepared_packs.len(),
             logical_size,
-            encrypted_size: pack_bytes.len() as u64,
+            encrypted_size,
             created_at_ms,
         })
     }
+}
+
+pub fn local_shard_path(spool_dir: &Path, pack_id: &str, shard_index: usize) -> PathBuf {
+    spool_dir.join(format!("{pack_id}.{LOCAL_SHARD_EXTENSION}{shard_index}"))
+}
+
+async fn build_shards(
+    spool_dir: &Path,
+    pack_id: &str,
+    ciphertext: &[u8],
+) -> Result<Vec<PreparedShard>, PackerError> {
+    let shard_bytes = split_ciphertext_into_shards(ciphertext)?;
+    let mut prepared = Vec::with_capacity(TOTAL_SHARDS);
+
+    for (index, bytes) in shard_bytes.into_iter().enumerate() {
+        let shard_role = if index < DATA_SHARDS {
+            ShardRole::Data
+        } else {
+            ShardRole::Parity
+        };
+        let local_path = local_shard_path(spool_dir, pack_id, index);
+        fs::write(&local_path, &bytes).await?;
+
+        prepared.push(PreparedShard {
+            shard_index: i64::try_from(index)
+                .map_err(|_| PackerError::NumericOverflow("shard index"))?,
+            shard_role,
+            provider: SHARD_PROVIDERS[index],
+            object_key: format!("packs/{pack_id}/shards/{index}.{LOCAL_SHARD_EXTENSION}"),
+            local_path,
+            size: to_i64(bytes.len(), "shard size")?,
+            checksum: hex_sha256(&bytes),
+        });
+    }
+
+    Ok(prepared)
+}
+
+fn split_ciphertext_into_shards(ciphertext: &[u8]) -> Result<Vec<Vec<u8>>, PackerError> {
+    let reed_solomon = ReedSolomon::new(DATA_SHARDS, PARITY_SHARDS)?;
+    let shard_len = ciphertext.len().div_ceil(DATA_SHARDS).max(1);
+    let mut shards = vec![vec![0u8; shard_len]; TOTAL_SHARDS];
+
+    for (offset, byte) in ciphertext.iter().copied().enumerate() {
+        let shard_index = offset / shard_len;
+        let position = offset % shard_len;
+        shards[shard_index][position] = byte;
+    }
+
+    reed_solomon.encode(&mut shards)?;
+    Ok(shards)
+}
+
+fn build_manifest_bytes(
+    chunk_id: [u8; 32],
+    nonce: [u8; 12],
+    ciphertext: &[u8],
+    gcm_tag: &[u8; 16],
+    plaintext_len: usize,
+) -> Result<Vec<u8>, PackerError> {
+    let prefix = ChunkRecordPrefix {
+        record_magic: CHUNK_RECORD_MAGIC,
+        record_version: 1,
+        flags: 0,
+        compression_algo: COMPRESSION_ALGO_NONE,
+        reserved_0: 0,
+        chunk_id,
+        plain_len: U64::new(plaintext_len as u64),
+        cipher_len: U64::new(ciphertext.len() as u64),
+        nonce,
+        reserved_1: [0u8; 12],
+    };
+
+    let mut bytes = Vec::with_capacity(ChunkRecordPrefix::SIZE + ciphertext.len() + gcm_tag.len());
+    bytes.extend_from_slice(prefix.as_bytes());
+    bytes.extend_from_slice(ciphertext);
+    bytes.extend_from_slice(gcm_tag);
+    Ok(bytes)
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
@@ -301,7 +464,6 @@ mod tests {
     use crate::db;
     use crate::vault::VaultKeyStore;
     use std::env;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
     async fn splits_into_default_4mb_chunks() -> Result<(), Box<dyn std::error::Error>> {
@@ -335,6 +497,7 @@ mod tests {
         let sizes: Vec<i64> = chunks.iter().map(|chunk| chunk.size).collect();
 
         assert_eq!(result.chunk_count, 3);
+        assert_eq!(result.pack_ids.len(), 3);
         assert_eq!(result.logical_size, payload_len as u64);
         assert_eq!(
             sizes,

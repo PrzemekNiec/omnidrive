@@ -1,5 +1,39 @@
 use sqlx::{FromRow, Row, SqlitePool};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackStatus {
+    Uploading,
+    Healthy,
+    Degraded,
+    Unreadable,
+}
+
+impl PackStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Uploading => "UPLOADING",
+            Self::Healthy => "COMPLETED_HEALTHY",
+            Self::Degraded => "COMPLETED_DEGRADED",
+            Self::Unreadable => "UNREADABLE",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShardRole {
+    Data,
+    Parity,
+}
+
+impl ShardRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Data => "DATA",
+            Self::Parity => "PARITY",
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
 pub struct VaultRecord {
@@ -36,10 +70,21 @@ pub struct InodeRecord {
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
 pub struct ChunkRecord {
     pub id: i64,
-    pub inode_id: i64,
+    pub revision_id: i64,
     pub chunk_id: Vec<u8>,
     pub file_offset: i64,
     pub size: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct FileRevisionRecord {
+    pub revision_id: i64,
+    pub inode_id: i64,
+    pub created_at: i64,
+    pub size: i64,
+    pub is_current: i64,
+    pub immutable_until: Option<i64>,
 }
 
 #[allow(dead_code)]
@@ -51,6 +96,46 @@ pub struct FileChunkLocation {
     pub pack_id: String,
     pub pack_offset: i64,
     pub encrypted_size: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct PackRecord {
+    pub pack_id: String,
+    pub chunk_id: Vec<u8>,
+    pub encryption_version: i64,
+    pub ec_scheme: String,
+    pub logical_size: i64,
+    pub cipher_size: i64,
+    pub shard_size: i64,
+    pub nonce: Vec<u8>,
+    pub gcm_tag: Vec<u8>,
+    pub status: String,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct PackShardRecord {
+    pub id: i64,
+    pub pack_id: String,
+    pub shard_index: i64,
+    pub shard_role: String,
+    pub provider: String,
+    pub object_key: String,
+    pub size: i64,
+    pub checksum: String,
+    pub status: String,
+    pub attempts: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PackShardSummary {
+    pub total: i64,
+    pub completed: i64,
+    pub pending: i64,
+    pub in_progress: i64,
+    pub failed: i64,
 }
 
 #[allow(dead_code)]
@@ -93,17 +178,24 @@ pub struct PackDownloadTarget {
     pub completed_at: Option<i64>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct VaultHealthSummary {
+    pub total_packs: i64,
+    pub healthy_packs: i64,
+    pub degraded_packs: i64,
+    pub unreadable_packs: i64,
+}
+
 #[allow(dead_code)]
 pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let pool = SqlitePool::connect(db_url).await?;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await?;
 
-    sqlx::query(
-        r#"
-        DROP TABLE IF EXISTS files
-        "#,
-    )
-    .execute(&pool)
-    .await?;
+    sqlx::query("DROP TABLE IF EXISTS files")
+        .execute(&pool)
+        .await?;
 
     sqlx::query(
         r#"
@@ -152,12 +244,68 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS file_revisions (
+            revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            inode_id INTEGER NOT NULL REFERENCES inodes(id) ON DELETE CASCADE,
+            created_at INTEGER NOT NULL,
+            size INTEGER NOT NULL,
+            is_current INTEGER NOT NULL DEFAULT 0,
+            immutable_until INTEGER
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS chunk_refs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            inode_id INTEGER REFERENCES inodes(id) ON DELETE CASCADE,
+            revision_id INTEGER REFERENCES file_revisions(revision_id) ON DELETE CASCADE,
             chunk_id BLOB NOT NULL,
             file_offset INTEGER NOT NULL,
             size INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS packs (
+            pack_id TEXT PRIMARY KEY,
+            chunk_id BLOB NOT NULL,
+            encryption_version INTEGER NOT NULL,
+            ec_scheme TEXT NOT NULL DEFAULT 'rs_2_1',
+            logical_size INTEGER NOT NULL,
+            cipher_size INTEGER NOT NULL,
+            shard_size INTEGER NOT NULL,
+            nonce BLOB NOT NULL,
+            gcm_tag BLOB NOT NULL,
+            status TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pack_shards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pack_id TEXT NOT NULL REFERENCES packs(pack_id) ON DELETE CASCADE,
+            shard_index INTEGER NOT NULL,
+            shard_role TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            object_key TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            checksum TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempts INTEGER DEFAULT 0,
+            last_error TEXT,
+            UNIQUE(pack_id, shard_index),
+            UNIQUE(pack_id, provider)
         )
         "#,
     )
@@ -215,6 +363,14 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
 
     ensure_column_exists(&pool, "upload_job_targets", "last_attempt_at", "INTEGER").await?;
     ensure_column_exists(&pool, "upload_job_targets", "updated_at", "INTEGER").await?;
+    ensure_column_exists(&pool, "pack_shards", "last_error", "TEXT").await?;
+    ensure_column_exists(
+        &pool,
+        "chunk_refs",
+        "revision_id",
+        "INTEGER REFERENCES file_revisions(revision_id) ON DELETE CASCADE",
+    )
+    .await?;
 
     Ok(pool)
 }
@@ -410,6 +566,23 @@ pub async fn get_inode_by_path(
 }
 
 #[allow(dead_code)]
+pub async fn get_inode_by_id(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<Option<InodeRecord>, sqlx::Error> {
+    sqlx::query_as::<_, InodeRecord>(
+        r#"
+        SELECT id, parent_id, name, kind, size, mode, mtime
+        FROM inodes
+        WHERE id = ?
+        "#,
+    )
+    .bind(inode_id)
+    .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
 pub async fn resolve_path(pool: &SqlitePool, path: &str) -> Result<Option<i64>, sqlx::Error> {
     let trimmed = path.trim();
     if trimmed.is_empty() || trimmed == "/" {
@@ -431,20 +604,126 @@ pub async fn resolve_path(pool: &SqlitePool, path: &str) -> Result<Option<i64>, 
 }
 
 #[allow(dead_code)]
-pub async fn register_chunk(
+pub async fn create_file_revision(
     pool: &SqlitePool,
     inode_id: i64,
+    size: i64,
+    immutable_until: Option<i64>,
+) -> Result<i64, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        r#"
+        UPDATE file_revisions
+        SET is_current = 0
+        WHERE inode_id = ?
+        "#,
+    )
+    .bind(inode_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let result = sqlx::query(
+        r#"
+        INSERT INTO file_revisions (inode_id, created_at, size, is_current, immutable_until)
+        VALUES (
+            ?,
+            CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            ?,
+            1,
+            ?
+        )
+        "#,
+    )
+    .bind(inode_id)
+    .bind(size)
+    .bind(immutable_until)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(result.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub async fn get_current_file_revision(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<Option<FileRevisionRecord>, sqlx::Error> {
+    sqlx::query_as::<_, FileRevisionRecord>(
+        r#"
+        SELECT revision_id, inode_id, created_at, size, is_current, immutable_until
+        FROM file_revisions
+        WHERE inode_id = ?
+          AND is_current = 1
+        ORDER BY revision_id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(inode_id)
+    .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn promote_revision_to_current(
+    pool: &SqlitePool,
+    revision_id: i64,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let inode_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT inode_id
+        FROM file_revisions
+        WHERE revision_id = ?
+        "#,
+    )
+    .bind(revision_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE file_revisions
+        SET is_current = 0
+        WHERE inode_id = ?
+        "#,
+    )
+    .bind(inode_id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE file_revisions
+        SET is_current = 1
+        WHERE revision_id = ?
+        "#,
+    )
+    .bind(revision_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn register_chunk(
+    pool: &SqlitePool,
+    revision_id: i64,
     chunk_id: &[u8],
     offset: i64,
     size: i64,
 ) -> Result<i64, sqlx::Error> {
     let result = sqlx::query(
         r#"
-        INSERT INTO chunk_refs (inode_id, chunk_id, file_offset, size)
+        INSERT INTO chunk_refs (revision_id, chunk_id, file_offset, size)
         VALUES (?, ?, ?, ?)
         "#,
     )
-    .bind(inode_id)
+    .bind(revision_id)
     .bind(chunk_id)
     .bind(offset)
     .bind(size)
@@ -459,6 +738,20 @@ pub async fn delete_file_chunks(pool: &SqlitePool, inode_id: i64) -> Result<(), 
     sqlx::query(
         r#"
         DELETE FROM chunk_refs
+        WHERE revision_id IN (
+            SELECT revision_id
+            FROM file_revisions
+            WHERE inode_id = ?
+        )
+        "#,
+    )
+    .bind(inode_id)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM file_revisions
         WHERE inode_id = ?
         "#,
     )
@@ -467,6 +760,506 @@ pub async fn delete_file_chunks(pool: &SqlitePool, inode_id: i64) -> Result<(), 
     .await?;
 
     Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn delete_inode_record(pool: &SqlitePool, inode_id: i64) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        DELETE FROM inodes
+        WHERE id = ?
+        "#,
+    )
+    .bind(inode_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
+#[allow(dead_code)]
+pub async fn create_pack(
+    pool: &SqlitePool,
+    pack_id: &str,
+    chunk_id: &[u8],
+    encryption_version: i64,
+    ec_scheme: &str,
+    logical_size: i64,
+    cipher_size: i64,
+    shard_size: i64,
+    nonce: &[u8],
+    gcm_tag: &[u8],
+    status: PackStatus,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO packs (
+            pack_id,
+            chunk_id,
+            encryption_version,
+            ec_scheme,
+            logical_size,
+            cipher_size,
+            shard_size,
+            nonce,
+            gcm_tag,
+            status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(pack_id) DO UPDATE SET
+            chunk_id = excluded.chunk_id,
+            encryption_version = excluded.encryption_version,
+            ec_scheme = excluded.ec_scheme,
+            logical_size = excluded.logical_size,
+            cipher_size = excluded.cipher_size,
+            shard_size = excluded.shard_size,
+            nonce = excluded.nonce,
+            gcm_tag = excluded.gcm_tag,
+            status = excluded.status
+        "#,
+    )
+    .bind(pack_id)
+    .bind(chunk_id)
+    .bind(encryption_version)
+    .bind(ec_scheme)
+    .bind(logical_size)
+    .bind(cipher_size)
+    .bind(shard_size)
+    .bind(nonce)
+    .bind(gcm_tag)
+    .bind(status.as_str())
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn update_pack_status(
+    pool: &SqlitePool,
+    pack_id: &str,
+    status: PackStatus,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE packs
+        SET status = ?
+        WHERE pack_id = ?
+        "#,
+    )
+    .bind(status.as_str())
+    .bind(pack_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn get_pack(pool: &SqlitePool, pack_id: &str) -> Result<Option<PackRecord>, sqlx::Error> {
+    sqlx::query_as::<_, PackRecord>(
+        r#"
+        SELECT
+            pack_id,
+            chunk_id,
+            encryption_version,
+            ec_scheme,
+            logical_size,
+            cipher_size,
+            shard_size,
+            nonce,
+            gcm_tag,
+            status
+        FROM packs
+        WHERE pack_id = ?
+        "#,
+    )
+    .bind(pack_id)
+    .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_orphaned_pack_ids(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT p.pack_id
+        FROM packs p
+        LEFT JOIN chunk_refs cr
+            ON cr.chunk_id = p.chunk_id
+        WHERE cr.chunk_id IS NULL
+        ORDER BY p.pack_id ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_next_degraded_pack(pool: &SqlitePool) -> Result<Option<PackRecord>, sqlx::Error> {
+    sqlx::query_as::<_, PackRecord>(
+        r#"
+        SELECT
+            pack_id,
+            chunk_id,
+            encryption_version,
+            ec_scheme,
+            logical_size,
+            cipher_size,
+            shard_size,
+            nonce,
+            gcm_tag,
+            status
+        FROM packs
+        WHERE status = 'COMPLETED_DEGRADED'
+        ORDER BY pack_id ASC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_vault_health_summary(
+    pool: &SqlitePool,
+) -> Result<VaultHealthSummary, sqlx::Error> {
+    sqlx::query_as::<_, VaultHealthSummary>(
+        r#"
+        SELECT
+            COUNT(*) AS total_packs,
+            COALESCE(SUM(CASE WHEN status = 'COMPLETED_HEALTHY' THEN 1 ELSE 0 END), 0) AS healthy_packs,
+            COALESCE(SUM(CASE WHEN status = 'COMPLETED_DEGRADED' THEN 1 ELSE 0 END), 0) AS degraded_packs,
+            COALESCE(SUM(CASE WHEN status = 'UNREADABLE' THEN 1 ELSE 0 END), 0) AS unreadable_packs
+        FROM packs
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn register_pack_shard(
+    pool: &SqlitePool,
+    pack_id: &str,
+    shard_index: i64,
+    shard_role: ShardRole,
+    provider: &str,
+    object_key: &str,
+    size: i64,
+    checksum: &str,
+    status: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO pack_shards (
+            pack_id,
+            shard_index,
+            shard_role,
+            provider,
+            object_key,
+            size,
+            checksum,
+            status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(pack_id, shard_index) DO UPDATE SET
+            shard_role = excluded.shard_role,
+            provider = excluded.provider,
+            object_key = excluded.object_key,
+            size = excluded.size,
+            checksum = excluded.checksum,
+            status = excluded.status,
+            last_error = NULL
+        "#,
+    )
+    .bind(pack_id)
+    .bind(shard_index)
+    .bind(shard_role.as_str())
+    .bind(provider)
+    .bind(object_key)
+    .bind(size)
+    .bind(checksum)
+    .bind(status)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn get_pack_shards(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<Vec<PackShardRecord>, sqlx::Error> {
+    sqlx::query_as::<_, PackShardRecord>(
+        r#"
+        SELECT
+            id,
+            pack_id,
+            shard_index,
+            shard_role,
+            provider,
+            object_key,
+            size,
+            checksum,
+            status,
+            attempts,
+            last_error
+        FROM pack_shards
+        WHERE pack_id = ?
+        ORDER BY shard_index ASC
+        "#,
+    )
+    .bind(pack_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn delete_pack_metadata(pool: &SqlitePool, pack_id: &str) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM upload_jobs
+        WHERE pack_id = ?
+        "#,
+    )
+    .bind(pack_id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM pack_locations
+        WHERE pack_id = ?
+        "#,
+    )
+    .bind(pack_id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM packs
+        WHERE pack_id = ?
+        "#,
+    )
+    .bind(pack_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn get_incomplete_pack_shards(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<Vec<PackShardRecord>, sqlx::Error> {
+    sqlx::query_as::<_, PackShardRecord>(
+        r#"
+        SELECT
+            id,
+            pack_id,
+            shard_index,
+            shard_role,
+            provider,
+            object_key,
+            size,
+            checksum,
+            status,
+            attempts,
+            last_error
+        FROM pack_shards
+        WHERE pack_id = ?
+          AND status != 'COMPLETED'
+        ORDER BY shard_index ASC
+        "#,
+    )
+    .bind(pack_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn mark_pack_shard_in_progress(
+    pool: &SqlitePool,
+    pack_id: &str,
+    shard_index: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE pack_shards
+        SET status = 'IN_PROGRESS',
+            last_error = NULL
+        WHERE pack_id = ?
+          AND shard_index = ?
+        "#,
+    )
+    .bind(pack_id)
+    .bind(shard_index)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn mark_pack_shard_completed(
+    pool: &SqlitePool,
+    pack_id: &str,
+    shard_index: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE pack_shards
+        SET status = 'COMPLETED',
+            last_error = NULL
+        WHERE pack_id = ?
+          AND shard_index = ?
+        "#,
+    )
+    .bind(pack_id)
+    .bind(shard_index)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn requeue_pack_shard(
+    pool: &SqlitePool,
+    pack_id: &str,
+    shard_index: i64,
+    error_message: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE pack_shards
+        SET status = 'PENDING',
+            attempts = COALESCE(attempts, 0) + 1,
+            last_error = ?
+        WHERE pack_id = ?
+          AND shard_index = ?
+        "#,
+    )
+    .bind(error_message)
+    .bind(pack_id)
+    .bind(shard_index)
+    .execute(pool)
+    .await?;
+
+    let attempts = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COALESCE(attempts, 0)
+        FROM pack_shards
+        WHERE pack_id = ?
+          AND shard_index = ?
+        "#,
+    )
+    .bind(pack_id)
+    .bind(shard_index)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(attempts)
+}
+
+#[allow(dead_code)]
+pub async fn mark_pack_shard_failed(
+    pool: &SqlitePool,
+    pack_id: &str,
+    shard_index: i64,
+    error_message: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE pack_shards
+        SET status = 'FAILED',
+            attempts = COALESCE(attempts, 0) + 1,
+            last_error = ?
+        WHERE pack_id = ?
+          AND shard_index = ?
+        "#,
+    )
+    .bind(error_message)
+    .bind(pack_id)
+    .bind(shard_index)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn reset_in_progress_pack_shards(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        UPDATE pack_shards
+        SET status = 'PENDING'
+        WHERE status = 'IN_PROGRESS'
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
+#[allow(dead_code)]
+pub async fn summarize_pack_shards(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<PackShardSummary, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"
+        SELECT status, COUNT(*) AS count
+        FROM pack_shards
+        WHERE pack_id = ?
+        GROUP BY status
+        "#,
+    )
+    .bind(pack_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut summary = PackShardSummary::default();
+    for row in rows {
+        let status: String = row.try_get("status")?;
+        let count: i64 = row.try_get("count")?;
+        summary.total += count;
+        match status.as_str() {
+            "COMPLETED" => summary.completed += count,
+            "PENDING" => summary.pending += count,
+            "IN_PROGRESS" => summary.in_progress += count,
+            "FAILED" => summary.failed += count,
+            _ => {}
+        }
+    }
+
+    Ok(summary)
+}
+
+#[allow(dead_code)]
+pub fn resolve_pack_status(summary: PackShardSummary) -> PackStatus {
+    if summary.completed >= 3 {
+        PackStatus::Healthy
+    } else if summary.completed >= 2 {
+        PackStatus::Degraded
+    } else if summary.pending > 0 || summary.in_progress > 0 {
+        PackStatus::Uploading
+    } else {
+        PackStatus::Unreadable
+    }
 }
 
 #[allow(dead_code)]
@@ -504,9 +1297,12 @@ pub async fn get_file_chunks(
 ) -> Result<Vec<ChunkRecord>, sqlx::Error> {
     sqlx::query_as::<_, ChunkRecord>(
         r#"
-        SELECT id, inode_id, chunk_id, file_offset, size
-        FROM chunk_refs
-        WHERE inode_id = ?
+        SELECT cr.id, cr.revision_id, cr.chunk_id, cr.file_offset, cr.size
+        FROM chunk_refs cr
+        INNER JOIN file_revisions fr
+            ON fr.revision_id = cr.revision_id
+        WHERE fr.inode_id = ?
+          AND fr.is_current = 1
         ORDER BY file_offset ASC
         "#,
     )
@@ -530,9 +1326,12 @@ pub async fn get_file_chunk_locations(
             pl.pack_offset,
             pl.encrypted_size
         FROM chunk_refs cr
+        INNER JOIN file_revisions fr
+            ON fr.revision_id = cr.revision_id
         INNER JOIN pack_locations pl
             ON pl.chunk_id = cr.chunk_id
-        WHERE cr.inode_id = ?
+        WHERE fr.inode_id = ?
+          AND fr.is_current = 1
         ORDER BY cr.file_offset ASC
         "#,
     )
@@ -547,7 +1346,11 @@ pub async fn queue_pack_for_upload(pool: &SqlitePool, pack_id: &str) -> Result<(
         r#"
         INSERT INTO upload_jobs (pack_id, status)
         VALUES (?, 'PENDING')
-        ON CONFLICT(pack_id) DO NOTHING
+        ON CONFLICT(pack_id) DO UPDATE SET
+            status = CASE
+                WHEN upload_jobs.status = 'COMPLETED' THEN 'PENDING'
+                ELSE upload_jobs.status
+            END
         "#,
     )
     .bind(pack_id)
@@ -609,6 +1412,24 @@ pub async fn mark_upload_job_completed(pool: &SqlitePool, job_id: i64) -> Result
     .await?;
 
     Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn get_upload_job_by_pack_id(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<Option<UploadJob>, sqlx::Error> {
+    sqlx::query_as::<_, UploadJob>(
+        r#"
+        SELECT id, pack_id, status, attempts
+        FROM upload_jobs
+        WHERE pack_id = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(pack_id)
+    .fetch_optional(pool)
+    .await
 }
 
 #[allow(dead_code)]

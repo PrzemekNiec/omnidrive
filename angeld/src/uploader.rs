@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 use crate::db;
+use crate::db::PackStatus;
+use crate::packer::local_shard_path;
 use aws_config::BehaviorVersion;
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
@@ -13,8 +15,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs;
 use tokio::time::{sleep, timeout};
-
-use crate::packer::LOCAL_PACK_EXTENSION;
 
 pub const KNOWN_PROVIDERS: [&str; 3] = ["cloudflare-r2", "scaleway", "backblaze-b2"];
 
@@ -49,8 +49,9 @@ enum JobProcessOutcome {
     Completed,
     PendingRetry {
         delay: Duration,
-        failed_providers: Vec<String>,
+        failed_shards: Vec<String>,
     },
+    Failed,
 }
 
 #[derive(Clone, Debug)]
@@ -70,7 +71,7 @@ pub enum UploaderError {
     InvalidEnv(&'static str),
     Io(std::io::Error),
     Db(sqlx::Error),
-    PackMissing(PathBuf),
+    LocalObjectMissing(PathBuf),
     Timeout {
         provider: &'static str,
         duration: Duration,
@@ -89,7 +90,9 @@ impl fmt::Display for UploaderError {
             Self::InvalidEnv(key) => write!(f, "invalid environment variable {key}"),
             Self::Io(err) => write!(f, "i/o error: {err}"),
             Self::Db(err) => write!(f, "sqlite error: {err}"),
-            Self::PackMissing(path) => write!(f, "pack file not found: {}", path.display()),
+            Self::LocalObjectMissing(path) => {
+                write!(f, "local upload object not found: {}", path.display())
+            }
             Self::Timeout { provider, duration } => {
                 write!(f, "upload to {provider} timed out after {:?}", duration)
             }
@@ -169,11 +172,9 @@ impl Uploader {
             .force_path_style(config.force_path_style)
             .build();
 
-        let client = Client::from_conf(s3_config);
-
         Ok(Self {
             provider_name,
-            client,
+            client: Client::from_conf(s3_config),
             bucket: config.bucket,
             force_path_style: config.force_path_style,
         })
@@ -202,12 +203,25 @@ impl Uploader {
             .await
     }
 
+    pub async fn upload_shard(
+        &self,
+        shard_path: impl AsRef<Path>,
+        object_key: &str,
+    ) -> Result<UploadedPack, UploaderError> {
+        self.upload_file(shard_path.as_ref(), object_key, "application/octet-stream")
+            .await
+    }
+
     async fn upload_file(
         &self,
         file_path: &Path,
         key: &str,
         content_type: &'static str,
     ) -> Result<UploadedPack, UploaderError> {
+        if !fs::try_exists(file_path).await? {
+            return Err(UploaderError::LocalObjectMissing(file_path.to_path_buf()));
+        }
+
         let body = ByteStream::from_path(file_path)
             .await
             .map_err(|err| self.sdk_error("read_body", err))?;
@@ -255,6 +269,7 @@ impl UploadWorker {
     pub async fn run(self) -> Result<(), UploaderError> {
         db::reset_in_progress_upload_jobs(&self.pool).await?;
         db::reset_in_progress_upload_targets(&self.pool).await?;
+        db::reset_in_progress_pack_shards(&self.pool).await?;
 
         loop {
             let Some(job) = db::get_next_upload_job(&self.pool).await? else {
@@ -262,50 +277,33 @@ impl UploadWorker {
                 continue;
             };
 
-            match self.process_job(&job).await {
-                Ok(JobProcessOutcome::Completed) => {
+            match self.process_job(&job).await? {
+                JobProcessOutcome::Completed => {
                     db::mark_upload_job_completed(&self.pool, job.id).await?;
                 }
-                Ok(JobProcessOutcome::PendingRetry {
+                JobProcessOutcome::PendingRetry {
                     delay,
-                    failed_providers,
-                }) => {
+                    failed_shards,
+                } => {
                     let attempts = db::requeue_upload_job(&self.pool, job.id).await?;
                     eprintln!(
                         "upload job {} remains pending for [{}]; retry after {:?} (job_attempts={})",
                         job.pack_id,
-                        failed_providers.join(", "),
+                        failed_shards.join(", "),
                         delay,
                         attempts
                     );
                     sleep(delay).await;
                 }
-                Err(err) if err.is_retryable() => {
-                    let attempts = db::requeue_upload_job(&self.pool, job.id).await?;
-                    let delay = self.retry_delay(attempts);
-                    eprintln!(
-                        "upload job {} will retry after {:?}: {}",
-                        job.pack_id, delay, err
-                    );
-                    sleep(delay).await;
-                }
-                Err(err) => {
+                JobProcessOutcome::Failed => {
                     db::mark_upload_job_failed(&self.pool, job.id).await?;
-                    eprintln!("upload job {} failed permanently: {}", job.pack_id, err);
+                    eprintln!("upload job {} became unreadable", job.pack_id);
                 }
             }
         }
     }
 
     async fn process_job(&self, job: &db::UploadJob) -> Result<JobProcessOutcome, UploaderError> {
-        let pack_path = self
-            .spool_dir
-            .join(format!("{}.{}", job.pack_id, LOCAL_PACK_EXTENSION));
-
-        if !fs::try_exists(&pack_path).await? {
-            return Err(UploaderError::PackMissing(pack_path));
-        }
-
         let provider_names: Vec<&str> = self
             .uploaders
             .iter()
@@ -313,25 +311,45 @@ impl UploadWorker {
             .collect();
         db::ensure_upload_targets(&self.pool, job.id, &provider_names).await?;
 
-        let pending_targets = db::get_incomplete_upload_targets(&self.pool, job.id).await?;
-        if pending_targets.is_empty() {
-            return Ok(JobProcessOutcome::Completed);
+        let pending_shards = db::get_incomplete_pack_shards(&self.pool, &job.pack_id).await?;
+        if pending_shards.is_empty() {
+            let summary = db::summarize_pack_shards(&self.pool, &job.pack_id).await?;
+            let status = db::resolve_pack_status(summary);
+            db::update_pack_status(&self.pool, &job.pack_id, status).await?;
+            return Ok(match status {
+                PackStatus::Healthy | PackStatus::Degraded => JobProcessOutcome::Completed,
+                PackStatus::Uploading => JobProcessOutcome::PendingRetry {
+                    delay: self.retry_delay(1),
+                    failed_shards: vec!["waiting for shard retry".to_string()],
+                },
+                PackStatus::Unreadable => JobProcessOutcome::Failed,
+            });
         }
 
-        let mut failed_providers = Vec::new();
-        let mut max_target_attempts = 0i64;
+        let mut failed_shards = Vec::new();
+        let mut max_attempts = 0i64;
 
-        for target in pending_targets {
+        for shard in pending_shards {
             let uploader = self
                 .uploaders
                 .iter()
-                .find(|uploader| uploader.provider_name() == target.provider.as_str())
-                .ok_or(UploaderError::InvalidEnv("upload_target.provider"))?;
+                .find(|uploader| uploader.provider_name() == shard.provider.as_str())
+                .ok_or(UploaderError::InvalidEnv("pack_shards.provider"))?;
 
-            db::mark_upload_target_in_progress(&self.pool, job.id, &target.provider).await?;
+            let shard_path = local_shard_path(
+                &self.spool_dir,
+                &job.pack_id,
+                usize::try_from(shard.shard_index)
+                    .map_err(|_| UploaderError::InvalidEnv("pack_shards.shard_index"))?,
+            );
+
+            db::mark_pack_shard_in_progress(&self.pool, &job.pack_id, shard.shard_index).await?;
+            db::mark_upload_target_in_progress(&self.pool, job.id, &shard.provider).await?;
+
             println!(
-                "upload start pack={} provider={} force_path_style={} worker_timeout={:?} connect_timeout={:?} read_timeout={:?}",
+                "upload start pack={} shard={} provider={} force_path_style={} worker_timeout={:?} connect_timeout={:?} read_timeout={:?}",
                 job.pack_id,
+                shard.shard_index,
                 uploader.provider_name(),
                 uploader.force_path_style(),
                 self.provider_timeout,
@@ -339,14 +357,32 @@ impl UploadWorker {
                 self.read_timeout
             );
 
-            let upload_result =
-                timeout(self.provider_timeout, uploader.upload_pack(&pack_path)).await;
-            match upload_result {
+            if !fs::try_exists(&shard_path).await? {
+                let message = format!("local shard missing: {}", shard_path.display());
+                db::mark_pack_shard_failed(&self.pool, &job.pack_id, shard.shard_index, &message)
+                    .await?;
+                db::mark_upload_target_failed(&self.pool, job.id, &shard.provider, &message)
+                    .await?;
+                failed_shards.push(format!(
+                    "{} shard {}: {}",
+                    shard.provider, shard.shard_index, message
+                ));
+                continue;
+            }
+
+            match timeout(
+                self.provider_timeout,
+                uploader.upload_shard(&shard_path, &shard.object_key),
+            )
+            .await
+            {
                 Ok(Ok(uploaded)) => {
+                    db::mark_pack_shard_completed(&self.pool, &job.pack_id, shard.shard_index)
+                        .await?;
                     db::mark_upload_target_completed(
                         &self.pool,
                         job.id,
-                        &target.provider,
+                        &shard.provider,
                         &uploaded.bucket,
                         &uploaded.key,
                         uploaded.etag.as_deref(),
@@ -354,58 +390,91 @@ impl UploadWorker {
                     )
                     .await?;
                     println!(
-                        "uploaded pack {} to {} at {}/{}",
-                        job.pack_id, uploaded.provider, uploaded.bucket, uploaded.key
+                        "uploaded pack={} shard={} provider={} key={}",
+                        job.pack_id, shard.shard_index, uploaded.provider, uploaded.key
                     );
                 }
                 Ok(Err(err)) if err.is_retryable() => {
-                    let attempts = db::requeue_upload_target(
+                    let attempts = db::requeue_pack_shard(
                         &self.pool,
-                        job.id,
-                        &target.provider,
+                        &job.pack_id,
+                        shard.shard_index,
                         &err.to_string(),
                     )
                     .await?;
-                    max_target_attempts = max_target_attempts.max(attempts);
-                    failed_providers.push(format!("{}: {}", target.provider, err));
+                    db::requeue_upload_target(
+                        &self.pool,
+                        job.id,
+                        &shard.provider,
+                        &err.to_string(),
+                    )
+                    .await?;
+                    max_attempts = max_attempts.max(attempts);
+                    failed_shards.push(format!(
+                        "{} shard {}: {}",
+                        shard.provider, shard.shard_index, err
+                    ));
                 }
                 Err(_) => {
                     let timeout_error = UploaderError::Timeout {
                         provider: uploader.provider_name(),
                         duration: self.provider_timeout,
                     };
-                    let attempts = db::requeue_upload_target(
+                    let attempts = db::requeue_pack_shard(
                         &self.pool,
-                        job.id,
-                        &target.provider,
+                        &job.pack_id,
+                        shard.shard_index,
                         &timeout_error.to_string(),
                     )
                     .await?;
-                    max_target_attempts = max_target_attempts.max(attempts);
-                    failed_providers.push(format!("{}: {}", target.provider, timeout_error));
-                }
-                Ok(Err(err)) => {
-                    db::mark_upload_target_failed(
+                    db::requeue_upload_target(
                         &self.pool,
                         job.id,
-                        &target.provider,
+                        &shard.provider,
+                        &timeout_error.to_string(),
+                    )
+                    .await?;
+                    max_attempts = max_attempts.max(attempts);
+                    failed_shards.push(format!(
+                        "{} shard {}: {}",
+                        shard.provider, shard.shard_index, timeout_error
+                    ));
+                }
+                Ok(Err(err)) => {
+                    db::mark_pack_shard_failed(
+                        &self.pool,
+                        &job.pack_id,
+                        shard.shard_index,
                         &err.to_string(),
                     )
                     .await?;
-                    return Err(err);
+                    db::mark_upload_target_failed(
+                        &self.pool,
+                        job.id,
+                        &shard.provider,
+                        &err.to_string(),
+                    )
+                    .await?;
+                    failed_shards.push(format!(
+                        "{} shard {}: {}",
+                        shard.provider, shard.shard_index, err
+                    ));
                 }
             }
         }
 
-        if db::has_incomplete_upload_targets(&self.pool, job.id).await? {
-            let delay = self.retry_delay(max_target_attempts.max(1));
-            return Ok(JobProcessOutcome::PendingRetry {
-                delay,
-                failed_providers,
-            });
-        }
+        let summary = db::summarize_pack_shards(&self.pool, &job.pack_id).await?;
+        let status = db::resolve_pack_status(summary);
+        db::update_pack_status(&self.pool, &job.pack_id, status).await?;
 
-        Ok(JobProcessOutcome::Completed)
+        Ok(match status {
+            PackStatus::Healthy | PackStatus::Degraded => JobProcessOutcome::Completed,
+            PackStatus::Uploading => JobProcessOutcome::PendingRetry {
+                delay: self.retry_delay(max_attempts.max(1)),
+                failed_shards,
+            },
+            PackStatus::Unreadable => JobProcessOutcome::Failed,
+        })
     }
 
     fn retry_delay(&self, attempts: i64) -> Duration {

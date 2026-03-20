@@ -1,10 +1,10 @@
 use crate::db;
 use crate::uploader::KNOWN_PROVIDERS;
 use crate::vault::VaultKeyStore;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -76,6 +76,20 @@ struct UnlockResponse {
     initialized: bool,
 }
 
+#[derive(Serialize)]
+struct VaultHealthResponse {
+    total_packs: i64,
+    healthy_packs: i64,
+    degraded_packs: i64,
+    unreadable_packs: i64,
+}
+
+#[derive(Serialize)]
+struct DeleteFileResponse {
+    inode_id: i64,
+    deleted: bool,
+}
+
 impl ApiServer {
     pub fn from_env(pool: SqlitePool, vault_keys: VaultKeyStore) -> Result<Self, ApiError> {
         let _ = dotenvy::dotenv();
@@ -100,6 +114,8 @@ impl ApiServer {
         let app = Router::new()
             .route("/api/transfers", get(get_transfers))
             .route("/api/health", get(get_health))
+            .route("/api/health/vault", get(get_vault_health))
+            .route("/api/files/{inode_id}", delete(delete_file))
             .route("/api/unlock", post(post_unlock))
             .with_state(state);
 
@@ -208,6 +224,22 @@ async fn get_health(State(state): State<ApiState>) -> impl IntoResponse {
     (StatusCode::OK, Json(providers)).into_response()
 }
 
+async fn get_vault_health(State(state): State<ApiState>) -> impl IntoResponse {
+    match db::get_vault_health_summary(&state.pool).await {
+        Ok(summary) => (
+            StatusCode::OK,
+            Json(VaultHealthResponse {
+                total_packs: summary.total_packs,
+                healthy_packs: summary.healthy_packs,
+                degraded_packs: summary.degraded_packs,
+                unreadable_packs: summary.unreadable_packs,
+            }),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
 async fn post_unlock(
     State(state): State<ApiState>,
     Json(request): Json<UnlockRequest>,
@@ -234,6 +266,55 @@ async fn post_unlock(
         )
             .into_response(),
     }
+}
+
+async fn delete_file(
+    State(state): State<ApiState>,
+    Path(inode_id): Path<i64>,
+) -> impl IntoResponse {
+    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
+        Ok(inode) => inode,
+        Err(err) => return internal_server_error(err),
+    };
+
+    let Some(inode) = inode else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "inode_not_found",
+                "inode_id": inode_id,
+            })),
+        )
+            .into_response();
+    };
+
+    if inode.kind != "FILE" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "inode_not_file",
+                "inode_id": inode_id,
+                "kind": inode.kind,
+            })),
+        )
+            .into_response();
+    }
+
+    if let Err(err) = db::delete_file_chunks(&state.pool, inode_id).await {
+        return internal_server_error(err);
+    }
+    if let Err(err) = db::delete_inode_record(&state.pool, inode_id).await {
+        return internal_server_error(err);
+    }
+
+    (
+        StatusCode::OK,
+        Json(DeleteFileResponse {
+            inode_id,
+            deleted: true,
+        }),
+    )
+        .into_response()
 }
 
 fn provider_connection_status(target_status: &str, has_error: bool) -> String {
