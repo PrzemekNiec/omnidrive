@@ -1,4 +1,6 @@
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{FromRow, Row, SqlitePool};
+use std::str::FromStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PackStatus {
@@ -208,7 +210,11 @@ pub struct VaultHealthSummary {
 
 #[allow(dead_code)]
 pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
-    let pool = SqlitePool::connect(db_url).await?;
+    let options = SqliteConnectOptions::from_str(db_url)
+        .map_err(|err| sqlx::Error::Configuration(Box::new(err)))?
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new().connect_with(options).await?;
     sqlx::query("PRAGMA foreign_keys = ON")
         .execute(&pool)
         .await?;

@@ -1,4 +1,5 @@
 mod api;
+mod aws_http;
 mod config;
 mod db;
 mod downloader;

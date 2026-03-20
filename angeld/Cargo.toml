@@ -8,8 +8,10 @@ async-stream = "0.3"
 axum = "0.8"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+aws-smithy-http-client = { version = "1", features = ["hyper-014"] }
 bytes = "1"
 dotenvy = "0.15"
+hyper-rustls = { version = "0.24", default-features = false, features = ["webpki-tokio", "http1", "http2", "tls12"] }
 http-body = "1"
 http-body-util = "0.1"
 notify = "8.1.0"

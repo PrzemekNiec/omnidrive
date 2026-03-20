@@ -5,7 +5,6 @@ use crate::db;
 use crate::db::PackStatus;
 use crate::packer::local_shard_path;
 use async_stream::stream;
-use aws_config::BehaviorVersion;
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
@@ -172,11 +171,11 @@ impl Uploader {
             .operation_timeout(operation_timeout)
             .build();
 
-        let shared_config = aws_config::defaults(BehaviorVersion::latest())
-            .region(Region::new(config.region.clone()))
-            .timeout_config(timeout_config.clone())
-            .load()
-            .await;
+        let shared_config = crate::aws_http::load_shared_config(
+            Region::new(config.region.clone()),
+            timeout_config.clone(),
+        )
+        .await;
 
         let s3_config = aws_sdk_s3::config::Builder::from(&shared_config)
             .credentials_provider(Credentials::new(

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::sync::mpsc;
-use tokio::time::{Instant, sleep_until};
+use tokio::time::{Instant, MissedTickBehavior, interval, sleep_until};
 
 pub struct FileWatcher {
     pool: SqlitePool,
@@ -21,6 +21,7 @@ pub struct FileWatcher {
     spool_dir: PathBuf,
     packer: Packer,
     debounce_window: StdDuration,
+    rescan_interval: StdDuration,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,6 +101,7 @@ impl FileWatcher {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(DEFAULT_CHUNK_SIZE);
         let debounce_window = duration_from_env("OMNIDRIVE_WATCH_DEBOUNCE_MS", 750);
+        let rescan_interval = duration_from_env("OMNIDRIVE_WATCH_RESCAN_MS", 30_000);
 
         let spool_dir = normalize_path(&spool_dir)?;
         fs::create_dir_all(&spool_dir).await?;
@@ -137,6 +139,7 @@ impl FileWatcher {
             spool_dir,
             packer,
             debounce_window,
+            rescan_interval,
         })
     }
 
@@ -150,11 +153,19 @@ impl FileWatcher {
         for root in watch_roots.clone() {
             watcher.watch(root.as_path(), RecursiveMode::Recursive)?;
         }
-        let mut processed_files = HashMap::new();
-        for root in watch_roots {
-            self.process_event_path(root, &mut processed_files).await?;
+        if let Err(err) = self.scan_existing_files().await {
+            if is_vault_locked_error(&err) {
+                eprintln!("watcher initial scan skipped while vault is locked");
+            } else {
+                return Err(err);
+            }
         }
+
+        let mut processed_files = HashMap::new();
         let mut pending_paths: HashMap<PathBuf, Instant> = HashMap::new();
+        let mut rescan_tick = interval(self.rescan_interval);
+        rescan_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        rescan_tick.tick().await;
 
         loop {
             if let Some(next_due) = next_due_instant(&pending_paths) {
@@ -168,12 +179,34 @@ impl FileWatcher {
                     _ = sleep_until(next_due) => {
                         self.flush_ready_paths(&mut pending_paths, &mut processed_files).await;
                     }
+                    _ = rescan_tick.tick() => {
+                        if let Err(err) = self.scan_existing_files().await {
+                            if is_vault_locked_error(&err) {
+                                eprintln!("watcher periodic scan skipped while vault is locked");
+                            } else {
+                                eprintln!("watcher periodic scan failed: {err}");
+                            }
+                        }
+                    }
                 }
             } else {
-                let Some(event_result) = rx.recv().await else {
-                    break;
-                };
-                self.handle_event(event_result?, &mut pending_paths)?;
+                tokio::select! {
+                    maybe_event = rx.recv() => {
+                        let Some(event_result) = maybe_event else {
+                            break;
+                        };
+                        self.handle_event(event_result?, &mut pending_paths)?;
+                    }
+                    _ = rescan_tick.tick() => {
+                        if let Err(err) = self.scan_existing_files().await {
+                            if is_vault_locked_error(&err) {
+                                eprintln!("watcher periodic scan skipped while vault is locked");
+                            } else {
+                                eprintln!("watcher periodic scan failed: {err}");
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -258,13 +291,25 @@ impl FileWatcher {
         if metadata.is_dir() {
             let files = collect_files_recursively(path).await?;
             for file in files {
-                self.process_file(file, processed_files).await?;
+                if let Err(err) = self.process_file(file.clone(), processed_files).await {
+                    if is_vault_locked_error(&err) {
+                        eprintln!("watcher skipped {} while vault is locked", file.display());
+                        continue;
+                    }
+                    return Err(err);
+                }
             }
             return Ok(());
         }
 
         if metadata.is_file() {
-            self.process_file(path, processed_files).await?;
+            if let Err(err) = self.process_file(path.clone(), processed_files).await {
+                if is_vault_locked_error(&err) {
+                    eprintln!("watcher skipped {} while vault is locked", path.display());
+                    return Ok(());
+                }
+                return Err(err);
+            }
         }
 
         Ok(())
@@ -446,6 +491,15 @@ fn duration_from_env(key: &str, default_ms: u64) -> StdDuration {
 
 fn next_due_instant(pending_paths: &HashMap<PathBuf, Instant>) -> Option<Instant> {
     pending_paths.values().copied().min()
+}
+
+fn is_vault_locked_error(err: &WatcherError) -> bool {
+    matches!(
+        err,
+        WatcherError::Packer(crate::packer::PackerError::Vault(
+            crate::vault::VaultError::Locked
+        ))
+    )
 }
 
 fn normalize_path(path: &Path) -> Result<PathBuf, WatcherError> {
