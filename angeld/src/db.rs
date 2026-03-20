@@ -103,6 +103,7 @@ pub struct FileChunkLocation {
 pub struct PackRecord {
     pub pack_id: String,
     pub chunk_id: Vec<u8>,
+    pub plaintext_hash: Option<String>,
     pub encryption_version: i64,
     pub ec_scheme: String,
     pub logical_size: i64,
@@ -276,6 +277,7 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
         CREATE TABLE IF NOT EXISTS packs (
             pack_id TEXT PRIMARY KEY,
             chunk_id BLOB NOT NULL,
+            plaintext_hash TEXT,
             encryption_version INTEGER NOT NULL,
             ec_scheme TEXT NOT NULL DEFAULT 'rs_2_1',
             logical_size INTEGER NOT NULL,
@@ -364,6 +366,7 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     ensure_column_exists(&pool, "upload_job_targets", "last_attempt_at", "INTEGER").await?;
     ensure_column_exists(&pool, "upload_job_targets", "updated_at", "INTEGER").await?;
     ensure_column_exists(&pool, "pack_shards", "last_error", "TEXT").await?;
+    ensure_column_exists(&pool, "packs", "plaintext_hash", "TEXT").await?;
     ensure_column_exists(
         &pool,
         "chunk_refs",
@@ -782,6 +785,7 @@ pub async fn create_pack(
     pool: &SqlitePool,
     pack_id: &str,
     chunk_id: &[u8],
+    plaintext_hash: &str,
     encryption_version: i64,
     ec_scheme: &str,
     logical_size: i64,
@@ -796,6 +800,7 @@ pub async fn create_pack(
         INSERT INTO packs (
             pack_id,
             chunk_id,
+            plaintext_hash,
             encryption_version,
             ec_scheme,
             logical_size,
@@ -805,9 +810,10 @@ pub async fn create_pack(
             gcm_tag,
             status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(pack_id) DO UPDATE SET
             chunk_id = excluded.chunk_id,
+            plaintext_hash = excluded.plaintext_hash,
             encryption_version = excluded.encryption_version,
             ec_scheme = excluded.ec_scheme,
             logical_size = excluded.logical_size,
@@ -820,6 +826,7 @@ pub async fn create_pack(
     )
     .bind(pack_id)
     .bind(chunk_id)
+    .bind(plaintext_hash)
     .bind(encryption_version)
     .bind(ec_scheme)
     .bind(logical_size)
@@ -862,6 +869,7 @@ pub async fn get_pack(pool: &SqlitePool, pack_id: &str) -> Result<Option<PackRec
         SELECT
             pack_id,
             chunk_id,
+            plaintext_hash,
             encryption_version,
             ec_scheme,
             logical_size,
@@ -875,6 +883,44 @@ pub async fn get_pack(pool: &SqlitePool, pack_id: &str) -> Result<Option<PackRec
         "#,
     )
     .bind(pack_id)
+    .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn find_pack_by_plaintext_hash(
+    pool: &SqlitePool,
+    plaintext_hash: &str,
+) -> Result<Option<PackRecord>, sqlx::Error> {
+    sqlx::query_as::<_, PackRecord>(
+        r#"
+        SELECT
+            pack_id,
+            chunk_id,
+            plaintext_hash,
+            encryption_version,
+            ec_scheme,
+            logical_size,
+            cipher_size,
+            shard_size,
+            nonce,
+            gcm_tag,
+            status
+        FROM packs
+        WHERE plaintext_hash = ?
+          AND status != 'UNREADABLE'
+        ORDER BY
+            CASE status
+                WHEN 'COMPLETED_HEALTHY' THEN 0
+                WHEN 'COMPLETED_DEGRADED' THEN 1
+                WHEN 'UPLOADING' THEN 2
+                ELSE 3
+            END,
+            pack_id ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(plaintext_hash)
     .fetch_optional(pool)
     .await
 }
@@ -907,6 +953,7 @@ pub async fn get_next_degraded_pack(pool: &SqlitePool) -> Result<Option<PackReco
         SELECT
             pack_id,
             chunk_id,
+            plaintext_hash,
             encryption_version,
             ec_scheme,
             logical_size,

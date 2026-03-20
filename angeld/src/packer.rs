@@ -70,16 +70,17 @@ pub struct PackResult {
 struct PreparedPack {
     pack_id: String,
     chunk_id: [u8; 32],
+    plaintext_hash: String,
     file_offset: i64,
     plain_size: i64,
     cipher_size: i64,
     shard_size: i64,
     manifest_path: PathBuf,
     manifest_size: i64,
-    manifest_bytes: Vec<u8>,
     nonce: [u8; 12],
     gcm_tag: [u8; 16],
     shards: Vec<PreparedShard>,
+    is_deduplicated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,6 +104,7 @@ pub enum PackerError {
     ErasureCoding(reed_solomon_erasure::Error),
     NumericOverflow(&'static str),
     Clock(std::time::SystemTimeError),
+    InvalidStoredPack(&'static str),
 }
 
 impl fmt::Display for PackerError {
@@ -118,6 +120,7 @@ impl fmt::Display for PackerError {
             Self::ErasureCoding(err) => write!(f, "erasure coding error: {err}"),
             Self::NumericOverflow(ctx) => write!(f, "numeric overflow while handling {ctx}"),
             Self::Clock(err) => write!(f, "system clock error: {err}"),
+            Self::InvalidStoredPack(ctx) => write!(f, "invalid stored pack metadata: {ctx}"),
         }
     }
 }
@@ -201,6 +204,37 @@ impl Packer {
             }
 
             let plaintext = &read_buffer[..bytes_read];
+            let plaintext_hash = hex_sha256(plaintext);
+            let plain_size = to_i64(bytes_read, "chunk size")?;
+
+            if let Some(existing_pack) =
+                db::find_pack_by_plaintext_hash(&self.pool, &plaintext_hash).await?
+            {
+                let manifest_size = manifest_size_from_pack(&existing_pack)?;
+
+                prepared_packs.push(PreparedPack {
+                    pack_id: existing_pack.pack_id.clone(),
+                    chunk_id: vec_to_array_32(&existing_pack.chunk_id, "chunk_id")?,
+                    plaintext_hash,
+                    file_offset,
+                    plain_size,
+                    cipher_size: existing_pack.cipher_size,
+                    shard_size: existing_pack.shard_size,
+                    manifest_path: local_pack_path(&self.config.spool_dir, &existing_pack.pack_id),
+                    manifest_size,
+                    nonce: vec_to_array_12(&existing_pack.nonce, "nonce")?,
+                    gcm_tag: vec_to_array_16(&existing_pack.gcm_tag, "gcm_tag")?,
+                    shards: Vec::new(),
+                    is_deduplicated: true,
+                });
+
+                logical_size += bytes_read as u64;
+                encrypted_size += u64::try_from(manifest_size)
+                    .map_err(|_| PackerError::NumericOverflow("manifest size total"))?;
+                file_offset = checked_add_i64(file_offset, plain_size, "file offset")?;
+                continue;
+            }
+
             let encrypted = encrypt_chunk(&vault_key, plaintext, &[])?;
             let manifest_bytes = build_manifest_bytes(
                 encrypted.chunk_id,
@@ -210,16 +244,12 @@ impl Packer {
                 bytes_read,
             )?;
             let pack_id = hex_sha256(&manifest_bytes);
-            let manifest_path = self
-                .config
-                .spool_dir
-                .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
+            let manifest_path = local_pack_path(&self.config.spool_dir, &pack_id);
             fs::write(&manifest_path, &manifest_bytes).await?;
 
             let shards =
                 build_shards(&self.config.spool_dir, &pack_id, &encrypted.ciphertext).await?;
 
-            let plain_size = to_i64(bytes_read, "chunk size")?;
             let cipher_size = to_i64(encrypted.ciphertext.len(), "cipher size")?;
             let shard_size = shards
                 .first()
@@ -230,16 +260,17 @@ impl Packer {
             prepared_packs.push(PreparedPack {
                 pack_id,
                 chunk_id: encrypted.chunk_id,
+                plaintext_hash,
                 file_offset,
                 plain_size,
                 cipher_size,
                 shard_size,
                 manifest_path,
                 manifest_size,
-                manifest_bytes,
                 nonce: encrypted.nonce,
                 gcm_tag: encrypted.gcm_tag,
                 shards,
+                is_deduplicated: false,
             });
 
             logical_size += bytes_read as u64;
@@ -293,10 +324,18 @@ impl Packer {
             )
             .await?;
 
+            pack_ids.push(pack.pack_id.clone());
+            pack_paths.push(pack.manifest_path.clone());
+
+            if pack.is_deduplicated {
+                continue;
+            }
+
             db::create_pack(
                 &self.pool,
                 &pack.pack_id,
                 &pack.chunk_id,
+                &pack.plaintext_hash,
                 1,
                 EC_SCHEME_RS_2_1,
                 pack.plain_size,
@@ -324,8 +363,6 @@ impl Packer {
             }
 
             db::queue_pack_for_upload(&self.pool, &pack.pack_id).await?;
-            pack_ids.push(pack.pack_id.clone());
-            pack_paths.push(pack.manifest_path.clone());
         }
 
         Ok(PackResult {
@@ -340,6 +377,10 @@ impl Packer {
             created_at_ms,
         })
     }
+}
+
+fn local_pack_path(spool_dir: &Path, pack_id: &str) -> PathBuf {
+    spool_dir.join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"))
 }
 
 pub fn local_shard_path(spool_dir: &Path, pack_id: &str, shard_index: usize) -> PathBuf {
@@ -441,6 +482,29 @@ fn to_i64(value: usize, context: &'static str) -> Result<i64, PackerError> {
 fn checked_add_i64(lhs: i64, rhs: i64, context: &'static str) -> Result<i64, PackerError> {
     lhs.checked_add(rhs)
         .ok_or(PackerError::NumericOverflow(context))
+}
+
+fn manifest_size_from_pack(pack: &db::PackRecord) -> Result<i64, PackerError> {
+    let cipher_size = usize::try_from(pack.cipher_size)
+        .map_err(|_| PackerError::NumericOverflow("stored cipher_size"))?;
+    let gcm_tag_len = pack.gcm_tag.len();
+    let total = ChunkRecordPrefix::SIZE
+        .checked_add(cipher_size)
+        .and_then(|value| value.checked_add(gcm_tag_len))
+        .ok_or(PackerError::NumericOverflow("stored manifest size"))?;
+    to_i64(total, "stored manifest size")
+}
+
+fn vec_to_array_32(bytes: &[u8], field: &'static str) -> Result<[u8; 32], PackerError> {
+    <[u8; 32]>::try_from(bytes).map_err(|_| PackerError::InvalidStoredPack(field))
+}
+
+fn vec_to_array_16(bytes: &[u8], field: &'static str) -> Result<[u8; 16], PackerError> {
+    <[u8; 16]>::try_from(bytes).map_err(|_| PackerError::InvalidStoredPack(field))
+}
+
+fn vec_to_array_12(bytes: &[u8], field: &'static str) -> Result<[u8; 12], PackerError> {
+    <[u8; 12]>::try_from(bytes).map_err(|_| PackerError::InvalidStoredPack(field))
 }
 
 async fn read_next_chunk(file: &mut File, buffer: &mut [u8]) -> Result<usize, std::io::Error> {
