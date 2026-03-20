@@ -1,8 +1,10 @@
+mod api;
 mod db;
 mod packer;
 mod uploader;
 mod watcher;
 
+use crate::api::ApiServer;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::uploader::{UploadWorker, Uploader};
 use crate::watcher::FileWatcher;
@@ -107,21 +109,31 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let db_url = env::var("OMNIDRIVE_DB_URL").unwrap_or_else(|_| "sqlite:omnidrive.db".to_string());
     let pool = db::init_db(&db_url).await?;
     let worker = UploadWorker::from_env(pool.clone()).await?;
-    let watcher = FileWatcher::from_env(pool).await?;
+    let watcher = FileWatcher::from_env(pool.clone()).await?;
+    let api = ApiServer::from_env(pool)?;
 
-    println!("upload worker and file watcher started");
+    println!("upload worker, file watcher, and api server started");
 
     let mut upload_task = tokio::spawn(async move { worker.run().await });
     let mut watcher_task = tokio::spawn(async move { watcher.run().await });
+    let mut api_task = tokio::spawn(async move { api.run().await });
 
     tokio::select! {
         result = &mut upload_task => {
             watcher_task.abort();
+            api_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
         result = &mut watcher_task => {
             upload_task.abort();
+            api_task.abort();
+            let outcome = result??;
+            Ok(outcome)
+        }
+        result = &mut api_task => {
+            upload_task.abort();
+            watcher_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
@@ -129,6 +141,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             signal?;
             upload_task.abort();
             watcher_task.abort();
+            api_task.abort();
             println!("shutdown signal received");
             Ok(())
         }

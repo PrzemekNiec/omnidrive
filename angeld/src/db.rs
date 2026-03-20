@@ -1,4 +1,4 @@
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, Row, SqlitePool};
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
@@ -53,6 +53,8 @@ pub struct UploadTargetRecord {
     pub object_key: Option<String>,
     pub etag: Option<String>,
     pub version_id: Option<String>,
+    pub last_attempt_at: Option<i64>,
+    pub updated_at: Option<i64>,
     pub completed_at: Option<i64>,
 }
 
@@ -151,6 +153,8 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
             object_key TEXT,
             etag TEXT,
             version_id TEXT,
+            last_attempt_at INTEGER,
+            updated_at INTEGER,
             completed_at INTEGER,
             UNIQUE(job_id, provider)
         )
@@ -158,6 +162,9 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+
+    ensure_column_exists(&pool, "upload_job_targets", "last_attempt_at", "INTEGER").await?;
+    ensure_column_exists(&pool, "upload_job_targets", "updated_at", "INTEGER").await?;
 
     Ok(pool)
 }
@@ -520,6 +527,8 @@ pub async fn get_incomplete_upload_targets(
             object_key,
             etag,
             version_id,
+            last_attempt_at,
+            updated_at,
             completed_at
         FROM upload_job_targets
         WHERE job_id = ?
@@ -541,7 +550,9 @@ pub async fn mark_upload_target_in_progress(
     sqlx::query(
         r#"
         UPDATE upload_job_targets
-        SET status = 'IN_PROGRESS'
+        SET status = 'IN_PROGRESS',
+            last_attempt_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
         WHERE job_id = ?
           AND provider = ?
         "#,
@@ -573,6 +584,8 @@ pub async fn mark_upload_target_completed(
             object_key = ?,
             etag = ?,
             version_id = ?,
+            last_attempt_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
             completed_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
         WHERE job_id = ?
           AND provider = ?
@@ -603,6 +616,8 @@ pub async fn requeue_upload_target(
         SET status = 'PENDING',
             attempts = COALESCE(attempts, 0) + 1,
             last_error = ?,
+            last_attempt_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
             completed_at = NULL
         WHERE job_id = ?
           AND provider = ?
@@ -643,6 +658,8 @@ pub async fn mark_upload_target_failed(
         SET status = 'FAILED',
             attempts = COALESCE(attempts, 0) + 1,
             last_error = ?,
+            last_attempt_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
             completed_at = NULL
         WHERE job_id = ?
           AND provider = ?
@@ -726,7 +743,8 @@ pub async fn reset_in_progress_upload_targets(pool: &SqlitePool) -> Result<u64, 
     let result = sqlx::query(
         r#"
         UPDATE upload_job_targets
-        SET status = 'PENDING'
+        SET status = 'PENDING',
+            updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
         WHERE status = 'IN_PROGRESS'
         "#,
     )
@@ -734,6 +752,89 @@ pub async fn reset_in_progress_upload_targets(pool: &SqlitePool) -> Result<u64, 
     .await?;
 
     Ok(result.rows_affected())
+}
+
+#[allow(dead_code)]
+pub async fn get_upload_targets_for_job(
+    pool: &SqlitePool,
+    job_id: i64,
+) -> Result<Vec<UploadTargetRecord>, sqlx::Error> {
+    sqlx::query_as::<_, UploadTargetRecord>(
+        r#"
+        SELECT
+            id,
+            job_id,
+            provider,
+            status,
+            attempts,
+            last_error,
+            bucket,
+            object_key,
+            etag,
+            version_id,
+            last_attempt_at,
+            updated_at,
+            completed_at
+        FROM upload_job_targets
+        WHERE job_id = ?
+        ORDER BY provider ASC
+        "#,
+    )
+    .bind(job_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn list_recent_upload_jobs(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<UploadJob>, sqlx::Error> {
+    sqlx::query_as::<_, UploadJob>(
+        r#"
+        SELECT id, pack_id, status, attempts
+        FROM upload_jobs
+        ORDER BY
+            CASE WHEN status IN ('PENDING', 'IN_PROGRESS') THEN 0 ELSE 1 END,
+            id DESC
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_latest_upload_target_for_provider(
+    pool: &SqlitePool,
+    provider: &str,
+) -> Result<Option<UploadTargetRecord>, sqlx::Error> {
+    sqlx::query_as::<_, UploadTargetRecord>(
+        r#"
+        SELECT
+            id,
+            job_id,
+            provider,
+            status,
+            attempts,
+            last_error,
+            bucket,
+            object_key,
+            etag,
+            version_id,
+            last_attempt_at,
+            updated_at,
+            completed_at
+        FROM upload_job_targets
+        WHERE provider = ?
+        ORDER BY COALESCE(last_attempt_at, updated_at, completed_at, 0) DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(provider)
+    .fetch_optional(pool)
+    .await
 }
 
 #[allow(dead_code)]
@@ -758,4 +859,26 @@ fn validate_inode_kind(kind: &str) -> Result<(), sqlx::Error> {
             "invalid inode kind '{kind}', expected FILE or DIR"
         ))),
     }
+}
+
+async fn ensure_column_exists(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), sqlx::Error> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let columns = sqlx::query(&pragma).fetch_all(pool).await?;
+    let exists = columns.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .map(|name| name == column)
+            .unwrap_or(false)
+    });
+
+    if !exists {
+        let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
+        sqlx::query(&alter).execute(pool).await?;
+    }
+
+    Ok(())
 }

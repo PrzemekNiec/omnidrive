@@ -16,6 +16,8 @@ use tokio::time::{sleep, timeout};
 
 use crate::packer::LOCAL_PACK_EXTENSION;
 
+pub const KNOWN_PROVIDERS: [&str; 3] = ["cloudflare-r2", "scaleway", "backblaze-b2"];
+
 pub struct Uploader {
     provider_name: &'static str,
     client: Client,
@@ -278,7 +280,10 @@ impl UploadWorker {
                 Err(err) if err.is_retryable() => {
                     let attempts = db::requeue_upload_job(&self.pool, job.id).await?;
                     let delay = self.retry_delay(attempts);
-                    eprintln!("upload job {} will retry after {:?}: {}", job.pack_id, delay, err);
+                    eprintln!(
+                        "upload job {} will retry after {:?}: {}",
+                        job.pack_id, delay, err
+                    );
                     sleep(delay).await;
                 }
                 Err(err) => {
@@ -331,7 +336,8 @@ impl UploadWorker {
                 self.read_timeout
             );
 
-            let upload_result = timeout(self.provider_timeout, uploader.upload_pack(&pack_path)).await;
+            let upload_result =
+                timeout(self.provider_timeout, uploader.upload_pack(&pack_path)).await;
             match upload_result {
                 Ok(Ok(uploaded)) => {
                     db::mark_upload_target_completed(
