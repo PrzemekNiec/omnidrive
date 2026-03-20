@@ -173,9 +173,8 @@ pub fn encrypt_chunk(
     let chunk_id = chunk_id(vault_key, plaintext_chunk)?;
     let nonce = chunk_nonce(vault_key, &chunk_id)?;
     let chunk_enc_key = chunk_encryption_key(vault_key)?;
-    let cipher = Aes256Gcm::new_from_slice(&chunk_enc_key).map_err(|_| {
-        CryptoError::Aead(aes_gcm::Error)
-    })?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&chunk_enc_key).map_err(|_| CryptoError::Aead(aes_gcm::Error))?;
 
     let mut ciphertext = plaintext_chunk.to_vec();
     let tag = cipher
@@ -202,9 +201,8 @@ pub fn decrypt_chunk(
 ) -> Result<Vec<u8>, CryptoError> {
     let nonce = chunk_nonce(vault_key, expected_chunk_id)?;
     let chunk_enc_key = chunk_encryption_key(vault_key)?;
-    let cipher = Aes256Gcm::new_from_slice(&chunk_enc_key).map_err(|_| {
-        CryptoError::Aead(aes_gcm::Error)
-    })?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&chunk_enc_key).map_err(|_| CryptoError::Aead(aes_gcm::Error))?;
 
     let mut plaintext = ciphertext.to_vec();
     cipher
