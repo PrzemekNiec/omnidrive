@@ -89,6 +89,16 @@ pub struct FileRevisionRecord {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct FileInventoryRecord {
+    pub inode_id: i64,
+    pub path: String,
+    pub size: i64,
+    pub current_revision_id: Option<i64>,
+    pub current_revision_created_at: Option<i64>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
 pub struct SyncPolicyRecord {
     pub policy_id: i64,
     pub path_prefix: String,
@@ -751,6 +761,45 @@ pub async fn get_current_file_revision(
     )
     .bind(inode_id)
     .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_file_revision(
+    pool: &SqlitePool,
+    inode_id: i64,
+    revision_id: i64,
+) -> Result<Option<FileRevisionRecord>, sqlx::Error> {
+    sqlx::query_as::<_, FileRevisionRecord>(
+        r#"
+        SELECT revision_id, inode_id, created_at, size, is_current, immutable_until
+        FROM file_revisions
+        WHERE inode_id = ?
+          AND revision_id = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(inode_id)
+    .bind(revision_id)
+    .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn list_file_revisions(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<Vec<FileRevisionRecord>, sqlx::Error> {
+    sqlx::query_as::<_, FileRevisionRecord>(
+        r#"
+        SELECT revision_id, inode_id, created_at, size, is_current, immutable_until
+        FROM file_revisions
+        WHERE inode_id = ?
+        ORDER BY created_at DESC, revision_id DESC
+        "#,
+    )
+    .bind(inode_id)
+    .fetch_all(pool)
     .await
 }
 
@@ -1483,6 +1532,48 @@ pub async fn get_file_chunks(
         "#,
     )
     .bind(inode_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn list_active_files(pool: &SqlitePool) -> Result<Vec<FileInventoryRecord>, sqlx::Error> {
+    sqlx::query_as::<_, FileInventoryRecord>(
+        r#"
+        WITH RECURSIVE inode_paths AS (
+            SELECT
+                id,
+                parent_id,
+                name AS path
+            FROM inodes
+            WHERE parent_id IS NULL
+
+            UNION ALL
+
+            SELECT
+                child.id,
+                child.parent_id,
+                inode_paths.path || '/' || child.name AS path
+            FROM inodes child
+            INNER JOIN inode_paths
+                ON child.parent_id = inode_paths.id
+        )
+        SELECT
+            i.id AS inode_id,
+            inode_paths.path AS path,
+            COALESCE(fr.size, i.size) AS size,
+            fr.revision_id AS current_revision_id,
+            fr.created_at AS current_revision_created_at
+        FROM inodes i
+        INNER JOIN inode_paths
+            ON inode_paths.id = i.id
+        LEFT JOIN file_revisions fr
+            ON fr.inode_id = i.id
+           AND fr.is_current = 1
+        WHERE i.kind = 'FILE'
+        ORDER BY inode_paths.path ASC
+        "#,
+    )
     .fetch_all(pool)
     .await
 }

@@ -1,3 +1,4 @@
+use crate::config::AppConfig;
 use crate::db;
 use crate::uploader::KNOWN_PROVIDERS;
 use crate::vault::VaultKeyStore;
@@ -90,6 +91,44 @@ struct DeleteFileResponse {
     deleted: bool,
 }
 
+#[derive(Serialize)]
+struct FileEntryResponse {
+    inode_id: i64,
+    path: String,
+    size: i64,
+    current_revision_id: Option<i64>,
+    current_revision_created_at: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct FileRevisionResponse {
+    revision_id: i64,
+    inode_id: i64,
+    created_at: i64,
+    size: i64,
+    is_current: bool,
+    immutable_until: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct RestoreRevisionResponse {
+    inode_id: i64,
+    revision_id: i64,
+    restored: bool,
+}
+
+#[derive(Serialize)]
+struct QuotaResponse {
+    max_physical_bytes_per_provider: u64,
+    providers: Vec<ProviderQuotaResponse>,
+}
+
+#[derive(Serialize)]
+struct ProviderQuotaResponse {
+    provider: String,
+    used_physical_bytes: u64,
+}
+
 impl ApiServer {
     pub fn from_env(pool: SqlitePool, vault_keys: VaultKeyStore) -> Result<Self, ApiError> {
         let _ = dotenvy::dotenv();
@@ -115,7 +154,14 @@ impl ApiServer {
             .route("/api/transfers", get(get_transfers))
             .route("/api/health", get(get_health))
             .route("/api/health/vault", get(get_vault_health))
+            .route("/api/files", get(get_files))
             .route("/api/files/{inode_id}", delete(delete_file))
+            .route("/api/files/{inode_id}/revisions", get(get_file_revisions))
+            .route(
+                "/api/files/{inode_id}/revisions/{revision_id}/restore",
+                post(restore_file_revision),
+            )
+            .route("/api/quota", get(get_quota))
             .route("/api/unlock", post(post_unlock))
             .with_state(state);
 
@@ -312,6 +358,169 @@ async fn delete_file(
         Json(DeleteFileResponse {
             inode_id,
             deleted: true,
+        }),
+    )
+        .into_response()
+}
+
+async fn get_files(State(state): State<ApiState>) -> impl IntoResponse {
+    match db::list_active_files(&state.pool).await {
+        Ok(files) => (
+            StatusCode::OK,
+            Json(
+                files
+                    .into_iter()
+                    .map(|file| FileEntryResponse {
+                        inode_id: file.inode_id,
+                        path: file.path,
+                        size: file.size,
+                        current_revision_id: file.current_revision_id,
+                        current_revision_created_at: file.current_revision_created_at,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn get_file_revisions(
+    State(state): State<ApiState>,
+    Path(inode_id): Path<i64>,
+) -> impl IntoResponse {
+    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
+        Ok(inode) => inode,
+        Err(err) => return internal_server_error(err),
+    };
+
+    let Some(inode) = inode else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "inode_not_found",
+                "inode_id": inode_id,
+            })),
+        )
+            .into_response();
+    };
+
+    if inode.kind != "FILE" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "inode_not_file",
+                "inode_id": inode_id,
+                "kind": inode.kind,
+            })),
+        )
+            .into_response();
+    }
+
+    match db::list_file_revisions(&state.pool, inode_id).await {
+        Ok(revisions) => (
+            StatusCode::OK,
+            Json(
+                revisions
+                    .into_iter()
+                    .map(|revision| FileRevisionResponse {
+                        revision_id: revision.revision_id,
+                        inode_id: revision.inode_id,
+                        created_at: revision.created_at,
+                        size: revision.size,
+                        is_current: revision.is_current != 0,
+                        immutable_until: revision.immutable_until,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn restore_file_revision(
+    State(state): State<ApiState>,
+    Path((inode_id, revision_id)): Path<(i64, i64)>,
+) -> impl IntoResponse {
+    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
+        Ok(inode) => inode,
+        Err(err) => return internal_server_error(err),
+    };
+
+    let Some(inode) = inode else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "inode_not_found",
+                "inode_id": inode_id,
+            })),
+        )
+            .into_response();
+    };
+
+    if inode.kind != "FILE" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "inode_not_file",
+                "inode_id": inode_id,
+                "kind": inode.kind,
+            })),
+        )
+            .into_response();
+    }
+
+    let revision = match db::get_file_revision(&state.pool, inode_id, revision_id).await {
+        Ok(revision) => revision,
+        Err(err) => return internal_server_error(err),
+    };
+
+    let Some(_) = revision else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "revision_not_found",
+                "inode_id": inode_id,
+                "revision_id": revision_id,
+            })),
+        )
+            .into_response();
+    };
+
+    match db::promote_revision_to_current(&state.pool, revision_id).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(RestoreRevisionResponse {
+                inode_id,
+                revision_id,
+                restored: true,
+            }),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn get_quota(State(state): State<ApiState>) -> impl IntoResponse {
+    let app_config = AppConfig::from_env();
+    let mut providers = Vec::with_capacity(KNOWN_PROVIDERS.len());
+
+    for provider in KNOWN_PROVIDERS {
+        match db::get_physical_usage_for_provider(&state.pool, provider).await {
+            Ok(used_physical_bytes) => providers.push(ProviderQuotaResponse {
+                provider: provider.to_string(),
+                used_physical_bytes,
+            }),
+            Err(err) => return internal_server_error(err),
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(QuotaResponse {
+            max_physical_bytes_per_provider: app_config.max_physical_bytes_per_provider,
+            providers,
         }),
     )
         .into_response()
