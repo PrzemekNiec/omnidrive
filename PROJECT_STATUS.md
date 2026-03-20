@@ -1,27 +1,70 @@
-# PROJECT STATUS
+# OmniDrive Project Status
 
 ## DONE
-- Epic 1: Core encryption in `omnidrive-core` is implemented with Argon2id root key derivation, HKDF-based key expansion, HMAC-SHA256 chunk IDs, and AES-256-GCM chunk encryption/decryption.
-- Epic 2: SQLite inode-based state store in `angeld` is implemented with schema initialization, vault state persistence, inode creation and lookup, recursive path resolution, chunk-to-pack mapping, and upload queue handoff.
-- Epic 3: Local Packaging Engine and Upload Worker are implemented. `angeld` reads local files, splits them into 4 MiB chunks, encrypts them into local packs, queues uploads, and uploads packs to S3-compatible providers.
-- Epic 4: File Watcher is implemented with recursive directory monitoring, inode tree updates, debounce, and deduplication before packaging.
-- Epic 4.5: Resilient Uploader is implemented with per-provider tracking via `upload_job_targets`, allowing R2 failures or transient backend errors without blocking successful uploads to Scaleway or Backblaze B2.
 
-## IN PROGRESS
-- Epic 5: API / Bridge Layer. `angeld` now exposes a local HTTP server with `GET /api/transfers` and `GET /api/health`, and this layer is being expanded into the frontend bridge surface.
+### Epic 1: Core Encryption
+- AES-256-GCM encryption pipeline implemented in `omnidrive-core`.
+- Deterministic chunk encryption and hashing flow integrated with the daemon.
 
-## TO DO
-- Epic 6: Read Path. Implement downloader, pack reader, chunk reconstruction, and decryptor flow for restoring file content from remote providers.
-- Epic 7: Vault Master Key management. Replace the current development key fallback with proper persistent vault key lifecycle and recovery-safe key handling.
-- Epic 8: Garbage Collection. Implement cleanup and reconciliation for deleted files, stale packs, and cloud-side object retention across providers.
+### Epic 2: SQLite Inodes Schema
+- Local state store implemented in SQLite.
+- Vault tree modeled through `inodes` with `parent_id` and `name`.
+- Chunk, pack, and upload tracking persisted in the daemon database.
 
-## CURRENT STATE
-- `angeld/src/db.rs` manages SQLite schema, inode tree state, chunk references, pack locations, upload jobs, and per-provider upload target tracking.
-- `angeld/src/packer.rs` builds encrypted local packs from watched filesystem changes using 4 MiB chunks by default.
-- `angeld/src/watcher.rs` monitors the configured watch directory recursively and collapses duplicate OS events before packaging.
-- `angeld/src/uploader.rs` uploads pending packs to Cloudflare R2, Scaleway, and Backblaze B2 with retries and per-provider persistence.
-- `angeld/src/api.rs` exposes local JSON endpoints for transfer state and provider health.
+### Epic 3: Packer and Uploader Worker
+- Local packaging engine implemented with configurable 4 MiB chunking.
+- Encrypted `.odpk` pack generation integrated with SQLite chunk registration.
+- Background uploader worker implemented for Cloudflare R2, Scaleway, and Backblaze B2.
 
-## NOTES
-- `cargo check --workspace` is currently green.
-- GitHub CLI board sync could not be executed from this environment because outbound GitHub API access for `gh` is blocked, so the local status tracker was updated instead.
+### Epic 4: File Watcher
+- Recursive local file watcher implemented with `notify`.
+- New and modified files are registered in SQLite and packed automatically.
+- Debounce and deduplication logic prevents duplicate packaging from repeated OS events.
+
+### Epic 4.5: Resilient Uploader
+- Per-provider upload tracking implemented through `upload_job_targets`.
+- Partial provider failures no longer block successful uploads to other backends.
+- Retry logic handles transient provider errors such as Cloudflare R2 `502` responses.
+
+### Epic 5: API / Bridge Layer
+- Local HTTP API server implemented with `axum`.
+- `GET /api/transfers` exposes transfer state with per-provider progress.
+- `GET /api/health` exposes provider connection status for the frontend bridge.
+
+### Epic 6: Read Path (Downloader & Decryptor)
+- File reconstruction flow implemented from SQLite chunk metadata.
+- Downloader retrieves encrypted packs from completed provider targets.
+- Latency-based provider selection uses `HEAD` probes to choose the fastest source.
+- Decrypt and reassembly path restores original files to the requested output path.
+
+### Epic 7: Vault Master Key Management
+- Secure Argon2-based key derivation implemented for the Vault Master Key.
+- `vault_config` stores the KDF salt and configuration parameters in SQLite.
+- In-memory `VaultKeyStore` manages the unlocked key lifecycle.
+- `POST /api/unlock` allows the daemon vault to be unlocked with a passphrase.
+- Packer and Downloader now require the vault to be unlocked before processing files.
+
+## CURRENT FOCUS
+
+### Epic 8: Garbage Collection & Deletes
+- Monitor local file deletions through the watcher pipeline.
+- Remove deleted file state from `inodes` and `chunk_refs` in SQLite.
+- Dispatch delete operations to Cloudflare R2, Scaleway, and Backblaze B2.
+- Prevent orphaned chunks and stale packs across local and remote storage.
+
+## UPCOMING ROADMAP
+
+### Epic 9: Expanded API Bridge
+- Add `GET /api/files` to expose the vault tree to the frontend.
+- Add `POST /api/download` to trigger the downloader from the UI.
+- Continue shaping the daemon API around frontend consumption patterns.
+
+### Epic 10: E2E Integration Testing
+- Build full dry-run test coverage through the API layer.
+- Validate flows such as unlock, upload, simulated provider failure, download, and delete.
+- Use the integration suite to harden daemon behavior before UI rollout.
+
+### Epic 11: Frontend UI Implementation
+- Build the desktop and mobile interface from the approved Google Stitch fintech designs.
+- Connect the UI to the local `axum` API bridge.
+- Surface vault state, transfers, health, and download actions through the frontend.
