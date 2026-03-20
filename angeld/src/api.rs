@@ -4,7 +4,7 @@ use crate::uploader::KNOWN_PROVIDERS;
 use crate::vault::VaultKeyStore;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -151,6 +151,7 @@ impl ApiServer {
             vault_keys: self.vault_keys,
         };
         let app = Router::new()
+            .route("/", get(get_index))
             .route("/api/transfers", get(get_transfers))
             .route("/api/health", get(get_health))
             .route("/api/health/vault", get(get_vault_health))
@@ -186,6 +187,10 @@ impl fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
+
+async fn get_index() -> Html<&'static str> {
+    Html(include_str!("../static/index.html"))
+}
 
 async fn get_transfers(State(state): State<ApiState>) -> impl IntoResponse {
     match db::list_recent_upload_jobs(&state.pool, 50).await {
