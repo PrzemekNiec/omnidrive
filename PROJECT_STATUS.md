@@ -94,13 +94,17 @@ Core assumptions:
 
 ### Next Epic
 Goal:
-- select the next major post-storage feature after dynamic storage modes and policy reconciliation
+- harden the local runtime and move the vault from advanced prototype to production-ready desktop system
 
 Scope:
-- pending architecture decision
+- next recommended implementation areas:
+  - local plaintext cache encryption
+  - observability and diagnostics
+  - end-to-end lifecycle testing
+  - installer and first-run bootstrap
 
 Outcome:
-- to be defined in the next implementation cycle
+- a stable, auditable, installable OmniDrive desktop product
 
 ## ROADMAP
 
@@ -1148,6 +1152,214 @@ Key decisions:
 
 Outcome:
 - private zero-knowledge file sharing
+
+## PHASE 7: HARDENING AND PRODUCTION READINESS
+
+### Epic 24: Secure Local Runtime
+Goal:
+- close the remaining local security gaps on the user machine
+
+Scope:
+- encrypt the local plaintext cache
+- audit and reduce plaintext lifetime for spool and temporary artifacts
+- tighten local directory permissions for cache, spool, and sync metadata
+- ensure temporary recovery and snapshot artifacts do not linger on disk longer than necessary
+- review what remains on disk after upload, hydration, restore, and reconciliation
+
+Outcome:
+- the local machine no longer keeps avoidable plaintext artifacts in normal operation
+
+### Epic 25: Observability and Diagnostics
+Goal:
+- make the daemon easy to understand and debug in production
+
+Scope:
+- structured logs
+- log levels and log rotation
+- diagnostics surface for:
+  - worker liveness
+  - queue depth
+  - last upload error
+  - last repair
+  - last scrub
+  - last metadata backup
+  - cache hit ratio
+- optional support bundle export
+
+Outcome:
+- failures can be diagnosed without manual SQLite inspection
+
+### Epic 26: End-to-End Test Matrix
+Goal:
+- validate the full lifecycle with repeatable system-level tests
+
+Scope:
+- E2E tests for:
+  - upload and download
+  - policy changes between `PARANOIA`, `STANDARD`, and `LOCAL`
+  - disaster recovery backup and restore
+  - Smart Sync hydration
+  - cache reuse and eviction
+  - GC after pack reconciliation
+  - scrubber -> degrade -> repair flow
+- provider failure scenarios
+- daemon restart during in-flight operations
+
+Outcome:
+- release confidence based on real lifecycle coverage, not only smoke tests
+
+## PHASE 8: INSTALLER AND FIRST-RUN EXPERIENCE
+
+### Epic 27: Installer and Bootstrap
+Goal:
+- turn OmniDrive into a normal installable desktop application
+
+Scope:
+- Windows installer
+- runtime directory setup
+- daemon autostart
+- `O:\` bootstrap
+- shell registration
+- first-run wizard for:
+  - vault creation
+  - unlock
+  - provider credential setup
+  - optional restore from cloud
+
+Outcome:
+- the user can install and start OmniDrive without terminal setup
+
+### Epic 28: Upgrades and Self-Healing Registration
+Goal:
+- make upgrades and Windows shell integration resilient
+
+Scope:
+- upgrade migrations
+- re-registration for:
+  - sync root
+  - `O:\`
+  - shell menu
+  - drive icon and label
+- recovery from stale shell, drive, or CFAPI state
+
+Outcome:
+- Explorer and Smart Sync integration survive upgrades and shell restarts reliably
+
+## PHASE 9: DATA AND COST OPERATIONS
+
+### Epic 29: Storage Cost and Policy Dashboard
+Goal:
+- expose the cost and behavior of storage policies in a product-readable way
+
+Scope:
+- usage per provider
+- logical vs physical storage
+- estimated savings from:
+  - deduplication
+  - cache
+  - `SINGLE_REPLICA`
+- distribution of files across:
+  - `PARANOIA`
+  - `STANDARD`
+  - `LOCAL`
+- reconciliation and cleanup visibility
+
+Outcome:
+- policy decisions become explainable in terms of storage and cost
+
+### Epic 30: Maintenance Console
+Goal:
+- centralize all maintenance actions for the user and operator
+
+Scope:
+- `Backup now`
+- `Scrub now`
+- `Repair now`
+- `Evict cache`
+- `Reconcile now`
+- `Rebuild sync root`
+- `Re-register O:\`
+
+Outcome:
+- maintenance workflows become accessible without manual command sequences
+
+## PHASE 10: MULTI-DEVICE AND NETWORK INTELLIGENCE
+
+### Epic 31: P2P LAN Cache
+Goal:
+- avoid unnecessary internet downloads when another trusted local device already has the data
+
+Scope:
+- peer discovery
+- mutual authentication
+- transfer of encrypted chunks or shards over LAN
+- downloader preference for LAN cache before cloud fetch
+
+Outcome:
+- lower egress costs and faster reads on home or office networks
+
+### Epic 32: Sync Conflict Handling
+Goal:
+- handle concurrent updates across multiple devices safely
+
+Scope:
+- conflict detection
+- conflict naming / conflict copies
+- revision ordering rules
+- optional lock / lease semantics where needed
+
+Outcome:
+- multi-device usage no longer risks silent overwrite ambiguity
+
+## PHASE 11: SHARING AND IDENTITY
+
+### Epic 33: Zero-Knowledge Link Sharing
+Goal:
+- let users share files safely without exposing decryption keys to the server
+
+Scope:
+- share token generation
+- dedicated download page
+- URL-fragment key delivery
+- browser-side decrypt / decode
+
+Outcome:
+- private zero-knowledge file sharing
+
+### Epic 34: Secure Authentication and Google Login
+Goal:
+- add account-based identity only when OmniDrive grows beyond a purely local daemon model
+
+Scope:
+- secure authentication model
+- Google Login / OAuth
+- session lifecycle
+- device association
+- installer onboarding integration
+
+Outcome:
+- account-backed identity for hosted or multi-user product scenarios
+
+## NEXT RECOMMENDED ORDER
+
+1. `Epic 24: Secure Local Runtime`
+2. `Epic 25: Observability and Diagnostics`
+3. `Epic 26: End-to-End Test Matrix`
+4. `Epic 27: Installer and Bootstrap`
+5. `Epic 28: Upgrades and Self-Healing Registration`
+6. `Epic 29: Storage Cost and Policy Dashboard`
+7. `Epic 30: Maintenance Console`
+8. `Epic 31: P2P LAN Cache`
+9. `Epic 32: Sync Conflict Handling`
+10. `Epic 33: Zero-Knowledge Link Sharing`
+11. `Epic 34: Secure Authentication and Google Login`
+
+## WHY THIS ORDER
+
+- It closes local security before adding more product surface.
+- It improves diagnostics and testability before installer and broader rollout.
+- It treats installation and upgrade resilience as more urgent than identity features.
+- It keeps Google Login as a later product-layer decision, not a premature infrastructure commitment.
 
 ## PHASE 6 RECOMMENDED ORDER
 
