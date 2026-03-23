@@ -161,6 +161,25 @@ struct SmartSyncActionResponse {
 }
 
 #[derive(Deserialize)]
+struct FilesystemPolicyRequest {
+    path: String,
+    policy_type: String,
+}
+
+#[derive(Deserialize)]
+struct FilesystemPathRequest {
+    path: String,
+}
+
+#[derive(Serialize)]
+struct FilesystemPolicyResponse {
+    inode_id: i64,
+    path: String,
+    policy_type: String,
+    repair_reconciliation_scheduled: bool,
+}
+
+#[derive(Deserialize)]
 struct SnapshotLocalRequest {
     output_path: String,
 }
@@ -250,6 +269,9 @@ impl ApiServer {
             .route("/api/files/{inode_id}/sync_status", get(get_file_sync_status))
             .route("/api/files/{inode_id}/pin", post(pin_file))
             .route("/api/files/{inode_id}/unpin", post(unpin_file))
+            .route("/api/filesystem/set-policy", post(set_filesystem_policy))
+            .route("/api/filesystem/pin", post(pin_filesystem_path))
+            .route("/api/filesystem/unpin", post(unpin_filesystem_path))
             .route("/api/files/{inode_id}/revisions", get(get_file_revisions))
             .route(
                 "/api/files/{inode_id}/revisions/{revision_id}/restore",
@@ -623,6 +645,155 @@ async fn unpin_file(
     }
 }
 
+async fn set_filesystem_policy(
+    State(state): State<ApiState>,
+    Json(request): Json<FilesystemPolicyRequest>,
+) -> impl IntoResponse {
+    let policy_type = match normalize_policy_type(&request.policy_type) {
+        Some(policy_type) => policy_type,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_policy_type",
+                    "policy_type": request.policy_type,
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    let (inode_id, logical_path, inode) =
+        match resolve_filesystem_request_target(&state.pool, &request.path).await {
+            Ok(target) => target,
+            Err(response) => return response,
+        };
+
+    if let Err(err) = db::set_sync_policy_type_for_path(&state.pool, &logical_path, policy_type).await
+    {
+        return internal_server_error(err);
+    }
+
+    if policy_type == "LOCAL" && inode.kind == "FILE" {
+        let sync_root = sync_root_path();
+        if let Err(err) = db::set_pin_state(&state.pool, inode_id, 1).await {
+            return internal_server_error(err);
+        }
+        if let Err(err) = smart_sync::hydrate_placeholder_now(&state.pool, &sync_root, inode_id).await
+        {
+            return internal_server_error(err);
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(FilesystemPolicyResponse {
+            inode_id,
+            path: logical_path,
+            policy_type: policy_type.to_string(),
+            repair_reconciliation_scheduled: policy_type == "PARANOIA",
+        }),
+    )
+        .into_response()
+}
+
+async fn pin_filesystem_path(
+    State(state): State<ApiState>,
+    Json(request): Json<FilesystemPathRequest>,
+) -> impl IntoResponse {
+    let (inode_id, _, inode) = match resolve_filesystem_request_target(&state.pool, &request.path).await
+    {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    if inode.kind != "FILE" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "inode_not_file",
+                "inode_id": inode_id,
+                "kind": inode.kind,
+            })),
+        )
+            .into_response();
+    }
+
+    let sync_root = sync_root_path();
+    if let Err(err) = db::set_pin_state(&state.pool, inode_id, 1).await {
+        return internal_server_error(err);
+    }
+    if let Err(err) = smart_sync::hydrate_placeholder_now(&state.pool, &sync_root, inode_id).await {
+        return internal_server_error(err);
+    }
+
+    match db::get_smart_sync_state(&state.pool, inode_id).await {
+        Ok(Some(status)) => (
+            StatusCode::OK,
+            Json(SmartSyncActionResponse {
+                inode_id: status.inode_id,
+                pin_state: status.pin_state,
+                hydration_state: status.hydration_state,
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id })),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn unpin_filesystem_path(
+    State(state): State<ApiState>,
+    Json(request): Json<FilesystemPathRequest>,
+) -> impl IntoResponse {
+    let (inode_id, _, inode) = match resolve_filesystem_request_target(&state.pool, &request.path).await
+    {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    if inode.kind != "FILE" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "inode_not_file",
+                "inode_id": inode_id,
+                "kind": inode.kind,
+            })),
+        )
+            .into_response();
+    }
+
+    let sync_root = sync_root_path();
+    if let Err(err) = db::set_pin_state(&state.pool, inode_id, 0).await {
+        return internal_server_error(err);
+    }
+    if let Err(err) = smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, true).await
+    {
+        return internal_server_error(err);
+    }
+
+    match db::get_smart_sync_state(&state.pool, inode_id).await {
+        Ok(Some(status)) => (
+            StatusCode::OK,
+            Json(SmartSyncActionResponse {
+                inode_id: status.inode_id,
+                pin_state: status.pin_state,
+                hydration_state: status.hydration_state,
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id })),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
 async fn get_file_revisions(
     State(state): State<ApiState>,
     Path(inode_id): Path<i64>,
@@ -971,6 +1142,112 @@ fn internal_server_error(err: impl std::error::Error) -> axum::response::Respons
         Json(serde_json::json!({ "error": "internal_server_error" })),
     )
         .into_response()
+}
+
+fn normalize_policy_type(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "PARANOIA" => Some("PARANOIA"),
+        "STANDARD" => Some("STANDARD"),
+        "LOCAL" => Some("LOCAL"),
+        _ => None,
+    }
+}
+
+async fn resolve_filesystem_request_target(
+    pool: &SqlitePool,
+    raw_path: &str,
+) -> Result<(i64, String, db::InodeRecord), axum::response::Response> {
+    let logical_path = match normalize_filesystem_api_path(raw_path) {
+        Some(path) => path,
+        None => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_filesystem_path",
+                    "path": raw_path,
+                })),
+            )
+                .into_response())
+        }
+    };
+
+    let inode_id = match db::resolve_path(pool, &logical_path).await {
+        Ok(Some(inode_id)) => inode_id,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "inode_not_found",
+                    "path": logical_path,
+                })),
+            )
+                .into_response())
+        }
+        Err(err) => return Err(internal_server_error(err)),
+    };
+
+    let inode = match db::get_inode_by_id(pool, inode_id).await {
+        Ok(Some(inode)) => inode,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "inode_not_found",
+                    "inode_id": inode_id,
+                })),
+            )
+                .into_response())
+        }
+        Err(err) => return Err(internal_server_error(err)),
+    };
+
+    let canonical_path = match db::get_inode_path(pool, inode_id).await {
+        Ok(Some(path)) => path,
+        Ok(None) => logical_path,
+        Err(err) => return Err(internal_server_error(err)),
+    };
+
+    Ok((inode_id, canonical_path, inode))
+}
+
+fn normalize_filesystem_api_path(raw_path: &str) -> Option<String> {
+    let trimmed = raw_path.trim().trim_matches('"').trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let sync_root = sync_root_path();
+    let drive_letter = env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
+    let drive_prefix = format!(
+        "{}\\",
+        drive_letter
+            .trim()
+            .trim_end_matches('\\')
+            .trim_end_matches('/')
+            .to_ascii_uppercase()
+    );
+    let candidate = trimmed.replace('/', "\\");
+    let candidate_upper = candidate.to_ascii_uppercase();
+    let sync_root_rendered = sync_root.to_string_lossy().replace('/', "\\");
+    let sync_root_upper = sync_root_rendered.to_ascii_uppercase();
+
+    let relative = if candidate_upper.starts_with(&drive_prefix) {
+        candidate[drive_prefix.len()..].to_string()
+    } else if candidate_upper.starts_with(&(sync_root_upper.clone() + "\\")) {
+        candidate[(sync_root_rendered.len() + 1)..].to_string()
+    } else {
+        candidate
+    };
+
+    let normalized = relative
+        .trim_start_matches('\\')
+        .trim_start_matches('/')
+        .replace('\\', "/");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 fn sync_root_path() -> std::path::PathBuf {

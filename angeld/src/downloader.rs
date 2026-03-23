@@ -2,7 +2,8 @@
 
 use crate::cache::{CacheError, CacheManager};
 use crate::db;
-use crate::packer::{DATA_SHARDS, LOCAL_PACK_EXTENSION, PARITY_SHARDS, TOTAL_SHARDS};
+use crate::db::StorageMode;
+use crate::packer::{DATA_SHARDS, LOCAL_PACK_EXTENSION, PARITY_SHARDS, TOTAL_SHARDS, local_pack_path};
 use crate::uploader::ProviderConfig;
 use crate::vault::{VaultError, VaultKeyStore};
 use aws_config::timeout::TimeoutConfig;
@@ -513,6 +514,24 @@ impl Downloader {
         let pack = db::get_pack(&self.pool, pack_id)
             .await?
             .ok_or_else(|| DownloaderError::PackMissing(pack_id.to_string()))?;
+        let storage_mode = StorageMode::from_str(&pack.storage_mode);
+        if storage_mode == StorageMode::LocalOnly {
+            let local_path = local_pack_path(
+                &env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool"),
+                pack_id,
+            );
+            if !fs::try_exists(&local_path).await? {
+                return Err(DownloaderError::InvalidPackRecord(
+                    "local-only pack manifest missing",
+                ));
+            }
+            return Ok(RestoredPackSource {
+                pack_id: pack_id.to_string(),
+                providers: vec!["local-only".to_string()],
+                local_path,
+            });
+        }
+
         let shards = db::get_pack_shards(&self.pool, pack_id).await?;
         if shards.is_empty() {
             return Err(DownloaderError::NoPackShards(pack_id.to_string()));
@@ -544,14 +563,24 @@ impl Downloader {
             )
         });
 
-        let mut shard_bytes: Vec<Option<Vec<u8>>> = vec![None; TOTAL_SHARDS];
+        let required_shards = match storage_mode {
+            StorageMode::Ec2_1 => DATA_SHARDS,
+            StorageMode::SingleReplica => 1,
+            StorageMode::LocalOnly => 0,
+        };
+        let shard_slots = if storage_mode == StorageMode::SingleReplica {
+            1
+        } else {
+            TOTAL_SHARDS
+        };
+        let mut shard_bytes: Vec<Option<Vec<u8>>> = vec![None; shard_slots];
         let mut downloaded_from = Vec::new();
         let mut errors = Vec::new();
 
         for (provider, shard, _) in candidates {
             let shard_index = usize::try_from(shard.shard_index)
                 .map_err(|_| DownloaderError::NumericOverflow("shard index"))?;
-            if shard_index >= TOTAL_SHARDS || shard_bytes[shard_index].is_some() {
+            if shard_index >= shard_slots || shard_bytes[shard_index].is_some() {
                 continue;
             }
 
@@ -563,7 +592,7 @@ impl Downloader {
                     let bytes = fs::read(&local_path).await?;
                     shard_bytes[shard_index] = Some(bytes);
                     downloaded_from.push(provider.provider_name.to_string());
-                    if shard_bytes.iter().flatten().count() >= DATA_SHARDS {
+                    if shard_bytes.iter().flatten().count() >= required_shards {
                         break;
                     }
                 }
@@ -576,14 +605,22 @@ impl Downloader {
             }
         }
 
-        if shard_bytes.iter().flatten().count() < DATA_SHARDS {
+        if shard_bytes.iter().flatten().count() < required_shards {
             return Err(DownloaderError::ShardDownloadFailed {
                 pack_id: pack_id.to_string(),
                 errors,
             });
         }
 
-        let ciphertext = reconstruct_ciphertext(&pack, &mut shard_bytes)?;
+        let ciphertext = match storage_mode {
+            StorageMode::Ec2_1 => reconstruct_ciphertext(&pack, &mut shard_bytes)?,
+            StorageMode::SingleReplica => shard_bytes
+                .into_iter()
+                .next()
+                .flatten()
+                .ok_or(DownloaderError::InvalidPackRecord("single replica missing shard"))?,
+            StorageMode::LocalOnly => unreachable!("local-only handled above"),
+        };
         let manifest_bytes = build_manifest_bytes(&pack, &ciphertext)?;
         let local_path = self
             .download_spool_dir

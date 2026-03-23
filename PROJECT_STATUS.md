@@ -83,14 +83,21 @@ Core assumptions:
 - Small-file warmup proactively caches the rest of files smaller than `8 MiB` after the first chunk read.
 - Cache visibility is exposed through API, CLI, and the dashboard, including hit/miss counters and cache usage.
 
+### Epic 23.5: Flexible Storage & Policy Reconciliation [x] Completed
+- `packs` now carry an explicit `storage_mode`, with working modes for `EC_2_1`, `SINGLE_REPLICA`, and `LOCAL_ONLY`.
+- New writes inherit their storage mode from the effective filesystem policy, so protection levels now affect actual storage behavior instead of only metadata intent.
+- `SINGLE_REPLICA` stores a single encrypted shard on the primary provider, while `LOCAL_ONLY` keeps only local metadata and manifest state without remote shard upload.
+- `downloader.read_range(...)` now reconstructs data according to the pack mode, using EC decode for `EC_2_1`, direct decrypt for `SINGLE_REPLICA`, and local manifest reads for `LOCAL_ONLY`.
+- The background repair/reconciliation flow can now convert active packs between storage modes when a policy changes, then re-point live chunk mappings so old physical variants can be collected by normal GC.
+
 ## CURRENT FOCUS
 
 ### Next Epic
 Goal:
-- define and start the next vault capability after cache and prefetching are fully integrated
+- select the next major post-storage feature after dynamic storage modes and policy reconciliation
 
 Scope:
-- pending
+- pending architecture decision
 
 Outcome:
 - to be defined in the next implementation cycle

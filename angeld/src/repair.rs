@@ -1,8 +1,11 @@
 #![allow(dead_code)]
 
 use crate::db;
-use crate::db::PackStatus;
-use crate::packer::{DATA_SHARDS, PARITY_SHARDS, TOTAL_SHARDS, local_shard_path};
+use crate::db::{PackStatus, StorageMode};
+use crate::packer::{
+    DATA_SHARDS, PARITY_SHARDS, TOTAL_SHARDS, build_manifest_bytes, build_shards, compute_pack_id,
+    local_pack_path, local_shard_path, storage_mode_scheme,
+};
 use crate::uploader::ProviderConfig;
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
@@ -52,6 +55,7 @@ pub enum RepairError {
     MissingShardRecord(&'static str),
     InvalidShardLayout(String),
     NumericOverflow(&'static str),
+    Packer(String),
 }
 
 impl fmt::Display for RepairError {
@@ -79,6 +83,7 @@ impl fmt::Display for RepairError {
                 write!(f, "invalid shard layout for pack {pack_id}")
             }
             Self::NumericOverflow(ctx) => write!(f, "numeric overflow while handling {ctx}"),
+            Self::Packer(message) => write!(f, "packer error: {message}"),
         }
     }
 }
@@ -122,36 +127,57 @@ impl RepairWorker {
         db::reset_in_progress_pack_shards(&self.pool).await?;
 
         loop {
-            let Some(pack) = db::get_next_degraded_pack(&self.pool).await? else {
-                sleep(self.poll_interval).await;
-                continue;
-            };
-
-            if !db::pack_requires_healthy(&self.pool, &pack.pack_id).await? {
-                sleep(self.poll_interval).await;
+            if let Some(pack) = db::get_next_pack_requiring_reconciliation(&self.pool).await? {
+                match self.reconcile_pack_mode(&pack).await {
+                    Ok(()) => {
+                        println!(
+                            "repair worker reconciled pack {} to mode {}",
+                            pack.pack_id, db::get_desired_storage_mode_for_pack(&self.pool, &pack.pack_id).await?.as_str()
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "repair worker reconciliation failed for pack {}: {}",
+                            pack.pack_id, err
+                        );
+                        sleep(self.retry_delay).await;
+                    }
+                }
                 continue;
             }
 
-            match self.repair_pack(&pack).await {
-                Ok(()) => {
-                    println!("repair worker restored pack {} to healthy", pack.pack_id);
+            if let Some(pack) = db::get_next_degraded_pack(&self.pool).await? {
+                if !db::pack_requires_healthy(&self.pool, &pack.pack_id).await? {
+                    sleep(self.poll_interval).await;
+                    continue;
                 }
-                Err(err) => {
-                    eprintln!("repair worker failed for pack {}: {}", pack.pack_id, err);
-                    sleep(self.retry_delay).await;
+
+                match self.repair_pack(&pack).await {
+                    Ok(()) => {
+                        println!("repair worker restored pack {} to healthy", pack.pack_id);
+                    }
+                    Err(err) => {
+                        eprintln!("repair worker failed for pack {}: {}", pack.pack_id, err);
+                        sleep(self.retry_delay).await;
+                    }
                 }
+            } else {
+                sleep(self.poll_interval).await;
             }
         }
     }
 
     async fn repair_pack(&self, pack: &db::PackRecord) -> Result<(), RepairError> {
+        if db::StorageMode::from_str(&pack.storage_mode) != StorageMode::Ec2_1 {
+            return Ok(());
+        }
         let shards = db::get_pack_shards(&self.pool, &pack.pack_id).await?;
         if shards.len() != TOTAL_SHARDS {
             return Err(RepairError::InvalidShardLayout(pack.pack_id.clone()));
         }
 
         let summary = db::summarize_pack_shards(&self.pool, &pack.pack_id).await?;
-        let status = db::resolve_pack_status(summary);
+        let status = db::resolve_pack_status_for_mode(StorageMode::Ec2_1, summary);
         match status {
             PackStatus::Healthy => return Ok(()),
             PackStatus::Unreadable => {
@@ -300,6 +326,232 @@ impl RepairWorker {
         }
 
         Ok(())
+    }
+
+    async fn reconcile_pack_mode(&self, pack: &db::PackRecord) -> Result<(), RepairError> {
+        let desired_mode = db::get_desired_storage_mode_for_pack(&self.pool, &pack.pack_id).await?;
+        let current_mode = StorageMode::from_str(&pack.storage_mode);
+        if current_mode == desired_mode {
+            return Ok(());
+        }
+
+        let ciphertext = self.load_ciphertext_for_pack(pack).await?;
+        let chunk_id = vec_to_array_32(&pack.chunk_id, "chunk_id")?;
+        let nonce = vec_to_array_12(&pack.nonce, "nonce")?;
+        let gcm_tag = vec_to_array_16(&pack.gcm_tag, "gcm_tag")?;
+        let logical_size = usize::try_from(pack.logical_size)
+            .map_err(|_| RepairError::NumericOverflow("logical size"))?;
+        let manifest_bytes = build_manifest_bytes(chunk_id, nonce, &ciphertext, &gcm_tag, logical_size)
+            .map_err(|err| RepairError::Packer(err.to_string()))?;
+        let new_pack_id = compute_pack_id(desired_mode, &manifest_bytes);
+        let manifest_path = local_pack_path(&self.spool_dir, &new_pack_id);
+        fs::write(&manifest_path, &manifest_bytes).await?;
+
+        let prepared_shards = build_shards(&self.spool_dir, &new_pack_id, &ciphertext, desired_mode)
+            .await
+            .map_err(|err| RepairError::Packer(err.to_string()))?;
+        let shard_size = prepared_shards.first().map(|shard| shard.size).unwrap_or(0);
+        let manifest_size = i64::try_from(manifest_bytes.len())
+            .map_err(|_| RepairError::NumericOverflow("manifest size"))?;
+
+        db::create_pack(
+            &self.pool,
+            &new_pack_id,
+            &pack.chunk_id,
+            pack.plaintext_hash.as_deref().unwrap_or(""),
+            desired_mode,
+            1,
+            storage_mode_scheme(desired_mode),
+            pack.logical_size,
+            pack.cipher_size,
+            shard_size,
+            &pack.nonce,
+            &pack.gcm_tag,
+            if desired_mode == StorageMode::LocalOnly {
+                PackStatus::Healthy
+            } else {
+                PackStatus::Uploading
+            },
+        )
+        .await?;
+
+        if desired_mode != StorageMode::LocalOnly && db::get_pack_shards(&self.pool, &new_pack_id).await?.is_empty() {
+            for shard in &prepared_shards {
+                db::register_pack_shard(
+                    &self.pool,
+                    &new_pack_id,
+                    shard.shard_index,
+                    shard.shard_role,
+                    shard.provider,
+                    &shard.object_key,
+                    shard.size,
+                    &shard.checksum,
+                    "PENDING",
+                )
+                .await?;
+            }
+        }
+
+        if desired_mode == StorageMode::LocalOnly {
+            db::update_pack_status(&self.pool, &new_pack_id, PackStatus::Healthy).await?;
+            db::link_chunk_to_pack(&self.pool, &pack.chunk_id, &new_pack_id, 0, manifest_size).await?;
+            return Ok(());
+        }
+
+        let pending_shards = db::get_incomplete_pack_shards(&self.pool, &new_pack_id).await?;
+        for shard in pending_shards {
+            let provider = self
+                .providers
+                .get(&shard.provider)
+                .ok_or_else(|| RepairError::InvalidEnv("reconcile provider not configured"))?;
+            let local_shard = local_shard_path(
+                &self.spool_dir,
+                &new_pack_id,
+                usize::try_from(shard.shard_index)
+                    .map_err(|_| RepairError::NumericOverflow("reconcile shard index"))?,
+            );
+            let bytes = fs::read(&local_shard).await?;
+            db::mark_pack_shard_in_progress(&self.pool, &new_pack_id, shard.shard_index).await?;
+            match timeout(
+                self.provider_timeout,
+                self.upload_shard(
+                    provider,
+                    &shard.object_key,
+                    &bytes,
+                    &new_pack_id,
+                    usize::try_from(shard.shard_index)
+                        .map_err(|_| RepairError::NumericOverflow("reconcile shard index"))?,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
+                    db::mark_pack_shard_completed(&self.pool, &new_pack_id, shard.shard_index).await?;
+                }
+                Ok(Err(err)) => {
+                    db::requeue_pack_shard(&self.pool, &new_pack_id, shard.shard_index, &err.to_string()).await?;
+                    let summary = db::summarize_pack_shards(&self.pool, &new_pack_id).await?;
+                    let status = db::resolve_pack_status_for_mode(desired_mode, summary);
+                    db::update_pack_status(&self.pool, &new_pack_id, status).await?;
+                    return Err(err);
+                }
+                Err(_) => {
+                    let err = RepairError::Timeout {
+                        provider: provider.provider_name,
+                        duration: self.provider_timeout,
+                    };
+                    db::requeue_pack_shard(&self.pool, &new_pack_id, shard.shard_index, &err.to_string()).await?;
+                    let summary = db::summarize_pack_shards(&self.pool, &new_pack_id).await?;
+                    let status = db::resolve_pack_status_for_mode(desired_mode, summary);
+                    db::update_pack_status(&self.pool, &new_pack_id, status).await?;
+                    return Err(err);
+                }
+            }
+        }
+
+        let summary = db::summarize_pack_shards(&self.pool, &new_pack_id).await?;
+        let status = db::resolve_pack_status_for_mode(desired_mode, summary);
+        db::update_pack_status(&self.pool, &new_pack_id, status).await?;
+        if status == PackStatus::Healthy {
+            db::link_chunk_to_pack(&self.pool, &pack.chunk_id, &new_pack_id, 0, manifest_size).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn load_ciphertext_for_pack(&self, pack: &db::PackRecord) -> Result<Vec<u8>, RepairError> {
+        match StorageMode::from_str(&pack.storage_mode) {
+            StorageMode::Ec2_1 => self.load_ec_ciphertext(pack).await,
+            StorageMode::SingleReplica => self.load_single_replica_ciphertext(pack).await,
+            StorageMode::LocalOnly => self.load_local_only_ciphertext(pack).await,
+        }
+    }
+
+    async fn load_ec_ciphertext(&self, pack: &db::PackRecord) -> Result<Vec<u8>, RepairError> {
+        let shards = db::get_pack_shards(&self.pool, &pack.pack_id).await?;
+        let shard_len = usize::try_from(pack.shard_size)
+            .map_err(|_| RepairError::NumericOverflow("pack shard size"))?;
+        let mut shard_set: Vec<Option<Vec<u8>>> = vec![None; TOTAL_SHARDS];
+        let mut completed = 0usize;
+
+        for shard in shards.into_iter().filter(|shard| shard.status == "COMPLETED") {
+            let provider = self
+                .providers
+                .get(&shard.provider)
+                .ok_or_else(|| RepairError::InvalidEnv("repair provider not configured"))?;
+            let bytes = self
+                .download_shard(
+                    provider,
+                    &shard.object_key,
+                    &pack.pack_id,
+                    shard.shard_index,
+                )
+                .await?;
+            if bytes.len() != shard_len {
+                return Err(RepairError::InvalidShardLayout(pack.pack_id.clone()));
+            }
+            let shard_index = usize::try_from(shard.shard_index)
+                .map_err(|_| RepairError::NumericOverflow("completed shard index"))?;
+            shard_set[shard_index] = Some(bytes);
+            completed += 1;
+        }
+
+        if completed < DATA_SHARDS {
+            return Err(RepairError::InvalidShardLayout(pack.pack_id.clone()));
+        }
+
+        let reed_solomon = ReedSolomon::new(DATA_SHARDS, PARITY_SHARDS)?;
+        reed_solomon.reconstruct(&mut shard_set)?;
+
+        let mut ciphertext = Vec::with_capacity(
+            usize::try_from(pack.cipher_size)
+                .map_err(|_| RepairError::NumericOverflow("cipher size"))?,
+        );
+        for shard in shard_set.iter().take(DATA_SHARDS) {
+            let bytes = shard
+                .as_ref()
+                .ok_or(RepairError::MissingShardRecord("reconstructed data shard missing"))?;
+            ciphertext.extend_from_slice(bytes);
+        }
+        let cipher_size = usize::try_from(pack.cipher_size)
+            .map_err(|_| RepairError::NumericOverflow("cipher size"))?;
+        ciphertext.truncate(cipher_size);
+        Ok(ciphertext)
+    }
+
+    async fn load_single_replica_ciphertext(
+        &self,
+        pack: &db::PackRecord,
+    ) -> Result<Vec<u8>, RepairError> {
+        let shard = db::get_pack_shards(&self.pool, &pack.pack_id)
+            .await?
+            .into_iter()
+            .find(|shard| shard.status == "COMPLETED")
+            .ok_or(RepairError::MissingShardRecord("single replica shard missing"))?;
+        let provider = self
+            .providers
+            .get(&shard.provider)
+            .ok_or_else(|| RepairError::InvalidEnv("single replica provider not configured"))?;
+        self.download_shard(provider, &shard.object_key, &pack.pack_id, shard.shard_index)
+            .await
+    }
+
+    async fn load_local_only_ciphertext(
+        &self,
+        pack: &db::PackRecord,
+    ) -> Result<Vec<u8>, RepairError> {
+        let manifest_path = local_pack_path(&self.spool_dir, &pack.pack_id);
+        let bytes = fs::read(&manifest_path).await?;
+        let cipher_size = usize::try_from(pack.cipher_size)
+            .map_err(|_| RepairError::NumericOverflow("cipher size"))?;
+        let start = omnidrive_core::layout::ChunkRecordPrefix::SIZE;
+        let end = start
+            .checked_add(cipher_size)
+            .ok_or(RepairError::NumericOverflow("cipher range"))?;
+        if end > bytes.len() {
+            return Err(RepairError::InvalidShardLayout(pack.pack_id.clone()));
+        }
+        Ok(bytes[start..end].to_vec())
     }
 
     async fn download_shard(
@@ -470,4 +722,19 @@ fn format_error_details(err: &(impl std::error::Error + fmt::Debug)) -> String {
         current = source.source();
     }
     details.join(" | ")
+}
+
+fn vec_to_array_32(bytes: &[u8], field: &'static str) -> Result<[u8; 32], RepairError> {
+    <[u8; 32]>::try_from(bytes)
+        .map_err(|_| RepairError::Packer(format!("invalid stored {field} length")))
+}
+
+fn vec_to_array_16(bytes: &[u8], field: &'static str) -> Result<[u8; 16], RepairError> {
+    <[u8; 16]>::try_from(bytes)
+        .map_err(|_| RepairError::Packer(format!("invalid stored {field} length")))
+}
+
+fn vec_to_array_12(bytes: &[u8], field: &'static str) -> Result<[u8; 12], RepairError> {
+    <[u8; 12]>::try_from(bytes)
+        .map_err(|_| RepairError::Packer(format!("invalid stored {field} length")))
 }

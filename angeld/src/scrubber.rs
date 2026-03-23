@@ -205,7 +205,12 @@ impl ScrubberWorker {
         }
 
         let summary = db::summarize_pack_shards(&self.pool, &shard.pack_id).await?;
-        let pack_status = db::resolve_pack_status(summary);
+        let pack = db::get_pack(&self.pool, &shard.pack_id).await?;
+        let storage_mode = pack
+            .as_ref()
+            .map(|pack| db::StorageMode::from_str(&pack.storage_mode))
+            .unwrap_or(db::StorageMode::Ec2_1);
+        let pack_status = db::resolve_pack_status_for_mode(storage_mode, summary);
         db::update_pack_status(&self.pool, &shard.pack_id, pack_status).await?;
         Ok(())
     }

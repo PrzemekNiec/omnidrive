@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::db;
-use crate::db::{PackStatus, ShardRole};
+use crate::db::{PackStatus, ShardRole, StorageMode};
 use crate::vault::{VaultError, VaultKeyStore};
 use omnidrive_core::crypto::{CryptoError, encrypt_chunk};
 use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix};
@@ -23,6 +23,9 @@ pub const DATA_SHARDS: usize = 2;
 pub const PARITY_SHARDS: usize = 1;
 pub const TOTAL_SHARDS: usize = DATA_SHARDS + PARITY_SHARDS;
 pub const EC_SCHEME_RS_2_1: &str = "rs_2_1";
+pub const EC_SCHEME_SINGLE_REPLICA: &str = "single_replica";
+pub const EC_SCHEME_LOCAL_ONLY: &str = "local_only";
+pub const SINGLE_REPLICA_PROVIDER: &str = "backblaze-b2";
 
 const SHARD_PROVIDERS: [&str; TOTAL_SHARDS] = ["cloudflare-r2", "backblaze-b2", "scaleway"];
 
@@ -71,6 +74,7 @@ struct PreparedPack {
     pack_id: String,
     chunk_id: [u8; 32],
     plaintext_hash: String,
+    storage_mode: StorageMode,
     file_offset: i64,
     plain_size: i64,
     cipher_size: i64,
@@ -84,14 +88,14 @@ struct PreparedPack {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct PreparedShard {
-    shard_index: i64,
-    shard_role: ShardRole,
-    provider: &'static str,
-    object_key: String,
-    local_path: PathBuf,
-    size: i64,
-    checksum: String,
+pub(crate) struct PreparedShard {
+    pub(crate) shard_index: i64,
+    pub(crate) shard_role: ShardRole,
+    pub(crate) provider: &'static str,
+    pub(crate) object_key: String,
+    pub(crate) local_path: PathBuf,
+    pub(crate) size: i64,
+    pub(crate) checksum: String,
 }
 
 #[derive(Debug)]
@@ -190,6 +194,7 @@ impl Packer {
 
         let created_at_ms = unix_timestamp_ms()?;
         let vault_key = self.vault_keys.require_key().await?;
+        let storage_mode = db::get_storage_mode_for_inode(&self.pool, inode_id).await?;
         let mut file = File::open(&source_path).await?;
         let mut read_buffer = vec![0u8; self.config.chunk_size];
         let mut prepared_packs = Vec::new();
@@ -208,7 +213,7 @@ impl Packer {
             let plain_size = to_i64(bytes_read, "chunk size")?;
 
             if let Some(existing_pack) =
-                db::find_pack_by_plaintext_hash(&self.pool, &plaintext_hash).await?
+                db::find_pack_by_plaintext_hash(&self.pool, &plaintext_hash, storage_mode).await?
             {
                 let manifest_size = manifest_size_from_pack(&existing_pack)?;
 
@@ -216,6 +221,7 @@ impl Packer {
                     pack_id: existing_pack.pack_id.clone(),
                     chunk_id: vec_to_array_32(&existing_pack.chunk_id, "chunk_id")?,
                     plaintext_hash,
+                    storage_mode,
                     file_offset,
                     plain_size,
                     cipher_size: existing_pack.cipher_size,
@@ -243,24 +249,34 @@ impl Packer {
                 &encrypted.gcm_tag,
                 bytes_read,
             )?;
-            let pack_id = hex_sha256(&manifest_bytes);
+            let pack_id = compute_pack_id(storage_mode, &manifest_bytes);
             let manifest_path = local_pack_path(&self.config.spool_dir, &pack_id);
             fs::write(&manifest_path, &manifest_bytes).await?;
 
-            let shards =
-                build_shards(&self.config.spool_dir, &pack_id, &encrypted.ciphertext).await?;
+            let shards = build_shards(
+                &self.config.spool_dir,
+                &pack_id,
+                &encrypted.ciphertext,
+                storage_mode,
+            )
+            .await?;
 
             let cipher_size = to_i64(encrypted.ciphertext.len(), "cipher size")?;
-            let shard_size = shards
-                .first()
-                .map(|shard| shard.size)
-                .ok_or(PackerError::NumericOverflow("missing shard size"))?;
+            let shard_size = if storage_mode == StorageMode::LocalOnly {
+                0
+            } else {
+                shards
+                    .first()
+                    .map(|shard| shard.size)
+                    .ok_or(PackerError::NumericOverflow("missing shard size"))?
+            };
             let manifest_size = to_i64(manifest_bytes.len(), "manifest size")?;
 
             prepared_packs.push(PreparedPack {
                 pack_id,
                 chunk_id: encrypted.chunk_id,
                 plaintext_hash,
+                storage_mode,
                 file_offset,
                 plain_size,
                 cipher_size,
@@ -336,14 +352,19 @@ impl Packer {
                 &pack.pack_id,
                 &pack.chunk_id,
                 &pack.plaintext_hash,
+                pack.storage_mode,
                 1,
-                EC_SCHEME_RS_2_1,
+                storage_mode_scheme(pack.storage_mode),
                 pack.plain_size,
                 pack.cipher_size,
                 pack.shard_size,
                 &pack.nonce,
                 &pack.gcm_tag,
-                PackStatus::Uploading,
+                if pack.storage_mode == StorageMode::LocalOnly {
+                    PackStatus::Healthy
+                } else {
+                    PackStatus::Uploading
+                },
             )
             .await?;
 
@@ -362,7 +383,9 @@ impl Packer {
                 .await?;
             }
 
-            db::queue_pack_for_upload(&self.pool, &pack.pack_id).await?;
+            if pack.storage_mode != StorageMode::LocalOnly {
+                db::queue_pack_for_upload(&self.pool, &pack.pack_id).await?;
+            }
         }
 
         Ok(PackResult {
@@ -379,7 +402,7 @@ impl Packer {
     }
 }
 
-fn local_pack_path(spool_dir: &Path, pack_id: &str) -> PathBuf {
+pub(crate) fn local_pack_path(spool_dir: &Path, pack_id: &str) -> PathBuf {
     spool_dir.join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"))
 }
 
@@ -387,19 +410,29 @@ pub fn local_shard_path(spool_dir: &Path, pack_id: &str, shard_index: usize) -> 
     spool_dir.join(format!("{pack_id}.{LOCAL_SHARD_EXTENSION}{shard_index}"))
 }
 
-async fn build_shards(
+pub(crate) async fn build_shards(
     spool_dir: &Path,
     pack_id: &str,
     ciphertext: &[u8],
+    storage_mode: StorageMode,
 ) -> Result<Vec<PreparedShard>, PackerError> {
-    let shard_bytes = split_ciphertext_into_shards(ciphertext)?;
+    let shard_bytes = match storage_mode {
+        StorageMode::Ec2_1 => split_ciphertext_into_shards(ciphertext)?,
+        StorageMode::SingleReplica => vec![ciphertext.to_vec()],
+        StorageMode::LocalOnly => Vec::new(),
+    };
     let mut prepared = Vec::with_capacity(TOTAL_SHARDS);
 
     for (index, bytes) in shard_bytes.into_iter().enumerate() {
-        let shard_role = if index < DATA_SHARDS {
-            ShardRole::Data
-        } else {
+        let shard_role = if storage_mode == StorageMode::Ec2_1 && index >= DATA_SHARDS {
             ShardRole::Parity
+        } else {
+            ShardRole::Data
+        };
+        let provider = match storage_mode {
+            StorageMode::Ec2_1 => SHARD_PROVIDERS[index],
+            StorageMode::SingleReplica => SINGLE_REPLICA_PROVIDER,
+            StorageMode::LocalOnly => unreachable!("local-only packs do not create shards"),
         };
         let local_path = local_shard_path(spool_dir, pack_id, index);
         fs::write(&local_path, &bytes).await?;
@@ -408,7 +441,7 @@ async fn build_shards(
             shard_index: i64::try_from(index)
                 .map_err(|_| PackerError::NumericOverflow("shard index"))?,
             shard_role,
-            provider: SHARD_PROVIDERS[index],
+            provider,
             object_key: format!("packs/{pack_id}/shards/{index}.{LOCAL_SHARD_EXTENSION}"),
             local_path,
             size: to_i64(bytes.len(), "shard size")?,
@@ -419,7 +452,7 @@ async fn build_shards(
     Ok(prepared)
 }
 
-fn split_ciphertext_into_shards(ciphertext: &[u8]) -> Result<Vec<Vec<u8>>, PackerError> {
+pub(crate) fn split_ciphertext_into_shards(ciphertext: &[u8]) -> Result<Vec<Vec<u8>>, PackerError> {
     let reed_solomon = ReedSolomon::new(DATA_SHARDS, PARITY_SHARDS)?;
     let shard_len = ciphertext.len().div_ceil(DATA_SHARDS).max(1);
     let mut shards = vec![vec![0u8; shard_len]; TOTAL_SHARDS];
@@ -434,7 +467,7 @@ fn split_ciphertext_into_shards(ciphertext: &[u8]) -> Result<Vec<Vec<u8>>, Packe
     Ok(shards)
 }
 
-fn build_manifest_bytes(
+pub(crate) fn build_manifest_bytes(
     chunk_id: [u8; 32],
     nonce: [u8; 12],
     ciphertext: &[u8],
@@ -461,7 +494,7 @@ fn build_manifest_bytes(
     Ok(bytes)
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -469,6 +502,14 @@ fn hex_sha256(bytes: &[u8]) -> String {
         let _ = write!(hex, "{byte:02x}");
     }
     hex
+}
+
+pub(crate) fn compute_pack_id(storage_mode: StorageMode, manifest_bytes: &[u8]) -> String {
+    let mut bytes = Vec::with_capacity(storage_mode.as_str().len() + 1 + manifest_bytes.len());
+    bytes.extend_from_slice(storage_mode.as_str().as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(manifest_bytes);
+    hex_sha256(&bytes)
 }
 
 fn unix_timestamp_ms() -> Result<u64, PackerError> {
@@ -493,6 +534,14 @@ fn manifest_size_from_pack(pack: &db::PackRecord) -> Result<i64, PackerError> {
         .and_then(|value| value.checked_add(gcm_tag_len))
         .ok_or(PackerError::NumericOverflow("stored manifest size"))?;
     to_i64(total, "stored manifest size")
+}
+
+pub(crate) fn storage_mode_scheme(storage_mode: StorageMode) -> &'static str {
+    match storage_mode {
+        StorageMode::Ec2_1 => EC_SCHEME_RS_2_1,
+        StorageMode::SingleReplica => EC_SCHEME_SINGLE_REPLICA,
+        StorageMode::LocalOnly => EC_SCHEME_LOCAL_ONLY,
+    }
 }
 
 fn vec_to_array_32(bytes: &[u8], field: &'static str) -> Result<[u8; 32], PackerError> {

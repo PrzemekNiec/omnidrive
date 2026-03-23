@@ -2,7 +2,7 @@
 
 use crate::config::AppConfig;
 use crate::db;
-use crate::db::PackStatus;
+use crate::db::{PackStatus, StorageMode};
 use crate::packer::local_shard_path;
 use async_stream::stream;
 use aws_config::timeout::TimeoutConfig;
@@ -344,17 +344,21 @@ impl UploadWorker {
     }
 
     async fn process_job(&self, job: &db::UploadJob) -> Result<JobProcessOutcome, UploaderError> {
-        let provider_names: Vec<&str> = self
-            .uploaders
+        let pack = db::get_pack(&self.pool, &job.pack_id)
+            .await?
+            .ok_or(UploaderError::InvalidEnv("upload_jobs.pack_id"))?;
+        let storage_mode = StorageMode::from_str(&pack.storage_mode);
+        let existing_shards = db::get_pack_shards(&self.pool, &job.pack_id).await?;
+        let provider_names: Vec<&str> = existing_shards
             .iter()
-            .map(|uploader| uploader.provider_name())
+            .map(|shard| shard.provider.as_str())
             .collect();
         db::ensure_upload_targets(&self.pool, job.id, &provider_names).await?;
 
         let pending_shards = db::get_incomplete_pack_shards(&self.pool, &job.pack_id).await?;
         if pending_shards.is_empty() {
             let summary = db::summarize_pack_shards(&self.pool, &job.pack_id).await?;
-            let status = db::resolve_pack_status(summary);
+            let status = db::resolve_pack_status_for_mode(storage_mode, summary);
             db::update_pack_status(&self.pool, &job.pack_id, status).await?;
             return Ok(match status {
                 PackStatus::Healthy | PackStatus::Degraded => JobProcessOutcome::Completed,
@@ -533,7 +537,7 @@ impl UploadWorker {
         }
 
         let summary = db::summarize_pack_shards(&self.pool, &job.pack_id).await?;
-        let status = db::resolve_pack_status(summary);
+        let status = db::resolve_pack_status_for_mode(storage_mode, summary);
         db::update_pack_status(&self.pool, &job.pack_id, status).await?;
 
         Ok(match status {

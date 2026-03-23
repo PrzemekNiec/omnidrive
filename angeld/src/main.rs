@@ -9,6 +9,7 @@ mod gc;
 mod packer;
 mod repair;
 mod scrubber;
+mod shell_integration;
 mod smart_sync;
 mod uploader;
 mod vault;
@@ -149,6 +150,12 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         &virtual_drive_icon_path(),
     )
     .map_err(|err| io::Error::other(format!("virtual drive appearance failed: {err}")))?;
+    shell_integration::register_explorer_context_menu(
+        &drive_letter,
+        &shell_api_base(),
+        &virtual_drive_icon_path(),
+    )
+    .map_err(|err| io::Error::other(format!("shell integration registration failed: {err}")))?;
 
     let worker = UploadWorker::from_env(pool.clone()).await?;
     let repair_worker = RepairWorker::from_env(pool.clone()).await?;
@@ -343,4 +350,13 @@ fn virtual_drive_icon_path() -> PathBuf {
     env::var("OMNIDRIVE_DRIVE_ICON")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("icons").join("omnidrive.ico"))
+}
+
+fn shell_api_base() -> String {
+    let bind = env::var("OMNIDRIVE_API_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+    let host_port = bind
+        .strip_prefix("0.0.0.0:")
+        .map(|port| format!("127.0.0.1:{port}"))
+        .unwrap_or(bind);
+    format!("http://{host_port}")
 }

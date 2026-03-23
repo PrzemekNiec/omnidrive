@@ -151,6 +151,25 @@ pub async fn sync_placeholder_pin_state(
     }
 }
 
+pub async fn hydrate_placeholder_now(
+    pool: &SqlitePool,
+    sync_root_path: &Path,
+    inode_id: i64,
+) -> Result<(), SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::hydrate_placeholder_now(pool, sync_root_path, inode_id).await
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = pool;
+        let _ = sync_root_path;
+        let _ = inode_id;
+        Err(SmartSyncError::UnsupportedPlatform)
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::SmartSyncError;
@@ -172,11 +191,13 @@ mod imp {
     use windows::Win32::Foundation::{HANDLE, NTSTATUS, S_OK};
     use windows::Win32::Storage::CloudFilters::{
         CfConnectSyncRoot, CfCreatePlaceholders, CfDisconnectSyncRoot, CfExecute,
+        CfHydratePlaceholder,
         CfRegisterSyncRoot, CfSetPinState, CfUnregisterSyncRoot, CfUpdatePlaceholder,
         CF_CALLBACK_INFO, CF_CALLBACK_PARAMETERS,
         CF_CALLBACK_REGISTRATION, CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
         CF_CALLBACK_TYPE_FETCH_DATA, CF_CALLBACK_TYPE_NONE, CF_CONNECT_FLAG_NONE,
         CF_CONNECTION_KEY, CF_CREATE_FLAGS, CF_CREATE_FLAG_NONE, CF_CREATE_FLAG_STOP_ON_ERROR,
+        CF_HYDRATE_FLAGS,
         CF_FILE_RANGE, CF_FS_METADATA, CF_HARDLINK_POLICY, CF_HARDLINK_POLICY_NONE,
         CF_HYDRATION_POLICY, CF_HYDRATION_POLICY_FULL, CF_HYDRATION_POLICY_MODIFIER,
         CF_HYDRATION_POLICY_MODIFIER_NONE, CF_HYDRATION_POLICY_PRIMARY, CF_INSYNC_POLICY,
@@ -192,6 +213,7 @@ mod imp {
         CF_SYNC_REGISTRATION, CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
     };
     use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_ARCHIVE, FILE_BASIC_INFO};
+    use windows::Win32::UI::Shell::{SHCNE_UPDATEITEM, SHCNF_PATHW, SHChangeNotify};
 
     const PROVIDER_NAME: &str = "OmniDrive";
     const PROVIDER_VERSION: &str = "1.0";
@@ -343,6 +365,9 @@ mod imp {
                             request.inode_id, err
                         );
                     }
+                    if let Ok(path) = projection_path_for_inode(&context.pool, request.inode_id).await {
+                        notify_shell_path_changed(&path);
+                    }
                 }
                 Err(err) => {
                     eprintln!(
@@ -474,6 +499,39 @@ mod imp {
             db::set_hydration_state(pool, inode_id, 0).await?;
         }
 
+        notify_shell_path_changed(&target_path);
+
+        Ok(())
+    }
+
+    pub async fn hydrate_placeholder_now(
+        pool: &SqlitePool,
+        sync_root_path: &Path,
+        inode_id: i64,
+    ) -> Result<(), SmartSyncError> {
+        let sync_root = normalize_sync_root_path(sync_root_path)?;
+        let file = db::get_active_file_for_projection_by_inode(pool, inode_id)
+            .await?
+            .ok_or_else(|| {
+                SmartSyncError::InvalidPathWithContext(
+                    "smart sync",
+                    format!("inode {inode_id} has no current revision for projection"),
+                )
+            })?;
+        let state = db::ensure_smart_sync_state(pool, file.inode_id, file.revision_id).await?;
+        let relative_path = normalize_relative_placeholder_path(&file.path)?;
+        let target_path = sync_root.join(relative_path);
+        if !target_path.exists() {
+            create_projection_placeholder(&sync_root, &file, true)?;
+        } else {
+            apply_pin_state(&target_path, CF_PIN_STATE_PINNED)?;
+        }
+
+        hydrate_placeholder(&target_path)?;
+        db::set_pin_state(pool, inode_id, 1).await?;
+        db::set_hydration_state(pool, inode_id, state.hydration_state.max(1))
+            .await?;
+        notify_shell_path_changed(&target_path);
         Ok(())
     }
 
@@ -504,6 +562,7 @@ mod imp {
             }
 
             db::set_hydration_state(pool, candidate.inode_id, 0).await?;
+            notify_shell_path_changed(&target_path);
             evicted += 1;
         }
 
@@ -977,6 +1036,63 @@ mod imp {
             )?;
         }
         Ok(())
+    }
+
+    fn hydrate_placeholder(path: &Path) -> Result<(), SmartSyncError> {
+        let file = open_placeholder_handle(path)?;
+        unsafe {
+            CfHydratePlaceholder(
+                as_handle(&file),
+                0,
+                i64::MAX,
+                CF_HYDRATE_FLAGS(0),
+                None,
+            )?;
+        }
+        Ok(())
+    }
+
+    async fn projection_path_for_inode(
+        pool: &SqlitePool,
+        inode_id: i64,
+    ) -> Result<PathBuf, SmartSyncError> {
+        let sync_root = std::env::var("OMNIDRIVE_SYNC_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| {
+                        std::env::var("USERPROFILE")
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|_| PathBuf::from(r"C:\Users\Default"))
+                    })
+                    .join("OmniDrive")
+                    .join("SyncRoot")
+            });
+        let sync_root = normalize_sync_root_path(&sync_root)?;
+        let file = db::get_active_file_for_projection_by_inode(pool, inode_id)
+            .await?
+            .ok_or_else(|| {
+                SmartSyncError::InvalidPathWithContext(
+                    "smart sync",
+                    format!("inode {inode_id} has no current revision for projection"),
+                )
+            })?;
+        let relative_path = normalize_relative_placeholder_path(&file.path)?;
+        Ok(sync_root.join(relative_path))
+    }
+
+    fn notify_shell_path_changed(path: &Path) {
+        if let Ok(wide) = wide_path(path) {
+            unsafe {
+                SHChangeNotify(
+                    SHCNE_UPDATEITEM,
+                    SHCNF_PATHW,
+                    Some(PCWSTR(wide.as_ptr()).0 as _),
+                    None,
+                );
+            }
+        }
     }
 
     fn directory_is_empty(path: &Path) -> Result<bool, SmartSyncError> {

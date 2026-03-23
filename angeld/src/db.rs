@@ -36,6 +36,39 @@ impl ShardRole {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StorageMode {
+    Ec2_1,
+    SingleReplica,
+    LocalOnly,
+}
+
+impl StorageMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ec2_1 => "EC_2_1",
+            Self::SingleReplica => "SINGLE_REPLICA",
+            Self::LocalOnly => "LOCAL_ONLY",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "SINGLE_REPLICA" => Self::SingleReplica,
+            "LOCAL_ONLY" => Self::LocalOnly,
+            _ => Self::Ec2_1,
+        }
+    }
+
+    pub fn from_policy_type(value: &str) -> Self {
+        match value {
+            "STANDARD" => Self::SingleReplica,
+            "LOCAL" => Self::LocalOnly,
+            _ => Self::Ec2_1,
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
 pub struct VaultRecord {
@@ -118,6 +151,7 @@ pub struct SyncPolicyRecord {
     pub path_prefix: String,
     pub require_healthy: i64,
     pub enable_versioning: i64,
+    pub policy_type: String,
 }
 
 #[allow(dead_code)]
@@ -192,6 +226,7 @@ pub struct PackRecord {
     pub pack_id: String,
     pub chunk_id: Vec<u8>,
     pub plaintext_hash: Option<String>,
+    pub storage_mode: String,
     pub encryption_version: i64,
     pub ec_scheme: String,
     pub logical_size: i64,
@@ -399,7 +434,8 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
             policy_id INTEGER PRIMARY KEY AUTOINCREMENT,
             path_prefix TEXT NOT NULL UNIQUE,
             require_healthy INTEGER NOT NULL DEFAULT 1,
-            enable_versioning INTEGER NOT NULL DEFAULT 1
+            enable_versioning INTEGER NOT NULL DEFAULT 1,
+            policy_type TEXT NOT NULL DEFAULT 'PARANOIA'
         )
         "#,
     )
@@ -477,6 +513,7 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
             pack_id TEXT PRIMARY KEY,
             chunk_id BLOB NOT NULL,
             plaintext_hash TEXT,
+            storage_mode TEXT NOT NULL DEFAULT 'EC_2_1',
             encryption_version INTEGER NOT NULL,
             ec_scheme TEXT NOT NULL DEFAULT 'rs_2_1',
             logical_size INTEGER NOT NULL,
@@ -584,9 +621,23 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     ensure_column_exists(&pool, "packs", "plaintext_hash", "TEXT").await?;
     ensure_column_exists(
         &pool,
+        "packs",
+        "storage_mode",
+        "TEXT NOT NULL DEFAULT 'EC_2_1'",
+    )
+    .await?;
+    ensure_column_exists(
+        &pool,
         "chunk_refs",
         "revision_id",
         "INTEGER REFERENCES file_revisions(revision_id) ON DELETE CASCADE",
+    )
+    .await?;
+    ensure_column_exists(
+        &pool,
+        "sync_policies",
+        "policy_type",
+        "TEXT NOT NULL DEFAULT 'PARANOIA'",
     )
     .await?;
 
@@ -870,18 +921,25 @@ pub async fn upsert_sync_policy(
     require_healthy: bool,
     enable_versioning: bool,
 ) -> Result<i64, sqlx::Error> {
+    let policy_type = if require_healthy {
+        "PARANOIA"
+    } else {
+        "STANDARD"
+    };
     sqlx::query(
         r#"
-        INSERT INTO sync_policies (path_prefix, require_healthy, enable_versioning)
-        VALUES (?, ?, ?)
+        INSERT INTO sync_policies (path_prefix, require_healthy, enable_versioning, policy_type)
+        VALUES (?, ?, ?, ?)
         ON CONFLICT(path_prefix) DO UPDATE SET
             require_healthy = excluded.require_healthy,
-            enable_versioning = excluded.enable_versioning
+            enable_versioning = excluded.enable_versioning,
+            policy_type = excluded.policy_type
         "#,
     )
     .bind(path_prefix)
     .bind(if require_healthy { 1 } else { 0 })
     .bind(if enable_versioning { 1 } else { 0 })
+    .bind(policy_type)
     .execute(pool)
     .await?;
 
@@ -904,13 +962,63 @@ pub async fn upsert_sync_policy(
 pub async fn list_sync_policies(pool: &SqlitePool) -> Result<Vec<SyncPolicyRecord>, sqlx::Error> {
     sqlx::query_as::<_, SyncPolicyRecord>(
         r#"
-        SELECT policy_id, path_prefix, require_healthy, enable_versioning
+        SELECT
+            policy_id,
+            path_prefix,
+            require_healthy,
+            enable_versioning,
+            COALESCE(policy_type, 'PARANOIA') AS policy_type
         FROM sync_policies
         ORDER BY LENGTH(path_prefix) DESC, policy_id ASC
         "#,
     )
     .fetch_all(pool)
     .await
+}
+
+#[allow(dead_code)]
+pub async fn set_sync_policy_type_for_path(
+    pool: &SqlitePool,
+    path_prefix: &str,
+    policy_type: &str,
+) -> Result<i64, sqlx::Error> {
+    let (require_healthy, enable_versioning) = match policy_type {
+        "PARANOIA" => (1_i64, 1_i64),
+        "STANDARD" => (0_i64, 1_i64),
+        "LOCAL" => (0_i64, 1_i64),
+        _ => (1_i64, 1_i64),
+    };
+
+    sqlx::query(
+        r#"
+        INSERT INTO sync_policies (path_prefix, require_healthy, enable_versioning, policy_type)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(path_prefix) DO UPDATE SET
+            require_healthy = excluded.require_healthy,
+            enable_versioning = excluded.enable_versioning,
+            policy_type = excluded.policy_type
+        "#,
+    )
+    .bind(path_prefix)
+    .bind(require_healthy)
+    .bind(enable_versioning)
+    .bind(policy_type)
+    .execute(pool)
+    .await?;
+
+    let policy_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT policy_id
+        FROM sync_policies
+        WHERE path_prefix = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(path_prefix)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(policy_id)
 }
 
 #[allow(dead_code)]
@@ -1142,6 +1250,21 @@ pub async fn get_current_file_revision(
 }
 
 #[allow(dead_code)]
+pub async fn get_storage_mode_for_inode(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<StorageMode, sqlx::Error> {
+    let inode_path = get_inode_path(pool, inode_id)
+        .await?
+        .unwrap_or_else(|| format!("inode/{inode_id}"));
+    let policy_type = find_sync_policy_for_path(pool, &inode_path)
+        .await?
+        .map(|policy| policy.policy_type)
+        .unwrap_or_else(|| "PARANOIA".to_string());
+    Ok(StorageMode::from_policy_type(&policy_type))
+}
+
+#[allow(dead_code)]
 pub async fn get_file_revision(
     pool: &SqlitePool,
     inode_id: i64,
@@ -1188,12 +1311,12 @@ pub async fn get_referencing_inode_ids_for_pack(
     sqlx::query_scalar::<_, i64>(
         r#"
         SELECT DISTINCT fr.inode_id
-        FROM packs p
+        FROM pack_locations pl
         INNER JOIN chunk_refs cr
-            ON cr.chunk_id = p.chunk_id
+            ON cr.chunk_id = pl.chunk_id
         INNER JOIN file_revisions fr
             ON fr.revision_id = cr.revision_id
-        WHERE p.pack_id = ?
+        WHERE pl.pack_id = ?
         ORDER BY fr.inode_id ASC
         "#,
     )
@@ -1320,6 +1443,7 @@ pub async fn create_pack(
     pack_id: &str,
     chunk_id: &[u8],
     plaintext_hash: &str,
+    storage_mode: StorageMode,
     encryption_version: i64,
     ec_scheme: &str,
     logical_size: i64,
@@ -1335,6 +1459,7 @@ pub async fn create_pack(
             pack_id,
             chunk_id,
             plaintext_hash,
+            storage_mode,
             encryption_version,
             ec_scheme,
             logical_size,
@@ -1348,6 +1473,7 @@ pub async fn create_pack(
         ON CONFLICT(pack_id) DO UPDATE SET
             chunk_id = excluded.chunk_id,
             plaintext_hash = excluded.plaintext_hash,
+            storage_mode = excluded.storage_mode,
             encryption_version = excluded.encryption_version,
             ec_scheme = excluded.ec_scheme,
             logical_size = excluded.logical_size,
@@ -1361,6 +1487,7 @@ pub async fn create_pack(
     .bind(pack_id)
     .bind(chunk_id)
     .bind(plaintext_hash)
+    .bind(storage_mode.as_str())
     .bind(encryption_version)
     .bind(ec_scheme)
     .bind(logical_size)
@@ -1404,6 +1531,7 @@ pub async fn get_pack(pool: &SqlitePool, pack_id: &str) -> Result<Option<PackRec
             pack_id,
             chunk_id,
             plaintext_hash,
+            storage_mode,
             encryption_version,
             ec_scheme,
             logical_size,
@@ -1425,6 +1553,7 @@ pub async fn get_pack(pool: &SqlitePool, pack_id: &str) -> Result<Option<PackRec
 pub async fn find_pack_by_plaintext_hash(
     pool: &SqlitePool,
     plaintext_hash: &str,
+    storage_mode: StorageMode,
 ) -> Result<Option<PackRecord>, sqlx::Error> {
     sqlx::query_as::<_, PackRecord>(
         r#"
@@ -1432,6 +1561,7 @@ pub async fn find_pack_by_plaintext_hash(
             pack_id,
             chunk_id,
             plaintext_hash,
+            storage_mode,
             encryption_version,
             ec_scheme,
             logical_size,
@@ -1442,6 +1572,7 @@ pub async fn find_pack_by_plaintext_hash(
             status
         FROM packs
         WHERE plaintext_hash = ?
+          AND storage_mode = ?
           AND status != 'UNREADABLE'
         ORDER BY
             CASE status
@@ -1455,6 +1586,7 @@ pub async fn find_pack_by_plaintext_hash(
         "#,
     )
     .bind(plaintext_hash)
+    .bind(storage_mode.as_str())
     .fetch_optional(pool)
     .await
 }
@@ -1468,9 +1600,10 @@ pub async fn get_orphaned_pack_ids(
         r#"
         SELECT p.pack_id
         FROM packs p
-        LEFT JOIN chunk_refs cr
-            ON cr.chunk_id = p.chunk_id
-        WHERE cr.chunk_id IS NULL
+        LEFT JOIN pack_locations pl
+            ON pl.pack_id = p.pack_id
+        WHERE pl.pack_id IS NULL
+          AND p.status != 'UPLOADING'
         ORDER BY p.pack_id ASC
         LIMIT ?
         "#,
@@ -1488,6 +1621,7 @@ pub async fn get_next_degraded_pack(pool: &SqlitePool) -> Result<Option<PackReco
             pack_id,
             chunk_id,
             plaintext_hash,
+            storage_mode,
             encryption_version,
             ec_scheme,
             logical_size,
@@ -2173,15 +2307,132 @@ pub async fn summarize_pack_shards(
 
 #[allow(dead_code)]
 pub fn resolve_pack_status(summary: PackShardSummary) -> PackStatus {
-    if summary.completed >= 3 {
-        PackStatus::Healthy
-    } else if summary.completed >= 2 {
-        PackStatus::Degraded
-    } else if summary.pending > 0 || summary.in_progress > 0 {
-        PackStatus::Uploading
-    } else {
-        PackStatus::Unreadable
+    resolve_pack_status_for_mode(StorageMode::Ec2_1, summary)
+}
+
+#[allow(dead_code)]
+pub fn resolve_pack_status_for_mode(
+    storage_mode: StorageMode,
+    summary: PackShardSummary,
+) -> PackStatus {
+    match storage_mode {
+        StorageMode::Ec2_1 => {
+            if summary.completed >= 3 {
+                PackStatus::Healthy
+            } else if summary.completed >= 2 {
+                PackStatus::Degraded
+            } else if summary.pending > 0 || summary.in_progress > 0 {
+                PackStatus::Uploading
+            } else {
+                PackStatus::Unreadable
+            }
+        }
+        StorageMode::SingleReplica => {
+            if summary.completed >= 1 {
+                PackStatus::Healthy
+            } else if summary.pending > 0 || summary.in_progress > 0 {
+                PackStatus::Uploading
+            } else {
+                PackStatus::Unreadable
+            }
+        }
+        StorageMode::LocalOnly => PackStatus::Healthy,
     }
+}
+
+#[allow(dead_code)]
+pub async fn list_active_packs(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<PackRecord>, sqlx::Error> {
+    sqlx::query_as::<_, PackRecord>(
+        r#"
+        SELECT DISTINCT
+            p.pack_id,
+            p.chunk_id,
+            p.plaintext_hash,
+            p.storage_mode,
+            p.encryption_version,
+            p.ec_scheme,
+            p.logical_size,
+            p.cipher_size,
+            p.shard_size,
+            p.nonce,
+            p.gcm_tag,
+            p.status
+        FROM packs p
+        INNER JOIN pack_locations pl
+            ON pl.pack_id = p.pack_id
+        ORDER BY p.pack_id ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_desired_storage_mode_for_pack(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<StorageMode, sqlx::Error> {
+    let inode_ids = get_referencing_inode_ids_for_pack(pool, pack_id).await?;
+    if inode_ids.is_empty() {
+        return Ok(StorageMode::Ec2_1);
+    }
+
+    let mut desired = StorageMode::LocalOnly;
+    for inode_id in inode_ids {
+        let inode_path = get_inode_path(pool, inode_id)
+            .await?
+            .unwrap_or_else(|| format!("inode/{inode_id}"));
+        let policy_type = find_sync_policy_for_path(pool, &inode_path)
+            .await?
+            .map(|policy| policy.policy_type)
+            .unwrap_or_else(|| "PARANOIA".to_string());
+        match StorageMode::from_policy_type(&policy_type) {
+            StorageMode::Ec2_1 => return Ok(StorageMode::Ec2_1),
+            StorageMode::SingleReplica => desired = StorageMode::SingleReplica,
+            StorageMode::LocalOnly => {}
+        }
+    }
+
+    Ok(desired)
+}
+
+#[allow(dead_code)]
+pub async fn get_next_pack_requiring_reconciliation(
+    pool: &SqlitePool,
+) -> Result<Option<PackRecord>, sqlx::Error> {
+    for pack in list_active_packs(pool, 256).await? {
+        let desired = get_desired_storage_mode_for_pack(pool, &pack.pack_id).await?;
+        if StorageMode::from_str(&pack.storage_mode) != desired {
+            return Ok(Some(pack));
+        }
+    }
+
+    Ok(None)
+}
+
+#[allow(dead_code)]
+pub async fn get_chunks_for_pack(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<Vec<ChunkRecord>, sqlx::Error> {
+    sqlx::query_as::<_, ChunkRecord>(
+        r#"
+        SELECT cr.id, cr.revision_id, cr.chunk_id, cr.file_offset, cr.size
+        FROM pack_locations pl
+        INNER JOIN chunk_refs cr
+            ON cr.chunk_id = pl.chunk_id
+        WHERE pl.pack_id = ?
+        ORDER BY cr.file_offset ASC, cr.id ASC
+        "#,
+    )
+    .bind(pack_id)
+    .fetch_all(pool)
+    .await
 }
 
 #[allow(dead_code)]
