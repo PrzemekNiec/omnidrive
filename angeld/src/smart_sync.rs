@@ -66,6 +66,18 @@ pub async fn register_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncEr
     }
 }
 
+pub fn shutdown_sync_root() -> Result<(), SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::shutdown_sync_root()
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err(SmartSyncError::UnsupportedPlatform)
+    }
+}
+
 pub fn install_hydration_runtime(
     pool: SqlitePool,
     downloader: Arc<Downloader>,
@@ -150,6 +162,7 @@ mod imp {
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
+    use std::path::Component;
     use std::path::{Path, PathBuf};
     use std::ptr;
     use std::sync::{Arc, OnceLock};
@@ -158,8 +171,9 @@ mod imp {
     use windows::core::{GUID, HRESULT, PCWSTR};
     use windows::Win32::Foundation::{HANDLE, NTSTATUS, S_OK};
     use windows::Win32::Storage::CloudFilters::{
-        CfConnectSyncRoot, CfCreatePlaceholders, CfExecute, CfRegisterSyncRoot, CfSetPinState,
-        CfUnregisterSyncRoot, CfUpdatePlaceholder, CF_CALLBACK_INFO, CF_CALLBACK_PARAMETERS,
+        CfConnectSyncRoot, CfCreatePlaceholders, CfDisconnectSyncRoot, CfExecute,
+        CfRegisterSyncRoot, CfSetPinState, CfUnregisterSyncRoot, CfUpdatePlaceholder,
+        CF_CALLBACK_INFO, CF_CALLBACK_PARAMETERS,
         CF_CALLBACK_REGISTRATION, CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
         CF_CALLBACK_TYPE_FETCH_DATA, CF_CALLBACK_TYPE_NONE, CF_CONNECT_FLAG_NONE,
         CF_CONNECTION_KEY, CF_CREATE_FLAGS, CF_CREATE_FLAG_NONE, CF_CREATE_FLAG_STOP_ON_ERROR,
@@ -174,15 +188,14 @@ mod imp {
         CF_PLACEHOLDER_MANAGEMENT_POLICY_CREATE_UNRESTRICTED, CF_POPULATION_POLICY,
         CF_POPULATION_POLICY_FULL, CF_POPULATION_POLICY_MODIFIER,
         CF_POPULATION_POLICY_MODIFIER_NONE, CF_POPULATION_POLICY_PRIMARY, CF_REGISTER_FLAGS,
-        CF_REGISTER_FLAG_DISABLE_ON_DEMAND_POPULATION_ON_ROOT, CF_REGISTER_FLAG_NONE,
-        CF_REGISTER_FLAG_UPDATE, CF_SET_PIN_FLAG_NONE, CF_SET_PIN_FLAGS, CF_SYNC_POLICIES,
+        CF_REGISTER_FLAG_NONE, CF_REGISTER_FLAG_UPDATE, CF_SET_PIN_FLAG_NONE, CF_SET_PIN_FLAGS, CF_SYNC_POLICIES,
         CF_SYNC_REGISTRATION, CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
     };
     use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_ARCHIVE, FILE_BASIC_INFO};
 
     const PROVIDER_NAME: &str = "OmniDrive";
     const PROVIDER_VERSION: &str = "1.0";
-    const SYNC_ROOT_IDENTITY: &[u8] = b"omnidrive-sync-root";
+    const ACCOUNT_NAME: &str = "UserVault";
     const PROVIDER_ID: GUID = GUID::from_u128(0xb7a42c2a_4af1_4f4a_a650_0b1308b8f019);
     const STATUS_UNSUCCESSFUL: i32 = 0xC0000001u32 as i32;
     const STATUS_SUCCESS: i32 = 0;
@@ -394,6 +407,15 @@ mod imp {
         Ok(())
     }
 
+    pub fn shutdown_sync_root() -> Result<(), SmartSyncError> {
+        if let Some(connection_key) = CONNECTION_KEY.get().copied() {
+            unsafe {
+                let _ = CfDisconnectSyncRoot(connection_key);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn project_vault_to_sync_root(
         pool: &SqlitePool,
         sync_root_path: &Path,
@@ -572,13 +594,14 @@ mod imp {
         let sync_root_wide = wide_path(sync_root_path)?;
         let provider_name_wide = wide_str(OsStr::new(PROVIDER_NAME));
         let provider_version_wide = wide_str(OsStr::new(PROVIDER_VERSION));
+        let sync_root_identity = sync_root_identity_bytes();
 
         let registration = CF_SYNC_REGISTRATION {
             StructSize: size_of::<CF_SYNC_REGISTRATION>() as u32,
             ProviderName: PCWSTR(provider_name_wide.as_ptr()),
             ProviderVersion: PCWSTR(provider_version_wide.as_ptr()),
-            SyncRootIdentity: SYNC_ROOT_IDENTITY.as_ptr().cast(),
-            SyncRootIdentityLength: SYNC_ROOT_IDENTITY.len() as u32,
+            SyncRootIdentity: sync_root_identity.as_ptr().cast(),
+            SyncRootIdentityLength: sync_root_identity.len() as u32,
             FileIdentity: ptr::null(),
             FileIdentityLength: 0,
             ProviderId: PROVIDER_ID,
@@ -602,13 +625,25 @@ mod imp {
         };
 
         let path = PCWSTR(sync_root_wide.as_ptr());
+        let initial_result =
+            unsafe { CfRegisterSyncRoot(path, &registration, &policies, register_flags(false)) };
+        if initial_result.is_ok() {
+            return Ok(());
+        }
+
+        let first_error = initial_result
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_else(|| "unknown register error".to_string());
+        eprintln!(
+            "smart-sync: initial register failed for {} (provider={}, account={ACCOUNT_NAME}): {}",
+            sync_root_path.display(),
+            PROVIDER_NAME,
+            first_error
+        );
+
         unsafe {
             let _ = CfUnregisterSyncRoot(path);
-        }
-        let create_result =
-            unsafe { CfRegisterSyncRoot(path, &registration, &policies, register_flags(false)) };
-        if create_result.is_ok() {
-            return Ok(());
         }
 
         unsafe { CfRegisterSyncRoot(path, &registration, &policies, register_flags(true))? };
@@ -649,7 +684,7 @@ mod imp {
     }
 
     fn normalize_sync_root_path(path: &Path) -> Result<PathBuf, SmartSyncError> {
-        std::fs::create_dir_all(path).map_err(SmartSyncError::Io)?;
+        prepare_sync_root_directory(path)?;
         let canonical = path.canonicalize().map_err(SmartSyncError::Io)?;
         let normalized = normalized_windows_path_string(&canonical)?;
         let normalized = PathBuf::from(normalized);
@@ -662,6 +697,25 @@ mod imp {
         Ok(normalized)
     }
 
+    fn prepare_sync_root_directory(path: &Path) -> Result<(), SmartSyncError> {
+        if path.exists() {
+            let metadata = std::fs::metadata(path).map_err(SmartSyncError::Io)?;
+            if !metadata.is_dir() {
+                return Err(SmartSyncError::InvalidPath(
+                    "sync root path exists and is not a directory",
+                ));
+            }
+
+            if directory_is_empty(path)? {
+                std::fs::remove_dir(path).map_err(SmartSyncError::Io)?;
+            }
+        }
+
+        std::fs::create_dir_all(path).map_err(SmartSyncError::Io)?;
+        assert_sync_root_writable(path)?;
+        Ok(())
+    }
+
     fn ensure_path_inside_user_profile(path: &Path) -> Result<(), SmartSyncError> {
         let user_profile = std::env::var("USERPROFILE")
             .map_err(|_| SmartSyncError::InvalidPath("USERPROFILE is not set"))?;
@@ -671,7 +725,7 @@ mod imp {
             })?,
         );
 
-        if !path.starts_with(&user_profile) {
+        if !starts_with_case_insensitive(path, &user_profile) {
             return Err(SmartSyncError::InvalidPath(
                 "sync root must be inside the current user profile",
             ));
@@ -724,6 +778,13 @@ mod imp {
         }
 
         Ok(without_leading.to_string())
+    }
+
+    fn sync_root_identity_bytes() -> Vec<u8> {
+        let vault_id = std::env::var("OMNIDRIVE_VAULT_ID")
+            .unwrap_or_else(|_| "default-vault".to_string());
+        format!("{PROVIDER_NAME}|{ACCOUNT_NAME}|{vault_id}")
+            .into_bytes()
     }
 
     fn file_time_from_unix_millis(unix_millis: i64) -> Result<i64, SmartSyncError> {
@@ -869,11 +930,9 @@ mod imp {
     }
 
     fn register_flags(update: bool) -> CF_REGISTER_FLAGS {
-        let mut flags = CF_REGISTER_FLAG_DISABLE_ON_DEMAND_POPULATION_ON_ROOT.0;
+        let mut flags = CF_REGISTER_FLAG_NONE.0;
         if update {
             flags |= CF_REGISTER_FLAG_UPDATE.0;
-        } else {
-            flags |= CF_REGISTER_FLAG_NONE.0;
         }
         CF_REGISTER_FLAGS(flags)
     }
@@ -918,5 +977,43 @@ mod imp {
             )?;
         }
         Ok(())
+    }
+
+    fn directory_is_empty(path: &Path) -> Result<bool, SmartSyncError> {
+        let mut entries = std::fs::read_dir(path).map_err(SmartSyncError::Io)?;
+        Ok(entries.next().is_none())
+    }
+
+    fn assert_sync_root_writable(path: &Path) -> Result<(), SmartSyncError> {
+        let probe = path.join(".omnidrive_acl_probe");
+        std::fs::write(&probe, b"ok").map_err(SmartSyncError::Io)?;
+        std::fs::remove_file(&probe).map_err(SmartSyncError::Io)?;
+        Ok(())
+    }
+
+    fn starts_with_case_insensitive(path: &Path, prefix: &Path) -> bool {
+        let path_parts: Vec<String> = path
+            .components()
+            .filter_map(normalized_component)
+            .collect();
+        let prefix_parts: Vec<String> = prefix
+            .components()
+            .filter_map(normalized_component)
+            .collect();
+
+        path_parts.len() >= prefix_parts.len()
+            && path_parts
+                .iter()
+                .zip(prefix_parts.iter())
+                .all(|(left, right)| left == right)
+    }
+
+    fn normalized_component(component: Component<'_>) -> Option<String> {
+        match component {
+            Component::Prefix(prefix) => Some(prefix.as_os_str().to_string_lossy().to_ascii_lowercase()),
+            Component::RootDir => Some("\\".to_string()),
+            Component::Normal(value) => Some(value.to_string_lossy().to_ascii_lowercase()),
+            _ => None,
+        }
     }
 }

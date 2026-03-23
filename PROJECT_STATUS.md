@@ -53,6 +53,12 @@ Core assumptions:
 - Pin / unpin, hydration state tracking, CLI commands, API endpoints, and web UI controls are implemented.
 - Smart Sync is complete enough to expose the vault as on-demand files in Windows Explorer.
 
+### Epic 19.5: Virtual Drive Mapping
+- The Smart Sync sync root is now exposed as a dedicated virtual drive mapped to `O:\`.
+- The physical sync root directory is hidden so the user naturally interacts with OmniDrive through the drive letter instead of the backing folder path.
+- Startup now mounts the virtual drive after Smart Sync bootstrap, and shutdown unmounts it cleanly.
+- Sync root preflight now recreates an empty stale directory in the current user context and verifies write access before CFAPI registration.
+
 ### Disaster Recovery
 - Live metadata snapshotting is implemented through safe SQLite `VACUUM INTO`.
 - Metadata backups are encrypted in the `OMNIDRIVE-META1` format with a dedicated recovery key derived via HKDF.
@@ -673,6 +679,262 @@ Key decisions:
 
 Outcome:
 - the system detects bitrot, not just missing objects
+
+### Epic 21 Implementation Plan
+
+#### Objective
+- detect and repair:
+  - missing shards
+  - silent data corruption
+  - size mismatches
+  - shard-set inconsistencies
+- degrade logical packs early and let the existing repair path rebuild missing or corrupted physical shards
+
+#### Core design
+- scrubbing operates at the **shard level**, not only the pack level
+- verification is split into two tiers:
+  - `Light verification`
+  - `Deep verification`
+- the scrubber detects and marks corruption
+- the existing `RepairWorker` remains responsible for reconstruction
+
+#### Verification model
+
+##### Light verification
+- cheap, continuous checks
+- uses `HEAD`
+- verifies:
+  - object existence
+  - `content-length`
+  - optional `etag` or provider metadata
+
+If a light check finds:
+- `404 / NoSuchKey` -> mark shard as `MISSING`
+- wrong size -> mark shard as `SIZE_MISMATCH`
+
+##### Deep verification
+- selective full byte download
+- compute local SHA-256
+- compare with `pack_shards.checksum`
+
+If a deep check finds:
+- checksum mismatch -> mark shard as `CORRUPTED`
+
+#### Important operational rule
+- do **not** mark shards as corrupted for transient network failures
+- distinguish:
+  - integrity failures:
+    - `404`
+    - bad size
+    - bad checksum
+  - operational failures:
+    - timeout
+    - DNS
+    - TLS
+    - `5xx`
+
+Only integrity failures should change shard health state.
+
+#### DB changes
+
+##### Extend `pack_shards`
+Add:
+- `last_verified_at INTEGER NULL`
+- `last_verification_method TEXT NULL`
+  - `HEAD`
+  - `FULL`
+- `last_verification_status TEXT NULL`
+  - `HEALTHY`
+  - `MISSING`
+  - `CORRUPTED`
+  - `SIZE_MISMATCH`
+  - `CHECKSUM_MISMATCH`
+  - `UNKNOWN`
+- `last_verified_size INTEGER NULL`
+- `last_verified_etag TEXT NULL`
+- `verification_failures INTEGER NOT NULL DEFAULT 0`
+- optional `last_scrub_error TEXT NULL`
+
+Purpose:
+- keep an audit trail
+- support scheduling by age
+- expose scrub state through API and CLI
+
+##### Optional future table: `scrub_jobs`
+Not required for the first iteration.
+
+Possible shape:
+- `id`
+- `pack_id`
+- `shard_index`
+- `scheduled_at`
+- `started_at`
+- `completed_at`
+- `status`
+- `reason`
+
+Recommendation:
+- skip this for the first implementation
+- keep the first version worker-driven and query-based
+
+#### Worker design
+
+##### `ScrubberWorker`
+- runs continuously in the background
+- low priority
+- processes a small batch each cycle
+
+##### Scheduling strategy
+Prioritize:
+1. shards never verified
+2. shards with the oldest `last_verified_at`
+3. shards with previous verification failures
+4. packs in `COMPLETED_DEGRADED`
+
+This balances safety and egress cost.
+
+##### Core query helper
+- `get_next_shards_for_scrub(limit)`
+
+Sort order:
+- `last_verified_at IS NULL` first
+- then oldest verified
+- optional bias toward problematic providers or degraded packs
+
+#### Corruption handling
+If scrubber detects:
+- `MISSING`
+- `SIZE_MISMATCH`
+- `CHECKSUM_MISMATCH`
+- `CORRUPTED`
+
+Then it should:
+1. update `pack_shards`
+   - `status = FAILED`
+   - `last_verification_status = ...`
+   - `verification_failures += 1`
+2. recompute logical pack status
+   - `2/3` remaining -> `COMPLETED_DEGRADED`
+   - `<2/3` remaining -> `UNREADABLE`
+3. let the existing `RepairWorker` rebuild the shard through EC
+
+#### Provider-aware strategy
+Scrubbing policy should be provider-sensitive.
+
+Recommended default:
+- `Cloudflare R2`
+  - allow more aggressive full verification if egress is acceptable
+- `Backblaze B2`
+  - mostly `HEAD`
+  - periodic full sampling
+- `Scaleway`
+  - mainly `HEAD`
+  - selective full verification
+
+Reason:
+- the cost profile differs per provider
+- scrub policy should reflect that instead of using one global rule
+
+#### API visibility
+
+##### `GET /api/maintenance/scrub-status`
+Return:
+- `last_scrub_started_at`
+- `last_scrub_completed_at`
+- `total_shards`
+- `never_verified`
+- `healthy_verified`
+- `verification_failures`
+- `corrupted_or_missing`
+- optional per-provider summary
+
+##### Optional `POST /api/maintenance/scrub-now`
+- manual trigger for one immediate batch
+
+##### Optional `GET /api/maintenance/scrub-log`
+- recent verification events and failures
+
+Recommendation:
+- implement `scrub-status` first
+
+#### CLI visibility
+
+##### `omnidrive maintenance scrub-status`
+Display:
+- last scrub time
+- shards never verified
+- healthy verified shards
+- missing / corrupted shards
+- verification failures
+
+##### Optional `omnidrive maintenance scrub-now`
+- manual one-shot scrub trigger
+
+#### Recommended phases
+
+##### Phase 1: Schema and tracking
+- extend `pack_shards`
+- add DB helpers:
+  - `get_next_shards_for_scrub(limit)`
+  - `mark_shard_verified_head(...)`
+  - `mark_shard_verified_full(...)`
+  - `mark_shard_missing(...)`
+  - `mark_shard_corrupted(...)`
+
+Deliverable:
+- verification history exists in the database
+
+##### Phase 2: Light scrubber
+- implement `ScrubberWorker`
+- `HEAD` verification only
+- detect:
+  - missing objects
+  - size mismatch
+- update shard state and logical pack state
+
+Deliverable:
+- low-cost continuous integrity monitoring
+
+##### Phase 3: Deep verification
+- selective full downloads
+- checksum verification
+- mark shards as corrupted on mismatch
+- rely on the existing repair worker afterward
+
+Deliverable:
+- actual bitrot detection, not just presence checks
+
+##### Phase 4: API and CLI visibility
+- `GET /api/maintenance/scrub-status`
+- `omnidrive maintenance scrub-status`
+
+Deliverable:
+- operator can observe scrub coverage and failures
+
+##### Phase 5: Policy tuning
+- per-provider scrub rules
+- sampling ratios
+- scheduling windows
+- cost-aware verification tuning
+
+Deliverable:
+- scrubber is practical to run continuously without exploding egress costs
+
+#### Architectural recommendations
+- reuse the existing `RepairWorker`; do not build a second repair path inside the scrubber
+- track verification at shard level, because corruption is a physical-object problem
+- use `HEAD` as the default scrub path and full-download verification selectively
+- treat network outages as operational failures, not corruption
+
+#### Minimal first milestone
+- schema extensions on `pack_shards`
+- `ScrubberWorker`
+- `HEAD` verification only
+- marking `MISSING` and `SIZE_MISMATCH`
+- update `packs.status`
+- basic `GET /api/maintenance/scrub-status`
+
+This first milestone already delivers real value while keeping egress cost low.
 
 ### Epic 22: P2P LAN Cache
 Goal:

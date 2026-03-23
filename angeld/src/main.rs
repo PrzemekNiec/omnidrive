@@ -10,6 +10,7 @@ mod repair;
 mod smart_sync;
 mod uploader;
 mod vault;
+mod virtual_drive;
 mod watcher;
 
 use crate::api::ApiServer;
@@ -123,6 +124,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv();
 
     let sync_root = sync_root_path();
+    let drive_letter = virtual_drive_letter();
     fs::create_dir_all(&sync_root).await?;
     let db_url = env::var("OMNIDRIVE_DB_URL").unwrap_or_else(|_| "sqlite:omnidrive.db".to_string());
     let pool = db::init_db(&db_url).await?;
@@ -134,6 +136,10 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|err| io::Error::other(format!("smart sync register failed: {err}")))?;
     smart_sync::project_vault_to_sync_root(&pool, &sync_root).await
         .map_err(|err| io::Error::other(format!("smart sync projection failed: {err}")))?;
+    virtual_drive::hide_sync_root(&sync_root)
+        .map_err(|err| io::Error::other(format!("virtual drive hide sync root failed: {err}")))?;
+    virtual_drive::mount_virtual_drive(&drive_letter, &sync_root)
+        .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
 
     let worker = UploadWorker::from_env(pool.clone()).await?;
     let repair_worker = RepairWorker::from_env(pool.clone()).await?;
@@ -152,6 +158,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         "smart sync bootstrap ready at {}",
         sync_root.display()
     );
+    println!("virtual drive mounted at {}", drive_letter);
     println!("upload worker, repair worker, gc worker, file watcher, and api server started");
 
     let mut upload_task = tokio::spawn(async move { worker.run().await });
@@ -162,7 +169,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let watcher_future = watcher.run();
     tokio::pin!(watcher_future);
 
-    tokio::select! {
+    let result = tokio::select! {
         result = &mut upload_task => {
             repair_task.abort();
             gc_task.abort();
@@ -222,7 +229,17 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             println!("shutdown signal received");
             Ok(())
         }
+    };
+
+    if let Err(err) = smart_sync::shutdown_sync_root() {
+        eprintln!("smart sync shutdown warning: {}", err);
     }
+
+    if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
+        eprintln!("virtual drive unmount warning for {}: {}", drive_letter, err);
+    }
+
+    result
 }
 
 async fn run_upload_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
@@ -289,4 +306,8 @@ fn sync_root_path() -> PathBuf {
                 .join("OmniDrive")
                 .join("SyncRoot")
         })
+}
+
+fn virtual_drive_letter() -> String {
+    env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string())
 }
