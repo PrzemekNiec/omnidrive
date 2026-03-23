@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::db;
+use crate::disaster_recovery;
 use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
 use crate::vault::VaultKeyStore;
@@ -147,6 +148,17 @@ struct SmartSyncActionResponse {
     hydration_state: i64,
 }
 
+#[derive(Deserialize)]
+struct SnapshotLocalRequest {
+    output_path: String,
+}
+
+#[derive(Serialize)]
+struct SnapshotLocalResponse {
+    output_path: String,
+    created: bool,
+}
+
 impl ApiServer {
     pub fn from_env(pool: SqlitePool, vault_keys: VaultKeyStore) -> Result<Self, ApiError> {
         let _ = dotenvy::dotenv();
@@ -184,6 +196,7 @@ impl ApiServer {
                 post(restore_file_revision),
             )
             .route("/api/quota", get(get_quota))
+            .route("/api/recovery/snapshot-local", post(post_snapshot_local))
             .route("/api/unlock", post(post_unlock))
             .with_state(state);
 
@@ -683,6 +696,24 @@ async fn get_quota(State(state): State<ApiState>) -> impl IntoResponse {
         }),
     )
         .into_response()
+}
+
+async fn post_snapshot_local(
+    State(state): State<ApiState>,
+    Json(request): Json<SnapshotLocalRequest>,
+) -> impl IntoResponse {
+    let output_path = std::path::PathBuf::from(&request.output_path);
+    match disaster_recovery::create_metadata_snapshot(&state.pool, &output_path).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(SnapshotLocalResponse {
+                output_path: output_path.display().to_string(),
+                created: true,
+            }),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
 }
 
 fn provider_connection_status(target_status: &str, has_error: bool) -> String {

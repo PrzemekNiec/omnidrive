@@ -2,6 +2,7 @@ mod api;
 mod aws_http;
 mod config;
 mod db;
+mod disaster_recovery;
 mod downloader;
 mod gc;
 mod packer;

@@ -24,7 +24,7 @@ pub const PARITY_SHARDS: usize = 1;
 pub const TOTAL_SHARDS: usize = DATA_SHARDS + PARITY_SHARDS;
 pub const EC_SCHEME_RS_2_1: &str = "rs_2_1";
 
-const SHARD_PROVIDERS: [&str; TOTAL_SHARDS] = ["cloudflare-r2", "scaleway", "backblaze-b2"];
+const SHARD_PROVIDERS: [&str; TOTAL_SHARDS] = ["cloudflare-r2", "backblaze-b2", "scaleway"];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackerConfig {

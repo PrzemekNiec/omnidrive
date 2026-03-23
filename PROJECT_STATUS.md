@@ -47,21 +47,40 @@ Core assumptions:
 - Transfer and provider health endpoints are available.
 - The API layer is ready to back the future UI.
 
+### Smart Sync / Files On-Demand
+- Windows `Cloud Files API` integration is implemented.
+- Sync root bootstrap, placeholder projection, hydration callbacks, range-based reads, and OS writeback are working.
+- Pin / unpin, hydration state tracking, CLI commands, API endpoints, and web UI controls are implemented.
+- Smart Sync is complete enough to expose the vault as on-demand files in Windows Explorer.
+
 ## CURRENT FOCUS
 
-### Epic 19: Smart Sync / Files On-Demand
+### Epic 20: Disaster Recovery
 Goal:
-- expose files locally without requiring a full local copy
+- eliminate the local SQLite metadata database as a single point of failure
 
 Scope:
-- placeholder files
-- lazy download / hydration
-- pin and unpin
-- cache policy
-- integration with Windows `Cloud Files API`
+- safe live snapshotting of `omnidrive.db`
+- encryption of metadata backups
+- cloud upload of recovery artifacts
+- automated metadata backup worker
+- `Restore from Cloud` bootstrap on a fresh machine
 
 Outcome:
-- full cloud-drive behavior at the OS level
+- full vault recovery from cloud metadata using only the master password and provider credentials
+
+### Current checkpoint
+- `Phase 1: Snapshot Engine` is implemented.
+- `create_metadata_snapshot(...)` works through SQLite `VACUUM INTO`.
+- API endpoint `POST /api/recovery/snapshot-local` is implemented.
+- CLI command `omnidrive recovery snapshot-local <output_path>` is implemented.
+- Snapshot engine test coverage exists and passes.
+
+### Next step after the pause
+- `Epic 20 / Phase 2: Encryption and backup artifact format`
+- derive a dedicated `metadata_backup_key`
+- encrypt the SQLite snapshot into a versioned recovery artifact
+- prepare the artifact for cloud upload and manifest tracking
 
 ## ROADMAP
 
@@ -418,6 +437,225 @@ Key decisions:
 
 Outcome:
 - local SQLite is no longer a single point of failure
+
+### Epic 20 Implementation Plan
+
+#### Objective
+- eliminate the local SQLite database as a single point of failure for vault metadata
+- allow a fresh installation to restore the complete vault structure using only:
+  - the Master Password
+  - provider credentials
+  - cloud-stored encrypted metadata backups
+
+#### Core design
+- back up the full SQLite metadata database rather than exporting logical tables
+- create a consistent live snapshot while the daemon is running
+- encrypt the snapshot before upload using a dedicated recovery key derived from the unlocked vault key
+- store the encrypted metadata backup as a reserved system object in cloud storage
+- support a clean `Restore from Cloud` bootstrap path on a new machine
+
+#### Snapshot strategy
+- use the SQLite Online Backup API as the primary snapshot mechanism
+- avoid raw file copying of `omnidrive.db` while WAL activity is in flight
+- write the temporary snapshot into a local recovery spool directory first
+
+Why:
+- it preserves relational integrity
+- it avoids pausing the daemon for a long time
+- it is safer than copying the live `.db` file directly
+
+#### Encryption strategy
+- do not encrypt the metadata snapshot directly with the generic `vault_key`
+- derive a dedicated recovery key, for example:
+  - `metadata_backup_key = HKDF(vault_key, "omnidrive-metadata-backup-v1")`
+- encrypt the snapshot with AES-256-GCM
+- wrap the encrypted file in a versioned backup format with:
+  - magic header
+  - format version
+  - created timestamp
+  - db schema version
+  - nonce
+  - plaintext size
+  - ciphertext checksum
+
+Why:
+- key separation is cleaner and safer
+- backup format versioning makes future migrations manageable
+
+#### Cloud storage strategy
+- store metadata backups under a reserved system prefix, for example:
+  - `_omnidrive/system/metadata/latest.db.enc`
+  - `_omnidrive/system/metadata/manifest.json`
+  - `_omnidrive/system/metadata/snapshots/<timestamp>.db.enc`
+- prefer storing backups on at least `2` providers, ideally all `3`, because metadata backups are relatively small
+- keep a rolling retention window instead of only one latest copy
+
+Why:
+- removing the local SPOF should not introduce a single-provider SPOF
+
+#### New module
+- create `angeld/src/disaster_recovery.rs`
+
+Responsibilities:
+- metadata snapshot creation
+- metadata backup encryption and packaging
+- cloud upload for recovery artifacts
+- manifest generation and validation
+- recovery download, decrypt, and restore flow
+
+#### New worker
+- create `MetadataBackupWorker`
+
+Responsibilities:
+- periodic metadata backup
+- backup retry handling
+- retention cleanup for old metadata snapshots
+- optional idle-aware or change-aware scheduling
+
+#### Proposed DB additions
+
+##### Table: `metadata_backups`
+- `backup_id TEXT PRIMARY KEY`
+- `created_at INTEGER NOT NULL`
+- `snapshot_version INTEGER NOT NULL`
+- `object_key TEXT NOT NULL`
+- `provider TEXT NOT NULL`
+- `encrypted_size INTEGER NOT NULL`
+- `plaintext_size INTEGER NOT NULL`
+- `checksum TEXT NOT NULL`
+- `status TEXT NOT NULL`
+- `last_error TEXT NULL`
+
+Purpose:
+- local visibility into created backups
+- diagnostics and history
+- tracking of the latest valid recovery point
+
+##### Table: `metadata_backup_targets` (recommended)
+- `backup_id TEXT NOT NULL`
+- `provider TEXT NOT NULL`
+- `object_key TEXT NOT NULL`
+- `status TEXT NOT NULL`
+- `attempts INTEGER NOT NULL DEFAULT 0`
+- `last_error TEXT NULL`
+- `etag TEXT NULL`
+
+Purpose:
+- per-provider tracking for metadata backup uploads
+- consistency with the rest of the daemon architecture
+
+#### Recovery manifest
+- store a small manifest object in cloud containing:
+  - `snapshot_version`
+  - `created_at`
+  - `providers`
+  - `object_keys`
+  - `checksum`
+  - `encryption_scheme`
+  - `db_schema_version`
+  - optional `backup_id`
+
+Purpose:
+- enable a fresh client to discover the newest valid metadata backup without a local database
+
+#### Phase 1: Snapshot engine
+- implement a safe live snapshot function
+- source: active SQLite database
+- output: temporary snapshot file in recovery spool
+- prefer SQLite Online Backup API over raw file copy
+
+Deliverable:
+- the daemon can generate a consistent metadata snapshot while still running normally
+
+#### Phase 2: Encryption and backup artifact format
+- derive `metadata_backup_key`
+- encrypt the snapshot using AES-256-GCM
+- produce a versioned `.db.enc` artifact
+- include metadata needed for safe restore and compatibility checks
+
+Deliverable:
+- metadata snapshot becomes a portable encrypted recovery artifact
+
+#### Phase 3: Cloud upload and tracking
+- upload the encrypted metadata artifact under `_omnidrive/system/metadata/...`
+- create or update local `metadata_backups`
+- create or update `metadata_backup_targets`
+- add retry behavior and mark failures cleanly
+
+Deliverable:
+- encrypted metadata backups are persisted in cloud storage and tracked locally
+
+#### Phase 4: Metadata Backup Worker
+- run periodically, for example every 24 hours
+- optionally trigger on:
+  - daemon idle
+  - significant metadata changes
+  - explicit backup-now action
+- maintain a retention policy, for example last `7` snapshots
+- clean up stale remote recovery artifacts
+
+Deliverable:
+- metadata backups happen automatically without operator action
+
+#### Phase 5: Restore from Cloud bootstrap
+- support a startup mode where no local database exists yet
+- read provider config and recovery manifest
+- pick the newest valid backup
+- download the encrypted metadata snapshot
+- derive `metadata_backup_key` from the passphrase lineage
+- decrypt and validate the snapshot
+- write restored `omnidrive.db`
+- continue daemon startup normally
+
+Deliverable:
+- a brand-new machine can recover the entire vault structure from cloud metadata backups
+
+#### Phase 6: Operator surface and validation
+- add CLI and/or API for:
+  - recovery status
+  - backup now
+  - restore from cloud
+- add an end-to-end disaster recovery test flow:
+  - create vault state
+  - run metadata backup
+  - remove local database
+  - restore from cloud
+  - verify the vault structure and file access still work
+
+Deliverable:
+- disaster recovery is not just implemented, but testable and operable
+
+#### Failure cases to design for
+- backup upload succeeds on only a subset of providers
+- latest cloud backup is corrupted
+- schema version in backup does not match daemon expectations
+- vault is still locked when a scheduled backup window arrives
+- passphrase lineage changes after older backups were created
+
+Expected handling:
+- per-provider status tracking
+- fallback to older valid backups
+- strict schema compatibility checks
+- worker waits for unlock before encrypting backups
+- recovery format carries enough metadata for safe refusal when incompatible
+
+#### Recommended rollout order
+1. safe SQLite snapshot engine
+2. backup encryption format and `metadata_backup_key`
+3. cloud upload and local tracking
+4. periodic `MetadataBackupWorker`
+5. restore bootstrap path
+6. CLI/API recovery controls
+7. end-to-end disaster recovery validation
+
+#### Minimal first milestone
+- manual `backup-now`
+- safe snapshot
+- encrypt locally
+- upload to cloud
+- manual restore on a clean database path
+
+This first milestone already removes the most important architectural risk: losing the only metadata database.
 
 ### Epic 21: Deep Data Scrubbing
 Goal:

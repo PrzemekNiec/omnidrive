@@ -23,6 +23,15 @@ enum Command {
     Restore { inode_id: i64, revision_id: i64 },
     Pin { inode_id: i64 },
     Unpin { inode_id: i64 },
+    Recovery {
+        #[command(subcommand)]
+        command: RecoveryCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum RecoveryCommand {
+    SnapshotLocal { output_path: String },
 }
 
 #[derive(Debug)]
@@ -103,6 +112,12 @@ struct SmartSyncActionResponse {
     hydration_state: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct SnapshotLocalResponse {
+    output_path: String,
+    created: bool,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -122,6 +137,11 @@ async fn main() {
         } => restore(&client, &api_base, inode_id, revision_id).await,
         Command::Pin { inode_id } => pin(&client, &api_base, inode_id).await,
         Command::Unpin { inode_id } => unpin(&client, &api_base, inode_id).await,
+        Command::Recovery { command } => match command {
+            RecoveryCommand::SnapshotLocal { output_path } => {
+                snapshot_local(&client, &api_base, &output_path).await
+            }
+        },
     };
 
     if let Err(err) = result {
@@ -295,6 +315,32 @@ async fn restore(
         restored.inode_id, restored.revision_id, restored.restored
     );
 
+    Ok(())
+}
+
+async fn snapshot_local(
+    client: &Client,
+    api_base: &str,
+    output_path: &str,
+) -> Result<(), CliError> {
+    let response = client
+        .post(format!("{api_base}/api/recovery/snapshot-local"))
+        .json(&serde_json::json!({ "output_path": output_path }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(CliError::Api(format!(
+            "snapshot-local failed with status {}",
+            response.status()
+        )));
+    }
+
+    let snapshot: SnapshotLocalResponse = response.json().await?;
+    println!(
+        "Created metadata snapshot at {} (created={})",
+        snapshot.output_path, snapshot.created
+    );
     Ok(())
 }
 

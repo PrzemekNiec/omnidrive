@@ -23,7 +23,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep, timeout};
 
-pub const KNOWN_PROVIDERS: [&str; 3] = ["cloudflare-r2", "scaleway", "backblaze-b2"];
+pub const KNOWN_PROVIDERS: [&str; 3] = ["cloudflare-r2", "backblaze-b2", "scaleway"];
 
 pub struct Uploader {
     provider_name: &'static str,
