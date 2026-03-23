@@ -1,5 +1,6 @@
 mod api;
 mod aws_http;
+mod cache;
 mod config;
 mod db;
 mod disaster_recovery;

@@ -75,19 +75,25 @@ Core assumptions:
 - Logical pack state is automatically degraded to `COMPLETED_DEGRADED` or `UNREADABLE` when scrub results invalidate shard health.
 - Visibility is exposed through API, CLI, and the dashboard, including audit views of currently problematic shards.
 
+### Epic 22: Intelligent Local Cache & Predictive Prefetching [x] Completed
+- A plaintext chunk cache now lives under `%LOCALAPPDATA%\OmniDrive\Cache`, keyed by `revision_id + chunk_index` and backed by SQLite metadata in `cache_entries`.
+- `downloader.read_range(...)` is now cache-aware, so cache hits bypass cloud fetches and cache misses write decrypted chunks back through the cache automatically.
+- LRU eviction keeps the cache within a fixed byte budget using `last_accessed_at`, `access_count`, and on-disk cache entry cleanup.
+- Sequential look-ahead now prefetches upcoming chunks in the background after adjacent reads are detected.
+- Small-file warmup proactively caches the rest of files smaller than `8 MiB` after the first chunk read.
+- Cache visibility is exposed through API, CLI, and the dashboard, including hit/miss counters and cache usage.
+
 ## CURRENT FOCUS
 
-### Epic 22: P2P LAN Cache
+### Next Epic
 Goal:
-- avoid unnecessary cloud downloads when another OmniDrive node on the same LAN already has the needed encrypted data
+- define and start the next vault capability after cache and prefetching are fully integrated
 
 Scope:
-- peer discovery in the local network
-- safe peer authentication for the same vault
-- local transfer of encrypted shards or chunks before falling back to cloud providers
+- pending
 
 Outcome:
-- lower internet usage and faster restores inside the home network
+- to be defined in the next implementation cycle
 
 ## ROADMAP
 
@@ -252,6 +258,160 @@ Scope:
 
 Outcome:
 - full cloud-drive behavior at the OS level
+
+### Epic 22: Intelligent Local Cache & Predictive Prefetching
+Goal:
+- make `O:\` feel as fast and responsive as possible by caching decrypted chunks locally and prefetching predictable reads
+
+Scope:
+- local cache directory under `%LOCALAPPDATA%\OmniDrive\Cache`
+- cache entries tracked in SQLite
+- read-through / write-through cache integrated into `downloader.read_range(...)`
+- LRU eviction when the cache exceeds its byte budget
+- predictive prefetch for sequential reads and small-file warmup
+- API / CLI / UI visibility for cache health and usage
+
+Outcome:
+- repeat reads avoid cloud fetches, hydration latency drops, and Smart Sync feels much closer to a native local drive
+
+## EPIC 22 IMPLEMENTATION PLAN
+
+### Objective
+- Make `O:\` behave like a fast local disk by introducing a cache layer between Smart Sync hydration and the cloud providers.
+- Minimize repeated shard downloads and reduce first-read latency for common access patterns.
+
+### Core design
+- Cache at the **chunk** level, not at the whole-file level.
+- Start by caching **plaintext chunks** after decrypt, because this gives the fastest repeat reads and fits naturally into `downloader.read_range(...)`.
+- Keep cache logic inside `downloader.rs`, not in CFAPI callbacks, so Smart Sync gets cache benefits automatically.
+
+### Cache store layout
+- Local cache root:
+  - `%LOCALAPPDATA%\OmniDrive\Cache`
+- Cache files stored on disk in hash-based subdirectories, for example:
+  - `Cache\ab\cd\<cache_key>.bin`
+- First cache key recommendation:
+  - `revision_id + chunk_index`
+- This is simple, deterministic, and safe for versioned files.
+
+### New table: `cache_entries`
+- `cache_key TEXT PRIMARY KEY`
+- `inode_id INTEGER NOT NULL`
+- `revision_id INTEGER NOT NULL`
+- `chunk_index INTEGER NOT NULL`
+- `pack_id TEXT NOT NULL`
+- `file_path TEXT NOT NULL`
+- `cache_path TEXT NOT NULL`
+- `size INTEGER NOT NULL`
+- `created_at INTEGER NOT NULL`
+- `last_accessed_at INTEGER NOT NULL`
+- `access_count INTEGER NOT NULL DEFAULT 0`
+- `is_prefetched INTEGER NOT NULL DEFAULT 0`
+
+### Required DB helpers
+- `get_cache_entry(cache_key)`
+- `upsert_cache_entry(...)`
+- `touch_cache_entry(cache_key)`
+- `list_cache_entries_by_lru(limit)`
+- `get_total_cache_size()`
+- `delete_cache_entry(cache_key)`
+
+### Phase 1: Basic Cache Store
+Goal:
+- Add a read-through / write-through cache for chunk reads.
+
+Scope:
+- new module `angeld/src/cache.rs`
+- helpers:
+  - `get_cached_chunk(...)`
+  - `put_cached_chunk(...)`
+- integrate into `downloader.read_range(...)`
+- cache lookup happens before cloud fetch
+- cache write happens after successful EC reconstruction + decrypt
+
+Deliverable:
+- repeated reads of the same chunk no longer hit the cloud providers
+
+### Phase 2: LRU Eviction
+Goal:
+- keep cache size under a fixed limit such as `50 GB`
+
+Scope:
+- new config:
+  - `OMNIDRIVE_CACHE_MAX_BYTES=53687091200`
+- on cache insert:
+  - compute total cache size
+  - evict least-recently-used entries by `last_accessed_at` until under budget
+- prefer simple LRU first
+- avoid evicting entries actively being read if practical
+
+Deliverable:
+- bounded cache size with predictable local disk usage
+
+### Phase 3: Hydration Hook Integration
+Goal:
+- let Smart Sync hydration benefit from the cache automatically
+
+Scope:
+- keep CFAPI callback flow unchanged
+- `smart_sync.rs` continues to call `downloader.read_range(...)`
+- `downloader.read_range(...)` becomes cache-aware:
+  - cache hit -> return bytes immediately
+  - cache miss -> fetch, decrypt, cache, return
+
+Deliverable:
+- `O:\` hydration gets local-cache acceleration without extra CFAPI complexity
+
+### Phase 4: Predictive Prefetching
+Goal:
+- proactively fetch likely-next chunks to reduce visible latency during sequential access
+
+Scope:
+- sequential-read detection:
+  - if the user reads chunk `N`, then `N+1`, then `N+2`, prefetch `N+3...`
+- first-read warmup for file opens near offset `0`
+- small-file optimization:
+  - if a file is smaller than a threshold, prefetch the rest after the first read
+- run prefetch in low-priority background tasks
+- only prefetch chunks not already cached
+
+Deliverable:
+- common sequential reads feel smoother and closer to a local disk
+
+### Phase 5: Cache Observability
+Goal:
+- expose cache usage and effectiveness through operators and UI
+
+Scope:
+- API:
+  - `GET /api/cache/status`
+- CLI:
+  - `omnidrive cache status`
+  - optional `omnidrive cache clear`
+- UI:
+  - cache usage
+  - hit ratio
+  - recent evictions
+  - prefetched entries
+
+Deliverable:
+- cache behavior is measurable and tunable
+
+### Architectural recommendations
+- start with **chunk cache**, not subrange cache
+- cache **plaintext chunks**, not encrypted shards
+- keep cache logic in `downloader.rs`
+- implement simple **LRU** first, then add predictive prefetch
+- postpone folder thumbnail / metadata prefetch until the chunk cache is stable
+
+### Minimal first milestone
+- `cache_entries` table
+- `cache.rs`
+- cache lookup / insert in `downloader.read_range(...)`
+- `OMNIDRIVE_CACHE_MAX_BYTES`
+- LRU eviction
+
+This milestone alone should noticeably improve `O:\` responsiveness and reduce repeated cloud reads.
 
 ## EPIC 19 IMPLEMENTATION PLAN
 

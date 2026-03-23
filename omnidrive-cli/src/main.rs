@@ -25,6 +25,10 @@ enum Command {
     Restore { inode_id: i64, revision_id: i64 },
     Pin { inode_id: i64 },
     Unpin { inode_id: i64 },
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
     Maintenance {
         #[command(subcommand)]
         command: MaintenanceCommand,
@@ -39,6 +43,11 @@ enum Command {
 enum MaintenanceCommand {
     Status,
     Errors,
+}
+
+#[derive(Subcommand)]
+enum CacheCommand {
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -170,6 +179,16 @@ struct ScrubErrorResponse {
     status: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CacheStatusResponse {
+    total_entries: i64,
+    total_bytes: i64,
+    max_bytes: u64,
+    prefetched_entries: i64,
+    hit_count: u64,
+    miss_count: u64,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -189,6 +208,9 @@ async fn main() {
         } => restore(&client, &api_base, inode_id, revision_id).await,
         Command::Pin { inode_id } => pin(&client, &api_base, inode_id).await,
         Command::Unpin { inode_id } => unpin(&client, &api_base, inode_id).await,
+        Command::Cache { command } => match command {
+            CacheCommand::Status => cache_status(&client, &api_base).await,
+        },
         Command::Maintenance { command } => match command {
             MaintenanceCommand::Status => maintenance_status(&client, &api_base).await,
             MaintenanceCommand::Errors => maintenance_errors(&client, &api_base).await,
@@ -265,6 +287,30 @@ async fn list_files(client: &Client, api_base: &str) -> Result<(), CliError> {
             file.path
         );
     }
+
+    Ok(())
+}
+
+async fn cache_status(client: &Client, api_base: &str) -> Result<(), CliError> {
+    let status: CacheStatusResponse = get_json(client, &format!("{api_base}/api/cache/status")).await?;
+    let total_ops = status.hit_count + status.miss_count;
+    let hit_ratio = if total_ops == 0 {
+        0.0
+    } else {
+        (status.hit_count as f64 / total_ops as f64) * 100.0
+    };
+
+    println!("Cache Performance");
+    println!("  entries:          {}", status.total_entries);
+    println!(
+        "  usage:            {} / {}",
+        human_bytes(status.total_bytes as u64),
+        human_bytes(status.max_bytes)
+    );
+    println!("  prefetched:       {}", status.prefetched_entries);
+    println!("  hits:             {}", status.hit_count);
+    println!("  misses:           {}", status.miss_count);
+    println!("  hit ratio:        {:.1}%", hit_ratio);
 
     Ok(())
 }

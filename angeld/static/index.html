@@ -84,6 +84,39 @@
     </section>
 
     <section class="mt-8 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+      <div class="mb-4 flex items-center justify-between">
+        <div>
+          <h2 class="text-lg font-semibold text-white">Cache Performance</h2>
+          <p id="cacheUsageLabel" class="mt-1 text-sm text-slate-400">Loading cache usage...</p>
+        </div>
+      </div>
+      <div class="grid gap-4 md:grid-cols-4">
+        <div class="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Entries</p>
+          <p id="cacheEntries" class="mt-3 text-2xl font-semibold text-white">-</p>
+        </div>
+        <div class="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4">
+          <p class="text-xs uppercase tracking-[0.2em] text-cyan-300">Hits</p>
+          <p id="cacheHits" class="mt-3 text-2xl font-semibold text-cyan-200">-</p>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Misses</p>
+          <p id="cacheMisses" class="mt-3 text-2xl font-semibold text-slate-100">-</p>
+        </div>
+        <div class="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+          <p class="text-xs uppercase tracking-[0.2em] text-emerald-300">Prefetched</p>
+          <p id="cachePrefetched" class="mt-3 text-2xl font-semibold text-emerald-200">-</p>
+        </div>
+      </div>
+      <div class="mt-4">
+        <p id="cacheHitRatioLabel" class="mb-2 text-sm text-slate-400">Hit ratio: -</p>
+        <div class="h-2 overflow-hidden rounded-full bg-slate-800">
+          <div id="cacheHitRatioBar" class="h-full rounded-full bg-emerald-400" style="width: 0%"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="mt-8 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
       <div class="mb-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 class="text-lg font-semibold text-white">Vault Integrity</h2>
@@ -316,6 +349,7 @@
       await Promise.all([
         loadHealth(),
         loadQuota(),
+        loadCacheStatus(),
         loadScrubStatus(),
         loadRecoveryStatus(),
         loadFiles(),
@@ -358,6 +392,22 @@
     async function loadFiles() {
       state.files = await fetchJson("/api/files");
       renderFiles();
+    }
+
+    async function loadCacheStatus() {
+      const cache = await fetchJson("/api/cache/status");
+      const totalOps = Number(cache.hit_count) + Number(cache.miss_count);
+      const hitRatio = totalOps > 0 ? Math.min(100, (Number(cache.hit_count) / totalOps) * 100) : 0;
+
+      document.getElementById("cacheEntries").textContent = cache.total_entries;
+      document.getElementById("cacheHits").textContent = cache.hit_count;
+      document.getElementById("cacheMisses").textContent = cache.miss_count;
+      document.getElementById("cachePrefetched").textContent = cache.prefetched_entries;
+      document.getElementById("cacheUsageLabel").textContent =
+        `Usage: ${humanBytes(cache.total_bytes)} / ${humanBytes(cache.max_bytes)}`;
+      document.getElementById("cacheHitRatioLabel").textContent =
+        `Hit ratio: ${hitRatio.toFixed(1)}%`;
+      document.getElementById("cacheHitRatioBar").style.width = `${hitRatio}%`;
     }
 
     async function loadScrubStatus() {

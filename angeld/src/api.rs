@@ -1,3 +1,4 @@
+use crate::cache;
 use crate::config::AppConfig;
 use crate::db;
 use crate::disaster_recovery;
@@ -129,6 +130,16 @@ struct QuotaResponse {
 }
 
 #[derive(Serialize)]
+struct CacheStatusResponse {
+    total_entries: i64,
+    total_bytes: i64,
+    max_bytes: u64,
+    prefetched_entries: i64,
+    hit_count: u64,
+    miss_count: u64,
+}
+
+#[derive(Serialize)]
 struct ProviderQuotaResponse {
     provider: String,
     used_physical_bytes: u64,
@@ -245,6 +256,7 @@ impl ApiServer {
                 post(restore_file_revision),
             )
             .route("/api/quota", get(get_quota))
+            .route("/api/cache/status", get(get_cache_status))
             .route("/api/maintenance/scrub-status", get(get_scrub_status))
             .route("/api/maintenance/scrub-errors", get(get_scrub_errors))
             .route("/api/maintenance/scrub-now", post(post_scrub_now))
@@ -747,6 +759,28 @@ async fn get_quota(State(state): State<ApiState>) -> impl IntoResponse {
         Json(QuotaResponse {
             max_physical_bytes_per_provider: app_config.max_physical_bytes_per_provider,
             providers,
+        }),
+    )
+        .into_response()
+}
+
+async fn get_cache_status(State(state): State<ApiState>) -> impl IntoResponse {
+    let config = AppConfig::from_env();
+    let summary = match db::get_cache_status_summary(&state.pool).await {
+        Ok(summary) => summary,
+        Err(err) => return internal_server_error(err),
+    };
+    let runtime = cache::cache_runtime_stats();
+
+    (
+        StatusCode::OK,
+        Json(CacheStatusResponse {
+            total_entries: summary.total_entries,
+            total_bytes: summary.total_bytes,
+            max_bytes: config.max_cache_bytes,
+            prefetched_entries: summary.prefetched_entries,
+            hit_count: runtime.hit_count,
+            miss_count: runtime.miss_count,
         }),
     )
         .into_response()
