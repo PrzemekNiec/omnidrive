@@ -6,6 +6,7 @@ mod downloader;
 mod gc;
 mod packer;
 mod repair;
+mod smart_sync;
 mod uploader;
 mod vault;
 mod watcher;
@@ -117,8 +118,15 @@ async fn smoke_test_r2_upload() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv();
 
+    let sync_root = sync_root_path();
+    fs::create_dir_all(&sync_root).await?;
     let db_url = env::var("OMNIDRIVE_DB_URL").unwrap_or_else(|_| "sqlite:omnidrive.db".to_string());
     let pool = db::init_db(&db_url).await?;
+    smart_sync::register_sync_root(&sync_root).await
+        .map_err(|err| io::Error::other(format!("smart sync register failed: {err}")))?;
+    smart_sync::project_vault_to_sync_root(&pool, &sync_root).await
+        .map_err(|err| io::Error::other(format!("smart sync projection failed: {err}")))?;
+
     let vault_keys = VaultKeyStore::new();
     let worker = UploadWorker::from_env(pool.clone()).await?;
     let repair_worker = RepairWorker::from_env(pool.clone()).await?;
@@ -126,6 +134,10 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let watcher = FileWatcher::from_env(pool.clone(), vault_keys.clone()).await?;
     let api = ApiServer::from_env(pool, vault_keys)?;
 
+    println!(
+        "smart sync bootstrap ready at {}",
+        sync_root.display()
+    );
     println!("upload worker, repair worker, gc worker, file watcher, and api server started");
 
     let mut upload_task = tokio::spawn(async move { worker.run().await });
@@ -232,4 +244,20 @@ fn env_path(key: &str, default: &str) -> PathBuf {
     env::var(key)
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(default))
+}
+
+fn sync_root_path() -> PathBuf {
+    env::var("OMNIDRIVE_SYNC_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            env::var("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    env::var("USERPROFILE")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|_| PathBuf::from(r"C:\Users\Default"))
+                })
+                .join("OmniDrive")
+                .join("SyncRoot")
+        })
 }

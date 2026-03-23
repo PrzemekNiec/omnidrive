@@ -101,6 +101,16 @@ pub struct FileInventoryRecord {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct ProjectionFileRecord {
+    pub inode_id: i64,
+    pub path: String,
+    pub revision_id: i64,
+    pub size: i64,
+    pub created_at: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
 pub struct SyncPolicyRecord {
     pub policy_id: i64,
     pub path_prefix: String,
@@ -1582,6 +1592,96 @@ pub async fn list_active_files(pool: &SqlitePool) -> Result<Vec<FileInventoryRec
     )
     .fetch_all(pool)
     .await
+}
+
+#[allow(dead_code)]
+pub async fn get_active_files_for_projection(
+    pool: &SqlitePool,
+) -> Result<Vec<ProjectionFileRecord>, sqlx::Error> {
+    let mut records = sqlx::query_as::<_, ProjectionFileRecord>(
+        r#"
+        WITH RECURSIVE inode_paths AS (
+            SELECT
+                id,
+                parent_id,
+                name AS path
+            FROM inodes
+            WHERE parent_id IS NULL
+
+            UNION ALL
+
+            SELECT
+                child.id,
+                child.parent_id,
+                inode_paths.path || '/' || child.name AS path
+            FROM inodes child
+            INNER JOIN inode_paths
+                ON child.parent_id = inode_paths.id
+        )
+        SELECT
+            i.id AS inode_id,
+            inode_paths.path AS path,
+            fr.revision_id AS revision_id,
+            fr.size AS size,
+            fr.created_at AS created_at
+        FROM inodes i
+        INNER JOIN inode_paths
+            ON inode_paths.id = i.id
+        INNER JOIN file_revisions fr
+            ON fr.inode_id = i.id
+           AND fr.is_current = 1
+        WHERE i.kind = 'FILE'
+        ORDER BY inode_paths.path ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut base_paths = list_sync_policies(pool)
+        .await?
+        .into_iter()
+        .map(|policy| policy.path_prefix)
+        .collect::<Vec<_>>();
+    if let Ok(watch_dir) = std::env::var("OMNIDRIVE_WATCH_DIR") {
+        base_paths.push(watch_dir);
+    }
+
+    for record in &mut records {
+        record.path = projection_relative_path(&record.path, &base_paths);
+    }
+
+    Ok(records)
+}
+
+fn projection_relative_path(path: &str, base_paths: &[String]) -> String {
+    let normalized = path.replace('\\', "/");
+    let normalized = normalized.trim().trim_start_matches('/').to_string();
+    if !normalized.contains(':') {
+        return normalized;
+    }
+
+    let candidate = format!("/{}", normalized);
+    let mut best_match_len = 0usize;
+    let mut best_suffix = normalized.clone();
+
+    for base in base_paths {
+        let base_normalized = normalize_policy_path(base);
+        if base_normalized.is_empty() {
+            continue;
+        }
+
+        for prefix in [base_normalized.clone(), format!("/{}", base_normalized)] {
+            if let Some(stripped) = candidate.strip_prefix(&prefix) {
+                let stripped = stripped.trim_start_matches('/').trim_start_matches('\\');
+                if !stripped.is_empty() && prefix.len() > best_match_len {
+                    best_match_len = prefix.len();
+                    best_suffix = stripped.replace('\\', "/");
+                }
+            }
+        }
+    }
+
+    best_suffix
 }
 
 #[allow(dead_code)]
