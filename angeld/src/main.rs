@@ -140,6 +140,12 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|err| io::Error::other(format!("virtual drive hide sync root failed: {err}")))?;
     virtual_drive::mount_virtual_drive(&drive_letter, &sync_root)
         .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
+    virtual_drive::configure_virtual_drive_appearance(
+        &drive_letter,
+        "OmniDrive",
+        &virtual_drive_icon_path(),
+    )
+    .map_err(|err| io::Error::other(format!("virtual drive appearance failed: {err}")))?;
 
     let worker = UploadWorker::from_env(pool.clone()).await?;
     let repair_worker = RepairWorker::from_env(pool.clone()).await?;
@@ -310,4 +316,10 @@ fn sync_root_path() -> PathBuf {
 
 fn virtual_drive_letter() -> String {
     env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string())
+}
+
+fn virtual_drive_icon_path() -> PathBuf {
+    env::var("OMNIDRIVE_DRIVE_ICON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("icons").join("omnidrive.ico"))
 }

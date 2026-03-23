@@ -82,6 +82,25 @@ pub fn hide_sync_root(target_path: &Path) -> Result<(), VirtualDriveError> {
     }
 }
 
+pub fn configure_virtual_drive_appearance(
+    drive_letter: &str,
+    label: &str,
+    icon_path: &Path,
+) -> Result<(), VirtualDriveError> {
+    #[cfg(windows)]
+    {
+        imp::configure_virtual_drive_appearance(drive_letter, label, icon_path)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = drive_letter;
+        let _ = label;
+        let _ = icon_path;
+        Err(VirtualDriveError::UnsupportedPlatform)
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::VirtualDriveError;
@@ -94,6 +113,10 @@ mod imp {
         DefineDosDeviceW, GetFileAttributesW, SetFileAttributesW, DDD_REMOVE_DEFINITION,
         DDD_RAW_TARGET_PATH, FILE_ATTRIBUTE_HIDDEN, FILE_FLAGS_AND_ATTRIBUTES,
     };
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, REG_SZ,
+    };
+    use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 
     pub fn mount_virtual_drive(
         drive_letter: &str,
@@ -145,6 +168,35 @@ mod imp {
         Ok(())
     }
 
+    pub fn configure_virtual_drive_appearance(
+        drive_letter: &str,
+        label: &str,
+        icon_path: &Path,
+    ) -> Result<(), VirtualDriveError> {
+        let drive = normalize_drive_letter(drive_letter)?;
+        let drive_key = drive
+            .chars()
+            .next()
+            .ok_or(VirtualDriveError::InvalidDriveLetter)?
+            .to_ascii_uppercase();
+        let icon_path = normalize_path(icon_path)?;
+        let icon_resource = format!("{},0", icon_path.to_string_lossy().replace('/', "\\"));
+        let base_key = format!(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\DriveIcons\\{drive_key}"
+        );
+        let icon_key = format!("{base_key}\\DefaultIcon");
+        let label_key = format!("{base_key}\\DefaultLabel");
+
+        set_registry_default_value(&icon_key, &icon_resource)?;
+        set_registry_default_value(&label_key, label)?;
+
+        unsafe {
+            SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+        }
+
+        Ok(())
+    }
+
     fn normalize_drive_letter(drive_letter: &str) -> Result<String, VirtualDriveError> {
         let trimmed = drive_letter.trim().trim_end_matches('\\').trim_end_matches('/');
         let core = trimmed.strip_suffix(':').unwrap_or(trimmed);
@@ -177,6 +229,33 @@ mod imp {
     fn raw_target_path(path: &Path) -> String {
         let rendered = path.to_string_lossy().replace('/', "\\");
         format!(r"\??\{rendered}")
+    }
+
+    fn set_registry_default_value(path: &str, value: &str) -> Result<(), VirtualDriveError> {
+        let path_w = wide_null(path);
+        let value_w = wide_null(value);
+        let mut key = HKEY::default();
+
+        unsafe {
+            RegCreateKeyW(
+                HKEY_CURRENT_USER,
+                PCWSTR(path_w.as_ptr()),
+                &mut key,
+            )
+            .ok()?;
+
+            let bytes = std::slice::from_raw_parts(
+                value_w.as_ptr().cast::<u8>(),
+                value_w.len() * std::mem::size_of::<u16>(),
+            );
+            let result = RegSetValueExW(key, None, Some(0), REG_SZ, Some(bytes));
+            let close_result = RegCloseKey(key);
+
+            result.ok()?;
+            close_result.ok()?;
+        }
+
+        Ok(())
     }
 
     fn wide_null(value: &str) -> Vec<u16> {

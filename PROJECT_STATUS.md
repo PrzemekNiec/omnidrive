@@ -58,6 +58,7 @@ Core assumptions:
 - The physical sync root directory is hidden so the user naturally interacts with OmniDrive through the drive letter instead of the backing folder path.
 - Startup now mounts the virtual drive after Smart Sync bootstrap, and shutdown unmounts it cleanly.
 - Sync root preflight now recreates an empty stale directory in the current user context and verifies write access before CFAPI registration.
+- The `O:\` drive now has a custom per-user label (`OmniDrive`) and a dedicated custom icon in Windows Explorer.
 
 ### Disaster Recovery
 - Live metadata snapshotting is implemented through safe SQLite `VACUUM INTO`.
