@@ -84,6 +84,39 @@
     </section>
 
     <section class="mt-8 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+      <div class="mb-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 class="text-lg font-semibold text-white">Recovery Status</h2>
+          <p id="recoveryLastBackup" class="mt-1 text-sm text-slate-400">Loading recovery status...</p>
+        </div>
+        <button
+          id="backupNowButton"
+          class="inline-flex items-center justify-center rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:border-cyan-400/50 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Backup Now
+        </button>
+      </div>
+      <div class="overflow-hidden rounded-xl border border-slate-800">
+        <table class="min-w-full divide-y divide-slate-800">
+          <thead class="bg-slate-950/70">
+            <tr class="text-left text-xs uppercase tracking-[0.2em] text-slate-500">
+              <th class="px-4 py-3">Provider</th>
+              <th class="px-4 py-3">Status</th>
+              <th class="px-4 py-3">Created</th>
+              <th class="px-4 py-3">Size</th>
+              <th class="px-4 py-3">Object Key</th>
+            </tr>
+          </thead>
+          <tbody id="recoveryTableBody" class="divide-y divide-slate-800 bg-slate-900/40">
+            <tr>
+              <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">Loading recovery history...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="mt-8 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
       <div class="mb-4 flex items-center justify-between">
         <div>
           <h2 class="text-lg font-semibold text-white">File Explorer</h2>
@@ -201,6 +234,9 @@
     const filesTableBody = document.getElementById("filesTableBody");
     const quotaGrid = document.getElementById("quotaGrid");
     const quotaLimit = document.getElementById("quotaLimit");
+    const recoveryLastBackup = document.getElementById("recoveryLastBackup");
+    const recoveryTableBody = document.getElementById("recoveryTableBody");
+    const backupNowButton = document.getElementById("backupNowButton");
     const modal = document.getElementById("detailsModal");
     const modalTitle = document.getElementById("modalTitle");
     const modalSubtitle = document.getElementById("modalSubtitle");
@@ -216,6 +252,7 @@
     let autoRefreshHandle = null;
 
     refreshButton.addEventListener("click", () => loadDashboard());
+    backupNowButton.addEventListener("click", triggerBackupNow);
     fileSearchInput.addEventListener("input", renderFiles);
     fileSortSelect.addEventListener("change", renderFiles);
     autoRefreshCheckbox.addEventListener("change", configureAutoRefresh);
@@ -228,6 +265,7 @@
       await Promise.all([
         loadHealth(),
         loadQuota(),
+        loadRecoveryStatus(),
         loadFiles(),
       ]);
       lastRefreshedLabel.textContent = `Last refreshed: ${new Date().toLocaleTimeString()}`;
@@ -268,6 +306,37 @@
     async function loadFiles() {
       state.files = await fetchJson("/api/files");
       renderFiles();
+    }
+
+    async function loadRecoveryStatus() {
+      const recovery = await fetchJson("/api/recovery/status");
+      recoveryLastBackup.textContent = recovery.last_successful_backup
+        ? `Last Backup: ${formatTimestamp(recovery.last_successful_backup)}`
+        : "Last Backup: never";
+
+      if (!recovery.recent_attempts || recovery.recent_attempts.length === 0) {
+        recoveryTableBody.innerHTML = `
+          <tr>
+            <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">No recovery backup attempts recorded yet.</td>
+          </tr>
+        `;
+        return;
+      }
+
+      recoveryTableBody.innerHTML = recovery.recent_attempts.map((attempt) => `
+        <tr>
+          <td class="px-4 py-3 text-sm text-slate-100">${escapeHtml(attempt.provider)}</td>
+          <td class="px-4 py-3 text-sm ${backupStatusClass(attempt.status)}">${escapeHtml(attempt.status)}</td>
+          <td class="px-4 py-3 text-sm text-slate-300">${formatTimestamp(attempt.created_at)}</td>
+          <td class="px-4 py-3 text-sm text-slate-300">${humanBytes(attempt.encrypted_size)}</td>
+          <td class="px-4 py-3 text-xs text-slate-400">${escapeHtml(attempt.object_key)}</td>
+        </tr>
+        ${attempt.last_error ? `
+          <tr>
+            <td colspan="5" class="px-4 pb-3 text-xs text-rose-300">Error: ${escapeHtml(attempt.last_error)}</td>
+          </tr>
+        ` : ""}
+      `).join("");
     }
 
     function renderFiles() {
@@ -393,6 +462,20 @@
       }
     }
 
+    async function triggerBackupNow() {
+      backupNowButton.disabled = true;
+      backupNowButton.textContent = "Backing up...";
+      try {
+        await fetchJson("/api/recovery/backup-now", { method: "POST" });
+        await loadRecoveryStatus();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        backupNowButton.disabled = false;
+        backupNowButton.textContent = "Backup Now";
+      }
+    }
+
     function closeModal() {
       modal.classList.add("hidden");
       modal.classList.remove("flex");
@@ -506,6 +589,13 @@
       const pin = syncStatus.pin_state === 1 ? "Pinned" : "Online-only";
       const hydration = syncStatus.hydration_state === 1 ? "Hydrated" : "Placeholder";
       return `${pin} | ${hydration} | revision ${syncStatus.revision_id}`;
+    }
+
+    function backupStatusClass(status) {
+      if (status === "COMPLETED") return "text-emerald-300";
+      if (status === "FAILED") return "text-rose-300";
+      if (status === "UPLOADING") return "text-cyan-300";
+      return "text-slate-300";
     }
 
     loadDashboard().catch((error) => {

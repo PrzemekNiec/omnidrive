@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand};
+use angeld::disaster_recovery::{MetadataBackupProviderManager, restore_metadata_from_cloud};
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
 use std::fmt;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "omnidrive")]
@@ -31,7 +33,10 @@ enum Command {
 
 #[derive(Subcommand)]
 enum RecoveryCommand {
-    SnapshotLocal { output_path: String },
+    Status,
+    #[command(alias = "snapshot-local")]
+    BackupNow,
+    Restore,
 }
 
 #[derive(Debug)]
@@ -113,9 +118,26 @@ struct SmartSyncActionResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct SnapshotLocalResponse {
-    output_path: String,
-    created: bool,
+struct BackupNowResponse {
+    uploaded: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecoveryStatusResponse {
+    last_successful_backup: Option<i64>,
+    recent_attempts: Vec<MetadataBackupAttemptResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetadataBackupAttemptResponse {
+    backup_id: String,
+    created_at: i64,
+    snapshot_version: i64,
+    object_key: String,
+    provider: String,
+    encrypted_size: i64,
+    status: String,
+    last_error: Option<String>,
 }
 
 #[tokio::main]
@@ -138,9 +160,9 @@ async fn main() {
         Command::Pin { inode_id } => pin(&client, &api_base, inode_id).await,
         Command::Unpin { inode_id } => unpin(&client, &api_base, inode_id).await,
         Command::Recovery { command } => match command {
-            RecoveryCommand::SnapshotLocal { output_path } => {
-                snapshot_local(&client, &api_base, &output_path).await
-            }
+            RecoveryCommand::Status => recovery_status(&client, &api_base).await,
+            RecoveryCommand::BackupNow => backup_now(&client, &api_base).await,
+            RecoveryCommand::Restore => restore_from_cloud().await,
         },
     };
 
@@ -318,29 +340,85 @@ async fn restore(
     Ok(())
 }
 
-async fn snapshot_local(
-    client: &Client,
-    api_base: &str,
-    output_path: &str,
-) -> Result<(), CliError> {
+async fn backup_now(client: &Client, api_base: &str) -> Result<(), CliError> {
     let response = client
-        .post(format!("{api_base}/api/recovery/snapshot-local"))
-        .json(&serde_json::json!({ "output_path": output_path }))
+        .post(format!("{api_base}/api/recovery/backup-now"))
         .send()
         .await?;
 
     if !response.status().is_success() {
         return Err(CliError::Api(format!(
-            "snapshot-local failed with status {}",
+            "backup-now failed with status {}",
             response.status()
         )));
     }
 
-    let snapshot: SnapshotLocalResponse = response.json().await?;
+    let backup: BackupNowResponse = response.json().await?;
+    println!("Uploaded encrypted metadata backup (uploaded={})", backup.uploaded);
+    Ok(())
+}
+
+async fn recovery_status(client: &Client, api_base: &str) -> Result<(), CliError> {
+    let status: RecoveryStatusResponse =
+        get_json(client, &format!("{api_base}/api/recovery/status")).await?;
+
+    println!("Recovery Status");
     println!(
-        "Created metadata snapshot at {} (created={})",
-        snapshot.output_path, snapshot.created
+        "  last successful backup: {}",
+        status
+            .last_successful_backup
+            .map(format_timestamp)
+            .unwrap_or_else(|| "never".to_string())
     );
+    println!();
+
+    if status.recent_attempts.is_empty() {
+        println!("No metadata backup attempts recorded.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<24} {:<18} {:<12} {:>12} {:<10}  OBJECT_KEY",
+        "BACKUP_ID", "PROVIDER", "STATUS", "SIZE", "VERSION"
+    );
+    for attempt in status.recent_attempts {
+        println!(
+            "{:<24} {:<18} {:<12} {:>12} {:<10}  {}",
+            truncate(&attempt.backup_id, 24),
+            attempt.provider,
+            attempt.status,
+            human_bytes(attempt.encrypted_size as u64),
+            attempt.snapshot_version,
+            attempt.object_key
+        );
+        if let Some(error) = attempt.last_error {
+            println!("  error: {}", error);
+        }
+        println!("  created_at: {}", format_timestamp(attempt.created_at));
+    }
+
+    Ok(())
+}
+
+async fn restore_from_cloud() -> Result<(), CliError> {
+    let output_db_path = env::var("OMNIDRIVE_DB_PATH")
+        .map(PathBuf::from)
+        .or_else(|_| env::var("OMNIDRIVE_DB_URL").map(parse_db_url_to_path))
+        .unwrap_or_else(|_| PathBuf::from("omnidrive.db"));
+
+    eprint!("Master Password: ");
+    let passphrase = rpassword::read_password()
+        .map_err(|err| CliError::Api(format!("failed to read password: {err}")))?;
+
+    let provider_manager = MetadataBackupProviderManager::from_env()
+        .await
+        .map_err(|err| CliError::Api(format!("failed to initialize recovery providers: {err}")))?;
+
+    restore_metadata_from_cloud(&provider_manager, &passphrase, &output_db_path)
+        .await
+        .map_err(|err| CliError::Api(format!("restore failed: {err}")))?;
+
+    println!("Restored metadata database to {}", output_db_path.display());
     Ok(())
 }
 
@@ -366,6 +444,26 @@ fn human_bytes(bytes: u64) -> String {
     }
 
     format!("{value:.2} {}", UNITS[unit])
+}
+
+fn parse_db_url_to_path(db_url: String) -> PathBuf {
+    db_url
+        .strip_prefix("sqlite://")
+        .or_else(|| db_url.strip_prefix("sqlite:"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(db_url))
+}
+
+fn format_timestamp(timestamp_ms: i64) -> String {
+    format!("{timestamp_ms} ms since epoch")
+}
+
+fn truncate(value: &str, max_len: usize) -> String {
+    if value.len() <= max_len {
+        value.to_string()
+    } else {
+        format!("{}...", &value[..max_len.saturating_sub(3)])
+    }
 }
 
 fn sync_marker(pin_state: Option<i64>, hydration_state: Option<i64>) -> String {

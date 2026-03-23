@@ -53,34 +53,29 @@ Core assumptions:
 - Pin / unpin, hydration state tracking, CLI commands, API endpoints, and web UI controls are implemented.
 - Smart Sync is complete enough to expose the vault as on-demand files in Windows Explorer.
 
+### Disaster Recovery
+- Live metadata snapshotting is implemented through safe SQLite `VACUUM INTO`.
+- Metadata backups are encrypted in the `OMNIDRIVE-META1` format with a dedicated recovery key derived via HKDF.
+- Off-site metadata backup upload and tracking are implemented across configured providers.
+- A periodic metadata backup worker now runs in the daemon background.
+- Recovery bootstrap is implemented through `omnidrive recovery restore`, without requiring a running daemon.
+- Recovery visibility is exposed through API, CLI, and the local web UI.
+
 ## CURRENT FOCUS
 
-### Epic 20: Disaster Recovery
+### Epic 21: Deep Data Scrubbing
 Goal:
-- eliminate the local SQLite metadata database as a single point of failure
+- detect and repair silent shard corruption in cloud storage
 
 Scope:
-- safe live snapshotting of `omnidrive.db`
-- encryption of metadata backups
-- cloud upload of recovery artifacts
-- automated metadata backup worker
-- `Restore from Cloud` bootstrap on a fresh machine
+- sampled or scheduled shard verification
+- checksum validation
+- object size validation
+- shard-set consistency checks
+- triggering the existing repair flow for corrupted shards
 
 Outcome:
-- full vault recovery from cloud metadata using only the master password and provider credentials
-
-### Current checkpoint
-- `Phase 1: Snapshot Engine` is implemented.
-- `create_metadata_snapshot(...)` works through SQLite `VACUUM INTO`.
-- API endpoint `POST /api/recovery/snapshot-local` is implemented.
-- CLI command `omnidrive recovery snapshot-local <output_path>` is implemented.
-- Snapshot engine test coverage exists and passes.
-
-### Next step after the pause
-- `Epic 20 / Phase 2: Encryption and backup artifact format`
-- derive a dedicated `metadata_backup_key`
-- encrypt the SQLite snapshot into a versioned recovery artifact
-- prepare the artifact for cloud upload and manifest tracking
+- the system detects bitrot, truncation, and silent corruption instead of only missing objects
 
 ## ROADMAP
 

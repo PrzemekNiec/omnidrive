@@ -3,7 +3,7 @@ use crate::db;
 use crate::disaster_recovery;
 use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
-use crate::vault::VaultKeyStore;
+use crate::vault::{VaultError, VaultKeyStore};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
@@ -159,6 +159,29 @@ struct SnapshotLocalResponse {
     created: bool,
 }
 
+#[derive(Serialize)]
+struct BackupNowResponse {
+    uploaded: bool,
+}
+
+#[derive(Serialize)]
+struct RecoveryStatusResponse {
+    last_successful_backup: Option<i64>,
+    recent_attempts: Vec<MetadataBackupAttemptResponse>,
+}
+
+#[derive(Serialize)]
+struct MetadataBackupAttemptResponse {
+    backup_id: String,
+    created_at: i64,
+    snapshot_version: i64,
+    object_key: String,
+    provider: String,
+    encrypted_size: i64,
+    status: String,
+    last_error: Option<String>,
+}
+
 impl ApiServer {
     pub fn from_env(pool: SqlitePool, vault_keys: VaultKeyStore) -> Result<Self, ApiError> {
         let _ = dotenvy::dotenv();
@@ -196,6 +219,8 @@ impl ApiServer {
                 post(restore_file_revision),
             )
             .route("/api/quota", get(get_quota))
+            .route("/api/recovery/status", get(get_recovery_status))
+            .route("/api/recovery/backup-now", post(post_backup_now))
             .route("/api/recovery/snapshot-local", post(post_snapshot_local))
             .route("/api/unlock", post(post_unlock))
             .with_state(state);
@@ -698,20 +723,117 @@ async fn get_quota(State(state): State<ApiState>) -> impl IntoResponse {
         .into_response()
 }
 
+async fn get_recovery_status(State(state): State<ApiState>) -> impl IntoResponse {
+    let last_successful_backup = match db::get_last_successful_metadata_backup_at(&state.pool).await
+    {
+        Ok(value) => value,
+        Err(err) => return internal_server_error(err),
+    };
+
+    let recent_attempts = match db::list_recent_metadata_backups(&state.pool, 10).await {
+        Ok(records) => records
+            .into_iter()
+            .map(|record| MetadataBackupAttemptResponse {
+                backup_id: record.backup_id,
+                created_at: record.created_at,
+                snapshot_version: record.snapshot_version,
+                object_key: record.object_key,
+                provider: record.provider,
+                encrypted_size: record.encrypted_size,
+                status: record.status,
+                last_error: record.last_error,
+            })
+            .collect(),
+        Err(err) => return internal_server_error(err),
+    };
+
+    (
+        StatusCode::OK,
+        Json(RecoveryStatusResponse {
+            last_successful_backup,
+            recent_attempts,
+        }),
+    )
+        .into_response()
+}
+
 async fn post_snapshot_local(
     State(state): State<ApiState>,
     Json(request): Json<SnapshotLocalRequest>,
 ) -> impl IntoResponse {
     let output_path = std::path::PathBuf::from(&request.output_path);
-    match disaster_recovery::create_metadata_snapshot(&state.pool, &output_path).await {
+    let master_key = match state.vault_keys.require_master_key().await {
+        Ok(key) => key,
+        Err(VaultError::Locked) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "vault_locked",
+                    "message": "unlock the vault before creating an encrypted metadata snapshot"
+                })),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_server_error(err),
+    };
+
+    match disaster_recovery::create_encrypted_metadata_snapshot(
+        &state.pool,
+        &output_path,
+        &master_key,
+    )
+    .await
+    {
         Ok(()) => (
             StatusCode::OK,
             Json(SnapshotLocalResponse {
-                output_path: output_path.display().to_string(),
+                output_path: if output_path
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with(".enc")
+                {
+                    output_path.display().to_string()
+                } else {
+                    format!("{}.enc", output_path.display())
+                },
                 created: true,
             }),
         )
             .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn post_backup_now(State(state): State<ApiState>) -> impl IntoResponse {
+    let master_key = match state.vault_keys.require_master_key().await {
+        Ok(key) => key,
+        Err(VaultError::Locked) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "vault_locked",
+                    "message": "unlock the vault before creating an encrypted metadata backup"
+                })),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_server_error(err),
+    };
+
+    let provider_manager = match disaster_recovery::MetadataBackupProviderManager::from_env().await
+    {
+        Ok(manager) => manager,
+        Err(err) => return internal_server_error(err),
+    };
+
+    match disaster_recovery::run_metadata_backup_now(
+        &state.pool,
+        &provider_manager,
+        &master_key,
+    )
+    .await
+    {
+        Ok(()) => (StatusCode::OK, Json(BackupNowResponse { uploaded: true })).into_response(),
         Err(err) => internal_server_error(err),
     }
 }

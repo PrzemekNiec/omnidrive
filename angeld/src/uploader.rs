@@ -222,6 +222,15 @@ impl Uploader {
             .await
     }
 
+    pub async fn upload_system_file(
+        &self,
+        file_path: impl AsRef<Path>,
+        key: &str,
+    ) -> Result<UploadedPack, UploaderError> {
+        self.upload_file(file_path.as_ref(), key, "application/octet-stream", None)
+            .await
+    }
+
     async fn upload_shard(
         &self,
         shard_path: impl AsRef<Path>,
@@ -453,26 +462,47 @@ impl UploadWorker {
                         job.pack_id, shard.shard_index, uploaded.provider, uploaded.key
                     );
                 }
-                Ok(Err(err)) if err.is_retryable() => {
-                    let attempts = db::requeue_pack_shard(
-                        &self.pool,
-                        &job.pack_id,
-                        shard.shard_index,
-                        &err.to_string(),
-                    )
-                    .await?;
-                    db::requeue_upload_target(
-                        &self.pool,
-                        job.id,
-                        &shard.provider,
-                        &err.to_string(),
-                    )
-                    .await?;
-                    max_attempts = max_attempts.max(attempts);
-                    failed_shards.push(format!(
-                        "{} shard {}: {}",
-                        shard.provider, shard.shard_index, err
-                    ));
+                Ok(Err(err)) => {
+                    if err.is_retryable() {
+                        let attempts = db::requeue_pack_shard(
+                            &self.pool,
+                            &job.pack_id,
+                            shard.shard_index,
+                            &err.to_string(),
+                        )
+                        .await?;
+                        db::requeue_upload_target(
+                            &self.pool,
+                            job.id,
+                            &shard.provider,
+                            &err.to_string(),
+                        )
+                        .await?;
+                        max_attempts = max_attempts.max(attempts);
+                        failed_shards.push(format!(
+                            "{} shard {}: {}",
+                            shard.provider, shard.shard_index, err
+                        ));
+                    } else {
+                        db::mark_pack_shard_failed(
+                            &self.pool,
+                            &job.pack_id,
+                            shard.shard_index,
+                            &err.to_string(),
+                        )
+                        .await?;
+                        db::mark_upload_target_failed(
+                            &self.pool,
+                            job.id,
+                            &shard.provider,
+                            &err.to_string(),
+                        )
+                        .await?;
+                        failed_shards.push(format!(
+                            "{} shard {}: {}",
+                            shard.provider, shard.shard_index, err
+                        ));
+                    }
                 }
                 Err(_) => {
                     let timeout_error = UploaderError::Timeout {
@@ -497,26 +527,6 @@ impl UploadWorker {
                     failed_shards.push(format!(
                         "{} shard {}: {}",
                         shard.provider, shard.shard_index, timeout_error
-                    ));
-                }
-                Ok(Err(err)) => {
-                    db::mark_pack_shard_failed(
-                        &self.pool,
-                        &job.pack_id,
-                        shard.shard_index,
-                        &err.to_string(),
-                    )
-                    .await?;
-                    db::mark_upload_target_failed(
-                        &self.pool,
-                        job.id,
-                        &shard.provider,
-                        &err.to_string(),
-                    )
-                    .await?;
-                    failed_shards.push(format!(
-                        "{} shard {}: {}",
-                        shard.provider, shard.shard_index, err
                     ));
                 }
             }

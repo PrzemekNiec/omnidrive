@@ -13,6 +13,7 @@ mod vault;
 mod watcher;
 
 use crate::api::ApiServer;
+use crate::disaster_recovery::{MetadataBackupProviderManager, start_metadata_backup_worker};
 use crate::downloader::Downloader;
 use crate::gc::GcWorker;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
@@ -137,6 +138,13 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let worker = UploadWorker::from_env(pool.clone()).await?;
     let repair_worker = RepairWorker::from_env(pool.clone()).await?;
     let gc_worker = GcWorker::from_env(pool.clone()).await?;
+    let metadata_backup_provider_manager =
+        Arc::new(MetadataBackupProviderManager::from_env().await?);
+    let metadata_backup_worker = start_metadata_backup_worker(
+        pool.clone(),
+        metadata_backup_provider_manager,
+        Arc::new(vault_keys.clone()),
+    );
     let watcher = FileWatcher::from_env(pool.clone(), vault_keys.clone()).await?;
     let api = ApiServer::from_env(pool, vault_keys)?;
 
@@ -149,6 +157,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let mut upload_task = tokio::spawn(async move { worker.run().await });
     let mut repair_task = tokio::spawn(async move { repair_worker.run().await });
     let mut gc_task = tokio::spawn(async move { gc_worker.run().await });
+    let mut metadata_backup_task = metadata_backup_worker;
     let mut api_task = tokio::spawn(async move { api.run().await });
     let watcher_future = watcher.run();
     tokio::pin!(watcher_future);
@@ -157,6 +166,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         result = &mut upload_task => {
             repair_task.abort();
             gc_task.abort();
+            metadata_backup_task.abort();
             api_task.abort();
             let outcome = result??;
             Ok(outcome)
@@ -164,6 +174,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         result = &mut repair_task => {
             upload_task.abort();
             gc_task.abort();
+            metadata_backup_task.abort();
             api_task.abort();
             let outcome = result??;
             Ok(outcome)
@@ -171,14 +182,24 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         result = &mut gc_task => {
             upload_task.abort();
             repair_task.abort();
+            metadata_backup_task.abort();
             api_task.abort();
             let outcome = result??;
             Ok(outcome)
+        }
+        result = &mut metadata_backup_task => {
+            upload_task.abort();
+            repair_task.abort();
+            gc_task.abort();
+            api_task.abort();
+            result?;
+            Ok(())
         }
         result = &mut watcher_future => {
             upload_task.abort();
             repair_task.abort();
             gc_task.abort();
+            metadata_backup_task.abort();
             api_task.abort();
             let outcome = result?;
             Ok(outcome)
@@ -187,6 +208,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             upload_task.abort();
             repair_task.abort();
             gc_task.abort();
+            metadata_backup_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
@@ -195,6 +217,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             upload_task.abort();
             repair_task.abort();
             gc_task.abort();
+            metadata_backup_task.abort();
             api_task.abort();
             println!("shutdown signal received");
             Ok(())

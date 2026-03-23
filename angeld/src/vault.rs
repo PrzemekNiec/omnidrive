@@ -12,7 +12,13 @@ const DEFAULT_LANES: u32 = 1;
 
 #[derive(Clone, Default)]
 pub struct VaultKeyStore {
-    inner: Arc<RwLock<Option<KeyBytes>>>,
+    inner: Arc<RwLock<Option<UnlockedVaultKeys>>>,
+}
+
+#[derive(Clone, Copy)]
+struct UnlockedVaultKeys {
+    master_key: KeyBytes,
+    vault_key: KeyBytes,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,7 +78,10 @@ impl VaultKeyStore {
 
         let (config, initialized) = ensure_vault_config(pool).await?;
         let root_keys = derive_root_keys(passphrase.as_bytes(), &config)?;
-        *self.inner.write().await = Some(root_keys.vault_key);
+        *self.inner.write().await = Some(UnlockedVaultKeys {
+            master_key: root_keys.master_key,
+            vault_key: root_keys.vault_key,
+        });
 
         Ok(UnlockResult {
             initialized,
@@ -82,14 +91,24 @@ impl VaultKeyStore {
 
     pub async fn require_key(&self) -> Result<KeyBytes, VaultError> {
         match *self.inner.read().await {
-            Some(key) => Ok(key),
+            Some(keys) => Ok(keys.vault_key),
+            None => Err(VaultError::Locked),
+        }
+    }
+
+    pub async fn require_master_key(&self) -> Result<KeyBytes, VaultError> {
+        match *self.inner.read().await {
+            Some(keys) => Ok(keys.master_key),
             None => Err(VaultError::Locked),
         }
     }
 
     #[cfg(test)]
     pub async fn set_key_for_tests(&self, key: KeyBytes) {
-        *self.inner.write().await = Some(key);
+        *self.inner.write().await = Some(UnlockedVaultKeys {
+            master_key: key,
+            vault_key: key,
+        });
     }
 }
 
