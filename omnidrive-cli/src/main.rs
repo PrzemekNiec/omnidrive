@@ -25,10 +25,20 @@ enum Command {
     Restore { inode_id: i64, revision_id: i64 },
     Pin { inode_id: i64 },
     Unpin { inode_id: i64 },
+    Maintenance {
+        #[command(subcommand)]
+        command: MaintenanceCommand,
+    },
     Recovery {
         #[command(subcommand)]
         command: RecoveryCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum MaintenanceCommand {
+    Status,
+    Errors,
 }
 
 #[derive(Subcommand)]
@@ -140,6 +150,26 @@ struct MetadataBackupAttemptResponse {
     last_error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ScrubStatusResponse {
+    total_shards: i64,
+    verified_shards: i64,
+    healthy_shards: i64,
+    corrupted_or_missing: i64,
+    verified_light_shards: i64,
+    verified_deep_shards: i64,
+    last_scrub_timestamp: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScrubErrorResponse {
+    pack_id: String,
+    provider: String,
+    shard_index: i64,
+    last_verified_at: Option<i64>,
+    status: Option<String>,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -159,6 +189,10 @@ async fn main() {
         } => restore(&client, &api_base, inode_id, revision_id).await,
         Command::Pin { inode_id } => pin(&client, &api_base, inode_id).await,
         Command::Unpin { inode_id } => unpin(&client, &api_base, inode_id).await,
+        Command::Maintenance { command } => match command {
+            MaintenanceCommand::Status => maintenance_status(&client, &api_base).await,
+            MaintenanceCommand::Errors => maintenance_errors(&client, &api_base).await,
+        },
         Command::Recovery { command } => match command {
             RecoveryCommand::Status => recovery_status(&client, &api_base).await,
             RecoveryCommand::BackupNow => backup_now(&client, &api_base).await,
@@ -395,6 +429,86 @@ async fn recovery_status(client: &Client, api_base: &str) -> Result<(), CliError
             println!("  error: {}", error);
         }
         println!("  created_at: {}", format_timestamp(attempt.created_at));
+    }
+
+    Ok(())
+}
+
+async fn maintenance_status(client: &Client, api_base: &str) -> Result<(), CliError> {
+    let status: ScrubStatusResponse =
+        get_json(client, &format!("{api_base}/api/maintenance/scrub-status")).await?;
+
+    let verification_pct = if status.total_shards > 0 {
+        (status.verified_shards as f64 / status.total_shards as f64) * 100.0
+    } else {
+        0.0
+    };
+    let healthy_pct = if status.total_shards > 0 {
+        (status.healthy_shards as f64 / status.total_shards as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    println!("Vault Integrity");
+    println!(
+        "  coverage: {:.1}% verified ({}/{})",
+        verification_pct, status.verified_shards, status.total_shards
+    );
+    println!(
+        "  healthy:  {:.1}% healthy ({}/{})",
+        healthy_pct, status.healthy_shards, status.total_shards
+    );
+    println!("  errors:   {}", status.corrupted_or_missing);
+    println!(
+        "  methods:  light={} deep={}",
+        status.verified_light_shards, status.verified_deep_shards
+    );
+    println!(
+        "  last scan: {}",
+        status
+            .last_scrub_timestamp
+            .map(format_timestamp)
+            .unwrap_or_else(|| "never".to_string())
+    );
+
+    let filled = ((verification_pct / 10.0).round() as usize).min(10);
+    let empty = 10usize.saturating_sub(filled);
+    println!();
+    println!(
+        "  [{}{}] {:.1}% verified",
+        "#".repeat(filled),
+        "-".repeat(empty),
+        verification_pct
+    );
+
+    Ok(())
+}
+
+async fn maintenance_errors(client: &Client, api_base: &str) -> Result<(), CliError> {
+    let errors: Vec<ScrubErrorResponse> =
+        get_json(client, &format!("{api_base}/api/maintenance/scrub-errors")).await?;
+
+    if errors.is_empty() {
+        println!("No scrubber errors detected.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<24} {:<18} {:<8} {:<18} STATUS",
+        "PACK_ID", "PROVIDER", "SHARD", "LAST_VERIFIED"
+    );
+    for error in errors {
+        println!(
+            "{:<24} {:<18} {:<8} {:<18} {}",
+            truncate(&error.pack_id, 24),
+            error.provider,
+            error.shard_index,
+            error
+                .last_verified_at
+                .map(format_timestamp)
+                .unwrap_or_else(|| "never".to_string()),
+            error.status.unwrap_or_else(|| "UNKNOWN".to_string())
+        );
     }
 
     Ok(())

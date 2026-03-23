@@ -191,6 +191,29 @@ pub struct PackShardRecord {
     pub status: String,
     pub attempts: Option<i64>,
     pub last_error: Option<String>,
+    pub last_verified_at: Option<i64>,
+    pub last_verification_method: Option<String>,
+    pub last_verification_status: Option<String>,
+    pub last_verified_size: Option<i64>,
+    pub verification_failures: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct ScrubShardRecord {
+    pub id: i64,
+    pub pack_id: String,
+    pub shard_index: i64,
+    pub provider: String,
+    pub object_key: String,
+    pub size: i64,
+    pub checksum: String,
+    pub status: String,
+    pub last_verified_at: Option<i64>,
+    pub last_verification_method: Option<String>,
+    pub last_verification_status: Option<String>,
+    pub last_verified_size: Option<i64>,
+    pub verification_failures: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -248,6 +271,26 @@ pub struct VaultHealthSummary {
     pub healthy_packs: i64,
     pub degraded_packs: i64,
     pub unreadable_packs: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct ScrubStatusSummary {
+    pub total_shards: i64,
+    pub verified_shards: i64,
+    pub healthy_shards: i64,
+    pub corrupted_or_missing: i64,
+    pub verified_light_shards: i64,
+    pub verified_deep_shards: i64,
+    pub last_scrub_timestamp: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct ScrubErrorRecord {
+    pub pack_id: String,
+    pub provider: String,
+    pub shard_index: i64,
+    pub last_verified_at: Option<i64>,
+    pub last_verification_status: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -416,6 +459,11 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
             status TEXT NOT NULL,
             attempts INTEGER DEFAULT 0,
             last_error TEXT,
+            last_verified_at INTEGER,
+            last_verification_method TEXT,
+            last_verification_status TEXT,
+            last_verified_size INTEGER,
+            verification_failures INTEGER NOT NULL DEFAULT 0,
             UNIQUE(pack_id, shard_index),
             UNIQUE(pack_id, provider)
         )
@@ -476,6 +524,17 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     ensure_column_exists(&pool, "upload_job_targets", "last_attempt_at", "INTEGER").await?;
     ensure_column_exists(&pool, "upload_job_targets", "updated_at", "INTEGER").await?;
     ensure_column_exists(&pool, "pack_shards", "last_error", "TEXT").await?;
+    ensure_column_exists(&pool, "pack_shards", "last_verified_at", "INTEGER").await?;
+    ensure_column_exists(&pool, "pack_shards", "last_verification_method", "TEXT").await?;
+    ensure_column_exists(&pool, "pack_shards", "last_verification_status", "TEXT").await?;
+    ensure_column_exists(&pool, "pack_shards", "last_verified_size", "INTEGER").await?;
+    ensure_column_exists(
+        &pool,
+        "pack_shards",
+        "verification_failures",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
     ensure_column_exists(&pool, "packs", "plaintext_hash", "TEXT").await?;
     ensure_column_exists(
         &pool,
@@ -1420,6 +1479,52 @@ pub async fn get_vault_health_summary(
 }
 
 #[allow(dead_code)]
+pub async fn get_scrub_status_summary(
+    pool: &SqlitePool,
+) -> Result<ScrubStatusSummary, sqlx::Error> {
+    sqlx::query_as::<_, ScrubStatusSummary>(
+        r#"
+        SELECT
+            COUNT(*) AS total_shards,
+            COALESCE(SUM(CASE WHEN last_verified_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS verified_shards,
+            COALESCE(SUM(CASE WHEN last_verification_status = 'HEALTHY' THEN 1 ELSE 0 END), 0) AS healthy_shards,
+            COALESCE(SUM(CASE WHEN last_verification_status IN ('MISSING', 'SIZE_MISMATCH', 'CORRUPTED') THEN 1 ELSE 0 END), 0) AS corrupted_or_missing,
+            COALESCE(SUM(CASE WHEN last_verification_method = 'LIGHT' THEN 1 ELSE 0 END), 0) AS verified_light_shards,
+            COALESCE(SUM(CASE WHEN last_verification_method = 'DEEP' THEN 1 ELSE 0 END), 0) AS verified_deep_shards,
+            MAX(last_verified_at) AS last_scrub_timestamp
+        FROM pack_shards
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn list_scrub_errors(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<ScrubErrorRecord>, sqlx::Error> {
+    sqlx::query_as::<_, ScrubErrorRecord>(
+        r#"
+        SELECT
+            pack_id,
+            provider,
+            shard_index,
+            last_verified_at,
+            last_verification_status
+        FROM pack_shards
+        WHERE last_verification_status IS NOT NULL
+          AND last_verification_status != 'HEALTHY'
+        ORDER BY COALESCE(last_verified_at, 0) DESC, pack_id ASC, shard_index ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
 pub async fn get_physical_usage_for_provider(
     pool: &SqlitePool,
     provider_name: &str,
@@ -1507,7 +1612,12 @@ pub async fn get_pack_shards(
             checksum,
             status,
             attempts,
-            last_error
+            last_error,
+            last_verified_at,
+            last_verification_method,
+            last_verification_status,
+            last_verified_size,
+            COALESCE(verification_failures, 0) AS verification_failures
         FROM pack_shards
         WHERE pack_id = ?
         ORDER BY shard_index ASC
@@ -1574,7 +1684,12 @@ pub async fn get_incomplete_pack_shards(
             checksum,
             status,
             attempts,
-            last_error
+            last_error,
+            last_verified_at,
+            last_verification_method,
+            last_verification_status,
+            last_verified_size,
+            COALESCE(verification_failures, 0) AS verification_failures
         FROM pack_shards
         WHERE pack_id = ?
           AND status != 'COMPLETED'
@@ -1689,6 +1804,86 @@ pub async fn mark_pack_shard_failed(
         "#,
     )
     .bind(error_message)
+    .bind(pack_id)
+    .bind(shard_index)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn get_next_shards_for_scrub(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<ScrubShardRecord>, sqlx::Error> {
+    sqlx::query_as::<_, ScrubShardRecord>(
+        r#"
+        SELECT
+            id,
+            pack_id,
+            shard_index,
+            provider,
+            object_key,
+            size,
+            checksum,
+            status,
+            last_verified_at,
+            last_verification_method,
+            last_verification_status,
+            last_verified_size,
+            COALESCE(verification_failures, 0) AS verification_failures
+        FROM pack_shards
+        ORDER BY
+            CASE WHEN last_verified_at IS NULL THEN 0 ELSE 1 END ASC,
+            COALESCE(last_verified_at, 0) ASC,
+            COALESCE(verification_failures, 0) DESC,
+            id ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn update_shard_verification_status(
+    pool: &SqlitePool,
+    pack_id: &str,
+    shard_index: i64,
+    verification_method: &str,
+    verification_status: &str,
+    verified_size: Option<i64>,
+    increment_failures: bool,
+    last_error: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let operational_status = if verification_status == "HEALTHY" {
+        "COMPLETED"
+    } else {
+        "FAILED"
+    };
+
+    sqlx::query(
+        r#"
+        UPDATE pack_shards
+        SET status = ?,
+            last_verified_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            last_verification_method = ?,
+            last_verification_status = ?,
+            last_verified_size = ?,
+            verification_failures = COALESCE(verification_failures, 0) + CASE WHEN ? THEN 1 ELSE 0 END,
+            last_error = ?
+        WHERE pack_id = ?
+          AND shard_index = ?
+        "#,
+    )
+    .bind(operational_status)
+    .bind(verification_method)
+    .bind(verification_status)
+    .bind(verified_size)
+    .bind(increment_failures)
+    .bind(last_error)
     .bind(pack_id)
     .bind(shard_index)
     .execute(pool)

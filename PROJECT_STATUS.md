@@ -68,21 +68,26 @@ Core assumptions:
 - Recovery bootstrap is implemented through `omnidrive recovery restore`, without requiring a running daemon.
 - Recovery visibility is exposed through API, CLI, and the local web UI.
 
+### Epic 21: Deep Data Scrubbing [x] Completed
+- `pack_shards` now track verification timestamps, methods, statuses, verified sizes, and verification failure counts.
+- A background `ScrubberWorker` performs low-cost `LIGHT` verification via `HEAD` requests and marks shards as `HEALTHY`, `MISSING`, or `SIZE_MISMATCH`.
+- Selective `DEEP` verification now downloads shard blobs, computes SHA-256, and detects true binary corruption with `CORRUPTED` status.
+- Logical pack state is automatically degraded to `COMPLETED_DEGRADED` or `UNREADABLE` when scrub results invalidate shard health.
+- Visibility is exposed through API, CLI, and the dashboard, including audit views of currently problematic shards.
+
 ## CURRENT FOCUS
 
-### Epic 21: Deep Data Scrubbing
+### Epic 22: P2P LAN Cache
 Goal:
-- detect and repair silent shard corruption in cloud storage
+- avoid unnecessary cloud downloads when another OmniDrive node on the same LAN already has the needed encrypted data
 
 Scope:
-- sampled or scheduled shard verification
-- checksum validation
-- object size validation
-- shard-set consistency checks
-- triggering the existing repair flow for corrupted shards
+- peer discovery in the local network
+- safe peer authentication for the same vault
+- local transfer of encrypted shards or chunks before falling back to cloud providers
 
 Outcome:
-- the system detects bitrot, truncation, and silent corruption instead of only missing objects
+- lower internet usage and faster restores inside the home network
 
 ## ROADMAP
 

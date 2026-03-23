@@ -86,6 +86,55 @@
     <section class="mt-8 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
       <div class="mb-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
+          <h2 class="text-lg font-semibold text-white">Vault Integrity</h2>
+          <p id="scrubLastScan" class="mt-1 text-sm text-slate-400">Loading scrub status...</p>
+        </div>
+        <button
+          id="scrubNowButton"
+          class="inline-flex items-center justify-center rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:border-cyan-400/50 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Start Light Scan
+        </button>
+      </div>
+      <div class="grid gap-4 md:grid-cols-4">
+        <div class="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Total Shards</p>
+          <p id="scrubTotalShards" class="mt-3 text-2xl font-semibold text-white">-</p>
+        </div>
+        <div class="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4">
+          <p class="text-xs uppercase tracking-[0.2em] text-cyan-300">Verified</p>
+          <p id="scrubVerifiedShards" class="mt-3 text-2xl font-semibold text-cyan-200">-</p>
+        </div>
+        <div class="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+          <p class="text-xs uppercase tracking-[0.2em] text-emerald-300">Healthy</p>
+          <p id="scrubHealthyShards" class="mt-3 text-2xl font-semibold text-emerald-200">-</p>
+        </div>
+        <div class="rounded-xl border border-rose-500/20 bg-rose-500/5 p-4">
+          <p class="text-xs uppercase tracking-[0.2em] text-rose-300">Missing / Corrupt</p>
+          <p id="scrubCorruptedShards" class="mt-3 text-2xl font-semibold text-rose-200">-</p>
+        </div>
+      </div>
+      <div class="mt-4 grid gap-4 md:grid-cols-2">
+        <div class="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">LIGHT Checks</p>
+          <p id="scrubLightChecks" class="mt-3 text-xl font-semibold text-slate-100">-</p>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">DEEP Checks</p>
+          <p id="scrubDeepChecks" class="mt-3 text-xl font-semibold text-slate-100">-</p>
+        </div>
+      </div>
+      <div class="mt-4">
+        <p id="scrubCoverageLabel" class="mb-2 text-sm text-slate-400">Coverage: -</p>
+        <div class="h-2 overflow-hidden rounded-full bg-slate-800">
+          <div id="scrubCoverageBar" class="h-full rounded-full bg-cyan-400" style="width: 0%"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="mt-8 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+      <div class="mb-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
           <h2 class="text-lg font-semibold text-white">Recovery Status</h2>
           <p id="recoveryLastBackup" class="mt-1 text-sm text-slate-400">Loading recovery status...</p>
         </div>
@@ -237,6 +286,7 @@
     const recoveryLastBackup = document.getElementById("recoveryLastBackup");
     const recoveryTableBody = document.getElementById("recoveryTableBody");
     const backupNowButton = document.getElementById("backupNowButton");
+    const scrubNowButton = document.getElementById("scrubNowButton");
     const modal = document.getElementById("detailsModal");
     const modalTitle = document.getElementById("modalTitle");
     const modalSubtitle = document.getElementById("modalSubtitle");
@@ -253,6 +303,7 @@
 
     refreshButton.addEventListener("click", () => loadDashboard());
     backupNowButton.addEventListener("click", triggerBackupNow);
+    scrubNowButton.addEventListener("click", triggerScrubNow);
     fileSearchInput.addEventListener("input", renderFiles);
     fileSortSelect.addEventListener("change", renderFiles);
     autoRefreshCheckbox.addEventListener("change", configureAutoRefresh);
@@ -265,6 +316,7 @@
       await Promise.all([
         loadHealth(),
         loadQuota(),
+        loadScrubStatus(),
         loadRecoveryStatus(),
         loadFiles(),
       ]);
@@ -306,6 +358,26 @@
     async function loadFiles() {
       state.files = await fetchJson("/api/files");
       renderFiles();
+    }
+
+    async function loadScrubStatus() {
+      const scrub = await fetchJson("/api/maintenance/scrub-status");
+      document.getElementById("scrubTotalShards").textContent = scrub.total_shards;
+      document.getElementById("scrubVerifiedShards").textContent = scrub.verified_shards;
+      document.getElementById("scrubHealthyShards").textContent = scrub.healthy_shards;
+      document.getElementById("scrubCorruptedShards").textContent = scrub.corrupted_or_missing;
+      document.getElementById("scrubLightChecks").textContent = scrub.verified_light_shards;
+      document.getElementById("scrubDeepChecks").textContent = scrub.verified_deep_shards;
+      document.getElementById("scrubLastScan").textContent = scrub.last_scrub_timestamp
+        ? `Last scan: ${formatTimestamp(scrub.last_scrub_timestamp)}`
+        : "Last scan: never";
+
+      const coverage = scrub.total_shards > 0
+        ? Math.min(100, (scrub.verified_shards / scrub.total_shards) * 100)
+        : 0;
+      document.getElementById("scrubCoverageLabel").textContent =
+        `Coverage: ${coverage.toFixed(1)}% verified`;
+      document.getElementById("scrubCoverageBar").style.width = `${coverage}%`;
     }
 
     async function loadRecoveryStatus() {
@@ -473,6 +545,20 @@
       } finally {
         backupNowButton.disabled = false;
         backupNowButton.textContent = "Backup Now";
+      }
+    }
+
+    async function triggerScrubNow() {
+      scrubNowButton.disabled = true;
+      scrubNowButton.textContent = "Scanning...";
+      try {
+        await fetchJson("/api/maintenance/scrub-now", { method: "POST" });
+        await loadScrubStatus();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        scrubNowButton.disabled = false;
+        scrubNowButton.textContent = "Start Light Scan";
       }
     }
 

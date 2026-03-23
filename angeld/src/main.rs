@@ -7,6 +7,7 @@ mod downloader;
 mod gc;
 mod packer;
 mod repair;
+mod scrubber;
 mod smart_sync;
 mod uploader;
 mod vault;
@@ -19,6 +20,7 @@ use crate::downloader::Downloader;
 use crate::gc::GcWorker;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::repair::RepairWorker;
+use crate::scrubber::ScrubberWorker;
 use crate::uploader::{UploadWorker, Uploader};
 use crate::vault::VaultKeyStore;
 use crate::watcher::FileWatcher;
@@ -149,6 +151,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     let worker = UploadWorker::from_env(pool.clone()).await?;
     let repair_worker = RepairWorker::from_env(pool.clone()).await?;
+    let scrubber_worker = ScrubberWorker::from_env(pool.clone()).await?;
     let gc_worker = GcWorker::from_env(pool.clone()).await?;
     let metadata_backup_provider_manager =
         Arc::new(MetadataBackupProviderManager::from_env().await?);
@@ -165,10 +168,11 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         sync_root.display()
     );
     println!("virtual drive mounted at {}", drive_letter);
-    println!("upload worker, repair worker, gc worker, file watcher, and api server started");
+    println!("upload worker, repair worker, scrubber worker, gc worker, file watcher, and api server started");
 
     let mut upload_task = tokio::spawn(async move { worker.run().await });
     let mut repair_task = tokio::spawn(async move { repair_worker.run().await });
+    let mut scrubber_task = tokio::spawn(async move { scrubber_worker.run().await });
     let mut gc_task = tokio::spawn(async move { gc_worker.run().await });
     let mut metadata_backup_task = metadata_backup_worker;
     let mut api_task = tokio::spawn(async move { api.run().await });
@@ -178,6 +182,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let result = tokio::select! {
         result = &mut upload_task => {
             repair_task.abort();
+            scrubber_task.abort();
             gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
@@ -186,6 +191,16 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         }
         result = &mut repair_task => {
             upload_task.abort();
+            scrubber_task.abort();
+            gc_task.abort();
+            metadata_backup_task.abort();
+            api_task.abort();
+            let outcome = result??;
+            Ok(outcome)
+        }
+        result = &mut scrubber_task => {
+            upload_task.abort();
+            repair_task.abort();
             gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
@@ -195,6 +210,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         result = &mut gc_task => {
             upload_task.abort();
             repair_task.abort();
+            scrubber_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
             let outcome = result??;
@@ -203,6 +219,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         result = &mut metadata_backup_task => {
             upload_task.abort();
             repair_task.abort();
+            scrubber_task.abort();
             gc_task.abort();
             api_task.abort();
             result?;
@@ -211,6 +228,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         result = &mut watcher_future => {
             upload_task.abort();
             repair_task.abort();
+            scrubber_task.abort();
             gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
@@ -220,6 +238,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         result = &mut api_task => {
             upload_task.abort();
             repair_task.abort();
+            scrubber_task.abort();
             gc_task.abort();
             metadata_backup_task.abort();
             let outcome = result??;
@@ -229,6 +248,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             signal?;
             upload_task.abort();
             repair_task.abort();
+            scrubber_task.abort();
             gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();

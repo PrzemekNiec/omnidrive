@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
 use crate::db;
 use crate::disaster_recovery;
+use crate::scrubber;
 use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
 use crate::vault::{VaultError, VaultKeyStore};
@@ -171,6 +172,31 @@ struct RecoveryStatusResponse {
 }
 
 #[derive(Serialize)]
+struct ScrubStatusResponse {
+    total_shards: i64,
+    verified_shards: i64,
+    healthy_shards: i64,
+    corrupted_or_missing: i64,
+    verified_light_shards: i64,
+    verified_deep_shards: i64,
+    last_scrub_timestamp: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct ScrubNowResponse {
+    processed_shards: usize,
+}
+
+#[derive(Serialize)]
+struct ScrubErrorResponse {
+    pack_id: String,
+    provider: String,
+    shard_index: i64,
+    last_verified_at: Option<i64>,
+    status: Option<String>,
+}
+
+#[derive(Serialize)]
 struct MetadataBackupAttemptResponse {
     backup_id: String,
     created_at: i64,
@@ -219,6 +245,9 @@ impl ApiServer {
                 post(restore_file_revision),
             )
             .route("/api/quota", get(get_quota))
+            .route("/api/maintenance/scrub-status", get(get_scrub_status))
+            .route("/api/maintenance/scrub-errors", get(get_scrub_errors))
+            .route("/api/maintenance/scrub-now", post(post_scrub_now))
             .route("/api/recovery/status", get(get_recovery_status))
             .route("/api/recovery/backup-now", post(post_backup_now))
             .route("/api/recovery/snapshot-local", post(post_snapshot_local))
@@ -755,6 +784,58 @@ async fn get_recovery_status(State(state): State<ApiState>) -> impl IntoResponse
         }),
     )
         .into_response()
+}
+
+async fn get_scrub_status(State(state): State<ApiState>) -> impl IntoResponse {
+    match db::get_scrub_status_summary(&state.pool).await {
+        Ok(summary) => (
+            StatusCode::OK,
+            Json(ScrubStatusResponse {
+                total_shards: summary.total_shards,
+                verified_shards: summary.verified_shards,
+                healthy_shards: summary.healthy_shards,
+                corrupted_or_missing: summary.corrupted_or_missing,
+                verified_light_shards: summary.verified_light_shards,
+                verified_deep_shards: summary.verified_deep_shards,
+                last_scrub_timestamp: summary.last_scrub_timestamp,
+            }),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn post_scrub_now(State(state): State<ApiState>) -> impl IntoResponse {
+    match scrubber::run_scrub_batch_now(state.pool.clone()).await {
+        Ok(processed_shards) => (
+            StatusCode::OK,
+            Json(ScrubNowResponse { processed_shards }),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn get_scrub_errors(State(state): State<ApiState>) -> impl IntoResponse {
+    match db::list_scrub_errors(&state.pool, 100).await {
+        Ok(errors) => (
+            StatusCode::OK,
+            Json(
+                errors
+                    .into_iter()
+                    .map(|record| ScrubErrorResponse {
+                        pack_id: record.pack_id,
+                        provider: record.provider,
+                        shard_index: record.shard_index,
+                        last_verified_at: record.last_verified_at,
+                        status: record.last_verification_status,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
 }
 
 async fn post_snapshot_local(
