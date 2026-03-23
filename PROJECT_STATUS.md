@@ -49,32 +49,19 @@ Core assumptions:
 
 ## CURRENT FOCUS
 
-### Epic 8: ADR and target storage model
+### Epic 19: Smart Sync / Files On-Demand
 Goal:
-- formally close the architectural decisions for the EC model
+- expose files locally without requiring a full local copy
 
 Scope:
-- lock in **single encrypted chunk** as the EC unit
-- define the shard model:
-  - `2 data shards`
-  - `1 parity shard`
-- define status semantics:
-  - `COMPLETED_HEALTHY` = `3/3`
-  - `COMPLETED_DEGRADED` = `2/3`
-  - `UNREADABLE` = `<2/3`
-- define repair lifecycle behavior
-- define the relationship:
-  - `inode/revision -> encrypted chunk`
-  - `encrypted chunk -> shard set`
-  - `shard set -> provider objects`
-- define identifiers and metadata:
-  - `chunk_id`
-  - `shard_id`
-  - checksums and reconstruction metadata
-- define the migration plan from the current prototype model
+- placeholder files
+- lazy download / hydration
+- pin and unpin
+- cache policy
+- integration with Windows `Cloud Files API`
 
 Outcome:
-- one technical design that becomes the implementation baseline
+- full cloud-drive behavior at the OS level
 
 ## ROADMAP
 
@@ -239,6 +226,274 @@ Scope:
 
 Outcome:
 - full cloud-drive behavior at the OS level
+
+## EPIC 19 IMPLEMENTATION PLAN
+
+### Objective
+- Integrate OmniDrive with the Windows `Cloud Files API` so the vault appears locally as a native filesystem tree while file contents are hydrated only on demand.
+
+### Platform approach
+- Target Windows first.
+- Use the Windows `Cloud Files API (CFAPI)` through the `windows` or `windows-sys` crate.
+- Do **not** build a custom filesystem driver.
+- Treat Smart Sync as a projection layer on top of the existing:
+  - `db.rs`
+  - `downloader.rs`
+  - EC shard model
+  - revision model
+
+### Core design
+- A local `sync root` is registered with Windows as a Cloud Files provider root.
+- Every active file in the vault is represented locally as a placeholder entry.
+- The placeholder stores file identity metadata:
+  - `inode_id`
+  - `revision_id`
+  - optional policy / pin flags
+- When Windows requests file content, OmniDrive resolves the request through:
+  - `inode_id`
+  - current or pinned `revision_id`
+  - EC downloader reconstruction
+
+### Data model additions
+- Add table `smart_sync_state`:
+  - `inode_id PRIMARY KEY`
+  - `revision_id`
+  - `placeholder_path`
+  - `pin_state`
+  - `hydration_state`
+  - `last_hydrated_at`
+  - `last_error`
+- Optional table `sync_root_config`:
+  - `root_path`
+  - `provider_name`
+  - `registered_at`
+  - `cfapi_version`
+
+### Phase 1: Sync Root bootstrap
+- Create module `angeld/src/smart_sync.rs`.
+- Register the selected local folder as a CFAPI sync root.
+- Persist sync root configuration in SQLite.
+- Add daemon startup wiring so Smart Sync can run beside:
+  - watcher
+  - uploader
+  - repair
+  - GC
+  - API
+
+Deliverable:
+- Windows recognizes the OmniDrive sync directory as a managed cloud root.
+
+### Phase 2: Placeholder projection
+- Extend `db.rs` with inventory queries specialized for placeholder generation:
+  - active files
+  - active directories
+  - current revision metadata
+  - logical file size
+- Project the vault tree into the sync root as placeholders.
+- Use `inode_id + revision_id` as the placeholder file identity payload.
+- Preserve timestamps and logical size from the current revision.
+
+Deliverable:
+- Explorer shows the full vault tree even when file data is not hydrated locally.
+
+### Phase 3: Hydration callback registration
+- Register CFAPI callbacks for:
+  - fetch data
+  - cancel fetch
+  - fetch placeholders
+- Build a callback dispatcher that converts CFAPI file identity back into:
+  - `inode_id`
+  - `revision_id`
+- Keep callback logic thin; delegate real work to downloader services.
+
+Deliverable:
+- OmniDrive is notified when Windows or a user process opens a placeholder file.
+
+### Phase 4: Downloader range API
+- Refactor `downloader.rs` to expose range-based reconstruction:
+  - `read_range(inode_id, revision_id, offset, length)`
+- Reuse existing EC logic:
+  - resolve chunk refs for the revision
+  - locate shard sets
+  - reconstruct missing shard if needed
+  - decode ciphertext
+  - decrypt plaintext
+- Avoid always restoring the full file to disk.
+
+Deliverable:
+- Downloader can produce byte ranges on demand for OS hydration requests.
+
+### Phase 5: OS hydration writeback
+- Stream reconstructed bytes back into the placeholder through CFAPI.
+- Support partial hydration for requested ranges.
+- Handle cancellation cleanly if Windows aborts the request.
+- Keep hydration incremental rather than forcing a full-file materialization.
+
+Deliverable:
+- Double-clicking or opening a placeholder file hydrates it through OmniDrive.
+
+### Phase 6: Pinning and cache policy
+- Introduce pin states:
+  - `ONLINE_ONLY`
+  - `PINNED`
+  - `HYDRATED`
+- Add local cache management:
+  - pin file
+  - unpin file
+  - evict hydrated content when allowed
+- Respect versioning:
+  - placeholders point to `current revision` by default
+  - restore changes the current revision and future hydrations follow it
+
+Deliverable:
+- Users can choose which files remain fully local and which stay on-demand.
+
+### Phase 7: API, CLI, and UI surface
+- Add API endpoints:
+  - `GET /api/files/:inode_id/status`
+  - `POST /api/files/:inode_id/pin`
+  - `POST /api/files/:inode_id/unpin`
+- Extend CLI:
+  - `omnidrive pin <inode_id>`
+  - `omnidrive unpin <inode_id>`
+- Extend web UI:
+  - placeholder / hydrated / pinned badges
+  - pin / unpin actions
+
+Deliverable:
+- Smart Sync is controllable from API, CLI, and web UI.
+
+### Runtime architecture
+- `smart_sync.rs`
+  - CFAPI registration
+  - placeholder reconciliation
+  - hydration callbacks
+- `db.rs`
+  - file inventory and sync state queries
+- `downloader.rs`
+  - range-based EC reconstruction
+- `api.rs`
+  - sync status and pin management
+- `omnidrive-cli`
+  - pin / unpin commands
+
+### Key technical rules
+- Placeholder identity must be stable and map directly to `inode_id` and `revision_id`.
+- Smart Sync should default to the `current revision`, not historical revisions.
+- Restore stays a metadata operation; hydration follows the newly promoted revision.
+- Hydration must be range-capable, not just whole-file restore.
+- Cancellation and partial reads are first-class requirements.
+
+### Risks
+- CFAPI callbacks are low-level and require strict error handling.
+- Range-based reconstruction is a deeper downloader change than simple file restore.
+- Concurrent readers may trigger overlapping hydration requests for the same file.
+- Placeholder reconciliation must stay consistent with watcher, versioning, and policy engine.
+
+### Recommended rollout order
+1. Register sync root and create a single test placeholder.
+2. Support hydration for one small full-file test case.
+3. Add range hydration for real application access patterns.
+4. Add pin / unpin and local cache policy.
+5. Add API / CLI / UI controls and diagnostics.
+
+## PHASE 6: OMNIDRIVE ULTIMATE v2
+
+### Epic 20: Disaster Recovery
+Goal:
+- recover the entire vault after loss of the local machine and local SQLite state
+
+Scope:
+- `Metadata Backup Worker`
+- periodic snapshots of `omnidrive.db`
+- encryption of metadata snapshots with a recovery key or a key derived from the Vault Master Key
+- upload of encrypted metadata backups to cloud storage
+- recovery manifest
+- `Restore from Cloud` flow on first startup on a new machine
+
+Key decisions:
+- whether metadata backup is stored on one provider or multiple providers
+- snapshot rotation policy
+- recovery workflow when no local database exists
+
+Outcome:
+- local SQLite is no longer a single point of failure
+
+### Epic 21: Deep Data Scrubbing
+Goal:
+- detect and repair silent shard corruption in cloud storage
+
+Scope:
+- `Scrubbing Worker`
+- sampled or scheduled shard verification
+- validation of:
+  - checksum
+  - object size
+  - shard-set consistency
+- marking corrupted shards as `FAILED`
+- automatic trigger of the existing `Repair Worker`
+
+Key decisions:
+- sampled scrubbing versus full sweep
+- scrub frequency
+- whether to prioritize `DEGRADED` packs
+
+Outcome:
+- the system detects bitrot, not just missing objects
+
+### Epic 22: P2P LAN Cache
+Goal:
+- avoid unnecessary internet downloads when another machine on the local network already has the required data
+
+Scope:
+- peer discovery via `mDNS / Bonjour`
+- identification of peers sharing the same `Vault ID`
+- downloader checks LAN peers before cloud providers
+- direct transfer of encrypted shards or encrypted chunks between devices
+
+Key decisions:
+- whether peers expose shards or encrypted chunks
+- mutual authentication between peers
+- whether LAN peers act only as opportunistic cache or as a full read-path source
+
+Outcome:
+- faster local recovery and lower internet bandwidth usage in home networks
+
+### Epic 23: Zero-Knowledge Link Sharing
+Goal:
+- share files safely without exposing the decryption key to the server
+
+Scope:
+- API endpoint for public share token generation
+- dedicated web download view
+- decryption key stored in the URL fragment
+- browser-side workflow:
+  - fetch at least `2/3` shards
+  - reconstruct data
+  - decrypt locally using WebCrypto or WASM
+
+Key decisions:
+- token expiry
+- token revocation
+- maximum shared file size
+- whether the browser performs full EC decode or consumes a prepared stream
+
+Outcome:
+- private zero-knowledge file sharing
+
+## PHASE 6 RECOMMENDED ORDER
+
+1. `Epic 20: Disaster Recovery`
+2. `Epic 21: Deep Data Scrubbing`
+3. `Epic 22: P2P LAN Cache`
+4. `Epic 23: Zero-Knowledge Link Sharing`
+
+## WHY THIS PHASE 6 STRUCTURE IS BETTER
+
+- It does not mix four different systems into one oversized epic.
+- It closes resilience and integrity before adding network convenience and sharing features.
+- It is easier to implement, test, and track on the roadmap.
+- It keeps `Smart Sync` as the immediate next delivery while making the post-Smart-Sync direction explicit.
 
 ## Architectural Notes
 
