@@ -250,6 +250,93 @@ impl Downloader {
         })
     }
 
+    pub async fn read_range(
+        &self,
+        inode_id: i64,
+        revision_id: i64,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>, DownloaderError> {
+        let _revision = db::get_file_revision(&self.pool, inode_id, revision_id)
+            .await?
+            .ok_or(DownloaderError::NoChunksForInode(inode_id))?;
+
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+
+        let end_offset = offset
+            .checked_add(length)
+            .ok_or(DownloaderError::NumericOverflow("range end"))?;
+        let start_i64 = i64::try_from(offset)
+            .map_err(|_| DownloaderError::NumericOverflow("range start"))?;
+        let end_i64 = i64::try_from(end_offset)
+            .map_err(|_| DownloaderError::NumericOverflow("range end"))?;
+
+        let chunk_locations = db::get_revision_chunk_locations_in_range(
+            &self.pool,
+            inode_id,
+            revision_id,
+            start_i64,
+            end_i64,
+        )
+        .await?;
+        if chunk_locations.is_empty() {
+            return Err(DownloaderError::NoChunksForInode(inode_id));
+        }
+
+        let vault_key = self.vault_keys.require_key().await?;
+        let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
+        let mut result = Vec::with_capacity(
+            usize::try_from(length).map_err(|_| DownloaderError::NumericOverflow("range length"))?,
+        );
+
+        for chunk in chunk_locations {
+            let source = if let Some(existing) = downloaded_packs.get(&chunk.pack_id) {
+                existing.clone()
+            } else {
+                let downloaded = self.download_pack(&chunk.pack_id).await?;
+                downloaded_packs.insert(chunk.pack_id.clone(), downloaded.clone());
+                downloaded
+            };
+
+            let pack_bytes = fs::read(&source.local_path).await?;
+            let plaintext = decrypt_chunk_record(&pack_bytes, &chunk, &vault_key)?;
+
+            let chunk_start = to_u64(chunk.file_offset, "file offset")?;
+            let chunk_end = chunk_start
+                .checked_add(plaintext.len() as u64)
+                .ok_or(DownloaderError::NumericOverflow("chunk end"))?;
+            let slice_start = offset.max(chunk_start);
+            let slice_end = end_offset.min(chunk_end);
+
+            if slice_start >= slice_end {
+                continue;
+            }
+
+            let local_start = usize::try_from(slice_start - chunk_start)
+                .map_err(|_| DownloaderError::NumericOverflow("slice start"))?;
+            let local_end = usize::try_from(slice_end - chunk_start)
+                .map_err(|_| DownloaderError::NumericOverflow("slice end"))?;
+            result.extend_from_slice(&plaintext[local_start..local_end]);
+
+            if result.len()
+                >= usize::try_from(length)
+                    .map_err(|_| DownloaderError::NumericOverflow("range length"))?
+            {
+                break;
+            }
+        }
+
+        let target_len =
+            usize::try_from(length).map_err(|_| DownloaderError::NumericOverflow("range length"))?;
+        if result.len() > target_len {
+            result.truncate(target_len);
+        }
+
+        Ok(result)
+    }
+
     async fn download_pack(&self, pack_id: &str) -> Result<RestoredPackSource, DownloaderError> {
         let pack = db::get_pack(&self.pool, pack_id)
             .await?
@@ -642,7 +729,7 @@ mod tests {
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
-    use axum::routing::{get, head, put};
+    use axum::routing::put;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::net::TcpListener;
@@ -788,6 +875,24 @@ mod tests {
                 .pack_sources
                 .iter()
                 .all(|source| source.providers.len() >= 2)
+        );
+
+        let current_revision = db::get_current_file_revision(&pool, inode_id)
+            .await?
+            .expect("current revision");
+        let range_offset = (DEFAULT_CHUNK_SIZE as u64) - 123;
+        let range_length = 512u64;
+        let range_bytes = downloader
+            .read_range(
+                inode_id,
+                current_revision.revision_id,
+                range_offset,
+                range_length,
+            )
+            .await?;
+        assert_eq!(
+            range_bytes,
+            payload[range_offset as usize..(range_offset + range_length) as usize]
         );
 
         server.abort();

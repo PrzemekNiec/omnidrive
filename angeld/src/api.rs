@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::db;
+use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
 use crate::vault::VaultKeyStore;
 use axum::extract::{Path, State};
@@ -98,6 +99,8 @@ struct FileEntryResponse {
     size: i64,
     current_revision_id: Option<i64>,
     current_revision_created_at: Option<i64>,
+    smart_sync_pin_state: Option<i64>,
+    smart_sync_hydration_state: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -129,6 +132,21 @@ struct ProviderQuotaResponse {
     used_physical_bytes: u64,
 }
 
+#[derive(Serialize)]
+struct SmartSyncStatusResponse {
+    inode_id: i64,
+    revision_id: i64,
+    pin_state: i64,
+    hydration_state: i64,
+}
+
+#[derive(Serialize)]
+struct SmartSyncActionResponse {
+    inode_id: i64,
+    pin_state: i64,
+    hydration_state: i64,
+}
+
 impl ApiServer {
     pub fn from_env(pool: SqlitePool, vault_keys: VaultKeyStore) -> Result<Self, ApiError> {
         let _ = dotenvy::dotenv();
@@ -157,6 +175,9 @@ impl ApiServer {
             .route("/api/health/vault", get(get_vault_health))
             .route("/api/files", get(get_files))
             .route("/api/files/{inode_id}", delete(delete_file))
+            .route("/api/files/{inode_id}/sync_status", get(get_file_sync_status))
+            .route("/api/files/{inode_id}/pin", post(pin_file))
+            .route("/api/files/{inode_id}/unpin", post(unpin_file))
             .route("/api/files/{inode_id}/revisions", get(get_file_revisions))
             .route(
                 "/api/files/{inode_id}/revisions/{revision_id}/restore",
@@ -381,9 +402,142 @@ async fn get_files(State(state): State<ApiState>) -> impl IntoResponse {
                         size: file.size,
                         current_revision_id: file.current_revision_id,
                         current_revision_created_at: file.current_revision_created_at,
+                        smart_sync_pin_state: file.smart_sync_pin_state,
+                        smart_sync_hydration_state: file.smart_sync_hydration_state,
                     })
                     .collect::<Vec<_>>(),
             ),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn get_file_sync_status(
+    State(state): State<ApiState>,
+    Path(inode_id): Path<i64>,
+) -> impl IntoResponse {
+    match db::get_smart_sync_state(&state.pool, inode_id).await {
+        Ok(Some(status)) => (
+            StatusCode::OK,
+            Json(SmartSyncStatusResponse {
+                inode_id: status.inode_id,
+                revision_id: status.revision_id,
+                pin_state: status.pin_state,
+                hydration_state: status.hydration_state,
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "smart_sync_state_not_found",
+                "inode_id": inode_id,
+            })),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn pin_file(
+    State(state): State<ApiState>,
+    Path(inode_id): Path<i64>,
+) -> impl IntoResponse {
+    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
+        Ok(inode) => inode,
+        Err(err) => return internal_server_error(err),
+    };
+    let Some(inode) = inode else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "inode_not_found", "inode_id": inode_id })),
+        )
+            .into_response();
+    };
+    if inode.kind != "FILE" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "inode_not_file", "inode_id": inode_id })),
+        )
+            .into_response();
+    }
+
+    let sync_root = sync_root_path();
+    if let Err(err) = db::set_pin_state(&state.pool, inode_id, 1).await {
+        return internal_server_error(err);
+    }
+    if let Err(err) =
+        smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, false).await
+    {
+        return internal_server_error(err);
+    }
+
+    match db::get_smart_sync_state(&state.pool, inode_id).await {
+        Ok(Some(status)) => (
+            StatusCode::OK,
+            Json(SmartSyncActionResponse {
+                inode_id: status.inode_id,
+                pin_state: status.pin_state,
+                hydration_state: status.hydration_state,
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id })),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn unpin_file(
+    State(state): State<ApiState>,
+    Path(inode_id): Path<i64>,
+) -> impl IntoResponse {
+    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
+        Ok(inode) => inode,
+        Err(err) => return internal_server_error(err),
+    };
+    let Some(inode) = inode else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "inode_not_found", "inode_id": inode_id })),
+        )
+            .into_response();
+    };
+    if inode.kind != "FILE" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "inode_not_file", "inode_id": inode_id })),
+        )
+            .into_response();
+    }
+
+    let sync_root = sync_root_path();
+    if let Err(err) = db::set_pin_state(&state.pool, inode_id, 0).await {
+        return internal_server_error(err);
+    }
+    if let Err(err) =
+        smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, true).await
+    {
+        return internal_server_error(err);
+    }
+
+    match db::get_smart_sync_state(&state.pool, inode_id).await {
+        Ok(Some(status)) => (
+            StatusCode::OK,
+            Json(SmartSyncActionResponse {
+                inode_id: status.inode_id,
+                pin_state: status.pin_state,
+                hydration_state: status.hydration_state,
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id })),
         )
             .into_response(),
         Err(err) => internal_server_error(err),
@@ -549,4 +703,20 @@ fn internal_server_error(err: impl std::error::Error) -> axum::response::Respons
         Json(serde_json::json!({ "error": "internal_server_error" })),
     )
         .into_response()
+}
+
+fn sync_root_path() -> std::path::PathBuf {
+    env::var("OMNIDRIVE_SYNC_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            env::var("LOCALAPPDATA")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    env::var("USERPROFILE")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|_| std::path::PathBuf::from(r"C:\Users\Default"))
+                })
+                .join("OmniDrive")
+                .join("SyncRoot")
+        })
 }

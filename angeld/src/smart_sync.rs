@@ -1,6 +1,8 @@
+use crate::downloader::Downloader;
 use sqlx::SqlitePool;
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum SmartSyncError {
@@ -64,6 +66,23 @@ pub async fn register_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncEr
     }
 }
 
+pub fn install_hydration_runtime(
+    pool: SqlitePool,
+    downloader: Arc<Downloader>,
+) -> Result<(), SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::install_hydration_runtime(pool, downloader)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = pool;
+        let _ = downloader;
+        Err(SmartSyncError::UnsupportedPlatform)
+    }
+}
+
 pub async fn project_vault_to_sync_root(
     pool: &SqlitePool,
     sync_root_path: &Path,
@@ -81,35 +100,83 @@ pub async fn project_vault_to_sync_root(
     }
 }
 
+#[allow(dead_code)]
+pub async fn evict_unpinned_hydrated_files(
+    pool: &SqlitePool,
+    sync_root_path: &Path,
+) -> Result<usize, SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::evict_unpinned_hydrated_files(pool, sync_root_path).await
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = pool;
+        let _ = sync_root_path;
+        Err(SmartSyncError::UnsupportedPlatform)
+    }
+}
+
+pub async fn sync_placeholder_pin_state(
+    pool: &SqlitePool,
+    sync_root_path: &Path,
+    inode_id: i64,
+    dehydrate_immediately: bool,
+) -> Result<(), SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::sync_placeholder_pin_state(pool, sync_root_path, inode_id, dehydrate_immediately).await
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = pool;
+        let _ = sync_root_path;
+        let _ = inode_id;
+        let _ = dehydrate_immediately;
+        Err(SmartSyncError::UnsupportedPlatform)
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::SmartSyncError;
     use crate::db::{self, ProjectionFileRecord};
+    use crate::downloader::Downloader;
     use sqlx::SqlitePool;
     use std::ffi::OsStr;
     use std::iter;
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
     use std::path::{Path, PathBuf};
     use std::ptr;
-    use std::sync::OnceLock;
+    use std::sync::{Arc, OnceLock};
     use std::time::{Duration, UNIX_EPOCH};
+    use tokio::runtime::Handle;
     use windows::core::{GUID, HRESULT, PCWSTR};
-    use windows::Win32::Foundation::S_OK;
+    use windows::Win32::Foundation::{HANDLE, NTSTATUS, S_OK};
     use windows::Win32::Storage::CloudFilters::{
-        CF_CALLBACK_REGISTRATION, CF_CALLBACK_TYPE_NONE, CF_CONNECT_FLAG_NONE, CF_CONNECTION_KEY,
-        CF_CREATE_FLAGS, CF_CREATE_FLAG_NONE, CF_CREATE_FLAG_STOP_ON_ERROR, CF_FS_METADATA,
-        CF_HARDLINK_POLICY, CF_HARDLINK_POLICY_NONE, CF_HYDRATION_POLICY,
-        CF_HYDRATION_POLICY_FULL, CF_HYDRATION_POLICY_MODIFIER,
+        CfConnectSyncRoot, CfCreatePlaceholders, CfExecute, CfRegisterSyncRoot, CfSetPinState,
+        CfUnregisterSyncRoot, CfUpdatePlaceholder, CF_CALLBACK_INFO, CF_CALLBACK_PARAMETERS,
+        CF_CALLBACK_REGISTRATION, CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
+        CF_CALLBACK_TYPE_FETCH_DATA, CF_CALLBACK_TYPE_NONE, CF_CONNECT_FLAG_NONE,
+        CF_CONNECTION_KEY, CF_CREATE_FLAGS, CF_CREATE_FLAG_NONE, CF_CREATE_FLAG_STOP_ON_ERROR,
+        CF_FILE_RANGE, CF_FS_METADATA, CF_HARDLINK_POLICY, CF_HARDLINK_POLICY_NONE,
+        CF_HYDRATION_POLICY, CF_HYDRATION_POLICY_FULL, CF_HYDRATION_POLICY_MODIFIER,
         CF_HYDRATION_POLICY_MODIFIER_NONE, CF_HYDRATION_POLICY_PRIMARY, CF_INSYNC_POLICY,
-        CF_INSYNC_POLICY_NONE, CF_PLACEHOLDER_CREATE_FLAGS, CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
-        CF_PLACEHOLDER_CREATE_FLAG_SUPERSEDE, CF_PLACEHOLDER_CREATE_INFO,
-        CF_PLACEHOLDER_MANAGEMENT_POLICY, CF_PLACEHOLDER_MANAGEMENT_POLICY_CREATE_UNRESTRICTED,
-        CF_POPULATION_POLICY, CF_POPULATION_POLICY_FULL, CF_POPULATION_POLICY_MODIFIER,
+        CF_INSYNC_POLICY_NONE, CF_OPERATION_INFO, CF_OPERATION_PARAMETERS, CF_PIN_STATE,
+        CF_PIN_STATE_PINNED, CF_PIN_STATE_UNPINNED, CF_OPERATION_TRANSFER_DATA_FLAGS,
+        CF_OPERATION_TYPE_TRANSFER_DATA, CF_PLACEHOLDER_CREATE_FLAGS,
+        CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC, CF_PLACEHOLDER_CREATE_FLAG_SUPERSEDE,
+        CF_PLACEHOLDER_CREATE_INFO, CF_PLACEHOLDER_MANAGEMENT_POLICY,
+        CF_PLACEHOLDER_MANAGEMENT_POLICY_CREATE_UNRESTRICTED, CF_POPULATION_POLICY,
+        CF_POPULATION_POLICY_FULL, CF_POPULATION_POLICY_MODIFIER,
         CF_POPULATION_POLICY_MODIFIER_NONE, CF_POPULATION_POLICY_PRIMARY, CF_REGISTER_FLAGS,
         CF_REGISTER_FLAG_DISABLE_ON_DEMAND_POPULATION_ON_ROOT, CF_REGISTER_FLAG_NONE,
-        CF_REGISTER_FLAG_UPDATE, CF_SYNC_POLICIES, CF_SYNC_REGISTRATION, CfConnectSyncRoot,
-        CfCreatePlaceholders, CfRegisterSyncRoot, CfUnregisterSyncRoot,
+        CF_REGISTER_FLAG_UPDATE, CF_SET_PIN_FLAG_NONE, CF_SET_PIN_FLAGS, CF_SYNC_POLICIES,
+        CF_SYNC_REGISTRATION, CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
     };
     use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_ARCHIVE, FILE_BASIC_INFO};
 
@@ -117,12 +184,200 @@ mod imp {
     const PROVIDER_VERSION: &str = "1.0";
     const SYNC_ROOT_IDENTITY: &[u8] = b"omnidrive-sync-root";
     const PROVIDER_ID: GUID = GUID::from_u128(0xb7a42c2a_4af1_4f4a_a650_0b1308b8f019);
+    const STATUS_UNSUCCESSFUL: i32 = 0xC0000001u32 as i32;
+    const STATUS_SUCCESS: i32 = 0;
     static CONNECTION_KEY: OnceLock<CF_CONNECTION_KEY> = OnceLock::new();
+    static HYDRATION_CONTEXT: OnceLock<HydrationContext> = OnceLock::new();
 
     #[repr(C)]
+    #[derive(Clone, Copy)]
     struct PlaceholderIdentity {
         inode_id: i64,
         revision_id: i64,
+    }
+
+    #[derive(Clone)]
+    struct HydrationContext {
+        pool: SqlitePool,
+        runtime: Handle,
+        downloader: Arc<Downloader>,
+    }
+
+    #[derive(Clone, Copy)]
+    struct HydrationRequest {
+        connection_key: CF_CONNECTION_KEY,
+        transfer_key: i64,
+        request_key: i64,
+        inode_id: i64,
+        revision_id: i64,
+        offset: i64,
+        length: i64,
+    }
+
+    pub fn install_hydration_runtime(
+        pool: SqlitePool,
+        downloader: Arc<Downloader>,
+    ) -> Result<(), SmartSyncError> {
+        let context = HydrationContext {
+            pool,
+            runtime: Handle::current(),
+            downloader,
+        };
+
+        let _ = HYDRATION_CONTEXT.set(context);
+        Ok(())
+    }
+
+    unsafe extern "system" fn fetch_data_callback(
+        callback_info: *const CF_CALLBACK_INFO,
+        callback_parameters: *const CF_CALLBACK_PARAMETERS,
+    ) {
+        if callback_info.is_null() || callback_parameters.is_null() {
+            return;
+        }
+
+        let callback_info = unsafe { &*callback_info };
+        let callback_parameters = unsafe { &*callback_parameters };
+        let fetch = unsafe { callback_parameters.Anonymous.FetchData };
+
+        let Some(identity) = decode_file_identity(
+            callback_info.FileIdentity,
+            callback_info.FileIdentityLength,
+        ) else {
+            eprintln!(
+                "smart-sync: hydration requested with invalid identity, request_key={}",
+                callback_info.RequestKey
+            );
+            let _ = complete_transfer_failure(
+                callback_info,
+                fetch.RequiredFileOffset,
+                fetch.RequiredLength,
+            );
+            return;
+        };
+
+        let request = HydrationRequest {
+            connection_key: callback_info.ConnectionKey,
+            transfer_key: callback_info.TransferKey,
+            request_key: callback_info.RequestKey,
+            inode_id: identity.inode_id,
+            revision_id: identity.revision_id,
+            offset: fetch.RequiredFileOffset,
+            length: fetch.RequiredLength,
+        };
+
+        println!(
+            "Hydration requested for inode: {}, revision: {}, offset: {}, length: {}",
+            request.inode_id, request.revision_id, request.offset, request.length
+        );
+
+        let Some(context) = HYDRATION_CONTEXT.get().cloned() else {
+            eprintln!(
+                "smart-sync: hydration runtime missing, request_key={}",
+                request.request_key
+            );
+            let _ = complete_transfer_failure_from_request(&request);
+            return;
+        };
+
+        context.runtime.spawn(async move {
+            let offset = match u64::try_from(request.offset) {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!(
+                        "smart-sync: invalid negative offset for inode={}, revision={}",
+                        request.inode_id, request.revision_id
+                    );
+                    let _ = complete_transfer_failure_from_request(&request);
+                    return;
+                }
+            };
+            let length = match u64::try_from(request.length) {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!(
+                        "smart-sync: invalid negative length for inode={}, revision={}",
+                        request.inode_id, request.revision_id
+                    );
+                    let _ = complete_transfer_failure_from_request(&request);
+                    return;
+                }
+            };
+
+            match context
+                .downloader
+                .read_range(
+                    request.inode_id,
+                    request.revision_id,
+                    offset,
+                    length,
+                )
+                .await
+            {
+                Ok(bytes) => {
+                    if let Err(err) = complete_transfer_success(&request, &bytes) {
+                        eprintln!(
+                            "smart-sync: transfer writeback failed for inode={}, revision={}: {}",
+                            request.inode_id, request.revision_id, err
+                        );
+                        let _ = complete_transfer_failure_from_request(&request);
+                        return;
+                    }
+
+                    if let Err(err) = db::set_hydration_state(&context.pool, request.inode_id, 1).await {
+                        eprintln!(
+                            "smart-sync: failed to persist hydration state for inode={}: {}",
+                            request.inode_id, err
+                        );
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "smart-sync: read_range failed for inode={}, revision={}, offset={}, length={}: {}",
+                        request.inode_id, request.revision_id, request.offset, request.length, err
+                    );
+                    let _ = complete_transfer_failure_from_request(&request);
+                }
+            }
+        });
+    }
+
+    unsafe extern "system" fn cancel_fetch_data_callback(
+        callback_info: *const CF_CALLBACK_INFO,
+        callback_parameters: *const CF_CALLBACK_PARAMETERS,
+    ) {
+        if callback_info.is_null() || callback_parameters.is_null() {
+            return;
+        }
+
+        let callback_info = unsafe { &*callback_info };
+        let callback_parameters = unsafe { &*callback_parameters };
+        let cancel = unsafe { callback_parameters.Anonymous.Cancel };
+        let fetch = unsafe { cancel.Anonymous.FetchData };
+
+        let identity = decode_file_identity(
+            callback_info.FileIdentity,
+            callback_info.FileIdentityLength,
+        );
+
+        match identity {
+            Some(identity) => {
+                eprintln!(
+                    "smart-sync: hydration canceled for inode={}, revision={}, offset={}, length={}",
+                    identity.inode_id,
+                    identity.revision_id,
+                    fetch.FileOffset,
+                    fetch.Length
+                );
+            }
+            None => {
+                eprintln!(
+                    "smart-sync: hydration canceled for unknown identity, offset={}, length={}",
+                    fetch.FileOffset,
+                    fetch.Length
+                );
+            }
+        }
     }
 
     pub async fn register_sync_root_public(sync_root_path: &Path) -> Result<(), SmartSyncError> {
@@ -152,88 +407,164 @@ mod imp {
         );
 
         for file in files {
-            create_projection_placeholder(&sync_root, &file)?;
+            let state = db::ensure_smart_sync_state(pool, file.inode_id, file.revision_id).await?;
+            create_projection_placeholder(&sync_root, &file, state.pin_state != 0)?;
         }
 
         Ok(())
     }
 
-    fn create_projection_placeholder(
-        sync_root: &Path,
-        file: &ProjectionFileRecord,
+    pub async fn sync_placeholder_pin_state(
+        pool: &SqlitePool,
+        sync_root_path: &Path,
+        inode_id: i64,
+        dehydrate_immediately: bool,
     ) -> Result<(), SmartSyncError> {
+        let sync_root = normalize_sync_root_path(sync_root_path)?;
+        let file = db::get_active_file_for_projection_by_inode(pool, inode_id)
+            .await?
+            .ok_or_else(|| {
+                SmartSyncError::InvalidPathWithContext(
+                    "smart sync",
+                    format!("inode {inode_id} has no current revision for projection"),
+                )
+            })?;
+        let state = db::ensure_smart_sync_state(pool, file.inode_id, file.revision_id).await?;
         let relative_path = normalize_relative_placeholder_path(&file.path)?;
-        let target_path = sync_root.join(&relative_path);
-        if target_path.exists() {
-            return Ok(());
-        }
-
-        if let Some(parent) = target_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let sync_root_wide = wide_path(sync_root)?;
-        let relative_name_wide = wide_str(OsStr::new(&relative_path));
-        let file_time = file_time_from_unix_millis(file.created_at)?;
-        let identity = PlaceholderIdentity {
-            inode_id: file.inode_id,
-            revision_id: file.revision_id,
-        };
-        let identity_bytes = unsafe {
-            std::slice::from_raw_parts(
-                (&identity as *const PlaceholderIdentity).cast::<u8>(),
-                size_of::<PlaceholderIdentity>(),
-            )
-        };
-        let mut entries_processed = 0u32;
-
-        let mut placeholder = [CF_PLACEHOLDER_CREATE_INFO {
-            RelativeFileName: PCWSTR(relative_name_wide.as_ptr()),
-            FsMetadata: CF_FS_METADATA {
-                BasicInfo: FILE_BASIC_INFO {
-                    CreationTime: file_time,
-                    LastAccessTime: file_time,
-                    LastWriteTime: file_time,
-                    ChangeTime: file_time,
-                    FileAttributes: FILE_ATTRIBUTE_ARCHIVE.0,
+        let target_path = sync_root.join(relative_path);
+        if !target_path.exists() {
+            create_projection_placeholder(&sync_root, &file, state.pin_state != 0)?;
+        } else {
+            apply_pin_state(
+                &target_path,
+                if state.pin_state != 0 {
+                    CF_PIN_STATE_PINNED
+                } else {
+                    CF_PIN_STATE_UNPINNED
                 },
-                FileSize: file.size,
-            },
-            FileIdentity: identity_bytes.as_ptr().cast(),
-            FileIdentityLength: identity_bytes.len() as u32,
-            Flags: placeholder_create_flags(),
-            Result: HRESULT(0),
-            CreateUsn: 0,
-        }];
-
-        unsafe {
-            CfCreatePlaceholders(
-                PCWSTR(sync_root_wide.as_ptr()),
-                &mut placeholder,
-                create_flags(),
-                Some(&mut entries_processed),
             )?;
         }
 
-        if entries_processed != 1 {
-            return Err(SmartSyncError::InvalidPathWithContext(
-                "CfCreatePlaceholders",
-                format!("expected one entry for {relative_path}, got {entries_processed}"),
-            ));
+        if dehydrate_immediately && state.pin_state == 0 {
+            if target_path.exists() && state.hydration_state != 0 {
+                dehydrate_placeholder(&target_path)?;
+            }
+            db::set_hydration_state(pool, inode_id, 0).await?;
         }
 
-        if placeholder[0].Result != S_OK {
-            return Err(SmartSyncError::InvalidPathWithContext(
-                "CfCreatePlaceholders",
-                format!(
-                    "placeholder {} failed with HRESULT 0x{:08X}",
-                    relative_path,
-                    placeholder[0].Result.0 as u32
-                ),
-            ));
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub async fn evict_unpinned_hydrated_files(
+        pool: &SqlitePool,
+        sync_root_path: &Path,
+    ) -> Result<usize, SmartSyncError> {
+        let sync_root = normalize_sync_root_path(sync_root_path)?;
+        let candidates = db::list_unpinned_hydrated_files_for_eviction(pool).await?;
+        let mut evicted = 0usize;
+
+        for candidate in candidates {
+            let relative_path = normalize_relative_placeholder_path(&candidate.path)?;
+            let target_path = sync_root.join(&relative_path);
+            if !target_path.exists() {
+                let _ = db::set_hydration_state(pool, candidate.inode_id, 0).await;
+                continue;
+            }
+
+            if let Err(err) = dehydrate_placeholder(&target_path) {
+                eprintln!(
+                    "smart-sync: failed to dehydrate {}: {}",
+                    target_path.display(),
+                    err
+                );
+                continue;
+            }
+
+            db::set_hydration_state(pool, candidate.inode_id, 0).await?;
+            evicted += 1;
         }
 
-        eprintln!("smart-sync: placeholder ready {}", relative_path);
+        Ok(evicted)
+    }
+
+    fn create_projection_placeholder(
+        sync_root: &Path,
+        file: &ProjectionFileRecord,
+        pinned: bool,
+    ) -> Result<(), SmartSyncError> {
+        let relative_path = normalize_relative_placeholder_path(&file.path)?;
+        let target_path = sync_root.join(&relative_path);
+        if !target_path.exists() {
+            if let Some(parent) = target_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            let sync_root_wide = wide_path(sync_root)?;
+            let relative_name_wide = wide_str(OsStr::new(&relative_path));
+            let file_time = file_time_from_unix_millis(file.created_at)?;
+            let identity = PlaceholderIdentity {
+                inode_id: file.inode_id,
+                revision_id: file.revision_id,
+            };
+            let identity_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    (&identity as *const PlaceholderIdentity).cast::<u8>(),
+                    size_of::<PlaceholderIdentity>(),
+                )
+            };
+            let mut entries_processed = 0u32;
+
+            let mut placeholder = [CF_PLACEHOLDER_CREATE_INFO {
+                RelativeFileName: PCWSTR(relative_name_wide.as_ptr()),
+                FsMetadata: CF_FS_METADATA {
+                    BasicInfo: FILE_BASIC_INFO {
+                        CreationTime: file_time,
+                        LastAccessTime: file_time,
+                        LastWriteTime: file_time,
+                        ChangeTime: file_time,
+                        FileAttributes: FILE_ATTRIBUTE_ARCHIVE.0,
+                    },
+                    FileSize: file.size,
+                },
+                FileIdentity: identity_bytes.as_ptr().cast(),
+                FileIdentityLength: identity_bytes.len() as u32,
+                Flags: placeholder_create_flags(),
+                Result: HRESULT(0),
+                CreateUsn: 0,
+            }];
+
+            unsafe {
+                CfCreatePlaceholders(
+                    PCWSTR(sync_root_wide.as_ptr()),
+                    &mut placeholder,
+                    create_flags(),
+                    Some(&mut entries_processed),
+                )?;
+            }
+
+            if entries_processed != 1 {
+                return Err(SmartSyncError::InvalidPathWithContext(
+                    "CfCreatePlaceholders",
+                    format!("expected one entry for {relative_path}, got {entries_processed}"),
+                ));
+            }
+
+            if placeholder[0].Result != S_OK {
+                return Err(SmartSyncError::InvalidPathWithContext(
+                    "CfCreatePlaceholders",
+                    format!(
+                        "placeholder {} failed with HRESULT 0x{:08X}",
+                        relative_path,
+                        placeholder[0].Result.0 as u32
+                    ),
+                ));
+            }
+
+            eprintln!("smart-sync: placeholder ready {}", relative_path);
+        }
+
+        apply_pin_state(&target_path, if pinned { CF_PIN_STATE_PINNED } else { CF_PIN_STATE_UNPINNED })?;
         Ok(())
     }
 
@@ -290,10 +621,20 @@ mod imp {
         }
 
         let sync_root_wide = wide_path(sync_root_path)?;
-        let callbacks = [CF_CALLBACK_REGISTRATION {
-            Type: CF_CALLBACK_TYPE_NONE,
-            Callback: None,
-        }];
+        let callbacks = [
+            CF_CALLBACK_REGISTRATION {
+                Type: CF_CALLBACK_TYPE_FETCH_DATA,
+                Callback: Some(fetch_data_callback),
+            },
+            CF_CALLBACK_REGISTRATION {
+                Type: CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
+                Callback: Some(cancel_fetch_data_callback),
+            },
+            CF_CALLBACK_REGISTRATION {
+                Type: CF_CALLBACK_TYPE_NONE,
+                Callback: None,
+            },
+        ];
 
         let connection = unsafe {
             CfConnectSyncRoot(
@@ -418,6 +759,115 @@ mod imp {
         value.encode_wide().chain(iter::once(0)).collect()
     }
 
+    fn open_placeholder_handle(path: &Path) -> Result<std::fs::File, SmartSyncError> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?;
+        Ok(file)
+    }
+
+    fn as_handle(file: &std::fs::File) -> HANDLE {
+        HANDLE(file.as_raw_handle())
+    }
+
+    fn decode_file_identity(
+        identity_ptr: *const core::ffi::c_void,
+        identity_len: u32,
+    ) -> Option<PlaceholderIdentity> {
+        if identity_ptr.is_null() || identity_len as usize != size_of::<PlaceholderIdentity>() {
+            return None;
+        }
+
+        let identity = unsafe { ptr::read_unaligned(identity_ptr.cast::<PlaceholderIdentity>()) };
+        Some(identity)
+    }
+
+    fn complete_transfer_success(
+        request: &HydrationRequest,
+        bytes: &[u8],
+    ) -> Result<(), SmartSyncError> {
+        let operation_info = CF_OPERATION_INFO {
+            StructSize: size_of::<CF_OPERATION_INFO>() as u32,
+            Type: CF_OPERATION_TYPE_TRANSFER_DATA,
+            ConnectionKey: request.connection_key,
+            TransferKey: request.transfer_key,
+            CorrelationVector: ptr::null(),
+            SyncStatus: ptr::null(),
+            RequestKey: request.request_key,
+        };
+
+        let mut operation_parameters = CF_OPERATION_PARAMETERS {
+            ParamSize: size_of::<CF_OPERATION_PARAMETERS>() as u32,
+            ..Default::default()
+        };
+        operation_parameters.Anonymous.TransferData =
+            windows::Win32::Storage::CloudFilters::CF_OPERATION_PARAMETERS_0_0 {
+                Flags: CF_OPERATION_TRANSFER_DATA_FLAGS(0),
+                CompletionStatus: NTSTATUS(STATUS_SUCCESS),
+                Buffer: bytes.as_ptr().cast(),
+                Offset: request.offset,
+                Length: i64::try_from(bytes.len())
+                    .map_err(|_| SmartSyncError::InvalidPath("range length overflow"))?,
+            };
+
+        unsafe {
+            CfExecute(&operation_info, &mut operation_parameters)?;
+        }
+
+        Ok(())
+    }
+
+    fn complete_transfer_failure(
+        callback_info: &CF_CALLBACK_INFO,
+        offset: i64,
+        length: i64,
+    ) -> Result<(), SmartSyncError> {
+        let request = HydrationRequest {
+            connection_key: callback_info.ConnectionKey,
+            transfer_key: callback_info.TransferKey,
+            request_key: callback_info.RequestKey,
+            inode_id: 0,
+            revision_id: 0,
+            offset,
+            length,
+        };
+        complete_transfer_failure_from_request(&request)
+    }
+
+    fn complete_transfer_failure_from_request(
+        request: &HydrationRequest,
+    ) -> Result<(), SmartSyncError> {
+        let operation_info = CF_OPERATION_INFO {
+            StructSize: size_of::<CF_OPERATION_INFO>() as u32,
+            Type: CF_OPERATION_TYPE_TRANSFER_DATA,
+            ConnectionKey: request.connection_key,
+            TransferKey: request.transfer_key,
+            CorrelationVector: ptr::null(),
+            SyncStatus: ptr::null(),
+            RequestKey: request.request_key,
+        };
+
+        let mut operation_parameters = CF_OPERATION_PARAMETERS {
+            ParamSize: size_of::<CF_OPERATION_PARAMETERS>() as u32,
+            ..Default::default()
+        };
+        operation_parameters.Anonymous.TransferData =
+            windows::Win32::Storage::CloudFilters::CF_OPERATION_PARAMETERS_0_0 {
+                Flags: CF_OPERATION_TRANSFER_DATA_FLAGS(0),
+                CompletionStatus: NTSTATUS(STATUS_UNSUCCESSFUL),
+                Buffer: ptr::null(),
+                Offset: request.offset,
+                Length: request.length.max(0),
+            };
+
+        unsafe {
+            CfExecute(&operation_info, &mut operation_parameters)?;
+        }
+
+        Ok(())
+    }
+
     fn register_flags(update: bool) -> CF_REGISTER_FLAGS {
         let mut flags = CF_REGISTER_FLAG_DISABLE_ON_DEMAND_POPULATION_ON_ROOT.0;
         if update {
@@ -436,5 +886,37 @@ mod imp {
         CF_PLACEHOLDER_CREATE_FLAGS(
             CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC.0 | CF_PLACEHOLDER_CREATE_FLAG_SUPERSEDE.0,
         )
+    }
+
+    fn apply_pin_state(path: &Path, pin_state: CF_PIN_STATE) -> Result<(), SmartSyncError> {
+        let file = open_placeholder_handle(path)?;
+        unsafe {
+            CfSetPinState(
+                as_handle(&file),
+                pin_state,
+                CF_SET_PIN_FLAGS(CF_SET_PIN_FLAG_NONE.0),
+                None,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn dehydrate_placeholder(path: &Path) -> Result<(), SmartSyncError> {
+        let file = open_placeholder_handle(path)?;
+        let mut update_usn = 0i64;
+        unsafe {
+            CfUpdatePlaceholder(
+                as_handle(&file),
+                None,
+                None,
+                0,
+                Option::<&[CF_FILE_RANGE]>::None,
+                CF_UPDATE_FLAGS(CF_UPDATE_FLAG_DEHYDRATE.0 | CF_UPDATE_FLAG_NONE.0),
+                Some(&mut update_usn),
+                None,
+            )?;
+        }
+        Ok(())
     }
 }

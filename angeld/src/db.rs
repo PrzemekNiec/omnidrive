@@ -97,6 +97,8 @@ pub struct FileInventoryRecord {
     pub size: i64,
     pub current_revision_id: Option<i64>,
     pub current_revision_created_at: Option<i64>,
+    pub smart_sync_pin_state: Option<i64>,
+    pub smart_sync_hydration_state: Option<i64>,
 }
 
 #[allow(dead_code)]
@@ -116,6 +118,23 @@ pub struct SyncPolicyRecord {
     pub path_prefix: String,
     pub require_healthy: i64,
     pub enable_versioning: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct SmartSyncStateRecord {
+    pub inode_id: i64,
+    pub revision_id: i64,
+    pub pin_state: i64,
+    pub hydration_state: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct SmartSyncEvictionRecord {
+    pub inode_id: i64,
+    pub revision_id: i64,
+    pub path: String,
 }
 
 #[allow(dead_code)]
@@ -300,6 +319,19 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
             path_prefix TEXT NOT NULL UNIQUE,
             require_healthy INTEGER NOT NULL DEFAULT 1,
             enable_versioning INTEGER NOT NULL DEFAULT 1
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS smart_sync_state (
+            inode_id INTEGER PRIMARY KEY REFERENCES inodes(id) ON DELETE CASCADE,
+            revision_id INTEGER NOT NULL REFERENCES file_revisions(revision_id) ON DELETE CASCADE,
+            pin_state INTEGER NOT NULL DEFAULT 0,
+            hydration_state INTEGER NOT NULL DEFAULT 0
         )
         "#,
     )
@@ -744,6 +776,89 @@ pub async fn list_sync_policies(pool: &SqlitePool) -> Result<Vec<SyncPolicyRecor
     )
     .fetch_all(pool)
     .await
+}
+
+#[allow(dead_code)]
+pub async fn ensure_smart_sync_state(
+    pool: &SqlitePool,
+    inode_id: i64,
+    revision_id: i64,
+) -> Result<SmartSyncStateRecord, sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO smart_sync_state (inode_id, revision_id, pin_state, hydration_state)
+        VALUES (?, ?, 0, 0)
+        ON CONFLICT(inode_id) DO UPDATE SET
+            revision_id = excluded.revision_id
+        "#,
+    )
+    .bind(inode_id)
+    .bind(revision_id)
+    .execute(pool)
+    .await?;
+
+    get_smart_sync_state(pool, inode_id)
+        .await?
+        .ok_or_else(|| sqlx::Error::RowNotFound)
+}
+
+#[allow(dead_code)]
+pub async fn get_smart_sync_state(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<Option<SmartSyncStateRecord>, sqlx::Error> {
+    sqlx::query_as::<_, SmartSyncStateRecord>(
+        r#"
+        SELECT inode_id, revision_id, pin_state, hydration_state
+        FROM smart_sync_state
+        WHERE inode_id = ?
+        "#,
+    )
+    .bind(inode_id)
+    .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn set_pin_state(
+    pool: &SqlitePool,
+    inode_id: i64,
+    pin_state: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE smart_sync_state
+        SET pin_state = ?
+        WHERE inode_id = ?
+        "#,
+    )
+    .bind(pin_state)
+    .bind(inode_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn set_hydration_state(
+    pool: &SqlitePool,
+    inode_id: i64,
+    hydration_state: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE smart_sync_state
+        SET hydration_state = ?
+        WHERE inode_id = ?
+        "#,
+    )
+    .bind(hydration_state)
+    .bind(inode_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -1579,13 +1694,17 @@ pub async fn list_active_files(pool: &SqlitePool) -> Result<Vec<FileInventoryRec
             inode_paths.path AS path,
             COALESCE(fr.size, i.size) AS size,
             fr.revision_id AS current_revision_id,
-            fr.created_at AS current_revision_created_at
+            fr.created_at AS current_revision_created_at,
+            ss.pin_state AS smart_sync_pin_state,
+            ss.hydration_state AS smart_sync_hydration_state
         FROM inodes i
         INNER JOIN inode_paths
             ON inode_paths.id = i.id
         LEFT JOIN file_revisions fr
             ON fr.inode_id = i.id
            AND fr.is_current = 1
+        LEFT JOIN smart_sync_state ss
+            ON ss.inode_id = i.id
         WHERE i.kind = 'FILE'
         ORDER BY inode_paths.path ASC
         "#,
@@ -1631,6 +1750,127 @@ pub async fn get_active_files_for_projection(
             ON fr.inode_id = i.id
            AND fr.is_current = 1
         WHERE i.kind = 'FILE'
+        ORDER BY inode_paths.path ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut base_paths = list_sync_policies(pool)
+        .await?
+        .into_iter()
+        .map(|policy| policy.path_prefix)
+        .collect::<Vec<_>>();
+    if let Ok(watch_dir) = std::env::var("OMNIDRIVE_WATCH_DIR") {
+        base_paths.push(watch_dir);
+    }
+
+    for record in &mut records {
+        record.path = projection_relative_path(&record.path, &base_paths);
+    }
+
+    Ok(records)
+}
+
+#[allow(dead_code)]
+pub async fn get_active_file_for_projection_by_inode(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<Option<ProjectionFileRecord>, sqlx::Error> {
+    let mut records = sqlx::query_as::<_, ProjectionFileRecord>(
+        r#"
+        WITH RECURSIVE inode_paths AS (
+            SELECT
+                id,
+                parent_id,
+                name AS path
+            FROM inodes
+            WHERE parent_id IS NULL
+
+            UNION ALL
+
+            SELECT
+                child.id,
+                child.parent_id,
+                inode_paths.path || '/' || child.name AS path
+            FROM inodes child
+            INNER JOIN inode_paths
+                ON child.parent_id = inode_paths.id
+        )
+        SELECT
+            i.id AS inode_id,
+            inode_paths.path AS path,
+            fr.revision_id AS revision_id,
+            fr.size AS size,
+            fr.created_at AS created_at
+        FROM inodes i
+        INNER JOIN inode_paths
+            ON inode_paths.id = i.id
+        INNER JOIN file_revisions fr
+            ON fr.inode_id = i.id
+           AND fr.is_current = 1
+        WHERE i.kind = 'FILE'
+          AND i.id = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(inode_id)
+    .fetch_all(pool)
+    .await?;
+
+    let Some(mut record) = records.pop() else {
+        return Ok(None);
+    };
+
+    let mut base_paths = list_sync_policies(pool)
+        .await?
+        .into_iter()
+        .map(|policy| policy.path_prefix)
+        .collect::<Vec<_>>();
+    if let Ok(watch_dir) = std::env::var("OMNIDRIVE_WATCH_DIR") {
+        base_paths.push(watch_dir);
+    }
+    record.path = projection_relative_path(&record.path, &base_paths);
+
+    Ok(Some(record))
+}
+
+#[allow(dead_code)]
+pub async fn list_unpinned_hydrated_files_for_eviction(
+    pool: &SqlitePool,
+) -> Result<Vec<SmartSyncEvictionRecord>, sqlx::Error> {
+    let mut records = sqlx::query_as::<_, SmartSyncEvictionRecord>(
+        r#"
+        WITH RECURSIVE inode_paths AS (
+            SELECT
+                id,
+                parent_id,
+                name AS path
+            FROM inodes
+            WHERE parent_id IS NULL
+
+            UNION ALL
+
+            SELECT
+                child.id,
+                child.parent_id,
+                inode_paths.path || '/' || child.name AS path
+            FROM inodes child
+            INNER JOIN inode_paths
+                ON child.parent_id = inode_paths.id
+        )
+        SELECT
+            s.inode_id AS inode_id,
+            s.revision_id AS revision_id,
+            inode_paths.path AS path
+        FROM smart_sync_state s
+        INNER JOIN inodes i
+            ON i.id = s.inode_id
+        INNER JOIN inode_paths
+            ON inode_paths.id = i.id
+        WHERE i.kind = 'FILE'
+          AND s.pin_state = 0
+          AND s.hydration_state = 1
         ORDER BY inode_paths.path ASC
         "#,
     )
@@ -1759,6 +1999,43 @@ pub async fn get_file_chunk_locations(
         "#,
     )
     .bind(inode_id)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_revision_chunk_locations_in_range(
+    pool: &SqlitePool,
+    inode_id: i64,
+    revision_id: i64,
+    start_offset: i64,
+    end_offset: i64,
+) -> Result<Vec<FileChunkLocation>, sqlx::Error> {
+    sqlx::query_as::<_, FileChunkLocation>(
+        r#"
+        SELECT
+            cr.chunk_id,
+            cr.file_offset,
+            cr.size,
+            pl.pack_id,
+            pl.pack_offset,
+            pl.encrypted_size
+        FROM chunk_refs cr
+        INNER JOIN file_revisions fr
+            ON fr.revision_id = cr.revision_id
+        INNER JOIN pack_locations pl
+            ON pl.chunk_id = cr.chunk_id
+        WHERE fr.inode_id = ?
+          AND fr.revision_id = ?
+          AND (cr.file_offset + cr.size) > ?
+          AND cr.file_offset < ?
+        ORDER BY cr.file_offset ASC
+        "#,
+    )
+    .bind(inode_id)
+    .bind(revision_id)
+    .bind(start_offset)
+    .bind(end_offset)
     .fetch_all(pool)
     .await
 }

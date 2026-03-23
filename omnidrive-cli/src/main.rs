@@ -21,6 +21,8 @@ enum Command {
     Ls,
     History { inode_id: i64 },
     Restore { inode_id: i64, revision_id: i64 },
+    Pin { inode_id: i64 },
+    Unpin { inode_id: i64 },
 }
 
 #[derive(Debug)]
@@ -73,6 +75,8 @@ struct FileEntryResponse {
     size: i64,
     current_revision_id: Option<i64>,
     current_revision_created_at: Option<i64>,
+    smart_sync_pin_state: Option<i64>,
+    smart_sync_hydration_state: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +96,13 @@ struct RestoreRevisionResponse {
     restored: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct SmartSyncActionResponse {
+    inode_id: i64,
+    pin_state: i64,
+    hydration_state: i64,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -109,6 +120,8 @@ async fn main() {
             inode_id,
             revision_id,
         } => restore(&client, &api_base, inode_id, revision_id).await,
+        Command::Pin { inode_id } => pin(&client, &api_base, inode_id).await,
+        Command::Unpin { inode_id } => unpin(&client, &api_base, inode_id).await,
     };
 
     if let Err(err) = result {
@@ -158,12 +171,13 @@ async fn list_files(client: &Client, api_base: &str) -> Result<(), CliError> {
     }
 
     println!(
-        "{:<10} {:>12} {:>12} {:>14}  PATH",
-        "INODE_ID", "SIZE", "REVISION", "CREATED_AT"
+        "{:<8} {:<10} {:>12} {:>12} {:>14}  PATH",
+        "SYNC", "INODE_ID", "SIZE", "REVISION", "CREATED_AT"
     );
     for file in files {
         println!(
-            "{:<10} {:>12} {:>12} {:>14}  {}",
+            "{:<8} {:<10} {:>12} {:>12} {:>14}  {}",
+            sync_marker(file.smart_sync_pin_state, file.smart_sync_hydration_state),
             file.inode_id,
             file.size,
             file.current_revision_id
@@ -176,6 +190,48 @@ async fn list_files(client: &Client, api_base: &str) -> Result<(), CliError> {
         );
     }
 
+    Ok(())
+}
+
+async fn pin(client: &Client, api_base: &str, inode_id: i64) -> Result<(), CliError> {
+    let response = client
+        .post(format!("{api_base}/api/files/{inode_id}/pin"))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(CliError::Api(format!(
+            "pin failed with status {}",
+            response.status()
+        )));
+    }
+
+    let result: SmartSyncActionResponse = response.json().await?;
+    println!(
+        "Pinned inode {} (pin_state={}, hydration_state={})",
+        result.inode_id, result.pin_state, result.hydration_state
+    );
+    Ok(())
+}
+
+async fn unpin(client: &Client, api_base: &str, inode_id: i64) -> Result<(), CliError> {
+    let response = client
+        .post(format!("{api_base}/api/files/{inode_id}/unpin"))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(CliError::Api(format!(
+            "unpin failed with status {}",
+            response.status()
+        )));
+    }
+
+    let result: SmartSyncActionResponse = response.json().await?;
+    println!(
+        "Unpinned inode {} (pin_state={}, hydration_state={})",
+        result.inode_id, result.pin_state, result.hydration_state
+    );
     Ok(())
 }
 
@@ -264,4 +320,13 @@ fn human_bytes(bytes: u64) -> String {
     }
 
     format!("{value:.2} {}", UNITS[unit])
+}
+
+fn sync_marker(pin_state: Option<i64>, hydration_state: Option<i64>) -> String {
+    match (pin_state.unwrap_or(0), hydration_state.unwrap_or(0)) {
+        (1, 1) => "[PH]".to_string(),
+        (1, _) => "[P]".to_string(),
+        (0, 1) => "[H]".to_string(),
+        _ => "[O]".to_string(),
+    }
 }

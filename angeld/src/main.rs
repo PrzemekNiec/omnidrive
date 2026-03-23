@@ -12,6 +12,7 @@ mod vault;
 mod watcher;
 
 use crate::api::ApiServer;
+use crate::downloader::Downloader;
 use crate::gc::GcWorker;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::repair::RepairWorker;
@@ -21,6 +22,7 @@ use crate::watcher::FileWatcher;
 use std::env;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::fs;
 use tokio::signal;
 
@@ -122,12 +124,15 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&sync_root).await?;
     let db_url = env::var("OMNIDRIVE_DB_URL").unwrap_or_else(|_| "sqlite:omnidrive.db".to_string());
     let pool = db::init_db(&db_url).await?;
+    let vault_keys = VaultKeyStore::new();
+    let downloader = Arc::new(Downloader::from_env(pool.clone(), vault_keys.clone()).await?);
+    smart_sync::install_hydration_runtime(pool.clone(), downloader)
+        .map_err(|err| io::Error::other(format!("smart sync hydration setup failed: {err}")))?;
     smart_sync::register_sync_root(&sync_root).await
         .map_err(|err| io::Error::other(format!("smart sync register failed: {err}")))?;
     smart_sync::project_vault_to_sync_root(&pool, &sync_root).await
         .map_err(|err| io::Error::other(format!("smart sync projection failed: {err}")))?;
 
-    let vault_keys = VaultKeyStore::new();
     let worker = UploadWorker::from_env(pool.clone()).await?;
     let repair_worker = RepairWorker::from_env(pool.clone()).await?;
     let gc_worker = GcWorker::from_env(pool.clone()).await?;
