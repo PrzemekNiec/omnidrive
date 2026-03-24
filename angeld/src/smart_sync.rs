@@ -175,23 +175,27 @@ mod imp {
     use super::SmartSyncError;
     use crate::db::{self, ProjectionFileRecord};
     use crate::downloader::Downloader;
+    use crate::win_acl;
     use sqlx::SqlitePool;
     use std::ffi::OsStr;
     use std::iter;
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::MetadataExt;
     use std::os::windows::io::AsRawHandle;
     use std::path::Component;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::ptr;
     use std::sync::{Arc, OnceLock};
     use std::time::{Duration, UNIX_EPOCH};
     use tokio::runtime::Handle;
-    use tracing::{info, warn};
+    use tracing::{info, trace, warn};
     use windows::core::{GUID, HRESULT, PCWSTR};
     use windows::Win32::Foundation::{HANDLE, NTSTATUS, S_OK};
     use windows::Win32::Storage::CloudFilters::{
         CfConnectSyncRoot, CfCreatePlaceholders, CfDisconnectSyncRoot, CfExecute,
+        CfGetSyncRootInfoByPath,
         CfHydratePlaceholder,
         CfRegisterSyncRoot, CfSetPinState, CfUnregisterSyncRoot, CfUpdatePlaceholder,
         CF_CALLBACK_INFO, CF_CALLBACK_PARAMETERS,
@@ -211,7 +215,8 @@ mod imp {
         CF_POPULATION_POLICY_FULL, CF_POPULATION_POLICY_MODIFIER,
         CF_POPULATION_POLICY_MODIFIER_NONE, CF_POPULATION_POLICY_PRIMARY, CF_REGISTER_FLAGS,
         CF_REGISTER_FLAG_NONE, CF_REGISTER_FLAG_UPDATE, CF_SET_PIN_FLAG_NONE, CF_SET_PIN_FLAGS, CF_SYNC_POLICIES,
-        CF_SYNC_REGISTRATION, CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
+        CF_SYNC_REGISTRATION, CF_SYNC_ROOT_INFO_STANDARD, CF_SYNC_ROOT_STANDARD_INFO,
+        CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
     };
     use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_ARCHIVE, FILE_BASIC_INFO};
     use windows::Win32::UI::Shell::{SHCNE_UPDATEITEM, SHCNF_PATHW, SHChangeNotify};
@@ -421,6 +426,7 @@ mod imp {
 
     pub async fn register_sync_root_public(sync_root_path: &Path) -> Result<(), SmartSyncError> {
         let sync_root = normalize_sync_root_path(sync_root_path)?;
+        debug_log_sync_root_security(&sync_root);
         info!("smart-sync: registering {}", sync_root.display());
         register_sync_root(&sync_root).map_err(|err| {
             SmartSyncError::InvalidPathWithContext("CfRegisterSyncRoot", err.to_string())
@@ -685,11 +691,29 @@ mod imp {
         };
 
         let path = PCWSTR(sync_root_wide.as_ptr());
+        if inspect_existing_sync_root(sync_root_path, path) {
+            info!(
+                "smart-sync: existing sync root detected, registration skipped for {}",
+                sync_root_path.display()
+            );
+            return Ok(());
+        }
+
+        assert_sync_root_writable(sync_root_path)?;
+        trace!(
+            "smart-sync: defensive unregister before register for {}",
+            sync_root_path.display()
+        );
+        unsafe {
+            let _ = CfUnregisterSyncRoot(path);
+        }
         let initial_result =
             unsafe { CfRegisterSyncRoot(path, &registration, &policies, register_flags(false)) };
         if initial_result.is_ok() {
             return Ok(());
         }
+
+        log_registration_context(sync_root_path, &registration, register_flags(false), "initial");
 
         let first_error = initial_result
             .err()
@@ -706,8 +730,138 @@ mod imp {
             let _ = CfUnregisterSyncRoot(path);
         }
 
+        log_registration_context(sync_root_path, &registration, register_flags(true), "update");
         unsafe { CfRegisterSyncRoot(path, &registration, &policies, register_flags(true))? };
         Ok(())
+    }
+
+    fn inspect_existing_sync_root(sync_root_path: &Path, path: PCWSTR) -> bool {
+        let mut buffer = vec![0u8; size_of::<CF_SYNC_ROOT_STANDARD_INFO>() + 512];
+        let mut returned = 0u32;
+        let result = unsafe {
+            CfGetSyncRootInfoByPath(
+                path,
+                CF_SYNC_ROOT_INFO_STANDARD,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                Some(&mut returned),
+            )
+        };
+
+        match result {
+            Ok(()) => {
+                let info = unsafe { &*(buffer.as_ptr() as *const CF_SYNC_ROOT_STANDARD_INFO) };
+                let provider_name = utf16_trimmed(&info.ProviderName);
+                let provider_version = utf16_trimmed(&info.ProviderVersion);
+                let identity_len = usize::try_from(info.SyncRootIdentityLength).unwrap_or(0);
+                let identity_ptr = info.SyncRootIdentity.as_ptr();
+                let identity_bytes = unsafe { std::slice::from_raw_parts(identity_ptr, identity_len) };
+                trace!(
+                    "smart-sync: CfGetSyncRootInfoByPath found existing root for {} => provider_name='{}', provider_version='{}', file_id={}, identity_len={}, identity={}",
+                    sync_root_path.display(),
+                    provider_name,
+                    provider_version,
+                    info.SyncRootFileId,
+                    info.SyncRootIdentityLength,
+                    String::from_utf8_lossy(identity_bytes)
+                );
+                true
+            }
+            Err(err) => {
+                trace!(
+                    "smart-sync: CfGetSyncRootInfoByPath reported no reusable root for {}: {}",
+                    sync_root_path.display(),
+                    err
+                );
+                false
+            }
+        }
+    }
+
+    fn log_registration_context(
+        sync_root_path: &Path,
+        registration: &CF_SYNC_REGISTRATION,
+        flags: CF_REGISTER_FLAGS,
+        phase: &str,
+    ) {
+        trace!(
+            "smart-sync: register context [{}] path={}, provider_name='{}', provider_version='{}', provider_id={:?}, sync_root_identity_len={}, flags=0x{:x}",
+            phase,
+            sync_root_path.display(),
+            PROVIDER_NAME,
+            PROVIDER_VERSION,
+            registration.ProviderId,
+            registration.SyncRootIdentityLength,
+            flags.0
+        );
+    }
+
+    fn utf16_trimmed(raw: &[u16]) -> String {
+        let len = raw.iter().position(|ch| *ch == 0).unwrap_or(raw.len());
+        String::from_utf16_lossy(&raw[..len])
+    }
+
+    fn debug_log_sync_root_security(path: &Path) {
+        let owner_output = powershell_literal_output(
+            path,
+            "$acl = Get-Acl -LiteralPath __PATH__; $acl.Owner",
+        );
+        let acl_output = Command::new("icacls").arg(path).output();
+
+        match owner_output {
+            Ok(owner) => trace!(
+                "smart-sync: sync root owner for {} => {}",
+                path.display(),
+                owner.trim()
+            ),
+            Err(err) => trace!(
+                "smart-sync: failed to read sync root owner for {}: {}",
+                path.display(),
+                err
+            ),
+        }
+
+        match acl_output {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                trace!(
+                    "smart-sync: sync root ACL dump for {} => status={:?}, stdout={}, stderr={}",
+                    path.display(),
+                    output.status.code(),
+                    stdout.trim(),
+                    stderr.trim()
+                );
+            }
+            Err(err) => trace!(
+                "smart-sync: failed to dump sync root ACLs for {}: {}",
+                path.display(),
+                err
+            ),
+        }
+    }
+
+    fn powershell_literal_output(path: &Path, script_template: &str) -> Result<String, SmartSyncError> {
+        let escaped = path
+            .display()
+            .to_string()
+            .replace('\'', "''");
+        let script = script_template.replace("__PATH__", &format!("'{}'", escaped));
+        let output = Command::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(script)
+            .output()
+            .map_err(SmartSyncError::Io)?;
+
+        if !output.status.success() {
+            return Err(SmartSyncError::InvalidPathWithContext(
+                "sync root security debug",
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     fn connect_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncError> {
@@ -759,6 +913,7 @@ mod imp {
 
     fn prepare_sync_root_directory(path: &Path) -> Result<(), SmartSyncError> {
         if path.exists() {
+            trace!("smart-sync: sync root exists before prep: {}", path.display());
             let metadata = std::fs::metadata(path).map_err(SmartSyncError::Io)?;
             if !metadata.is_dir() {
                 return Err(SmartSyncError::InvalidPath(
@@ -766,13 +921,24 @@ mod imp {
                 ));
             }
 
-            if directory_is_empty(path)? {
-                std::fs::remove_dir(path).map_err(SmartSyncError::Io)?;
-            }
+            let attrs = metadata.file_attributes();
+            trace!(
+                "smart-sync: existing sync root attrs for {} => 0x{:x}",
+                path.display(),
+                attrs
+            );
         }
 
+        trace!("smart-sync: creating sync root directory {}", path.display());
         std::fs::create_dir_all(path).map_err(SmartSyncError::Io)?;
-        assert_sync_root_writable(path)?;
+        trace!("smart-sync: created sync root directory {}", path.display());
+        if let Err(err) = win_acl::prepare_sync_root_directory(path) {
+            return Err(SmartSyncError::InvalidPathWithContext(
+                "sync root acl preparation",
+                err.to_string(),
+            ));
+        }
+        trace!("smart-sync: prepared sync root ACLs {}", path.display());
         Ok(())
     }
 
@@ -1094,11 +1260,6 @@ mod imp {
                 );
             }
         }
-    }
-
-    fn directory_is_empty(path: &Path) -> Result<bool, SmartSyncError> {
-        let mut entries = std::fs::read_dir(path).map_err(SmartSyncError::Io)?;
-        Ok(entries.next().is_none())
     }
 
     fn assert_sync_root_writable(path: &Path) -> Result<(), SmartSyncError> {

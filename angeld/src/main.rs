@@ -225,6 +225,61 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         return result;
     }
 
+    if e2e_test_mode {
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Uploader, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Repair, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Scrubber, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Gc, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Watcher, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::MetadataBackup, crate::diagnostics::WorkerStatus::Idle);
+
+        let mut smart_sync_ready = false;
+        match smart_sync::register_sync_root(&sync_root).await {
+            Ok(()) => {
+                smart_sync_ready = true;
+                if let Err(err) = smart_sync::project_vault_to_sync_root(&pool, &sync_root).await {
+                    warn!("smart sync bootstrap warning: projection failed for {}: {}", sync_root.display(), err);
+                    smart_sync_ready = false;
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "smart sync bootstrap warning: registration failed for {}: {}",
+                    sync_root.display(),
+                    err
+                );
+            }
+        }
+
+        let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone())?;
+        if smart_sync_ready {
+            info!("smart sync bootstrap ready at {}", sync_root.display());
+        } else {
+            warn!("smart sync bootstrap warning at {}", sync_root.display());
+        }
+        info!("e2e test mode enabled: background provider workers and virtual drive bootstrap are disabled");
+
+        let mut api_task = tokio::spawn(async move { api.run().await });
+        let result = tokio::select! {
+            result = &mut api_task => {
+                let outcome = result??;
+                Ok(outcome)
+            }
+            signal = signal::ctrl_c() => {
+                signal?;
+                api_task.abort();
+                info!("shutdown signal received");
+                Ok(())
+            }
+        };
+
+        if let Err(err) = smart_sync::shutdown_sync_root() {
+            warn!("smart sync shutdown warning: {}", err);
+        }
+
+        return result;
+    }
+
     let downloader = Arc::new(Downloader::from_env(pool.clone(), vault_keys.clone()).await?);
     if no_sync {
         warn!("starting angeld with --no-sync; skipping Smart Sync and virtual drive bootstrap");

@@ -1224,6 +1224,12 @@ Current progress:
 - The first happy-path test launches a fresh daemon, queues a minimal `LOCAL_ONLY` upload job, polls `GET /api/diagnostics/health`, and verifies the uploader transitions `idle -> active -> idle`.
 - The baseline E2E test passes under:
   - `cargo test -p angeld --test e2e_basic -- --nocapture`
+- `Task 26.3` is implemented.
+- A dedicated full-stack SyncRoot harness now exists in `angeld/tests/e2e_sync.rs`.
+- The Smart Sync bootstrap now performs a non-destructive CFAPI state probe with `CfGetSyncRootInfoByPath` before attempting registration.
+- In E2E mode, the HTTP API starts even when Smart Sync only reports a bootstrap warning, which keeps diagnostics reachable during driver-state investigations.
+- The SyncRoot E2E test now passes under:
+  - `cargo test -p angeld --test e2e_sync -- --nocapture`
 
 ## PHASE 8: EXPLORER RELIABILITY AND OPERATIONS
 
