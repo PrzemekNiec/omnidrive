@@ -3,6 +3,7 @@
 use crate::config::AppConfig;
 use crate::db;
 use crate::db::{PackStatus, StorageMode};
+use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::packer::local_shard_path;
 use crate::packer::{LOCAL_PACK_EXTENSION, TOTAL_SHARDS};
 use crate::secure_fs::secure_delete;
@@ -24,6 +25,7 @@ use tokio::fs::{self, File};
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep, timeout};
+use tracing::{error, info, warn};
 
 pub const KNOWN_PROVIDERS: [&str; 3] = ["cloudflare-r2", "backblaze-b2", "scaleway"];
 
@@ -312,34 +314,43 @@ impl UploadWorker {
         db::reset_in_progress_upload_jobs(&self.pool).await?;
         db::reset_in_progress_upload_targets(&self.pool).await?;
         db::reset_in_progress_pack_shards(&self.pool).await?;
+        diagnostics::set_worker_status(WorkerKind::Uploader, WorkerStatus::Idle);
 
         loop {
             let Some(job) = db::get_next_upload_job(&self.pool).await? else {
+                diagnostics::set_worker_status(WorkerKind::Uploader, WorkerStatus::Idle);
                 sleep(self.poll_interval).await;
                 continue;
             };
+            diagnostics::set_worker_status(WorkerKind::Uploader, WorkerStatus::Active);
 
             match self.process_job(&job).await? {
                 JobProcessOutcome::Completed => {
                     db::mark_upload_job_completed(&self.pool, job.id).await?;
+                    diagnostics::clear_upload_error();
                 }
                 JobProcessOutcome::PendingRetry {
                     delay,
                     failed_shards,
                 } => {
                     let attempts = db::requeue_upload_job(&self.pool, job.id).await?;
-                    eprintln!(
+                    let message = format!(
                         "upload job {} remains pending for [{}]; retry after {:?} (job_attempts={})",
                         job.pack_id,
                         failed_shards.join(", "),
                         delay,
                         attempts
                     );
+                    diagnostics::record_upload_error(message.clone());
+                    warn!("{message}");
+                    diagnostics::set_worker_status(WorkerKind::Uploader, WorkerStatus::Idle);
                     sleep(delay).await;
                 }
                 JobProcessOutcome::Failed => {
                     db::mark_upload_job_failed(&self.pool, job.id).await?;
-                    eprintln!("upload job {} became unreadable", job.pack_id);
+                    let message = format!("upload job {} became unreadable", job.pack_id);
+                    diagnostics::record_upload_error(message.clone());
+                    error!("{message}");
                 }
             }
         }
@@ -394,7 +405,8 @@ impl UploadWorker {
                     projected_usage,
                     self.app_config.max_physical_bytes_per_provider
                 );
-                eprintln!("{message}");
+                diagnostics::record_upload_error(message.clone());
+                warn!("{message}");
                 db::mark_pack_shard_failed(&self.pool, &job.pack_id, shard.shard_index, &message)
                     .await?;
                 db::mark_upload_target_failed(&self.pool, job.id, &shard.provider, &message)
@@ -416,7 +428,7 @@ impl UploadWorker {
             db::mark_pack_shard_in_progress(&self.pool, &job.pack_id, shard.shard_index).await?;
             db::mark_upload_target_in_progress(&self.pool, job.id, &shard.provider).await?;
 
-            println!(
+            info!(
                 "upload start pack={} shard={} provider={} force_path_style={} worker_timeout={:?} connect_timeout={:?} read_timeout={:?}",
                 job.pack_id,
                 shard.shard_index,
@@ -463,7 +475,7 @@ impl UploadWorker {
                         uploaded.version_id.as_deref(),
                     )
                     .await?;
-                    println!(
+                    info!(
                         "uploaded pack={} shard={} provider={} key={}",
                         job.pack_id, shard.shard_index, uploaded.provider, uploaded.key
                     );
@@ -574,7 +586,7 @@ impl UploadWorker {
             .spool_dir
             .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
         if let Err(err) = secure_delete(&manifest_path).await {
-            eprintln!(
+            warn!(
                 "spool secure delete failed for manifest {}: {}",
                 manifest_path.display(),
                 err
@@ -584,7 +596,7 @@ impl UploadWorker {
         for shard_index in 0..TOTAL_SHARDS {
             let shard_path = local_shard_path(&self.spool_dir, pack_id, shard_index);
             if let Err(err) = secure_delete(&shard_path).await {
-                eprintln!(
+                warn!(
                     "spool secure delete failed for shard {}: {}",
                     shard_path.display(),
                     err

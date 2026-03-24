@@ -1,6 +1,7 @@
 use crate::cache;
 use crate::config::AppConfig;
 use crate::db;
+use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
 use crate::disaster_recovery;
 use crate::scrubber;
 use crate::smart_sync;
@@ -17,16 +18,20 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tracing::{error, info};
 
 #[derive(Clone)]
 struct ApiState {
     pool: SqlitePool,
     vault_keys: VaultKeyStore,
+    diagnostics: Arc<DaemonDiagnostics>,
 }
 
 pub struct ApiServer {
     pool: SqlitePool,
     vault_keys: VaultKeyStore,
+    diagnostics: Arc<DaemonDiagnostics>,
     bind_addr: SocketAddr,
 }
 
@@ -238,8 +243,34 @@ struct MetadataBackupAttemptResponse {
     last_error: Option<String>,
 }
 
+#[derive(Serialize)]
+struct DiagnosticsHealthResponse {
+    uptime_seconds: u64,
+    pending_uploads_queue_size: i64,
+    last_upload_error: Option<String>,
+    cache_size_bytes: i64,
+    cache_hit_count: u64,
+    cache_miss_count: u64,
+    worker_statuses: DiagnosticsWorkerStatusesResponse,
+}
+
+#[derive(Serialize)]
+struct DiagnosticsWorkerStatusesResponse {
+    uploader: String,
+    repair: String,
+    scrubber: String,
+    gc: String,
+    watcher: String,
+    metadata_backup: String,
+    api: String,
+}
+
 impl ApiServer {
-    pub fn from_env(pool: SqlitePool, vault_keys: VaultKeyStore) -> Result<Self, ApiError> {
+    pub fn from_env(
+        pool: SqlitePool,
+        vault_keys: VaultKeyStore,
+        diagnostics: Arc<DaemonDiagnostics>,
+    ) -> Result<Self, ApiError> {
         let _ = dotenvy::dotenv();
 
         let bind_addr = env::var("OMNIDRIVE_API_BIND")
@@ -250,19 +281,23 @@ impl ApiServer {
         Ok(Self {
             pool,
             vault_keys,
+            diagnostics,
             bind_addr,
         })
     }
 
     pub async fn run(self) -> Result<(), ApiError> {
+        let diagnostics = self.diagnostics.clone();
         let state = ApiState {
             pool: self.pool,
             vault_keys: self.vault_keys,
+            diagnostics: diagnostics.clone(),
         };
         let app = Router::new()
             .route("/", get(get_index))
             .route("/api/transfers", get(get_transfers))
             .route("/api/health", get(get_health))
+            .route("/api/diagnostics/health", get(get_diagnostics_health))
             .route("/api/health/vault", get(get_vault_health))
             .route("/api/files", get(get_files))
             .route("/api/files/{inode_id}", delete(delete_file))
@@ -291,7 +326,8 @@ impl ApiServer {
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
             .await
             .map_err(ApiError::Io)?;
-        println!("api server listening on http://{}", self.bind_addr);
+        diagnostics.set_worker_status(WorkerKind::Api, WorkerStatus::Idle);
+        info!("api server listening on http://{}", self.bind_addr);
 
         axum::serve(listener, app).await.map_err(ApiError::Io)
     }
@@ -395,6 +431,48 @@ async fn get_health(State(state): State<ApiState>) -> impl IntoResponse {
     }
 
     (StatusCode::OK, Json(providers)).into_response()
+}
+
+async fn get_diagnostics_health(State(state): State<ApiState>) -> impl IntoResponse {
+    let snapshot = state.diagnostics.snapshot();
+    let pending_uploads_queue_size = match db::get_pending_upload_queue_size(&state.pool).await {
+        Ok(value) => value,
+        Err(err) => return internal_server_error(err),
+    };
+    let cache_summary = match db::get_cache_status_summary(&state.pool).await {
+        Ok(summary) => summary,
+        Err(err) => return internal_server_error(err),
+    };
+    let runtime_cache = cache::cache_runtime_stats();
+    let last_upload_error = match &snapshot.last_upload_error {
+        Some(value) => Some(value.clone()),
+        None => match db::get_latest_upload_error(&state.pool).await {
+            Ok(value) => value,
+            Err(err) => return internal_server_error(err),
+        },
+    };
+
+    (
+        StatusCode::OK,
+        Json(DiagnosticsHealthResponse {
+            uptime_seconds: snapshot.uptime_seconds,
+            pending_uploads_queue_size,
+            last_upload_error,
+            cache_size_bytes: cache_summary.total_bytes,
+            cache_hit_count: runtime_cache.hit_count,
+            cache_miss_count: runtime_cache.miss_count,
+            worker_statuses: DiagnosticsWorkerStatusesResponse {
+                uploader: snapshot.uploader.as_str().to_string(),
+                repair: snapshot.repair.as_str().to_string(),
+                scrubber: snapshot.scrubber.as_str().to_string(),
+                gc: snapshot.gc.as_str().to_string(),
+                watcher: snapshot.watcher.as_str().to_string(),
+                metadata_backup: snapshot.metadata_backup.as_str().to_string(),
+                api: snapshot.api.as_str().to_string(),
+            },
+        }),
+    )
+        .into_response()
 }
 
 async fn get_vault_health(State(state): State<ApiState>) -> impl IntoResponse {
@@ -1136,7 +1214,7 @@ fn provider_connection_status(target_status: &str, has_error: bool) -> String {
 }
 
 fn internal_server_error(err: impl std::error::Error) -> axum::response::Response {
-    eprintln!("api request failed: {err}");
+    error!("api request failed: {err}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "error": "internal_server_error" })),

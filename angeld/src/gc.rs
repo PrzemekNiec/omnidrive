@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::db;
+use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::packer::{LOCAL_PACK_EXTENSION, TOTAL_SHARDS, local_shard_path};
 use crate::uploader::ProviderConfig;
 use aws_config::timeout::TimeoutConfig;
@@ -14,6 +15,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::fs;
 use tokio::time::{sleep, timeout};
+use tracing::{info, warn};
 
 pub struct GcWorker {
     pool: SqlitePool,
@@ -100,16 +102,19 @@ impl GcWorker {
     }
 
     pub async fn run(self) -> Result<(), GcError> {
+        diagnostics::set_worker_status(WorkerKind::Gc, WorkerStatus::Idle);
         loop {
             let orphaned = db::get_orphaned_pack_ids(&self.pool, self.batch_size).await?;
             if orphaned.is_empty() {
+                diagnostics::set_worker_status(WorkerKind::Gc, WorkerStatus::Idle);
                 sleep(self.poll_interval).await;
                 continue;
             }
 
+            diagnostics::set_worker_status(WorkerKind::Gc, WorkerStatus::Active);
             for pack_id in orphaned {
                 if let Err(err) = self.collect_pack(&pack_id).await {
-                    eprintln!("gc failed for orphaned pack {}: {}", pack_id, err);
+                    warn!("gc failed for orphaned pack {}: {}", pack_id, err);
                     sleep(self.retry_delay).await;
                 }
             }
@@ -157,7 +162,7 @@ impl GcWorker {
 
         db::delete_pack_metadata(&self.pool, pack_id).await?;
         self.cleanup_local_files(pack_id).await?;
-        println!("gc removed orphaned pack {}", pack_id);
+        info!("gc removed orphaned pack {}", pack_id);
         Ok(())
     }
 

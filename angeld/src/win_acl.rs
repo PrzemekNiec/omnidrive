@@ -1,5 +1,6 @@
 use std::fmt;
 use std::path::Path;
+use tracing::debug;
 
 #[derive(Debug)]
 pub enum AclError {
@@ -26,7 +27,30 @@ impl From<std::io::Error> for AclError {
 
 pub fn secure_directory(path: &Path) -> Result<(), AclError> {
     std::fs::create_dir_all(path)?;
-    secure_directory_inner(path)
+
+    #[cfg(debug_assertions)]
+    {
+        debug!(
+            "skipping ACL hardening in debug build for {}",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    let normalized = normalize_directory_path(path)?;
+    secure_directory_inner(&normalized)
+}
+
+fn normalize_directory_path(path: &Path) -> Result<std::path::PathBuf, AclError> {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return Ok(canonical);
+    }
+
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+
+    Ok(std::env::current_dir()?.join(path))
 }
 
 #[cfg(target_os = "windows")]

@@ -3290,6 +3290,39 @@ pub async fn list_recent_upload_jobs(
 }
 
 #[allow(dead_code)]
+pub async fn get_pending_upload_queue_size(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query(
+        r#"
+        SELECT COUNT(*) AS count
+        FROM upload_jobs
+        WHERE status = 'PENDING'
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    row.try_get("count")
+}
+
+#[allow(dead_code)]
+pub async fn get_latest_upload_error(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query(
+        r#"
+        SELECT last_error
+        FROM upload_job_targets
+        WHERE last_error IS NOT NULL
+          AND last_error != ''
+        ORDER BY COALESCE(last_attempt_at, updated_at, completed_at, 0) DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.and_then(|row| row.try_get("last_error").ok()))
+}
+
+#[allow(dead_code)]
 pub async fn get_latest_upload_target_for_provider(
     pool: &SqlitePool,
     provider: &str,

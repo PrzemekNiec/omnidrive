@@ -2,6 +2,7 @@
 
 use crate::config::AppConfig;
 use crate::db;
+use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::vault::VaultKeyStore;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -14,6 +15,7 @@ use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval, sleep_until};
+use tracing::{info, warn};
 
 pub struct FileWatcher {
     pool: SqlitePool,
@@ -144,6 +146,7 @@ impl FileWatcher {
     }
 
     pub async fn run(self) -> Result<(), WatcherError> {
+        diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Starting);
         let (tx, mut rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
         let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |result| {
             let _ = tx.send(result);
@@ -155,11 +158,12 @@ impl FileWatcher {
         }
         if let Err(err) = self.scan_existing_files().await {
             if is_vault_locked_error(&err) {
-                eprintln!("watcher initial scan skipped while vault is locked");
+                warn!("watcher initial scan skipped while vault is locked");
             } else {
                 return Err(err);
             }
         }
+        diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Idle);
 
         let mut processed_files = HashMap::new();
         let mut pending_paths: HashMap<PathBuf, Instant> = HashMap::new();
@@ -177,16 +181,20 @@ impl FileWatcher {
                         self.handle_event(event_result?, &mut pending_paths)?;
                     }
                     _ = sleep_until(next_due) => {
+                        diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Active);
                         self.flush_ready_paths(&mut pending_paths, &mut processed_files).await;
+                        diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Idle);
                     }
                     _ = rescan_tick.tick() => {
+                        diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Active);
                         if let Err(err) = self.scan_existing_files().await {
                             if is_vault_locked_error(&err) {
-                                eprintln!("watcher periodic scan skipped while vault is locked");
+                                warn!("watcher periodic scan skipped while vault is locked");
                             } else {
-                                eprintln!("watcher periodic scan failed: {err}");
+                                warn!("watcher periodic scan failed: {err}");
                             }
                         }
+                        diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Idle);
                     }
                 }
             } else {
@@ -198,13 +206,15 @@ impl FileWatcher {
                         self.handle_event(event_result?, &mut pending_paths)?;
                     }
                     _ = rescan_tick.tick() => {
+                        diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Active);
                         if let Err(err) = self.scan_existing_files().await {
                             if is_vault_locked_error(&err) {
-                                eprintln!("watcher periodic scan skipped while vault is locked");
+                                warn!("watcher periodic scan skipped while vault is locked");
                             } else {
-                                eprintln!("watcher periodic scan failed: {err}");
+                                warn!("watcher periodic scan failed: {err}");
                             }
                         }
+                        diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Idle);
                     }
                 }
             }
@@ -264,7 +274,7 @@ impl FileWatcher {
         for path in ready_paths {
             pending_paths.remove(&path);
             if let Err(err) = self.process_event_path(path, processed_files).await {
-                eprintln!("watcher failed to process event: {err}");
+                warn!("watcher failed to process event: {err}");
             }
         }
     }
@@ -293,7 +303,7 @@ impl FileWatcher {
             for file in files {
                 if let Err(err) = self.process_file(file.clone(), processed_files).await {
                     if is_vault_locked_error(&err) {
-                        eprintln!("watcher skipped {} while vault is locked", file.display());
+                        warn!("watcher skipped {} while vault is locked", file.display());
                         continue;
                     }
                     return Err(err);
@@ -305,7 +315,7 @@ impl FileWatcher {
         if metadata.is_file() {
             if let Err(err) = self.process_file(path.clone(), processed_files).await {
                 if is_vault_locked_error(&err) {
-                    eprintln!("watcher skipped {} while vault is locked", path.display());
+                    warn!("watcher skipped {} while vault is locked", path.display());
                     return Ok(());
                 }
                 return Err(err);
@@ -365,7 +375,7 @@ impl FileWatcher {
         let pack_result = self.packer.pack_file(inode_id, &file_path).await?;
         processed_files.insert(file_path.clone(), fingerprint);
         if let Some(pack_id) = pack_result.pack_id {
-            println!("watcher packed {} into {}", file_path.display(), pack_id);
+            info!("watcher packed {} into {}", file_path.display(), pack_id);
         }
 
         Ok(())
@@ -392,7 +402,7 @@ impl FileWatcher {
 
         db::delete_file_chunks(&self.pool, inode_id).await?;
         db::delete_inode_record(&self.pool, inode_id).await?;
-        println!("watcher removed {} from sqlite", path.display());
+        info!("watcher removed {} from sqlite", path.display());
         Ok(())
     }
 

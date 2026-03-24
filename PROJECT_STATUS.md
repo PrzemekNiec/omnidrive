@@ -106,6 +106,8 @@ Goal:
 Scope:
 - next recommended implementation areas:
   - observability and diagnostics
+  - structured rotating daemon logs
+  - live diagnostics health API for installer-era background operation
   - end-to-end lifecycle testing
   - installer and first-run bootstrap
 

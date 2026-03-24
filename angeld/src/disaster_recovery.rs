@@ -1,4 +1,5 @@
 use crate::db;
+use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::secure_fs::secure_delete;
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -16,6 +17,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Duration, MissedTickBehavior, interval};
 use crate::uploader::{ProviderConfig, Uploader, UploaderError};
 use crate::vault::VaultKeyStore;
+use tracing::{info, warn};
 
 pub const METADATA_BACKUP_MAGIC: &[u8; 15] = b"OMNIDRIVE-META1";
 pub const METADATA_BACKUP_VERSION: u8 = 0x02;
@@ -144,6 +146,7 @@ pub fn start_metadata_backup_worker(
     tokio::spawn(async move {
         let mut ticker = interval(METADATA_BACKUP_WORKER_TICK);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        diagnostics::set_worker_status(WorkerKind::MetadataBackup, WorkerStatus::Idle);
 
         loop {
             ticker.tick().await;
@@ -151,7 +154,7 @@ pub fn start_metadata_backup_worker(
             let last_success = match db::get_last_successful_metadata_backup_at(&db_pool).await {
                 Ok(value) => value,
                 Err(err) => {
-                    eprintln!("metadata backup worker failed to query last backup: {err}");
+                    warn!("metadata backup worker failed to query last backup: {err}");
                     continue;
                 }
             };
@@ -159,7 +162,7 @@ pub fn start_metadata_backup_worker(
             let now_ms = match unix_timestamp_ms() {
                 Ok(value) => value as i64,
                 Err(err) => {
-                    eprintln!("metadata backup worker failed to read clock: {err}");
+                    warn!("metadata backup worker failed to read clock: {err}");
                     continue;
                 }
             };
@@ -179,18 +182,20 @@ pub fn start_metadata_backup_worker(
             let master_key = match keystore.require_master_key().await {
                 Ok(key) => key,
                 Err(_) => {
-                    eprintln!("metadata backup worker skipped: vault is locked");
+                    warn!("metadata backup worker skipped: vault is locked");
                     continue;
                 }
             };
+            diagnostics::set_worker_status(WorkerKind::MetadataBackup, WorkerStatus::Active);
 
             if let Err(err) =
                 run_metadata_backup_now(&db_pool, provider_manager.as_ref(), &master_key).await
             {
-                eprintln!("metadata backup worker failed: {err}");
+                warn!("metadata backup worker failed: {err}");
             } else {
-                println!("metadata backup worker uploaded a fresh recovery snapshot");
+                info!("metadata backup worker uploaded a fresh recovery snapshot");
             }
+            diagnostics::set_worker_status(WorkerKind::MetadataBackup, WorkerStatus::Idle);
         }
     })
 }
@@ -408,7 +413,7 @@ pub async fn upload_metadata_backup(
                 db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None).await?;
 
                 if let Err(err) = uploader.upload_system_file(enc_file_path, latest_key).await {
-                    eprintln!(
+                    warn!(
                         "metadata backup latest pointer update failed for {}: {}",
                         uploader.provider_name(),
                         err
@@ -452,7 +457,7 @@ pub async fn run_metadata_backup_now(
     let cleanup_result = secure_delete(&temp_enc_path).await;
 
     if let Err(err) = cleanup_result {
-        eprintln!(
+        warn!(
             "metadata backup temp cleanup failed for {}: {}",
             temp_enc_path.display(),
             err

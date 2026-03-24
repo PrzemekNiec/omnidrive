@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::db;
+use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::uploader::ProviderConfig;
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
@@ -12,6 +13,7 @@ use std::env;
 use std::fmt;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
+use tracing::warn;
 
 pub struct ScrubberWorker {
     pool: SqlitePool,
@@ -82,13 +84,17 @@ impl ScrubberWorker {
     }
 
     pub async fn run(self) -> Result<(), ScrubberError> {
+        diagnostics::set_worker_status(WorkerKind::Scrubber, WorkerStatus::Idle);
         loop {
+            diagnostics::set_worker_status(WorkerKind::Scrubber, WorkerStatus::Active);
             let processed = self.run_one_batch().await?;
             if processed == 0 {
+                diagnostics::set_worker_status(WorkerKind::Scrubber, WorkerStatus::Idle);
                 sleep(self.poll_interval).await;
                 continue;
             }
 
+            diagnostics::set_worker_status(WorkerKind::Scrubber, WorkerStatus::Idle);
             sleep(self.poll_interval).await;
         }
     }
@@ -104,7 +110,7 @@ impl ScrubberWorker {
             processed += 1;
             let use_deep = self.should_deep_verify(&shard, idx);
             if let Err(err) = self.verify_shard(&shard, use_deep).await {
-                eprintln!(
+                warn!(
                     "scrubber verification error pack={} shard={} provider={}: {}",
                     shard.pack_id, shard.shard_index, shard.provider, err
                 );
@@ -182,13 +188,13 @@ impl ScrubberWorker {
                     )
                     .await?;
                 } else if is_transient_error(&details) {
-                    eprintln!(
+                    warn!(
                         "scrubber transient error pack={} shard={} provider={}: {}",
                         shard.pack_id, shard.shard_index, provider.provider_name, details
                     );
                     return Ok(());
                 } else {
-                    eprintln!(
+                    warn!(
                         "scrubber non-integrity error pack={} shard={} provider={}: {}",
                         shard.pack_id, shard.shard_index, provider.provider_name, details
                     );
@@ -196,7 +202,7 @@ impl ScrubberWorker {
                 }
             }
             Err(_) => {
-                eprintln!(
+                warn!(
                     "scrubber timeout pack={} shard={} provider={}",
                     shard.pack_id, shard.shard_index, provider.provider_name
                 );
@@ -238,12 +244,12 @@ impl ScrubberWorker {
                     Err(err) => {
                         let details = format_error_details(&err);
                         if is_transient_error(&details) {
-                            eprintln!(
+                            warn!(
                                 "scrubber deep body transient error pack={} shard={} provider={}: {}",
                                 shard.pack_id, shard.shard_index, provider.provider_name, details
                             );
                         } else {
-                            eprintln!(
+                            warn!(
                                 "scrubber deep body error pack={} shard={} provider={}: {}",
                                 shard.pack_id, shard.shard_index, provider.provider_name, details
                             );
@@ -297,12 +303,12 @@ impl ScrubberWorker {
                     )
                     .await?;
                 } else if is_transient_error(&details) {
-                    eprintln!(
+                    warn!(
                         "scrubber deep transient error pack={} shard={} provider={}: {}",
                         shard.pack_id, shard.shard_index, provider.provider_name, details
                     );
                 } else {
-                    eprintln!(
+                    warn!(
                         "scrubber deep non-integrity error pack={} shard={} provider={}: {}",
                         shard.pack_id, shard.shard_index, provider.provider_name, details
                     );
@@ -310,7 +316,7 @@ impl ScrubberWorker {
                 Ok(())
             }
             Err(_) => {
-                eprintln!(
+                warn!(
                     "scrubber deep timeout pack={} shard={} provider={}",
                     shard.pack_id, shard.shard_index, provider.provider_name
                 );

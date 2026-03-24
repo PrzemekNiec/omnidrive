@@ -1,4 +1,6 @@
 pub mod aws_http;
+pub mod diagnostics;
+pub mod logging;
 pub mod config;
 pub mod db;
 pub mod disaster_recovery;

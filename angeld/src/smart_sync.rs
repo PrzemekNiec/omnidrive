@@ -187,6 +187,7 @@ mod imp {
     use std::sync::{Arc, OnceLock};
     use std::time::{Duration, UNIX_EPOCH};
     use tokio::runtime::Handle;
+    use tracing::{info, warn};
     use windows::core::{GUID, HRESULT, PCWSTR};
     use windows::Win32::Foundation::{HANDLE, NTSTATUS, S_OK};
     use windows::Win32::Storage::CloudFilters::{
@@ -279,7 +280,7 @@ mod imp {
             callback_info.FileIdentity,
             callback_info.FileIdentityLength,
         ) else {
-            eprintln!(
+            warn!(
                 "smart-sync: hydration requested with invalid identity, request_key={}",
                 callback_info.RequestKey
             );
@@ -301,13 +302,13 @@ mod imp {
             length: fetch.RequiredLength,
         };
 
-        println!(
+        info!(
             "Hydration requested for inode: {}, revision: {}, offset: {}, length: {}",
             request.inode_id, request.revision_id, request.offset, request.length
         );
 
         let Some(context) = HYDRATION_CONTEXT.get().cloned() else {
-            eprintln!(
+            warn!(
                 "smart-sync: hydration runtime missing, request_key={}",
                 request.request_key
             );
@@ -319,7 +320,7 @@ mod imp {
             let offset = match u64::try_from(request.offset) {
                 Ok(value) => value,
                 Err(_) => {
-                    eprintln!(
+                    warn!(
                         "smart-sync: invalid negative offset for inode={}, revision={}",
                         request.inode_id, request.revision_id
                     );
@@ -330,7 +331,7 @@ mod imp {
             let length = match u64::try_from(request.length) {
                 Ok(value) => value,
                 Err(_) => {
-                    eprintln!(
+                    warn!(
                         "smart-sync: invalid negative length for inode={}, revision={}",
                         request.inode_id, request.revision_id
                     );
@@ -351,7 +352,7 @@ mod imp {
             {
                 Ok(bytes) => {
                     if let Err(err) = complete_transfer_success(&request, &bytes) {
-                        eprintln!(
+                        warn!(
                             "smart-sync: transfer writeback failed for inode={}, revision={}: {}",
                             request.inode_id, request.revision_id, err
                         );
@@ -360,7 +361,7 @@ mod imp {
                     }
 
                     if let Err(err) = db::set_hydration_state(&context.pool, request.inode_id, 1).await {
-                        eprintln!(
+                        warn!(
                             "smart-sync: failed to persist hydration state for inode={}: {}",
                             request.inode_id, err
                         );
@@ -370,7 +371,7 @@ mod imp {
                     }
                 }
                 Err(err) => {
-                    eprintln!(
+                    warn!(
                         "smart-sync: read_range failed for inode={}, revision={}, offset={}, length={}: {}",
                         request.inode_id, request.revision_id, request.offset, request.length, err
                     );
@@ -400,7 +401,7 @@ mod imp {
 
         match identity {
             Some(identity) => {
-                eprintln!(
+                warn!(
                     "smart-sync: hydration canceled for inode={}, revision={}, offset={}, length={}",
                     identity.inode_id,
                     identity.revision_id,
@@ -409,7 +410,7 @@ mod imp {
                 );
             }
             None => {
-                eprintln!(
+                warn!(
                     "smart-sync: hydration canceled for unknown identity, offset={}, length={}",
                     fetch.FileOffset,
                     fetch.Length
@@ -420,15 +421,15 @@ mod imp {
 
     pub async fn register_sync_root_public(sync_root_path: &Path) -> Result<(), SmartSyncError> {
         let sync_root = normalize_sync_root_path(sync_root_path)?;
-        eprintln!("smart-sync: registering {}", sync_root.display());
+        info!("smart-sync: registering {}", sync_root.display());
         register_sync_root(&sync_root).map_err(|err| {
             SmartSyncError::InvalidPathWithContext("CfRegisterSyncRoot", err.to_string())
         })?;
-        eprintln!("smart-sync: connecting {}", sync_root.display());
+        info!("smart-sync: connecting {}", sync_root.display());
         connect_sync_root(&sync_root).map_err(|err| {
             SmartSyncError::InvalidPathWithContext("CfConnectSyncRoot", err.to_string())
         })?;
-        eprintln!("smart-sync: connected {}", sync_root.display());
+        info!("smart-sync: connected {}", sync_root.display());
         Ok(())
     }
 
@@ -447,7 +448,7 @@ mod imp {
     ) -> Result<(), SmartSyncError> {
         let sync_root = normalize_sync_root_path(sync_root_path)?;
         let files = db::get_active_files_for_projection(pool).await?;
-        eprintln!(
+        info!(
             "smart-sync: projecting {} active file placeholders into {}",
             files.len(),
             sync_root.display()
@@ -553,7 +554,7 @@ mod imp {
             }
 
             if let Err(err) = dehydrate_placeholder(&target_path) {
-                eprintln!(
+                warn!(
                     "smart-sync: failed to dehydrate {}: {}",
                     target_path.display(),
                     err
@@ -642,7 +643,7 @@ mod imp {
                 ));
             }
 
-            eprintln!("smart-sync: placeholder ready {}", relative_path);
+            info!("smart-sync: placeholder ready {}", relative_path);
         }
 
         apply_pin_state(&target_path, if pinned { CF_PIN_STATE_PINNED } else { CF_PIN_STATE_UNPINNED })?;
@@ -694,7 +695,7 @@ mod imp {
             .err()
             .map(|err| err.to_string())
             .unwrap_or_else(|| "unknown register error".to_string());
-        eprintln!(
+        warn!(
             "smart-sync: initial register failed for {} (provider={}, account={ACCOUNT_NAME}): {}",
             sync_root_path.display(),
             PROVIDER_NAME,

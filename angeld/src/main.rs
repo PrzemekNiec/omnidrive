@@ -3,9 +3,11 @@ mod aws_http;
 mod cache;
 mod config;
 mod db;
+mod diagnostics;
 mod disaster_recovery;
 mod downloader;
 mod gc;
+mod logging;
 mod packer;
 mod repair;
 mod scrubber;
@@ -19,9 +21,11 @@ mod watcher;
 mod win_acl;
 
 use crate::api::ApiServer;
+use crate::diagnostics::init_global_diagnostics;
 use crate::disaster_recovery::{MetadataBackupProviderManager, start_metadata_backup_worker};
 use crate::downloader::Downloader;
 use crate::gc::GcWorker;
+use crate::logging::{default_log_dir, init_logging};
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::repair::RepairWorker;
 use crate::scrubber::ScrubberWorker;
@@ -34,12 +38,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::signal;
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() {
+    if let Err(err) = init_logging() {
+        eprintln!("failed to initialize logging: {err}");
+        std::process::exit(1);
+    }
+
     if should_run_r2_smoke_test() {
         if let Err(err) = smoke_test_r2_upload().await {
-            eprintln!("r2 smoke test failed: {err}");
+            error!("r2 smoke test failed: {err}");
             std::process::exit(1);
         }
         return;
@@ -47,14 +57,14 @@ async fn main() {
 
     if should_run_upload_diagnostics() {
         if let Err(err) = run_upload_diagnostics().await {
-            eprintln!("upload diagnostics failed: {err}");
+            error!("upload diagnostics failed: {err}");
             std::process::exit(1);
         }
         return;
     }
 
     if let Err(err) = run_daemon().await {
-        eprintln!("angeld failed: {err}");
+        error!("angeld failed: {err}");
         std::process::exit(1);
     }
 }
@@ -65,6 +75,10 @@ fn should_run_r2_smoke_test() -> bool {
 
 fn should_run_upload_diagnostics() -> bool {
     env_flag("OMNIDRIVE_DIAG_UPLOADS")
+}
+
+fn should_disable_sync() -> bool {
+    env::args().any(|arg| arg == "--no-sync")
 }
 
 fn env_flag(key: &str) -> bool {
@@ -117,7 +131,7 @@ async fn smoke_test_r2_upload() -> Result<(), Box<dyn std::error::Error>> {
     let uploader = Uploader::from_r2_env().await?;
     let uploaded = uploader.upload_pack(&pack_path).await?;
 
-    println!(
+    info!(
         "uploaded {} to {}/{}",
         pack_path.display(),
         uploaded.bucket,
@@ -128,6 +142,8 @@ async fn smoke_test_r2_upload() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv();
+    let diagnostics = init_global_diagnostics();
+    let no_sync = should_disable_sync();
 
     let sync_root = sync_root_path();
     let drive_letter = virtual_drive_letter();
@@ -135,13 +151,17 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let spool_dir = env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool");
     let download_spool_dir = env_path("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", ".omnidrive/download-spool");
     let cache_dir = cache_root_path();
+    let log_dir = default_log_dir();
     let db_dir = sqlite_db_directory(&db_url).unwrap_or_else(|| PathBuf::from("."));
 
-    fs::create_dir_all(&sync_root).await?;
     fs::create_dir_all(&spool_dir).await?;
     fs::create_dir_all(&download_spool_dir).await?;
     fs::create_dir_all(&cache_dir).await?;
+    fs::create_dir_all(&log_dir).await?;
     fs::create_dir_all(&db_dir).await?;
+    if !no_sync {
+        fs::create_dir_all(&sync_root).await?;
+    }
 
     win_acl::secure_directory(&cache_dir)
         .map_err(|err| io::Error::other(format!("failed to secure cache dir: {err}")))?;
@@ -149,34 +169,45 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|err| io::Error::other(format!("failed to secure spool dir: {err}")))?;
     win_acl::secure_directory(&download_spool_dir)
         .map_err(|err| io::Error::other(format!("failed to secure download spool dir: {err}")))?;
-    win_acl::secure_directory(&db_dir)
-        .map_err(|err| io::Error::other(format!("failed to secure db dir: {err}")))?;
+    if should_secure_db_directory(&db_dir) {
+        win_acl::secure_directory(&db_dir)
+            .map_err(|err| io::Error::other(format!("failed to secure db dir: {err}")))?;
+    } else {
+        warn!(
+            "skipping db directory ACL hardening for relative or working-directory path {}",
+            db_dir.display()
+        );
+    }
 
     let pool = db::init_db(&db_url).await?;
     let vault_keys = VaultKeyStore::new();
     let downloader = Arc::new(Downloader::from_env(pool.clone(), vault_keys.clone()).await?);
-    smart_sync::install_hydration_runtime(pool.clone(), downloader)
-        .map_err(|err| io::Error::other(format!("smart sync hydration setup failed: {err}")))?;
-    smart_sync::register_sync_root(&sync_root).await
-        .map_err(|err| io::Error::other(format!("smart sync register failed: {err}")))?;
-    smart_sync::project_vault_to_sync_root(&pool, &sync_root).await
-        .map_err(|err| io::Error::other(format!("smart sync projection failed: {err}")))?;
-    virtual_drive::hide_sync_root(&sync_root)
-        .map_err(|err| io::Error::other(format!("virtual drive hide sync root failed: {err}")))?;
-    virtual_drive::mount_virtual_drive(&drive_letter, &sync_root)
-        .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
-    virtual_drive::configure_virtual_drive_appearance(
-        &drive_letter,
-        "OmniDrive",
-        &virtual_drive_icon_path(),
-    )
-    .map_err(|err| io::Error::other(format!("virtual drive appearance failed: {err}")))?;
-    shell_integration::register_explorer_context_menu(
-        &drive_letter,
-        &shell_api_base(),
-        &virtual_drive_icon_path(),
-    )
-    .map_err(|err| io::Error::other(format!("shell integration registration failed: {err}")))?;
+    if no_sync {
+        warn!("starting angeld with --no-sync; skipping Smart Sync and virtual drive bootstrap");
+    } else {
+        smart_sync::install_hydration_runtime(pool.clone(), downloader)
+            .map_err(|err| io::Error::other(format!("smart sync hydration setup failed: {err}")))?;
+        smart_sync::register_sync_root(&sync_root).await
+            .map_err(|err| io::Error::other(format!("smart sync register failed: {err}")))?;
+        smart_sync::project_vault_to_sync_root(&pool, &sync_root).await
+            .map_err(|err| io::Error::other(format!("smart sync projection failed: {err}")))?;
+        virtual_drive::hide_sync_root(&sync_root)
+            .map_err(|err| io::Error::other(format!("virtual drive hide sync root failed: {err}")))?;
+        virtual_drive::mount_virtual_drive(&drive_letter, &sync_root)
+            .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
+        virtual_drive::configure_virtual_drive_appearance(
+            &drive_letter,
+            "OmniDrive",
+            &virtual_drive_icon_path(),
+        )
+        .map_err(|err| io::Error::other(format!("virtual drive appearance failed: {err}")))?;
+        shell_integration::register_explorer_context_menu(
+            &drive_letter,
+            &shell_api_base(),
+            &virtual_drive_icon_path(),
+        )
+        .map_err(|err| io::Error::other(format!("shell integration registration failed: {err}")))?;
+    }
 
     let worker = UploadWorker::from_env(pool.clone()).await?;
     let repair_worker = RepairWorker::from_env(pool.clone()).await?;
@@ -190,14 +221,15 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(vault_keys.clone()),
     );
     let watcher = FileWatcher::from_env(pool.clone(), vault_keys.clone()).await?;
-    let api = ApiServer::from_env(pool, vault_keys)?;
+    let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone())?;
 
-    println!(
-        "smart sync bootstrap ready at {}",
-        sync_root.display()
-    );
-    println!("virtual drive mounted at {}", drive_letter);
-    println!("upload worker, repair worker, scrubber worker, gc worker, file watcher, and api server started");
+    if no_sync {
+        info!("smart sync bootstrap skipped by --no-sync");
+    } else {
+        info!("smart sync bootstrap ready at {}", sync_root.display());
+        info!("virtual drive mounted at {}", drive_letter);
+    }
+    info!("upload worker, repair worker, scrubber worker, gc worker, file watcher, and api server started");
 
     let mut upload_task = tokio::spawn(async move { worker.run().await });
     let mut repair_task = tokio::spawn(async move { repair_worker.run().await });
@@ -281,17 +313,19 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
-            println!("shutdown signal received");
+            info!("shutdown signal received");
             Ok(())
         }
     };
 
-    if let Err(err) = smart_sync::shutdown_sync_root() {
-        eprintln!("smart sync shutdown warning: {}", err);
-    }
+    if !no_sync {
+        if let Err(err) = smart_sync::shutdown_sync_root() {
+            warn!("smart sync shutdown warning: {}", err);
+        }
 
-    if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
-        eprintln!("virtual drive unmount warning for {}: {}", drive_letter, err);
+        if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
+            warn!("virtual drive unmount warning for {}: {}", drive_letter, err);
+        }
     }
 
     result
@@ -314,7 +348,7 @@ async fn run_upload_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
             "diagnostics/{}/provider-diagnostic-1kb.txt",
             uploader.provider_name()
         );
-        println!(
+        info!(
             "diagnostic start provider={} force_path_style={} key={}",
             uploader.provider_name(),
             uploader.force_path_style(),
@@ -323,13 +357,13 @@ async fn run_upload_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
 
         match uploader.upload_debug_file(&diag_path, &key).await {
             Ok(result) => {
-                println!(
+                info!(
                     "diagnostic ok provider={} bucket={} key={} etag={:?} version_id={:?}",
                     result.provider, result.bucket, result.key, result.etag, result.version_id
                 );
             }
             Err(err) => {
-                eprintln!(
+                error!(
                     "diagnostic fail provider={}: {}",
                     uploader.provider_name(),
                     err
@@ -412,6 +446,25 @@ fn sqlite_db_directory(db_url: &str) -> Option<PathBuf> {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(".")),
     )
+}
+
+fn should_secure_db_directory(path: &std::path::Path) -> bool {
+    let normalized = path.as_os_str().to_string_lossy().trim().to_string();
+    if normalized.is_empty() || normalized == "." {
+        return false;
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        if let (Ok(candidate), Ok(current)) =
+            (std::fs::canonicalize(path), std::fs::canonicalize(current_dir))
+        {
+            if candidate == current {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 fn shell_api_base() -> String {

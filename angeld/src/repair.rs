@@ -2,6 +2,7 @@
 
 use crate::db;
 use crate::db::{PackStatus, StorageMode};
+use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::packer::{
     DATA_SHARDS, PARITY_SHARDS, TOTAL_SHARDS, build_manifest_bytes, build_shards, compute_pack_id,
     local_pack_path, local_shard_path, storage_mode_scheme,
@@ -21,6 +22,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::fs;
 use tokio::time::{sleep, timeout};
+use tracing::{error, info, warn};
 
 pub struct RepairWorker {
     pool: SqlitePool,
@@ -126,21 +128,24 @@ impl RepairWorker {
 
     pub async fn run(self) -> Result<(), RepairError> {
         db::reset_in_progress_pack_shards(&self.pool).await?;
+        diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Idle);
 
         loop {
             if let Some(pack) = db::get_next_pack_requiring_reconciliation(&self.pool).await? {
+                diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Active);
                 match self.reconcile_pack_mode(&pack).await {
                     Ok(()) => {
-                        println!(
+                        info!(
                             "repair worker reconciled pack {} to mode {}",
                             pack.pack_id, db::get_desired_storage_mode_for_pack(&self.pool, &pack.pack_id).await?.as_str()
                         );
                     }
                     Err(err) => {
-                        eprintln!(
+                        warn!(
                             "repair worker reconciliation failed for pack {}: {}",
                             pack.pack_id, err
                         );
+                        diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Idle);
                         sleep(self.retry_delay).await;
                     }
                 }
@@ -149,20 +154,24 @@ impl RepairWorker {
 
             if let Some(pack) = db::get_next_degraded_pack(&self.pool).await? {
                 if !db::pack_requires_healthy(&self.pool, &pack.pack_id).await? {
+                    diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Idle);
                     sleep(self.poll_interval).await;
                     continue;
                 }
 
+                diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Active);
                 match self.repair_pack(&pack).await {
                     Ok(()) => {
-                        println!("repair worker restored pack {} to healthy", pack.pack_id);
+                        info!("repair worker restored pack {} to healthy", pack.pack_id);
                     }
                     Err(err) => {
-                        eprintln!("repair worker failed for pack {}: {}", pack.pack_id, err);
+                        error!("repair worker failed for pack {}: {}", pack.pack_id, err);
+                        diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Idle);
                         sleep(self.retry_delay).await;
                     }
                 }
             } else {
+                diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Idle);
                 sleep(self.poll_interval).await;
             }
         }
