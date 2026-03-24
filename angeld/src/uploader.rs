@@ -56,6 +56,7 @@ pub struct UploadWorker {
     read_timeout: Duration,
     retry_base_delay: Duration,
     retry_max_delay: Duration,
+    test_process_delay: Duration,
 }
 
 enum JobProcessOutcome {
@@ -293,7 +294,14 @@ impl UploadWorker {
         let _ = dotenvy::dotenv();
 
         let app_config = AppConfig::from_env();
-        let uploaders = Uploader::all_from_env().await?;
+        let uploaders = match Uploader::all_from_env().await {
+            Ok(uploaders) => uploaders,
+            Err(err) if bool_from_env("OMNIDRIVE_ALLOW_EMPTY_UPLOADERS", false) => {
+                warn!("starting uploader without configured remote providers: {}", err);
+                Vec::new()
+            }
+            Err(err) => return Err(err),
+        };
 
         Ok(Self {
             pool,
@@ -307,6 +315,7 @@ impl UploadWorker {
             read_timeout: duration_from_env("OMNIDRIVE_UPLOAD_READ_TIMEOUT_MS", 90_000),
             retry_base_delay: duration_from_env("OMNIDRIVE_UPLOAD_RETRY_BASE_MS", 2_000),
             retry_max_delay: duration_from_env("OMNIDRIVE_UPLOAD_RETRY_MAX_MS", 60_000),
+            test_process_delay: duration_from_env("OMNIDRIVE_UPLOAD_TEST_PROCESS_DELAY_MS", 0),
         })
     }
 
@@ -357,6 +366,10 @@ impl UploadWorker {
     }
 
     async fn process_job(&self, job: &db::UploadJob) -> Result<JobProcessOutcome, UploaderError> {
+        if !self.test_process_delay.is_zero() {
+            sleep(self.test_process_delay).await;
+        }
+
         let pack = db::get_pack(&self.pool, &job.pack_id)
             .await?
             .ok_or(UploaderError::InvalidEnv("upload_jobs.pack_id"))?;

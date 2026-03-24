@@ -81,6 +81,10 @@ fn should_disable_sync() -> bool {
     env::args().any(|arg| arg == "--no-sync")
 }
 
+fn is_e2e_test_mode() -> bool {
+    env_flag("OMNIDRIVE_E2E_TEST_MODE")
+}
+
 fn env_flag(key: &str) -> bool {
     matches!(
         env::var(key)
@@ -144,6 +148,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv();
     let diagnostics = init_global_diagnostics();
     let no_sync = should_disable_sync();
+    let e2e_test_mode = is_e2e_test_mode();
 
     let sync_root = sync_root_path();
     let drive_letter = virtual_drive_letter();
@@ -181,6 +186,45 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = db::init_db(&db_url).await?;
     let vault_keys = VaultKeyStore::new();
+    if no_sync && e2e_test_mode {
+        let worker = UploadWorker::from_env(pool.clone()).await?;
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Repair, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Scrubber, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Gc, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Watcher, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::MetadataBackup, crate::diagnostics::WorkerStatus::Idle);
+        let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone())?;
+
+        warn!("starting angeld in OMNIDRIVE_E2E_TEST_MODE with --no-sync; only uploader and API workers are enabled");
+        info!("smart sync bootstrap skipped by --no-sync");
+        info!("e2e test mode enabled: repair, scrubber, gc, watcher, and metadata backup workers are disabled");
+
+        let mut upload_task = tokio::spawn(async move { worker.run().await });
+        let mut api_task = tokio::spawn(async move { api.run().await });
+
+        let result = tokio::select! {
+            result = &mut upload_task => {
+                api_task.abort();
+                let outcome = result??;
+                Ok(outcome)
+            }
+            result = &mut api_task => {
+                upload_task.abort();
+                let outcome = result??;
+                Ok(outcome)
+            }
+            signal = signal::ctrl_c() => {
+                signal?;
+                upload_task.abort();
+                api_task.abort();
+                info!("shutdown signal received");
+                Ok(())
+            }
+        };
+
+        return result;
+    }
+
     let downloader = Arc::new(Downloader::from_env(pool.clone(), vault_keys.clone()).await?);
     if no_sync {
         warn!("starting angeld with --no-sync; skipping Smart Sync and virtual drive bootstrap");

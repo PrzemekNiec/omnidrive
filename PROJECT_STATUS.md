@@ -101,18 +101,18 @@ Core assumptions:
 
 ### Next Epic
 Goal:
-- make the daemon observable, diagnosable, and safer to operate in real-world failures
+- build repeatable end-to-end lifecycle coverage before the installer phase
 
 Scope:
 - next recommended implementation areas:
-  - observability and diagnostics
-  - structured rotating daemon logs
-  - live diagnostics health API for installer-era background operation
   - end-to-end lifecycle testing
+  - daemon orchestration harness with `--no-sync`
+  - baseline happy-path upload queue and diagnostics validation
+  - disaster recovery and policy reconciliation scenarios
   - installer and first-run bootstrap
 
 Outcome:
-- a stable and debuggable OmniDrive desktop product, ready for broader rollout
+- a stable and testable OmniDrive desktop product, ready for installer work
 
 ## ROADMAP
 
@@ -1216,6 +1216,14 @@ Scope:
 
 Outcome:
 - release confidence based on real lifecycle coverage, not only smoke tests
+
+Current progress:
+- `Task 26.1` is implemented.
+- A dedicated integration harness now exists in `angeld/tests/e2e_basic.rs`.
+- The daemon supports `--no-sync` and `OMNIDRIVE_E2E_TEST_MODE=1` so tests can exercise the HTTP API and worker lifecycle without CFAPI bootstrap.
+- The first happy-path test launches a fresh daemon, queues a minimal `LOCAL_ONLY` upload job, polls `GET /api/diagnostics/health`, and verifies the uploader transitions `idle -> active -> idle`.
+- The baseline E2E test passes under:
+  - `cargo test -p angeld --test e2e_basic -- --nocapture`
 
 ## PHASE 8: EXPLORER RELIABILITY AND OPERATIONS
 
