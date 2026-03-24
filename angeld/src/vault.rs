@@ -1,5 +1,8 @@
 use crate::db;
-use omnidrive_core::crypto::{KeyBytes, RootKdfParams, derive_root_keys};
+use hkdf::Hkdf;
+use omnidrive_core::crypto::{CryptoError, KeyBytes, RootKdfParams, derive_root_keys};
+use secrecy::{ExposeSecret, SecretBox};
+use sha2::Sha256;
 use sqlx::SqlitePool;
 use std::fmt;
 use std::sync::Arc;
@@ -9,16 +12,34 @@ const DEFAULT_PARAMETER_SET_VERSION: u32 = 1;
 const DEFAULT_MEMORY_COST_KIB: u32 = 65_536;
 const DEFAULT_TIME_COST: u32 = 3;
 const DEFAULT_LANES: u32 = 1;
+#[allow(dead_code)]
+const LOCAL_CACHE_KEY_INFO: &[u8] = b"omnidrive-local-cache-v1";
 
 #[derive(Clone, Default)]
 pub struct VaultKeyStore {
     inner: Arc<RwLock<Option<UnlockedVaultKeys>>>,
 }
 
-#[derive(Clone, Copy)]
 struct UnlockedVaultKeys {
-    master_key: KeyBytes,
-    vault_key: KeyBytes,
+    master_key: SecretBox<KeyBytes>,
+    vault_key: SecretBox<KeyBytes>,
+}
+
+impl UnlockedVaultKeys {
+    fn new(master_key: KeyBytes, vault_key: KeyBytes) -> Self {
+        Self {
+            master_key: SecretBox::new(Box::new(master_key)),
+            vault_key: SecretBox::new(Box::new(vault_key)),
+        }
+    }
+
+    fn master_key(&self) -> KeyBytes {
+        *self.master_key.expose_secret()
+    }
+
+    fn vault_key(&self) -> KeyBytes {
+        *self.vault_key.expose_secret()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,10 +99,8 @@ impl VaultKeyStore {
 
         let (config, initialized) = ensure_vault_config(pool).await?;
         let root_keys = derive_root_keys(passphrase.as_bytes(), &config)?;
-        *self.inner.write().await = Some(UnlockedVaultKeys {
-            master_key: root_keys.master_key,
-            vault_key: root_keys.vault_key,
-        });
+        *self.inner.write().await =
+            Some(UnlockedVaultKeys::new(root_keys.master_key, root_keys.vault_key));
 
         Ok(UnlockResult {
             initialized,
@@ -90,25 +109,29 @@ impl VaultKeyStore {
     }
 
     pub async fn require_key(&self) -> Result<KeyBytes, VaultError> {
-        match *self.inner.read().await {
-            Some(keys) => Ok(keys.vault_key),
+        match self.inner.read().await.as_ref() {
+            Some(keys) => Ok(keys.vault_key()),
             None => Err(VaultError::Locked),
         }
     }
 
     pub async fn require_master_key(&self) -> Result<KeyBytes, VaultError> {
-        match *self.inner.read().await {
-            Some(keys) => Ok(keys.master_key),
+        match self.inner.read().await.as_ref() {
+            Some(keys) => Ok(keys.master_key()),
             None => Err(VaultError::Locked),
         }
     }
 
+    #[allow(dead_code)]
+    pub async fn derive_cache_key(&self) -> Result<SecretBox<KeyBytes>, VaultError> {
+        let master_key = self.require_master_key().await?;
+        let cache_key = derive_cache_key(&master_key)?;
+        Ok(SecretBox::new(Box::new(cache_key)))
+    }
+
     #[cfg(test)]
     pub async fn set_key_for_tests(&self, key: KeyBytes) {
-        *self.inner.write().await = Some(UnlockedVaultKeys {
-            master_key: key,
-            vault_key: key,
-        });
+        *self.inner.write().await = Some(UnlockedVaultKeys::new(key, key));
     }
 }
 
@@ -152,10 +175,20 @@ fn to_root_kdf_params(record: db::VaultConfigRecord) -> Result<RootKdfParams, Va
     ))
 }
 
+#[allow(dead_code)]
+pub fn derive_cache_key(master_key: &[u8]) -> Result<KeyBytes, VaultError> {
+    let hkdf = Hkdf::<Sha256>::from_prk(master_key).map_err(CryptoError::HkdfPrk)?;
+    let mut derived_key = [0u8; 32];
+    hkdf.expand(LOCAL_CACHE_KEY_INFO, &mut derived_key)
+        .map_err(CryptoError::HkdfExpand)?;
+    Ok(derived_key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db;
+    use secrecy::ExposeSecret;
 
     #[tokio::test]
     async fn unlock_reuses_same_config_and_derives_stable_key()
@@ -170,6 +203,25 @@ mod tests {
         assert!(first.initialized);
         assert!(!second.initialized);
         assert_eq!(store_a.require_key().await?, store_b.require_key().await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cache_key_derivation_is_stable_and_separate() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "1234").await?;
+
+        let master_key = store.require_master_key().await?;
+        let vault_key = store.require_key().await?;
+        let cache_key_a = store.derive_cache_key().await?;
+        let cache_key_b = store.derive_cache_key().await?;
+
+        assert_eq!(*cache_key_a.expose_secret(), *cache_key_b.expose_secret());
+        assert_ne!(*cache_key_a.expose_secret(), master_key);
+        assert_ne!(*cache_key_a.expose_secret(), vault_key);
 
         Ok(())
     }

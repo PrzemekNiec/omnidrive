@@ -20,6 +20,7 @@ notify = "8.1.0"
 omnidrive-core = { path = "../omnidrive-core" }
 rand = "0.8"
 reed-solomon-erasure = "6"
+secrecy = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -30,10 +31,13 @@ zerocopy = { version = "0.7", features = ["derive"] }
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Storage_CloudFilters",
     "Win32_Storage_FileSystem",
     "Win32_System_CorrelationVector",
     "Win32_System_IO",
+    "Win32_System_Threading",
     "Win32_System_Registry",
     "Win32_UI_Shell",
 ] }

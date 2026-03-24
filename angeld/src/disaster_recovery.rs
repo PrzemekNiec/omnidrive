@@ -1,4 +1,5 @@
 use crate::db;
+use crate::secure_fs::secure_delete;
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
@@ -271,13 +272,12 @@ pub async fn create_encrypted_metadata_snapshot(
         &kdf_params,
     )
     .await;
-    let remove_result = fs::remove_file(&temp_snapshot_path).await;
+    let remove_result = secure_delete(&temp_snapshot_path).await;
 
     encrypt_result?;
     match remove_result {
         Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(DisasterRecoveryError::Io(err)),
+        Err(err) => Err(DisasterRecoveryError::Io(std::io::Error::other(err.to_string()))),
     }
 }
 
@@ -444,12 +444,12 @@ pub async fn run_metadata_backup_now(
         create_encrypted_metadata_snapshot(db_pool, &temp_enc_path, master_key).await;
 
     if let Err(err) = create_result {
-        let _ = fs::remove_file(&temp_enc_path).await;
+        let _ = secure_delete(&temp_enc_path).await;
         return Err(err);
     }
 
     let upload_result = upload_metadata_backup(db_pool, provider_manager, &temp_enc_path).await;
-    let cleanup_result = fs::remove_file(&temp_enc_path).await;
+    let cleanup_result = secure_delete(&temp_enc_path).await;
 
     if let Err(err) = cleanup_result {
         eprintln!(

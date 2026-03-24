@@ -6,6 +6,7 @@ use crate::packer::{
     DATA_SHARDS, PARITY_SHARDS, TOTAL_SHARDS, build_manifest_bytes, build_shards, compute_pack_id,
     local_pack_path, local_shard_path, storage_mode_scheme,
 };
+use crate::secure_fs::write_ephemeral_bytes;
 use crate::uploader::ProviderConfig;
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
@@ -345,7 +346,9 @@ impl RepairWorker {
             .map_err(|err| RepairError::Packer(err.to_string()))?;
         let new_pack_id = compute_pack_id(desired_mode, &manifest_bytes);
         let manifest_path = local_pack_path(&self.spool_dir, &new_pack_id);
-        fs::write(&manifest_path, &manifest_bytes).await?;
+        write_ephemeral_bytes(&manifest_path, &manifest_bytes)
+            .await
+            .map_err(|err| RepairError::Io(std::io::Error::other(err.to_string())))?;
 
         let prepared_shards = build_shards(&self.spool_dir, &new_pack_id, &ciphertext, desired_mode)
             .await
@@ -590,7 +593,9 @@ impl RepairWorker {
             usize::try_from(shard_index)
                 .map_err(|_| RepairError::NumericOverflow("repair shard index"))?,
         );
-        fs::write(shard_path, &bytes).await?;
+        write_ephemeral_bytes(&shard_path, &bytes)
+            .await
+            .map_err(|err| RepairError::Io(std::io::Error::other(err.to_string())))?;
 
         Ok(bytes)
     }
@@ -604,7 +609,9 @@ impl RepairWorker {
         shard_index: usize,
     ) -> Result<(Option<String>, Option<String>), RepairError> {
         let shard_path = local_shard_path(&self.spool_dir, pack_id, shard_index);
-        fs::write(&shard_path, bytes).await?;
+        write_ephemeral_bytes(&shard_path, bytes)
+            .await
+            .map_err(|err| RepairError::Io(std::io::Error::other(err.to_string())))?;
 
         let body = ByteStream::from_path(&shard_path)
             .await

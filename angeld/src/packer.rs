@@ -2,6 +2,7 @@
 
 use crate::db;
 use crate::db::{PackStatus, ShardRole, StorageMode};
+use crate::secure_fs::write_ephemeral_bytes;
 use crate::vault::{VaultError, VaultKeyStore};
 use omnidrive_core::crypto::{CryptoError, encrypt_chunk};
 use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix};
@@ -251,7 +252,9 @@ impl Packer {
             )?;
             let pack_id = compute_pack_id(storage_mode, &manifest_bytes);
             let manifest_path = local_pack_path(&self.config.spool_dir, &pack_id);
-            fs::write(&manifest_path, &manifest_bytes).await?;
+            write_ephemeral_bytes(&manifest_path, &manifest_bytes)
+                .await
+                .map_err(|err| PackerError::Io(std::io::Error::other(err.to_string())))?;
 
             let shards = build_shards(
                 &self.config.spool_dir,
@@ -435,7 +438,9 @@ pub(crate) async fn build_shards(
             StorageMode::LocalOnly => unreachable!("local-only packs do not create shards"),
         };
         let local_path = local_shard_path(spool_dir, pack_id, index);
-        fs::write(&local_path, &bytes).await?;
+        write_ephemeral_bytes(&local_path, &bytes)
+            .await
+            .map_err(|err| PackerError::Io(std::io::Error::other(err.to_string())))?;
 
         prepared.push(PreparedShard {
             shard_index: i64::try_from(index)

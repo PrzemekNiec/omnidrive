@@ -90,22 +90,27 @@ Core assumptions:
 - `downloader.read_range(...)` now reconstructs data according to the pack mode, using EC decode for `EC_2_1`, direct decrypt for `SINGLE_REPLICA`, and local manifest reads for `LOCAL_ONLY`.
 - The background repair/reconciliation flow can now convert active packs between storage modes when a policy changes, then re-point live chunk mappings so old physical variants can be collected by normal GC.
 
+### Epic 24: Secure Local Runtime [x] Completed
+- In-memory vault keys are now wrapped in `secrecy`, so master and vault keys are zeroized on drop instead of living as plain arrays in RAM.
+- A dedicated `cache_key` is derived from the master key via HKDF using a separate context string, so local cache encryption is cryptographically separated from the main vault key.
+- `%LOCALAPPDATA%\\OmniDrive\\Cache` no longer stores plaintext chunks; cache entries are encrypted at rest with `AES-256-GCM` and automatically treated as cache misses if decryption fails.
+- Sensitive spool and temporary artifacts now use ephemeral-file handling where possible, and secure cleanup overwrites then removes temporary files during disaster-recovery and upload cleanup paths.
+- Runtime directories for cache, spool, download spool, and the SQLite database are now ACL-hardened on Windows for the current user and `SYSTEM`, with `0700` fallback on Unix-like targets.
+
 ## CURRENT FOCUS
 
 ### Next Epic
 Goal:
-- harden the local runtime and move the vault from advanced prototype to production-ready desktop system
+- make the daemon observable, diagnosable, and safer to operate in real-world failures
 
 Scope:
 - next recommended implementation areas:
-  - local plaintext cache encryption
-  - local artifact hygiene and secure temp handling
   - observability and diagnostics
   - end-to-end lifecycle testing
   - installer and first-run bootstrap
 
 Outcome:
-- a stable, auditable, installable OmniDrive desktop product
+- a stable and debuggable OmniDrive desktop product, ready for broader rollout
 
 ## ROADMAP
 

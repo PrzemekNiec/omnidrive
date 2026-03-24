@@ -4,6 +4,7 @@ use crate::cache::{CacheError, CacheManager};
 use crate::db;
 use crate::db::StorageMode;
 use crate::packer::{DATA_SHARDS, LOCAL_PACK_EXTENSION, PARITY_SHARDS, TOTAL_SHARDS, local_pack_path};
+use crate::secure_fs::write_ephemeral_bytes;
 use crate::uploader::ProviderConfig;
 use crate::vault::{VaultError, VaultKeyStore};
 use aws_config::timeout::TimeoutConfig;
@@ -193,7 +194,7 @@ impl Downloader {
 
         let download_spool_dir = download_spool_dir.into();
         fs::create_dir_all(&download_spool_dir).await?;
-        let cache = CacheManager::from_env(pool.clone()).await?;
+        let cache = CacheManager::from_env(pool.clone(), vault_keys.clone()).await?;
 
         let mut providers = HashMap::new();
         for config in configs {
@@ -625,7 +626,9 @@ impl Downloader {
         let local_path = self
             .download_spool_dir
             .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
-        fs::write(&local_path, &manifest_bytes).await?;
+        write_ephemeral_bytes(&local_path, &manifest_bytes)
+            .await
+            .map_err(|err| DownloaderError::Io(std::io::Error::other(err.to_string())))?;
 
         Ok(RestoredPackSource {
             pack_id: pack_id.to_string(),
@@ -692,7 +695,7 @@ impl Downloader {
         let local_path = self
             .download_spool_dir
             .join(format!("{pack_id}.download-shard{shard_index}"));
-        fs::write(&local_path, body.into_bytes())
+        write_ephemeral_bytes(&local_path, &body.into_bytes())
             .await
             .map_err(|err| err.to_string())?;
 

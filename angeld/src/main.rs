@@ -9,12 +9,14 @@ mod gc;
 mod packer;
 mod repair;
 mod scrubber;
+mod secure_fs;
 mod shell_integration;
 mod smart_sync;
 mod uploader;
 mod vault;
 mod virtual_drive;
 mod watcher;
+mod win_acl;
 
 use crate::api::ApiServer;
 use crate::disaster_recovery::{MetadataBackupProviderManager, start_metadata_backup_worker};
@@ -129,8 +131,27 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     let sync_root = sync_root_path();
     let drive_letter = virtual_drive_letter();
-    fs::create_dir_all(&sync_root).await?;
     let db_url = env::var("OMNIDRIVE_DB_URL").unwrap_or_else(|_| "sqlite:omnidrive.db".to_string());
+    let spool_dir = env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool");
+    let download_spool_dir = env_path("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", ".omnidrive/download-spool");
+    let cache_dir = cache_root_path();
+    let db_dir = sqlite_db_directory(&db_url).unwrap_or_else(|| PathBuf::from("."));
+
+    fs::create_dir_all(&sync_root).await?;
+    fs::create_dir_all(&spool_dir).await?;
+    fs::create_dir_all(&download_spool_dir).await?;
+    fs::create_dir_all(&cache_dir).await?;
+    fs::create_dir_all(&db_dir).await?;
+
+    win_acl::secure_directory(&cache_dir)
+        .map_err(|err| io::Error::other(format!("failed to secure cache dir: {err}")))?;
+    win_acl::secure_directory(&spool_dir)
+        .map_err(|err| io::Error::other(format!("failed to secure spool dir: {err}")))?;
+    win_acl::secure_directory(&download_spool_dir)
+        .map_err(|err| io::Error::other(format!("failed to secure download spool dir: {err}")))?;
+    win_acl::secure_directory(&db_dir)
+        .map_err(|err| io::Error::other(format!("failed to secure db dir: {err}")))?;
+
     let pool = db::init_db(&db_url).await?;
     let vault_keys = VaultKeyStore::new();
     let downloader = Arc::new(Downloader::from_env(pool.clone(), vault_keys.clone()).await?);
@@ -350,6 +371,47 @@ fn virtual_drive_icon_path() -> PathBuf {
     env::var("OMNIDRIVE_DRIVE_ICON")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("icons").join("omnidrive.ico"))
+}
+
+fn cache_root_path() -> PathBuf {
+    env::var("OMNIDRIVE_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            env::var("LOCALAPPDATA")
+                .map(|root| PathBuf::from(root).join("OmniDrive").join("Cache"))
+                .unwrap_or_else(|_| PathBuf::from(".omnidrive").join("cache"))
+        })
+}
+
+fn sqlite_db_directory(db_url: &str) -> Option<PathBuf> {
+    if db_url.contains(":memory:") {
+        return None;
+    }
+
+    let raw = db_url
+        .strip_prefix("sqlite://")
+        .or_else(|| db_url.strip_prefix("sqlite:"))
+        .unwrap_or(db_url);
+
+    if raw.is_empty() {
+        return None;
+    }
+
+    let normalized = if raw.len() >= 4
+        && raw.starts_with('/')
+        && raw.as_bytes().get(2) == Some(&b':')
+    {
+        &raw[1..]
+    } else {
+        raw
+    };
+
+    let path = PathBuf::from(normalized);
+    Some(
+        path.parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(".")),
+    )
 }
 
 fn shell_api_base() -> String {

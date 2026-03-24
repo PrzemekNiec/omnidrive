@@ -1,5 +1,10 @@
 use crate::config::AppConfig;
 use crate::db;
+use crate::vault::{VaultError, VaultKeyStore};
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
+use rand::RngCore;
+use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::env;
@@ -12,6 +17,7 @@ use tokio::fs;
 #[derive(Clone)]
 pub struct CacheManager {
     pool: SqlitePool,
+    vault_keys: VaultKeyStore,
     root_dir: PathBuf,
     max_bytes: u64,
     metrics: Arc<CacheMetrics>,
@@ -30,11 +36,14 @@ pub struct CacheRuntimeStats {
 }
 
 static GLOBAL_CACHE_METRICS: OnceLock<Arc<CacheMetrics>> = OnceLock::new();
+const CACHE_NONCE_LEN: usize = 12;
 
 #[derive(Debug)]
 pub enum CacheError {
     Io(std::io::Error),
     Db(sqlx::Error),
+    Vault(VaultError),
+    Crypto(&'static str),
     NumericOverflow(&'static str),
 }
 
@@ -43,6 +52,8 @@ impl fmt::Display for CacheError {
         match self {
             Self::Io(err) => write!(f, "cache i/o error: {err}"),
             Self::Db(err) => write!(f, "cache sqlite error: {err}"),
+            Self::Vault(err) => write!(f, "cache vault error: {err}"),
+            Self::Crypto(reason) => write!(f, "cache crypto error: {reason}"),
             Self::NumericOverflow(ctx) => write!(f, "numeric overflow while handling {ctx}"),
         }
     }
@@ -62,8 +73,14 @@ impl From<sqlx::Error> for CacheError {
     }
 }
 
+impl From<VaultError> for CacheError {
+    fn from(value: VaultError) -> Self {
+        Self::Vault(value)
+    }
+}
+
 impl CacheManager {
-    pub async fn from_env(pool: SqlitePool) -> Result<Self, CacheError> {
+    pub async fn from_env(pool: SqlitePool, vault_keys: VaultKeyStore) -> Result<Self, CacheError> {
         let config = AppConfig::from_env();
         let root_dir = env::var("OMNIDRIVE_CACHE_DIR")
             .map(PathBuf::from)
@@ -73,6 +90,7 @@ impl CacheManager {
 
         Ok(Self {
             pool,
+            vault_keys,
             root_dir,
             max_bytes: config.max_cache_bytes,
             metrics: GLOBAL_CACHE_METRICS
@@ -93,8 +111,18 @@ impl CacheManager {
 
         match fs::read(&entry.cache_path).await {
             Ok(bytes) => {
-                let byte_len = i64::try_from(bytes.len())
-                    .map_err(|_| CacheError::NumericOverflow("cache read length"))?;
+                let plaintext = match self.decrypt_cache_payload(cache_key, &bytes).await {
+                    Ok(plaintext) => plaintext,
+                    Err(_) => {
+                        self.delete_entry(&entry.cache_key, Path::new(&entry.cache_path))
+                            .await?;
+                        self.metrics.miss_count.fetch_add(1, Ordering::Relaxed);
+                        return Ok(None);
+                    }
+                };
+
+                let byte_len = i64::try_from(plaintext.len())
+                    .map_err(|_| CacheError::NumericOverflow("cache plaintext length"))?;
                 if byte_len != entry.size {
                     self.delete_entry(&entry.cache_key, Path::new(&entry.cache_path))
                         .await?;
@@ -104,7 +132,7 @@ impl CacheManager {
 
                 db::touch_cache_entry(&self.pool, cache_key).await?;
                 self.metrics.hit_count.fetch_add(1, Ordering::Relaxed);
-                Ok(Some(bytes))
+                Ok(Some(plaintext))
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 db::delete_cache_entry(&self.pool, cache_key).await?;
@@ -131,7 +159,8 @@ impl CacheManager {
             fs::create_dir_all(parent).await?;
         }
 
-        fs::write(&cache_path, bytes).await?;
+        let encrypted_payload = self.encrypt_cache_payload(&cache_key, bytes).await?;
+        fs::write(&cache_path, &encrypted_payload).await?;
 
         let size = i64::try_from(bytes.len())
             .map_err(|_| CacheError::NumericOverflow("cache write length"))?;
@@ -206,6 +235,50 @@ impl CacheManager {
         let dir_a = &digest_hex[..2];
         let dir_b = &digest_hex[2..4];
         self.root_dir.join(dir_a).join(dir_b).join(format!("{cache_key}.bin"))
+    }
+
+    async fn encrypt_cache_payload(
+        &self,
+        cache_key: &str,
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, CacheError> {
+        let cache_key_material = self.vault_keys.derive_cache_key().await?;
+        let cipher = Aes256Gcm::new_from_slice(cache_key_material.expose_secret())
+            .map_err(|_| CacheError::Crypto("invalid cache key length"))?;
+        let mut nonce = [0u8; CACHE_NONCE_LEN];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce), aes_gcm::aead::Payload {
+                msg: plaintext,
+                aad: cache_key.as_bytes(),
+            })
+            .map_err(|_| CacheError::Crypto("cache encryption failed"))?;
+
+        let mut output = Vec::with_capacity(CACHE_NONCE_LEN + ciphertext.len());
+        output.extend_from_slice(&nonce);
+        output.extend_from_slice(&ciphertext);
+        Ok(output)
+    }
+
+    async fn decrypt_cache_payload(
+        &self,
+        cache_key: &str,
+        encrypted_payload: &[u8],
+    ) -> Result<Vec<u8>, CacheError> {
+        if encrypted_payload.len() <= CACHE_NONCE_LEN {
+            return Err(CacheError::Crypto("cache payload too short"));
+        }
+
+        let cache_key_material = self.vault_keys.derive_cache_key().await?;
+        let cipher = Aes256Gcm::new_from_slice(cache_key_material.expose_secret())
+            .map_err(|_| CacheError::Crypto("invalid cache key length"))?;
+        let (nonce_bytes, ciphertext) = encrypted_payload.split_at(CACHE_NONCE_LEN);
+        cipher
+            .decrypt(Nonce::from_slice(nonce_bytes), aes_gcm::aead::Payload {
+                msg: ciphertext,
+                aad: cache_key.as_bytes(),
+            })
+            .map_err(|_| CacheError::Crypto("cache decryption failed"))
     }
 }
 

@@ -4,6 +4,8 @@ use crate::config::AppConfig;
 use crate::db;
 use crate::db::{PackStatus, StorageMode};
 use crate::packer::local_shard_path;
+use crate::packer::{LOCAL_PACK_EXTENSION, TOTAL_SHARDS};
+use crate::secure_fs::secure_delete;
 use async_stream::stream;
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
@@ -540,6 +542,12 @@ impl UploadWorker {
         let status = db::resolve_pack_status_for_mode(storage_mode, summary);
         db::update_pack_status(&self.pool, &job.pack_id, status).await?;
 
+        if matches!(status, PackStatus::Healthy | PackStatus::Degraded)
+            && storage_mode != StorageMode::LocalOnly
+        {
+            self.cleanup_remote_backed_pack_spool(&job.pack_id).await;
+        }
+
         Ok(match status {
             PackStatus::Healthy | PackStatus::Degraded => JobProcessOutcome::Completed,
             PackStatus::Uploading => JobProcessOutcome::PendingRetry {
@@ -559,6 +567,30 @@ impl UploadWorker {
             .unwrap_or(self.retry_max_delay);
 
         delay.min(self.retry_max_delay)
+    }
+
+    async fn cleanup_remote_backed_pack_spool(&self, pack_id: &str) {
+        let manifest_path = self
+            .spool_dir
+            .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
+        if let Err(err) = secure_delete(&manifest_path).await {
+            eprintln!(
+                "spool secure delete failed for manifest {}: {}",
+                manifest_path.display(),
+                err
+            );
+        }
+
+        for shard_index in 0..TOTAL_SHARDS {
+            let shard_path = local_shard_path(&self.spool_dir, pack_id, shard_index);
+            if let Err(err) = secure_delete(&shard_path).await {
+                eprintln!(
+                    "spool secure delete failed for shard {}: {}",
+                    shard_path.display(),
+                    err
+                );
+            }
+        }
     }
 }
 
