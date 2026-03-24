@@ -1,4 +1,4 @@
-# OmniDrive - Project Status & Architecture Roadmap v3
+# OmniDrive - Project Status & Architecture Roadmap v3.3
 
 ## Vision
 
@@ -99,6 +99,7 @@ Goal:
 Scope:
 - next recommended implementation areas:
   - local plaintext cache encryption
+  - local artifact hygiene and secure temp handling
   - observability and diagnostics
   - end-to-end lifecycle testing
   - installer and first-run bootstrap
@@ -1162,8 +1163,9 @@ Goal:
 Scope:
 - encrypt the local plaintext cache
 - audit and reduce plaintext lifetime for spool and temporary artifacts
+- secure deletion / cleanup of temporary recovery and snapshot artifacts
 - tighten local directory permissions for cache, spool, and sync metadata
-- ensure temporary recovery and snapshot artifacts do not linger on disk longer than necessary
+- review master-key-adjacent runtime surfaces and sensitive local state
 - review what remains on disk after upload, hydration, restore, and reconciliation
 
 Outcome:
@@ -1208,9 +1210,9 @@ Scope:
 Outcome:
 - release confidence based on real lifecycle coverage, not only smoke tests
 
-## PHASE 8: INSTALLER AND FIRST-RUN EXPERIENCE
+## PHASE 8: EXPLORER RELIABILITY AND OPERATIONS
 
-### Epic 27: Installer and Bootstrap
+### Epic 27: Installer and First-Run Bootstrap
 Goal:
 - turn OmniDrive into a normal installable desktop application
 
@@ -1229,23 +1231,21 @@ Scope:
 Outcome:
 - the user can install and start OmniDrive without terminal setup
 
-### Epic 28: Upgrades and Self-Healing Registration
+### Epic 28: Self-Healing Shell Integration
 Goal:
-- make upgrades and Windows shell integration resilient
+- make Windows shell integration resilient
 
 Scope:
-- upgrade migrations
-- re-registration for:
+- re-registration and repair for:
   - sync root
   - `O:\`
   - shell menu
   - drive icon and label
-- recovery from stale shell, drive, or CFAPI state
+- recovery from stale shell, drive, Explorer, or CFAPI state
+- resilience after upgrades and Windows drift
 
 Outcome:
 - Explorer and Smart Sync integration survive upgrades and shell restarts reliably
-
-## PHASE 9: DATA AND COST OPERATIONS
 
 ### Epic 29: Storage Cost and Policy Dashboard
 Goal:
@@ -1345,8 +1345,8 @@ Outcome:
 1. `Epic 24: Secure Local Runtime`
 2. `Epic 25: Observability and Diagnostics`
 3. `Epic 26: End-to-End Test Matrix`
-4. `Epic 27: Installer and Bootstrap`
-5. `Epic 28: Upgrades and Self-Healing Registration`
+4. `Epic 27: Installer and First-Run Bootstrap`
+5. `Epic 28: Self-Healing Shell Integration`
 6. `Epic 29: Storage Cost and Policy Dashboard`
 7. `Epic 30: Maintenance Console`
 8. `Epic 31: P2P LAN Cache`
@@ -1357,8 +1357,8 @@ Outcome:
 ## WHY THIS ORDER
 
 - It closes local security before adding more product surface.
-- It improves diagnostics and testability before installer and broader rollout.
-- It treats installation and upgrade resilience as more urgent than identity features.
+- It improves diagnostics and testability before broader rollout.
+- It makes installation and Explorer reliability more urgent than sharing or identity features.
 - It keeps Google Login as a later product-layer decision, not a premature infrastructure commitment.
 
 ## PHASE 6 RECOMMENDED ORDER
