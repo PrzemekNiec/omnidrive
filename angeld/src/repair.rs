@@ -184,6 +184,12 @@ impl RepairWorker {
         if db::StorageMode::from_str(&pack.storage_mode) != StorageMode::Ec2_1 {
             return Ok(());
         }
+        info!(
+            "repair degraded pack start: pack={} mode={} status={}",
+            pack.pack_id,
+            pack.storage_mode,
+            pack.status
+        );
         let shards = db::get_pack_shards(&self.pool, &pack.pack_id).await?;
         if shards.len() != TOTAL_SHARDS {
             return Err(RepairError::InvalidShardLayout(pack.pack_id.clone()));
@@ -218,6 +224,12 @@ impl RepairWorker {
         let missing = missing.ok_or(RepairError::MissingShardRecord("no missing shard"))?;
         let missing_index = usize::try_from(missing.shard_index)
             .map_err(|_| RepairError::NumericOverflow("missing shard index"))?;
+        info!(
+            "repair degraded pack reconstructing shard: pack={} shard={} provider={}",
+            pack.pack_id,
+            missing.shard_index,
+            missing.provider
+        );
         let shard_len = usize::try_from(pack.shard_size)
             .map_err(|_| RepairError::NumericOverflow("pack shard size"))?;
         let mut shard_set: Vec<Option<Vec<u8>>> = vec![None; TOTAL_SHARDS];
@@ -279,6 +291,12 @@ impl RepairWorker {
                 db::mark_pack_shard_completed(&self.pool, &pack.pack_id, missing.shard_index)
                     .await?;
                 db::update_pack_status(&self.pool, &pack.pack_id, PackStatus::Healthy).await?;
+                info!(
+                    "repair degraded pack complete: pack={} shard={} provider={}",
+                    pack.pack_id,
+                    missing.shard_index,
+                    missing.provider
+                );
 
                 if let Some(job) = db::get_upload_job_by_pack_id(&self.pool, &pack.pack_id).await? {
                     db::mark_upload_target_completed(

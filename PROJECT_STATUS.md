@@ -1217,6 +1217,9 @@ Scope:
 Outcome:
 - release confidence based on real lifecycle coverage, not only smoke tests
 
+Summary:
+- Fully validated via E2E: Recovery, Reconciliation, and Self-Healing.
+
 Current progress:
 - `Task 26.1` is implemented.
 - A dedicated integration harness now exists in `angeld/tests/e2e_basic.rs`.
@@ -1254,14 +1257,23 @@ Current progress:
 - The reconciliation harness uses a local mock S3 provider stack and `--no-sync` full daemon mode so uploader, repair, downloader, and watcher can be exercised deterministically without CFAPI.
 - The reconciliation E2E test now passes under:
   - `cargo test -p angeld --test e2e_reconciliation -- --nocapture`
+- `Task 26.7` is implemented.
+- A dedicated chaos harness now exists in `angeld/tests/e2e_scrubber_repair.rs`.
+- The scrubber / repair E2E flow now validates:
+  - creation of a healthy `PARANOIA` (`EC_2_1`) pack for a `1 MiB` file
+  - physical sabotage by deleting one remote shard from the mock S3 object store
+  - scrubber detection of the missing shard and transition of the pack to `COMPLETED_DEGRADED`
+  - repair reconstruction and re-upload of the missing shard from the remaining shard set
+  - return of the pack to `COMPLETED_HEALTHY` after re-scrub verification
+  - continuous 100 ms heartbeat reads that never fail during the full degrade-and-heal cycle
+- The repair path now emits explicit degraded-pack lifecycle logs:
+  - `repair degraded pack start`
+  - `repair degraded pack reconstructing shard`
+  - `repair degraded pack complete`
+- The scrubber / repair E2E test now passes under:
+  - `cargo test -p angeld --test e2e_scrubber_repair -- --nocapture`
 - Next recommended step:
-  - `Task 26.7: Scrubber -> Degrade -> Repair E2E`
-- Planned scope for the next task:
-  - seed a healthy remote-backed pack
-  - simulate a missing or corrupted shard on one provider
-  - wait for the scrubber to mark the pack degraded
-  - verify the repair worker reconstructs the missing shard
-  - confirm the pack returns to healthy without breaking reads
+  - `Epic 27: Installer and First-Run Bootstrap`
 
 ## PHASE 8: EXPLORER RELIABILITY AND OPERATIONS
 
