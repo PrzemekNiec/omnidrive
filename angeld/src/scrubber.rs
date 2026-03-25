@@ -378,6 +378,7 @@ impl ScrubProvider {
         let shared_config = crate::aws_http::load_shared_config(
             Region::new(config.region.clone()),
             timeout_config.clone(),
+            config.endpoint.starts_with("http://"),
         )
         .await;
 

@@ -34,6 +34,7 @@ pub struct Uploader {
     client: Client,
     bucket: String,
     force_path_style: bool,
+    buffered_uploads: bool,
 }
 
 pub struct UploadedPack {
@@ -179,6 +180,7 @@ impl Uploader {
         let shared_config = crate::aws_http::load_shared_config(
             Region::new(config.region.clone()),
             timeout_config.clone(),
+            config.endpoint.starts_with("http://"),
         )
         .await;
 
@@ -201,6 +203,7 @@ impl Uploader {
             client: Client::from_conf(s3_config),
             bucket: config.bucket,
             force_path_style: config.force_path_style,
+            buffered_uploads: bool_from_env("OMNIDRIVE_UPLOAD_BUFFERED", false),
         })
     }
 
@@ -263,7 +266,11 @@ impl Uploader {
         }
 
         let file_size = fs::metadata(file_path).await?.len();
-        let body = throttled_byte_stream(file_path.to_path_buf(), rate_limiter);
+        let body = if self.buffered_uploads {
+            ByteStream::from(fs::read(file_path).await?)
+        } else {
+            throttled_byte_stream(file_path.to_path_buf(), rate_limiter)
+        };
 
         let response = self
             .client

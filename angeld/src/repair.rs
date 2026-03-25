@@ -133,11 +133,14 @@ impl RepairWorker {
         loop {
             if let Some(pack) = db::get_next_pack_requiring_reconciliation(&self.pool).await? {
                 diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Active);
+                let desired_mode =
+                    db::get_desired_storage_mode_for_pack(&self.pool, &pack.pack_id).await?;
                 match self.reconcile_pack_mode(&pack).await {
                     Ok(()) => {
                         info!(
                             "repair worker reconciled pack {} to mode {}",
-                            pack.pack_id, db::get_desired_storage_mode_for_pack(&self.pool, &pack.pack_id).await?.as_str()
+                            pack.pack_id,
+                            desired_mode.as_str()
                         );
                     }
                     Err(err) => {
@@ -345,6 +348,13 @@ impl RepairWorker {
             return Ok(());
         }
 
+        info!(
+            "repair reconcile start: old_pack={} current_mode={} desired_mode={}",
+            pack.pack_id,
+            current_mode.as_str(),
+            desired_mode.as_str()
+        );
+
         let ciphertext = self.load_ciphertext_for_pack(pack).await?;
         let chunk_id = vec_to_array_32(&pack.chunk_id, "chunk_id")?;
         let nonce = vec_to_array_12(&pack.nonce, "nonce")?;
@@ -406,7 +416,21 @@ impl RepairWorker {
 
         if desired_mode == StorageMode::LocalOnly {
             db::update_pack_status(&self.pool, &new_pack_id, PackStatus::Healthy).await?;
+            info!(
+                "repair reconcile SWAP start: old_pack={} new_pack={} current_mode={} desired_mode={}",
+                pack.pack_id,
+                new_pack_id,
+                current_mode.as_str(),
+                desired_mode.as_str()
+            );
             db::link_chunk_to_pack(&self.pool, &pack.chunk_id, &new_pack_id, 0, manifest_size).await?;
+            info!(
+                "repair reconcile SWAP complete: old_pack={} new_pack={} current_mode={} desired_mode={}",
+                pack.pack_id,
+                new_pack_id,
+                current_mode.as_str(),
+                desired_mode.as_str()
+            );
             return Ok(());
         }
 
@@ -465,7 +489,21 @@ impl RepairWorker {
         let status = db::resolve_pack_status_for_mode(desired_mode, summary);
         db::update_pack_status(&self.pool, &new_pack_id, status).await?;
         if status == PackStatus::Healthy {
+            info!(
+                "repair reconcile SWAP start: old_pack={} new_pack={} current_mode={} desired_mode={}",
+                pack.pack_id,
+                new_pack_id,
+                current_mode.as_str(),
+                desired_mode.as_str()
+            );
             db::link_chunk_to_pack(&self.pool, &pack.chunk_id, &new_pack_id, 0, manifest_size).await?;
+            info!(
+                "repair reconcile SWAP complete: old_pack={} new_pack={} current_mode={} desired_mode={}",
+                pack.pack_id,
+                new_pack_id,
+                current_mode.as_str(),
+                desired_mode.as_str()
+            );
         }
 
         Ok(())
@@ -622,9 +660,14 @@ impl RepairWorker {
             .await
             .map_err(|err| RepairError::Io(std::io::Error::other(err.to_string())))?;
 
-        let body = ByteStream::from_path(&shard_path)
-            .await
-            .map_err(|err| provider_error(provider.provider_name, "read_body", err))?;
+        info!(
+            "repair reconcile upload start: pack={} shard={} provider={} key={}",
+            pack_id,
+            shard_index,
+            provider.provider_name,
+            object_key
+        );
+        let body = ByteStream::from(bytes.to_vec());
         let response = provider
             .client
             .put_object()
@@ -635,6 +678,13 @@ impl RepairWorker {
             .send()
             .await
             .map_err(|err| provider_error(provider.provider_name, "put_object", err))?;
+        info!(
+            "repair reconcile upload complete: pack={} shard={} provider={} key={}",
+            pack_id,
+            shard_index,
+            provider.provider_name,
+            object_key
+        );
 
         Ok((response.e_tag, response.version_id))
     }
@@ -677,6 +727,7 @@ impl ProviderClient {
         let shared_config = crate::aws_http::load_shared_config(
             Region::new(config.region.clone()),
             timeout_config.clone(),
+            config.endpoint.starts_with("http://"),
         )
         .await;
 

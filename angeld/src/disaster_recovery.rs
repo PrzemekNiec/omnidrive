@@ -710,6 +710,7 @@ impl MetadataBackupDownloadProvider {
         let shared_config = crate::aws_http::load_shared_config(
             aws_sdk_s3::config::Region::new(config.region.clone()),
             timeout_config.clone(),
+            config.endpoint.starts_with("http://"),
         )
         .await;
 

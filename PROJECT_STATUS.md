@@ -1244,14 +1244,24 @@ Current progress:
   - treating modern Cloud Files placeholder attributes such as `UNPINNED` and `RECALL_ON_DATA_ACCESS` as valid placeholder state in the Windows test assertions
 - The full-stack DR E2E test now passes under:
   - `cargo test -p angeld --test e2e_recovery -- --nocapture`
+- `Task 26.6` is implemented.
+- A dedicated reconciliation harness now exists in `angeld/tests/e2e_reconciliation.rs`.
+- The reconciliation E2E flow now validates:
+  - linear policy transitions `PARANOIA -> STANDARD -> LOCAL -> PARANOIA`
+  - continuous 100 ms heartbeat reads during each transition
+  - explicit `SWAP start` / `SWAP complete` logging at the live `pack_locations` repoint moment
+  - old packs becoming inactive-orphaned GC candidates only after the new pack is ready
+- The reconciliation harness uses a local mock S3 provider stack and `--no-sync` full daemon mode so uploader, repair, downloader, and watcher can be exercised deterministically without CFAPI.
+- The reconciliation E2E test now passes under:
+  - `cargo test -p angeld --test e2e_reconciliation -- --nocapture`
 - Next recommended step:
-  - `Task 26.6: Policy Reconciliation E2E`
+  - `Task 26.7: Scrubber -> Degrade -> Repair E2E`
 - Planned scope for the next task:
-  - seed files under one protection mode
-  - switch policy between `PARANOIA`, `STANDARD`, and `LOCAL`
-  - wait for background reconciliation to create the new target pack mode
-  - verify reads still succeed during and after transitions
-  - verify old physical variants become GC candidates after repointing live chunk mappings
+  - seed a healthy remote-backed pack
+  - simulate a missing or corrupted shard on one provider
+  - wait for the scrubber to mark the pack degraded
+  - verify the repair worker reconstructs the missing shard
+  - confirm the pack returns to healthy without breaking reads
 
 ## PHASE 8: EXPLORER RELIABILITY AND OPERATIONS
 

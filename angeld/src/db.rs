@@ -1469,7 +1469,7 @@ pub async fn create_pack(
             gcm_tag,
             status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(pack_id) DO UPDATE SET
             chunk_id = excluded.chunk_id,
             plaintext_hash = excluded.plaintext_hash,
