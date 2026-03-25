@@ -1,3 +1,4 @@
+pub mod autostart;
 pub mod aws_http;
 pub mod cache;
 pub mod downloader;
@@ -7,6 +8,7 @@ pub mod config;
 pub mod db;
 pub mod disaster_recovery;
 pub mod packer;
+pub mod runtime_paths;
 pub mod secure_fs;
 pub mod smart_sync;
 pub mod uploader;

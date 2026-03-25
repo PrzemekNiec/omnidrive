@@ -101,18 +101,18 @@ Core assumptions:
 
 ### Next Epic
 Goal:
-- build repeatable end-to-end lifecycle coverage before the installer phase
+- turn OmniDrive into an installable desktop product and make installed-mode runtime bootstrap reliable
 
 Scope:
 - next recommended implementation areas:
-  - end-to-end lifecycle testing
-  - daemon orchestration harness with `--no-sync`
-  - baseline happy-path upload queue and diagnostics validation
-  - disaster recovery and policy reconciliation scenarios
-  - installer and first-run bootstrap
+  - installer packaging
+  - installed-mode runtime path resolution
+  - `%LOCALAPPDATA%\OmniDrive` bootstrap
+  - autostart and headless daemon lifecycle
+  - first-run bootstrap and restore readiness
 
 Outcome:
-- a stable and testable OmniDrive desktop product, ready for installer work
+- a stable installable OmniDrive desktop product, ready for first-run UX and shell hardening
 
 ## ROADMAP
 
@@ -1295,6 +1295,232 @@ Scope:
 
 Outcome:
 - the user can install and start OmniDrive without terminal setup
+
+Implementation plan:
+
+#### Task 27.1: Packaging and Installer Baseline
+Goal:
+- produce a Windows installer that lays down all required OmniDrive binaries and runtime assets
+
+Scope:
+- choose installer technology:
+  - WiX
+  - Inno Setup
+  - MSIX
+- package:
+  - `angeld`
+  - `omnidrive-cli`
+  - static web assets
+  - required icons and shell assets
+- define installation directories under `Program Files` and per-user runtime directories under `%LOCALAPPDATA%\OmniDrive`
+- create uninstall entry and clean upgrade-safe layout
+
+Deliverable:
+- a repeatable installer that places OmniDrive on a clean Windows machine without manual file copying
+
+#### Task 27.2: Runtime Bootstrap and First-Run State
+Goal:
+- ensure the installed app can initialize its local runtime safely on first launch
+
+Scope:
+- detect runtime mode:
+  - development / workspace mode
+  - installed mode under `Program Files`
+- in installed mode, use `%LOCALAPPDATA%\OmniDrive` as the base path for:
+  - SQLite DB
+  - cache directory
+  - spool directory
+  - download spool
+  - logs directory
+- create and validate all required runtime directories on startup if they are missing
+- ensure the base runtime directory and its sensitive children are ACL-hardened through `win_acl.rs`
+- ensure installed-mode logging is redirected to `%LOCALAPPDATA%\OmniDrive\logs`
+- initialize local configuration if missing
+- add a first-run marker / bootstrap state so the daemon and UI know whether onboarding is still required
+
+Deliverable:
+- installed OmniDrive can bootstrap its runtime directories and local DB state without terminal setup
+
+Implementation plan for Task 27.2:
+
+1. Runtime mode detection
+- add a small environment-resolution layer in `main.rs` / config bootstrap
+- determine whether OmniDrive is running from:
+  - a developer worktree
+  - an installed location under `Program Files`
+- prefer explicit env overrides first, then installed-mode defaults
+
+2. Unified runtime path resolver
+- introduce one source of truth for:
+  - DB path
+  - logs path
+  - cache path
+  - spool path
+  - download spool path
+- in installed mode, all of them resolve under `%LOCALAPPDATA%\OmniDrive`
+- keep current env overrides working for tests and development
+
+3. Startup directory bootstrap
+- before DB init and worker startup:
+  - create `%LOCALAPPDATA%\OmniDrive`
+  - create `logs`
+  - create `Cache`
+  - create `Spool`
+  - create `download-spool`
+- ensure bootstrap is idempotent and safe to run on every start
+
+4. ACL hardening for installed mode
+- call `secure_directory(...)` on the runtime base directory and sensitive subdirectories
+- treat ACL failure as a startup error in installed mode
+- keep debug/development guardrails intact so local development is not bricked again
+
+5. Installed-mode logging
+- route default logs to `%LOCALAPPDATA%\OmniDrive\logs`
+- keep stdout available in development mode
+- confirm the daemon remains diagnosable when started headlessly by the installer/autostart path
+
+6. First-run marker
+- persist a simple local marker indicating:
+  - runtime bootstrapped
+  - onboarding still required or already completed
+- this marker will feed `Task 27.4`
+
+Exit criteria:
+- starting `angeld` from an installed layout without env vars creates and uses `%LOCALAPPDATA%\OmniDrive`
+- DB, cache, spool, and logs all resolve there automatically
+- the runtime directories are ACL-hardened
+- logs are written to the file logger path in installed mode
+- development mode and E2E harnesses still work without regression
+
+Current progress:
+- `Task 27.2` is implemented.
+- A shared runtime path resolver now detects:
+  - workspace mode
+  - installed mode under `Program Files`
+- In installed mode, daemon and CLI now resolve their runtime paths from `%LOCALAPPDATA%\OmniDrive`.
+- The daemon now bootstraps:
+  - runtime base directory
+  - DB directory
+  - cache
+  - spool
+  - download spool
+  - logs
+- Installed-mode runtime directories are ACL-hardened through `win_acl.rs`.
+- Logging now uses the shared runtime path resolver and writes rotating `angeld.log*` files under the installed runtime log directory.
+- The CLI recovery path now resolves the same SQLite location as the daemon by default.
+
+#### Task 27.3: Daemon Autostart and Process Lifecycle
+Goal:
+- make `angeld` behave like a real background desktop daemon
+
+Scope:
+- register daemon autostart for the current user
+- define start / stop / restart behavior during:
+  - install
+  - update
+  - uninstall
+- ensure logs and diagnostics survive background execution
+- verify the daemon can start headlessly without stdout dependence
+
+Deliverable:
+- OmniDrive starts automatically after install and after user logon, with stable lifecycle management
+
+Current progress:
+- `Task 27.3` is implemented.
+- The daemon now exposes current-user autostart registry helpers in `angeld/src/autostart.rs`.
+- OmniDrive registers itself under:
+  - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+  - value name: `OmniDriveAngeld`
+- Installed-mode autostart now prefers a headless launcher script:
+  - `angeld-autostart.vbs`
+  - launched through `wscript.exe //B`
+- The installer now:
+  - installs the headless launcher script
+  - registers the autostart entry during installation
+  - removes the autostart entry during uninstall
+- The CLI now provides a manual fallback for lifecycle control:
+  - `omnidrive service register`
+  - `omnidrive service unregister`
+- Verification:
+  - `cargo check --workspace`
+
+#### Task 27.4: First-Run Wizard
+Goal:
+- guide the user through vault creation or restore on a clean machine
+
+Scope:
+- first-run UI flow for:
+  - create new vault
+  - unlock existing vault
+  - set master passphrase
+  - configure provider credentials
+  - choose sync root location if needed
+  - optional metadata restore from cloud
+- clear success / failure states and retry UX
+- persist configuration only after validation succeeds
+
+Deliverable:
+- a non-technical user can reach a usable OmniDrive state without touching CLI commands
+
+#### Task 27.5: SyncRoot and `O:\` Bootstrap
+Goal:
+- make installed OmniDrive bring up the actual Windows integration automatically
+
+Scope:
+- register or reuse Smart Sync `SyncRoot`
+- bootstrap placeholder projection after onboarding or restore
+- map the virtual drive to `O:\`
+- apply:
+  - drive label
+  - drive icon
+  - shell menu registration
+- verify startup ordering:
+  - unlock
+  - DB ready
+  - SyncRoot ready
+  - `O:\` mount
+
+Deliverable:
+- after first-run completion, the user sees a working `O:\` drive and Explorer integration automatically
+
+#### Task 27.6: Clean-Machine Validation Matrix
+Goal:
+- prove the installer flow works on a fresh environment, not just in dev worktrees
+
+Scope:
+- validate on a clean Windows user profile:
+  - fresh install
+  - first vault creation
+  - provider credential setup
+  - restore path
+  - reboot / relogon autostart
+  - uninstall / reinstall
+- verify:
+  - daemon starts
+  - API responds
+  - `SyncRoot` works
+  - `O:\` appears
+  - logs are written
+
+Deliverable:
+- a reproducible install / first-run / reboot validation checklist for release readiness
+
+#### Recommended execution order
+1. `Task 27.1: Packaging and Installer Baseline`
+2. `Task 27.2: Runtime Bootstrap and First-Run State`
+3. `Task 27.3: Daemon Autostart and Process Lifecycle`
+4. `Task 27.4: First-Run Wizard`
+5. `Task 27.5: SyncRoot and O:\ Bootstrap`
+6. `Task 27.6: Clean-Machine Validation Matrix`
+
+#### Suggested first milestone
+- installer places binaries
+- runtime directories are created
+- daemon autostarts
+- basic first-run screen appears
+- user can create or restore a vault
+
+This milestone is enough to move OmniDrive from a developer-operated system to an installable desktop product.
 
 ### Epic 28: Self-Healing Shell Integration
 Goal:

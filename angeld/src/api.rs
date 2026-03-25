@@ -1329,17 +1329,5 @@ fn normalize_filesystem_api_path(raw_path: &str) -> Option<String> {
 }
 
 fn sync_root_path() -> std::path::PathBuf {
-    env::var("OMNIDRIVE_SYNC_ROOT")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            env::var("LOCALAPPDATA")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| {
-                    env::var("USERPROFILE")
-                        .map(std::path::PathBuf::from)
-                        .unwrap_or_else(|_| std::path::PathBuf::from(r"C:\Users\Default"))
-                })
-                .join("OmniDrive")
-                .join("SyncRoot")
-        })
+    crate::runtime_paths::RuntimePaths::detect().sync_root
 }

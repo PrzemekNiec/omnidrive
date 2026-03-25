@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -11,6 +10,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 static LOG_GUARDS: OnceLock<Vec<WorkerGuard>> = OnceLock::new();
+const LOG_BASENAME: &str = "angeld.log";
 
 pub fn init_logging() -> io::Result<PathBuf> {
     let log_dir = default_log_dir();
@@ -20,7 +20,8 @@ pub fn init_logging() -> io::Result<PathBuf> {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn,hyper=warn,h2=warn,aws_config=warn"));
 
-    let file_appender = std::panic::catch_unwind(|| tracing_appender::rolling::daily(&log_dir, "daemon.log"));
+    let file_appender =
+        std::panic::catch_unwind(|| tracing_appender::rolling::daily(&log_dir, LOG_BASENAME));
     match file_appender {
         Ok(file_appender) => {
             let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
@@ -72,17 +73,7 @@ pub fn init_logging() -> io::Result<PathBuf> {
 }
 
 pub fn default_log_dir() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        env::var("LOCALAPPDATA")
-            .map(|root| PathBuf::from(root).join("OmniDrive").join("logs"))
-            .unwrap_or_else(|_| PathBuf::from(".omnidrive").join("logs"))
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        PathBuf::from("/tmp").join("omnidrive").join("logs")
-    }
+    crate::runtime_paths::RuntimePaths::detect().log_dir
 }
 
 fn prune_old_logs(log_dir: &Path, max_age: Duration) -> io::Result<()> {
@@ -91,7 +82,7 @@ fn prune_old_logs(log_dir: &Path, max_age: Duration) -> io::Result<()> {
         let entry = entry?;
         let file_name = entry.file_name();
         let file_name = file_name.to_string_lossy();
-        if !file_name.starts_with("daemon.log") {
+        if !file_name.starts_with(LOG_BASENAME) {
             continue;
         }
 

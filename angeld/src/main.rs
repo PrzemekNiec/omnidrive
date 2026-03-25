@@ -10,6 +10,7 @@ mod gc;
 mod logging;
 mod packer;
 mod repair;
+mod runtime_paths;
 mod scrubber;
 mod secure_fs;
 mod shell_integration;
@@ -27,9 +28,10 @@ use crate::disaster_recovery::{
 };
 use crate::downloader::Downloader;
 use crate::gc::GcWorker;
-use crate::logging::{default_log_dir, init_logging};
+use crate::logging::init_logging;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::repair::RepairWorker;
+use crate::runtime_paths::{RuntimePaths, sqlite_db_file_path};
 use crate::scrubber::ScrubberWorker;
 use crate::uploader::{UploadWorker, Uploader};
 use crate::vault::VaultKeyStore;
@@ -45,6 +47,9 @@ use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() {
+    let _ = dotenvy::dotenv();
+    let runtime_paths = RuntimePaths::detect();
+    runtime_paths.export_env_defaults();
     if let Err(err) = init_logging() {
         eprintln!("failed to initialize logging: {err}");
         std::process::exit(1);
@@ -152,44 +157,17 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let diagnostics = init_global_diagnostics();
     let no_sync = should_disable_sync();
     let e2e_test_mode = is_e2e_test_mode();
+    let runtime_paths = RuntimePaths::detect();
+    runtime_paths.export_env_defaults();
 
-    let sync_root = sync_root_path();
+    let sync_root = runtime_paths.sync_root.clone();
     let drive_letter = virtual_drive_letter();
-    let db_url = env::var("OMNIDRIVE_DB_URL").unwrap_or_else(|_| "sqlite:omnidrive.db".to_string());
-    let spool_dir = env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool");
-    let download_spool_dir = env_path("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", ".omnidrive/download-spool");
-    let cache_dir = cache_root_path();
-    let log_dir = default_log_dir();
-    let db_dir = sqlite_db_directory(&db_url).unwrap_or_else(|| PathBuf::from("."));
+    runtime_paths.bootstrap_directories(!no_sync).await?;
+    runtime_paths.secure_runtime_directories()?;
 
-    fs::create_dir_all(&spool_dir).await?;
-    fs::create_dir_all(&download_spool_dir).await?;
-    fs::create_dir_all(&cache_dir).await?;
-    fs::create_dir_all(&log_dir).await?;
-    fs::create_dir_all(&db_dir).await?;
-    if !no_sync {
-        fs::create_dir_all(&sync_root).await?;
-    }
+    let just_restored = maybe_auto_restore_database(&runtime_paths.db_url).await?;
 
-    let just_restored = maybe_auto_restore_database(&db_url).await?;
-
-    win_acl::secure_directory(&cache_dir)
-        .map_err(|err| io::Error::other(format!("failed to secure cache dir: {err}")))?;
-    win_acl::secure_directory(&spool_dir)
-        .map_err(|err| io::Error::other(format!("failed to secure spool dir: {err}")))?;
-    win_acl::secure_directory(&download_spool_dir)
-        .map_err(|err| io::Error::other(format!("failed to secure download spool dir: {err}")))?;
-    if should_secure_db_directory(&db_dir) {
-        win_acl::secure_directory(&db_dir)
-            .map_err(|err| io::Error::other(format!("failed to secure db dir: {err}")))?;
-    } else {
-        warn!(
-            "skipping db directory ACL hardening for relative or working-directory path {}",
-            db_dir.display()
-        );
-    }
-
-    let pool = db::init_db(&db_url).await?;
+    let pool = db::init_db(&runtime_paths.db_url).await?;
     let vault_keys = VaultKeyStore::new();
     if no_sync && e2e_test_mode {
         let worker = UploadWorker::from_env(pool.clone()).await?;
@@ -601,22 +579,6 @@ fn env_path(key: &str, default: &str) -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(default))
 }
 
-fn sync_root_path() -> PathBuf {
-    env::var("OMNIDRIVE_SYNC_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            env::var("LOCALAPPDATA")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| {
-                    env::var("USERPROFILE")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|_| PathBuf::from(r"C:\Users\Default"))
-                })
-                .join("OmniDrive")
-                .join("SyncRoot")
-        })
-}
-
 fn virtual_drive_letter() -> String {
     env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string())
 }
@@ -627,72 +589,6 @@ fn virtual_drive_icon_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("icons").join("omnidrive.ico"))
 }
 
-fn cache_root_path() -> PathBuf {
-    env::var("OMNIDRIVE_CACHE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            env::var("LOCALAPPDATA")
-                .map(|root| PathBuf::from(root).join("OmniDrive").join("Cache"))
-                .unwrap_or_else(|_| PathBuf::from(".omnidrive").join("cache"))
-        })
-}
-
-fn sqlite_db_directory(db_url: &str) -> Option<PathBuf> {
-    if db_url.contains(":memory:") {
-        return None;
-    }
-
-    let raw = db_url
-        .strip_prefix("sqlite://")
-        .or_else(|| db_url.strip_prefix("sqlite:"))
-        .unwrap_or(db_url);
-
-    if raw.is_empty() {
-        return None;
-    }
-
-    let normalized = if raw.len() >= 4
-        && raw.starts_with('/')
-        && raw.as_bytes().get(2) == Some(&b':')
-    {
-        &raw[1..]
-    } else {
-        raw
-    };
-
-    let path = PathBuf::from(normalized);
-    Some(
-        path.parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(".")),
-    )
-}
-
-fn sqlite_db_file_path(db_url: &str) -> Option<PathBuf> {
-    if db_url.contains(":memory:") {
-        return None;
-    }
-
-    let raw = db_url
-        .strip_prefix("sqlite://")
-        .or_else(|| db_url.strip_prefix("sqlite:"))
-        .unwrap_or(db_url);
-
-    if raw.is_empty() {
-        return None;
-    }
-
-    let normalized = if raw.len() >= 4
-        && raw.starts_with('/')
-        && raw.as_bytes().get(2) == Some(&b':')
-    {
-        &raw[1..]
-    } else {
-        raw
-    };
-
-    Some(PathBuf::from(normalized))
-}
 
 async fn maybe_auto_restore_database(db_url: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let Some(passphrase) = env::var("OMNIDRIVE_AUTO_RESTORE_PASSPHRASE").ok() else {
@@ -714,25 +610,6 @@ async fn maybe_auto_restore_database(db_url: &str) -> Result<bool, Box<dyn std::
     restore_metadata_from_cloud(&provider_manager, &passphrase, &db_path).await?;
     info!("automatic metadata restore completed for {}", db_path.display());
     Ok(true)
-}
-
-fn should_secure_db_directory(path: &std::path::Path) -> bool {
-    let normalized = path.as_os_str().to_string_lossy().trim().to_string();
-    if normalized.is_empty() || normalized == "." {
-        return false;
-    }
-
-    if let Ok(current_dir) = std::env::current_dir() {
-        if let (Ok(candidate), Ok(current)) =
-            (std::fs::canonicalize(path), std::fs::canonicalize(current_dir))
-        {
-            if candidate == current {
-                return false;
-            }
-        }
-    }
-
-    true
 }
 
 fn shell_api_base() -> String {

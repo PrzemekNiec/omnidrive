@@ -294,9 +294,7 @@ pub fn cache_runtime_stats() -> CacheRuntimeStats {
 }
 
 fn default_cache_root() -> PathBuf {
-    env::var("LOCALAPPDATA")
-        .map(|root| PathBuf::from(root).join("OmniDrive").join("Cache"))
-        .unwrap_or_else(|_| PathBuf::from(".omnidrive").join("cache"))
+    crate::runtime_paths::RuntimePaths::detect().cache_dir
 }
 
 fn hex_lower(bytes: &[u8]) -> String {

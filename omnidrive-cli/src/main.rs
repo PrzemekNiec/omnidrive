@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
+use angeld::autostart;
 use angeld::disaster_recovery::{MetadataBackupProviderManager, restore_metadata_from_cloud};
+use angeld::runtime_paths::{RuntimePaths, sqlite_db_file_path};
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
@@ -37,6 +39,10 @@ enum Command {
         #[command(subcommand)]
         command: RecoveryCommand,
     },
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -56,6 +62,12 @@ enum RecoveryCommand {
     #[command(alias = "snapshot-local")]
     BackupNow,
     Restore,
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    Register,
+    Unregister,
 }
 
 #[derive(Debug)]
@@ -219,6 +231,10 @@ async fn main() {
             RecoveryCommand::Status => recovery_status(&client, &api_base).await,
             RecoveryCommand::BackupNow => backup_now(&client, &api_base).await,
             RecoveryCommand::Restore => restore_from_cloud().await,
+        },
+        Command::Service { command } => match command {
+            ServiceCommand::Register => register_service_autostart(),
+            ServiceCommand::Unregister => unregister_service_autostart(),
         },
     };
 
@@ -563,8 +579,16 @@ async fn maintenance_errors(client: &Client, api_base: &str) -> Result<(), CliEr
 async fn restore_from_cloud() -> Result<(), CliError> {
     let output_db_path = env::var("OMNIDRIVE_DB_PATH")
         .map(PathBuf::from)
-        .or_else(|_| env::var("OMNIDRIVE_DB_URL").map(parse_db_url_to_path))
-        .unwrap_or_else(|_| PathBuf::from("omnidrive.db"));
+        .or_else(|_| {
+            env::var("OMNIDRIVE_DB_URL").map(|db_url| {
+                sqlite_db_file_path(&db_url).unwrap_or_else(|| parse_db_url_to_path(db_url))
+            })
+        })
+        .unwrap_or_else(|_| {
+            RuntimePaths::detect()
+                .db_file_path
+                .unwrap_or_else(|| PathBuf::from("omnidrive.db"))
+        });
 
     eprint!("Master Password: ");
     let passphrase = rpassword::read_password()
@@ -579,6 +603,23 @@ async fn restore_from_cloud() -> Result<(), CliError> {
         .map_err(|err| CliError::Api(format!("restore failed: {err}")))?;
 
     println!("Restored metadata database to {}", output_db_path.display());
+    Ok(())
+}
+
+fn register_service_autostart() -> Result<(), CliError> {
+    let command = autostart::default_current_user_autostart_command()
+        .map_err(|err| CliError::Api(format!("autostart command resolution failed: {err}")))?;
+    autostart::register_current_user_autostart(&command)
+        .map_err(|err| CliError::Api(format!("autostart registration failed: {err}")))?;
+    println!("Registered OmniDrive daemon autostart for current user.");
+    println!("Command: {}", command);
+    Ok(())
+}
+
+fn unregister_service_autostart() -> Result<(), CliError> {
+    autostart::unregister_current_user_autostart()
+        .map_err(|err| CliError::Api(format!("autostart unregistration failed: {err}")))?;
+    println!("Unregistered OmniDrive daemon autostart for current user.");
     Ok(())
 }
 
