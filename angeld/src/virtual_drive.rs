@@ -56,6 +56,19 @@ pub fn mount_virtual_drive(drive_letter: &str, target_path: &Path) -> Result<(),
     }
 }
 
+pub fn select_mount_drive_letter(preferred_drive_letter: &str) -> Result<String, VirtualDriveError> {
+    #[cfg(windows)]
+    {
+        imp::select_mount_drive_letter(preferred_drive_letter)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = preferred_drive_letter;
+        Err(VirtualDriveError::UnsupportedPlatform)
+    }
+}
+
 pub fn unmount_virtual_drive(drive_letter: &str) -> Result<(), VirtualDriveError> {
     #[cfg(windows)]
     {
@@ -110,7 +123,7 @@ mod imp {
     use std::path::{Path, PathBuf};
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
-        DefineDosDeviceW, GetFileAttributesW, SetFileAttributesW, DDD_REMOVE_DEFINITION,
+        DefineDosDeviceW, GetFileAttributesW, GetLogicalDrives, SetFileAttributesW, DDD_REMOVE_DEFINITION,
         DDD_RAW_TARGET_PATH, FILE_ATTRIBUTE_HIDDEN, FILE_FLAGS_AND_ATTRIBUTES,
     };
     use windows::Win32::System::Registry::{
@@ -137,6 +150,33 @@ mod imp {
         }
 
         Ok(())
+    }
+
+    pub fn select_mount_drive_letter(
+        preferred_drive_letter: &str,
+    ) -> Result<String, VirtualDriveError> {
+        let preferred = normalize_drive_letter(preferred_drive_letter)?;
+        let preferred_letter = preferred
+            .chars()
+            .next()
+            .ok_or(VirtualDriveError::InvalidDriveLetter)?;
+        let used_mask = unsafe { GetLogicalDrives() };
+
+        if used_mask == 0 {
+            return Ok(preferred);
+        }
+
+        if drive_letter_available(preferred_letter, used_mask) {
+            return Ok(preferred);
+        }
+
+        for letter in ('D'..='Z').filter(|letter| *letter != preferred_letter) {
+            if drive_letter_available(letter, used_mask) {
+                return Ok(format!("{letter}:"));
+            }
+        }
+
+        Err(VirtualDriveError::InvalidDriveLetter)
     }
 
     pub fn unmount_virtual_drive(drive_letter: &str) -> Result<(), VirtualDriveError> {
@@ -211,6 +251,11 @@ mod imp {
         }
 
         Ok(format!("{}:", letter.to_ascii_uppercase()))
+    }
+
+    fn drive_letter_available(letter: char, used_mask: u32) -> bool {
+        let bit = 1u32 << (letter.to_ascii_uppercase() as u8 - b'A');
+        used_mask & bit == 0
     }
 
     fn normalize_path(target_path: &Path) -> Result<PathBuf, VirtualDriveError> {

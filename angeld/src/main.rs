@@ -34,7 +34,7 @@ use crate::repair::RepairWorker;
 use crate::runtime_paths::{RuntimePaths, sqlite_db_file_path};
 use crate::scrubber::ScrubberWorker;
 use crate::uploader::{UploadWorker, Uploader};
-use crate::vault::VaultKeyStore;
+use crate::vault::{VaultKeyStore, bootstrap_local_vault};
 use crate::watcher::FileWatcher;
 use std::env;
 use std::io;
@@ -161,13 +161,21 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     runtime_paths.export_env_defaults();
 
     let sync_root = runtime_paths.sync_root.clone();
-    let drive_letter = virtual_drive_letter();
+    let preferred_drive_letter = virtual_drive_letter();
     runtime_paths.bootstrap_directories(!no_sync).await?;
     runtime_paths.secure_runtime_directories()?;
+    let database_missing_on_start = runtime_paths
+        .db_file_path
+        .as_ref()
+        .map(|path| !path.exists())
+        .unwrap_or(false);
 
     let just_restored = maybe_auto_restore_database(&runtime_paths.db_url).await?;
 
     let pool = db::init_db(&runtime_paths.db_url).await?;
+    let local_vault_bootstrapped =
+        bootstrap_default_local_vault(&pool, &runtime_paths, database_missing_on_start, just_restored)
+            .await?;
     let vault_keys = VaultKeyStore::new();
     if no_sync && e2e_test_mode {
         let worker = UploadWorker::from_env(pool.clone()).await?;
@@ -301,6 +309,12 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let downloader = Arc::new(Downloader::from_env(pool.clone(), vault_keys.clone()).await?);
+    let drive_letter = if no_sync {
+        preferred_drive_letter.clone()
+    } else {
+        virtual_drive::select_mount_drive_letter(&preferred_drive_letter)
+            .unwrap_or(preferred_drive_letter.clone())
+    };
     if no_sync {
         warn!("starting angeld with --no-sync; skipping Smart Sync and virtual drive bootstrap");
     } else {
@@ -353,6 +367,9 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         info!("smart sync bootstrap ready at {}", sync_root.display());
         info!("virtual drive mounted at {}", drive_letter);
+    }
+    if local_vault_bootstrapped {
+        info!("default local vault bootstrap is ready");
     }
     info!("upload worker, repair worker, scrubber worker, gc worker, file watcher, and api server started");
 
@@ -464,6 +481,44 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     result
+}
+
+async fn bootstrap_default_local_vault(
+    pool: &sqlx::SqlitePool,
+    runtime_paths: &RuntimePaths,
+    database_missing_on_start: bool,
+    just_restored: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut bootstrapped = false;
+
+    if database_missing_on_start && !just_restored {
+        if bootstrap_local_vault(pool).await? {
+            info!(
+                "initialized default local vault metadata in {}",
+                runtime_paths
+                    .db_file_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| runtime_paths.db_url.clone())
+            );
+            bootstrapped = true;
+        }
+    }
+
+    if db::list_sync_policies(pool).await?.is_empty() {
+        if let Some(default_watch_dir) = &runtime_paths.default_watch_dir {
+            fs::create_dir_all(default_watch_dir).await?;
+            let policy_path = absolute_path_to_policy_key(default_watch_dir)?;
+            db::upsert_sync_policy(pool, &policy_path, true, true).await?;
+            info!(
+                "bootstrapped default local vault watch root at {}",
+                default_watch_dir.display()
+            );
+            bootstrapped = true;
+        }
+    }
+
+    Ok(bootstrapped)
 }
 
 async fn project_sync_root_with_retry(
@@ -619,4 +674,18 @@ fn shell_api_base() -> String {
         .map(|port| format!("127.0.0.1:{port}"))
         .unwrap_or(bind);
     format!("http://{host_port}")
+}
+
+fn absolute_path_to_policy_key(path: &std::path::Path) -> io::Result<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()?.join(path)
+    };
+    let normalized = absolute.to_string_lossy().replace('\\', "/");
+    let segments: Vec<&str> = normalized.split('/').filter(|segment| !segment.is_empty()).collect();
+    if segments.is_empty() {
+        return Err(io::Error::other("invalid empty policy path"));
+    }
+    Ok(segments.join("/"))
 }

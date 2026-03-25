@@ -20,6 +20,7 @@ pub struct RuntimePaths {
     pub download_spool_dir: PathBuf,
     pub log_dir: PathBuf,
     pub sync_root: PathBuf,
+    pub default_watch_dir: Option<PathBuf>,
 }
 
 impl RuntimePaths {
@@ -79,6 +80,13 @@ impl RuntimePaths {
 
         let sync_root = env_path("OMNIDRIVE_SYNC_ROOT")
             .unwrap_or_else(|| local_app_base.join("SyncRoot"));
+        let default_watch_dir = env_path("OMNIDRIVE_WATCH_DIR").or_else(|| {
+            if mode == RuntimeMode::Installed {
+                Some(default_local_vault_root())
+            } else {
+                None
+            }
+        });
 
         Self {
             mode,
@@ -91,6 +99,7 @@ impl RuntimePaths {
             download_spool_dir,
             log_dir,
             sync_root,
+            default_watch_dir,
         }
     }
 
@@ -127,6 +136,12 @@ impl RuntimePaths {
             "OMNIDRIVE_SYNC_ROOT",
             self.sync_root.to_string_lossy().to_string(),
         );
+        if let Some(default_watch_dir) = &self.default_watch_dir {
+            set_env_default(
+                "OMNIDRIVE_WATCH_DIR",
+                default_watch_dir.to_string_lossy().to_string(),
+            );
+        }
     }
 
     pub async fn bootstrap_directories(&self, include_sync_root: bool) -> io::Result<()> {
@@ -140,6 +155,9 @@ impl RuntimePaths {
         }
         if include_sync_root {
             tokio::fs::create_dir_all(&self.sync_root).await?;
+        }
+        if let Some(default_watch_dir) = &self.default_watch_dir {
+            tokio::fs::create_dir_all(default_watch_dir).await?;
         }
         Ok(())
     }
@@ -243,7 +261,7 @@ fn detect_runtime_mode() -> RuntimeMode {
     }
 
     if let Ok(exe_path) = env::current_exe() {
-        if is_under_program_files(&exe_path) {
+        if is_in_installed_location(&exe_path) {
             return RuntimeMode::Installed;
         }
     }
@@ -251,10 +269,11 @@ fn detect_runtime_mode() -> RuntimeMode {
     RuntimeMode::Workspace
 }
 
-fn is_under_program_files(path: &Path) -> bool {
+fn is_in_installed_location(path: &Path) -> bool {
     let candidates = [
         env_path("ProgramFiles"),
         env_path("ProgramFiles(x86)"),
+        env_path("LOCALAPPDATA").map(|path| path.join("Programs")),
     ];
 
     for candidate in candidates.into_iter().flatten() {
@@ -271,4 +290,10 @@ fn local_app_omnidrive_root() -> PathBuf {
         .or_else(|| env_path("USERPROFILE").map(|path| path.join("AppData").join("Local")))
         .unwrap_or_else(|| PathBuf::from(".omnidrive"))
         .join("OmniDrive")
+}
+
+fn default_local_vault_root() -> PathBuf {
+    env_path("USERPROFILE")
+        .unwrap_or_else(|| local_app_omnidrive_root())
+        .join("OmniDrive Vault")
 }

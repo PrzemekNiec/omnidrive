@@ -1318,6 +1318,26 @@ Scope:
 Deliverable:
 - a repeatable installer that places OmniDrive on a clean Windows machine without manual file copying
 
+Current progress:
+- `Task 27.1` is implemented.
+- OmniDrive now ships with an Inno Setup installer that packages:
+  - `angeld`
+  - `omnidrive-cli`
+  - static web assets
+  - shell and icon assets
+- The installer model was refined to a per-user architecture:
+  - install root: `%LOCALAPPDATA%\Programs\OmniDrive`
+  - runtime root: `%LOCALAPPDATA%\OmniDrive`
+- The installer now:
+  - registers uninstall metadata
+  - supports optional user PATH integration through `HKCU\Environment`
+  - avoids the earlier admin/per-user mismatch warning by using `PrivilegesRequired=lowest`
+- A repeatable installer build pipeline now exists through:
+  - `installer/omnidrive.iss`
+  - `scripts/build-installer.ps1`
+- Current packaged output:
+  - `dist\installer\output\OmniDrive-Setup-0.1.0.exe`
+
 #### Task 27.2: Runtime Bootstrap and First-Run State
 Goal:
 - ensure the installed app can initialize its local runtime safely on first launch
@@ -1462,6 +1482,18 @@ Scope:
 Deliverable:
 - a non-technical user can reach a usable OmniDrive state without touching CLI commands
 
+Current progress:
+- `Task 27.4` is partially implemented through daemon-side auto-bootstrap.
+- On a clean install with no local SQLite database, `angeld` now:
+  - initializes default local-vault metadata
+  - creates the installed runtime directory layout under `%LOCALAPPDATA%\OmniDrive`
+  - bootstraps a default local watch root under the current user profile
+- This gives OmniDrive a usable empty local vault immediately after installation, even before the dedicated first-run UI is added.
+- Remaining scope for the future UI layer:
+  - explicit create / unlock / restore screens
+  - passphrase entry and validation UX
+  - provider credential onboarding UX
+
 #### Task 27.5: SyncRoot and `O:\` Bootstrap
 Goal:
 - make installed OmniDrive bring up the actual Windows integration automatically
@@ -1482,6 +1514,15 @@ Scope:
 
 Deliverable:
 - after first-run completion, the user sees a working `O:\` drive and Explorer integration automatically
+
+Current progress:
+- `Task 27.5` is implemented.
+- On normal daemon startup, OmniDrive now:
+  - automatically registers or reuses the Smart Sync `SyncRoot`
+  - refreshes placeholder projection through the existing recursive projection path
+  - mounts the virtual drive to `O:\` or the first available drive letter if `O:` is already occupied
+  - applies the existing drive label, drive icon, and Explorer shell integration
+- This means an installed OmniDrive instance can self-initialize into a working Windows-integrated vault without manual terminal setup.
 
 #### Task 27.6: Clean-Machine Validation Matrix
 Goal:

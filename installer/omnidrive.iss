@@ -25,14 +25,14 @@ AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={autopf}\OmniDrive
+DefaultDirName={localappdata}\Programs\OmniDrive
 DefaultGroupName=OmniDrive
 DisableProgramGroupPage=no
 UninstallDisplayIcon={app}\icons\omnidrive.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
@@ -70,7 +70,7 @@ Filename: "{app}\{#AppExeName}"; Description: "Start OmniDrive after installatio
 [Code]
 const
   CFAPI_MIN_BUILD = 16299;
-  EnvironmentKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+  UserEnvironmentKey = 'Environment';
 
 function IsCloudFilesSupported(): Boolean;
 var
@@ -109,7 +109,7 @@ begin
   Result := Pos(';' + Lowercase(Entry) + ';', SearchPath) > 0;
 end;
 
-procedure AddInstallDirToSystemPath();
+procedure AddInstallDirToUserPath();
 var
   ExistingPath: string;
   ExpandedPath: string;
@@ -117,7 +117,7 @@ begin
   if not WizardIsTaskSelected('addtopath') then
     exit;
 
-  if not RegQueryStringValue(HKLM, EnvironmentKey, 'Path', ExistingPath) then
+  if not RegQueryStringValue(HKCU, UserEnvironmentKey, 'Path', ExistingPath) then
     ExistingPath := '';
 
   ExpandedPath := ExpandConstant('{app}');
@@ -128,8 +128,8 @@ begin
     ExistingPath := ExistingPath + ';';
   ExistingPath := ExistingPath + ExpandedPath;
 
-  if not RegWriteExpandStringValue(HKLM, EnvironmentKey, 'Path', ExistingPath) then
-    MsgBox('Failed to update the system PATH for OmniDrive.', mbError, MB_OK);
+  if not RegWriteExpandStringValue(HKCU, UserEnvironmentKey, 'Path', ExistingPath) then
+    MsgBox('Failed to update the user PATH for OmniDrive.', mbError, MB_OK);
 end;
 
 function RemovePathEntry(const ExistingPath, Entry: string): string;
@@ -150,29 +150,29 @@ begin
   Result := SearchPath;
 end;
 
-procedure RemoveInstallDirFromSystemPath();
+procedure RemoveInstallDirFromUserPath();
 var
   ExistingPath: string;
   UpdatedPath: string;
 begin
-  if not RegQueryStringValue(HKLM, EnvironmentKey, 'Path', ExistingPath) then
+  if not RegQueryStringValue(HKCU, UserEnvironmentKey, 'Path', ExistingPath) then
     exit;
 
   UpdatedPath := RemovePathEntry(ExistingPath, ExpandConstant('{app}'));
   if UpdatedPath = ExistingPath then
     exit;
 
-  RegWriteExpandStringValue(HKLM, EnvironmentKey, 'Path', UpdatedPath);
+  RegWriteExpandStringValue(HKCU, UserEnvironmentKey, 'Path', UpdatedPath);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
-    AddInstallDirToSystemPath();
+    AddInstallDirToUserPath();
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
-    RemoveInstallDirFromSystemPath();
+    RemoveInstallDirFromUserPath();
 end;

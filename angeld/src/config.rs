@@ -1,5 +1,6 @@
 use std::env;
 use std::path::PathBuf;
+use crate::runtime_paths::RuntimePaths;
 
 pub const DEFAULT_MAX_PHYSICAL_BYTES_PER_PROVIDER: u64 = 80_530_636_800;
 pub const DEFAULT_MAX_UPLOAD_BYTES_PER_SEC: u64 = 0;
@@ -28,7 +29,8 @@ impl AppConfig {
             default_watch_dir: env::var("OMNIDRIVE_WATCH_DIR")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
-                .map(PathBuf::from),
+                .map(PathBuf::from)
+                .or_else(|| RuntimePaths::detect().default_watch_dir),
         }
     }
 }

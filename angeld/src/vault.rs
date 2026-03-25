@@ -6,6 +6,7 @@ use sha2::Sha256;
 use sqlx::SqlitePool;
 use std::fmt;
 use std::sync::Arc;
+use rand::RngCore;
 use tokio::sync::RwLock;
 
 const DEFAULT_PARAMETER_SET_VERSION: u32 = 1;
@@ -135,6 +136,25 @@ impl VaultKeyStore {
     }
 }
 
+pub async fn bootstrap_local_vault(pool: &SqlitePool) -> Result<bool, VaultError> {
+    let (config, initialized) = ensure_vault_config(pool).await?;
+    if db::get_vault_params(pool).await?.is_none() {
+        let mut salt = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut salt);
+        let vault_id = format!("local-vault-{}", hex_prefix(&config.salt));
+        let params_json = format!(
+            r#"{{"mode":"LOCAL_VAULT","parameter_set_version":{},"memory_cost_kib":{},"time_cost":{},"lanes":{}}}"#,
+            config.parameter_set_version,
+            config.memory_cost_kib,
+            config.time_cost,
+            config.lanes
+        );
+        db::set_vault_params(pool, &salt, &params_json, &vault_id).await?;
+        return Ok(true);
+    }
+    Ok(initialized)
+}
+
 async fn ensure_vault_config(pool: &SqlitePool) -> Result<(RootKdfParams, bool), VaultError> {
     if let Some(existing) = db::get_vault_config(pool).await? {
         return Ok((to_root_kdf_params(existing)?, false));
@@ -182,6 +202,14 @@ pub fn derive_cache_key(master_key: &[u8]) -> Result<KeyBytes, VaultError> {
     hkdf.expand(LOCAL_CACHE_KEY_INFO, &mut derived_key)
         .map_err(CryptoError::HkdfExpand)?;
     Ok(derived_key)
+}
+
+fn hex_prefix(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 #[cfg(test)]
