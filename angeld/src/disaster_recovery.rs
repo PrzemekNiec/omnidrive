@@ -100,6 +100,7 @@ impl From<UploaderError> for DisasterRecoveryError {
 pub struct MetadataBackupProviderManager {
     uploaders: Vec<Uploader>,
     download_providers: Vec<MetadataBackupDownloadProvider>,
+    local_store: Option<LocalMetadataBackupStore>,
 }
 
 #[allow(dead_code)]
@@ -109,9 +110,24 @@ struct MetadataBackupDownloadProvider {
     client: aws_sdk_s3::Client,
 }
 
+#[allow(dead_code)]
+struct LocalMetadataBackupStore {
+    root: PathBuf,
+}
+
 impl MetadataBackupProviderManager {
     pub async fn from_env() -> Result<Self, DisasterRecoveryError> {
         let _ = dotenvy::dotenv();
+        if let Some(root) = std::env::var_os("OMNIDRIVE_METADATA_BACKUP_DIR") {
+            let root = PathBuf::from(root);
+            fs::create_dir_all(&root).await?;
+            return Ok(Self {
+                uploaders: Vec::new(),
+                download_providers: Vec::new(),
+                local_store: Some(LocalMetadataBackupStore { root }),
+            });
+        }
+
         let configs = vec![
             ProviderConfig::from_r2_env()?,
             ProviderConfig::from_b2_env()?,
@@ -134,6 +150,7 @@ impl MetadataBackupProviderManager {
         Ok(Self {
             uploaders,
             download_providers,
+            local_store: None,
         })
     }
 }
@@ -355,6 +372,16 @@ pub async fn restore_metadata_from_cloud(
     let object_key = "_omnidrive/system/metadata/latest.db.enc";
     let mut errors = Vec::new();
 
+    if let Some(local_store) = &provider_manager.local_store {
+        let encoded = local_store.download_bytes(object_key).await?;
+        let plaintext = decrypt_metadata_backup(&encoded, passphrase)?;
+        if let Some(parent) = output_db_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(output_db_path, plaintext).await?;
+        return Ok(());
+    }
+
     for provider in &provider_manager.download_providers {
         match provider.download_bytes(object_key).await {
             Ok(encoded) => {
@@ -377,7 +404,7 @@ pub async fn upload_metadata_backup(
     provider_manager: &MetadataBackupProviderManager,
     enc_file_path: &Path,
 ) -> Result<(), DisasterRecoveryError> {
-    if provider_manager.uploaders.is_empty() {
+    if provider_manager.uploaders.is_empty() && provider_manager.local_store.is_none() {
         return Err(DisasterRecoveryError::NoConfiguredProviders);
     }
 
@@ -392,6 +419,45 @@ pub async fn upload_metadata_backup(
     let latest_key = "_omnidrive/system/metadata/latest.db.enc";
 
     let mut successful_uploads = 0usize;
+
+    if let Some(local_store) = &provider_manager.local_store {
+        let backup_id = format!("{created_at}-{}", local_store.provider_name());
+        db::record_metadata_backup_attempt(
+            db_pool,
+            &backup_id,
+            created_at,
+            i64::from(METADATA_BACKUP_VERSION),
+            &snapshot_key,
+            local_store.provider_name(),
+            encrypted_size,
+            "UPLOADING",
+        )
+        .await?;
+
+        match local_store.upload_file(enc_file_path, &snapshot_key).await {
+            Ok(()) => {
+                successful_uploads += 1;
+                db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None).await?;
+                if let Err(err) = local_store.upload_file(enc_file_path, latest_key).await {
+                    warn!(
+                        "metadata backup latest pointer update failed for {}: {}",
+                        local_store.provider_name(),
+                        err
+                    );
+                }
+            }
+            Err(err) => {
+                let error_text = err.to_string();
+                db::update_metadata_backup_status(
+                    db_pool,
+                    &backup_id,
+                    "FAILED",
+                    Some(&error_text),
+                )
+                .await?;
+            }
+        }
+    }
 
     for uploader in &provider_manager.uploaders {
         let backup_id = format!("{created_at}-{}", uploader.provider_name());
@@ -695,6 +761,30 @@ impl MetadataBackupDownloadProvider {
             }))?;
 
         Ok(body.into_bytes().to_vec())
+    }
+}
+
+impl LocalMetadataBackupStore {
+    fn provider_name(&self) -> &'static str {
+        "local-metadata-store"
+    }
+
+    async fn upload_file(
+        &self,
+        source_path: &Path,
+        object_key: &str,
+    ) -> Result<(), DisasterRecoveryError> {
+        let target_path = self.root.join(object_key.replace('/', "\\"));
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::copy(source_path, &target_path).await?;
+        Ok(())
+    }
+
+    async fn download_bytes(&self, object_key: &str) -> Result<Vec<u8>, DisasterRecoveryError> {
+        let source_path = self.root.join(object_key.replace('/', "\\"));
+        Ok(fs::read(source_path).await?)
     }
 }
 

@@ -22,7 +22,9 @@ mod win_acl;
 
 use crate::api::ApiServer;
 use crate::diagnostics::init_global_diagnostics;
-use crate::disaster_recovery::{MetadataBackupProviderManager, start_metadata_backup_worker};
+use crate::disaster_recovery::{
+    MetadataBackupProviderManager, restore_metadata_from_cloud, start_metadata_backup_worker,
+};
 use crate::downloader::Downloader;
 use crate::gc::GcWorker;
 use crate::logging::{default_log_dir, init_logging};
@@ -38,6 +40,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::signal;
+use tokio::time::{Duration, sleep};
 use tracing::{error, info, warn};
 
 #[tokio::main]
@@ -168,6 +171,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(&sync_root).await?;
     }
 
+    let just_restored = maybe_auto_restore_database(&db_url).await?;
+
     win_acl::secure_directory(&cache_dir)
         .map_err(|err| io::Error::other(format!("failed to secure cache dir: {err}")))?;
     win_acl::secure_directory(&spool_dir)
@@ -237,7 +242,15 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         match smart_sync::register_sync_root(&sync_root).await {
             Ok(()) => {
                 smart_sync_ready = true;
-                if let Err(err) = smart_sync::project_vault_to_sync_root(&pool, &sync_root).await {
+                if just_restored {
+                    info!(
+                        "just-restored database detected; forcing recursive placeholder projection into {}",
+                        sync_root.display()
+                    );
+                }
+                if let Err(err) =
+                    project_sync_root_with_retry(&pool, &sync_root, just_restored).await
+                {
                     warn!("smart sync bootstrap warning: projection failed for {}: {}", sync_root.display(), err);
                     smart_sync_ready = false;
                 }
@@ -248,6 +261,28 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                     sync_root.display(),
                     err
                 );
+                if just_restored {
+                    info!(
+                        "just-restored database detected; attempting placeholder projection despite registration warning into {}",
+                        sync_root.display()
+                    );
+                }
+                match project_sync_root_with_retry(&pool, &sync_root, just_restored).await {
+                    Ok(()) => {
+                        info!(
+                            "smart sync fallback projection succeeded at {} after registration warning",
+                            sync_root.display()
+                        );
+                        smart_sync_ready = true;
+                    }
+                    Err(project_err) => {
+                        warn!(
+                            "smart sync bootstrap warning: fallback projection failed for {}: {}",
+                            sync_root.display(),
+                            project_err
+                        );
+                    }
+                }
             }
         }
 
@@ -276,6 +311,13 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(err) = smart_sync::shutdown_sync_root() {
             warn!("smart sync shutdown warning: {}", err);
         }
+        if let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
+            warn!(
+                "smart sync unregister warning for {}: {}",
+                sync_root.display(),
+                err
+            );
+        }
 
         return result;
     }
@@ -288,7 +330,13 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|err| io::Error::other(format!("smart sync hydration setup failed: {err}")))?;
         smart_sync::register_sync_root(&sync_root).await
             .map_err(|err| io::Error::other(format!("smart sync register failed: {err}")))?;
-        smart_sync::project_vault_to_sync_root(&pool, &sync_root).await
+        if just_restored {
+            info!(
+                "just-restored database detected; forcing recursive placeholder projection into {}",
+                sync_root.display()
+            );
+        }
+        project_sync_root_with_retry(&pool, &sync_root, just_restored).await
             .map_err(|err| io::Error::other(format!("smart sync projection failed: {err}")))?;
         virtual_drive::hide_sync_root(&sync_root)
             .map_err(|err| io::Error::other(format!("virtual drive hide sync root failed: {err}")))?;
@@ -422,12 +470,85 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             warn!("smart sync shutdown warning: {}", err);
         }
 
+        if e2e_test_mode {
+            if let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
+                warn!(
+                    "smart sync unregister warning for {}: {}",
+                    sync_root.display(),
+                    err
+                );
+            }
+        }
+
         if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
             warn!("virtual drive unmount warning for {}: {}", drive_letter, err);
         }
     }
 
     result
+}
+
+async fn project_sync_root_with_retry(
+    pool: &sqlx::SqlitePool,
+    sync_root: &std::path::Path,
+    just_restored: bool,
+) -> Result<(), crate::smart_sync::SmartSyncError> {
+    let attempts = if just_restored { 8 } else { 5 };
+    let delay = Duration::from_millis(250);
+    let mut last_err = None;
+
+    for attempt in 1..=attempts {
+        match smart_sync::project_vault_to_sync_root(pool, sync_root).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                let error_text = err.to_string();
+                let retryable = is_retryable_cloud_projection_error(&err.to_string());
+                let fatal = is_fatal_cloud_projection_error(&error_text);
+                error!(
+                    "smart sync projection attempt {}/{} failed for {}: {}",
+                    attempt,
+                    attempts,
+                    sync_root.display(),
+                    error_text
+                );
+                if fatal {
+                    error!(
+                        "smart sync projection encountered a fatal error for {} and will not retry",
+                        sync_root.display()
+                    );
+                    return Err(err);
+                }
+                if !retryable || attempt == attempts {
+                    return Err(err);
+                }
+                warn!(
+                    "smart sync projection retry {}/{} for {} after error: {}",
+                    attempt,
+                    attempts,
+                    sync_root.display(),
+                    err
+                );
+                last_err = Some(err);
+                sleep(delay).await;
+            }
+        }
+    }
+
+    Err(last_err.expect("projection retry loop should capture the last error"))
+}
+
+fn is_retryable_cloud_projection_error(message: &str) -> bool {
+    message.contains("0x8007017C")
+        || message.contains("Operacja w chmurze jest nieprawid")
+        || message.contains("cloud operation is invalid")
+}
+
+fn is_fatal_cloud_projection_error(message: &str) -> bool {
+    message.contains("0x80070186")
+        || message.contains("0x80070057")
+        || message.contains("invalid arguments")
+        || message.contains("only supported for files in the cloud sync root")
+        || message.contains("obsługiwana tylko w przypadku plików w katalogu głównym synchronizacji")
 }
 
 async fn run_upload_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
@@ -545,6 +666,54 @@ fn sqlite_db_directory(db_url: &str) -> Option<PathBuf> {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(".")),
     )
+}
+
+fn sqlite_db_file_path(db_url: &str) -> Option<PathBuf> {
+    if db_url.contains(":memory:") {
+        return None;
+    }
+
+    let raw = db_url
+        .strip_prefix("sqlite://")
+        .or_else(|| db_url.strip_prefix("sqlite:"))
+        .unwrap_or(db_url);
+
+    if raw.is_empty() {
+        return None;
+    }
+
+    let normalized = if raw.len() >= 4
+        && raw.starts_with('/')
+        && raw.as_bytes().get(2) == Some(&b':')
+    {
+        &raw[1..]
+    } else {
+        raw
+    };
+
+    Some(PathBuf::from(normalized))
+}
+
+async fn maybe_auto_restore_database(db_url: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(passphrase) = env::var("OMNIDRIVE_AUTO_RESTORE_PASSPHRASE").ok() else {
+        return Ok(false);
+    };
+    let Some(db_path) = sqlite_db_file_path(db_url) else {
+        return Ok(false);
+    };
+
+    if fs::try_exists(&db_path).await? {
+        return Ok(false);
+    }
+
+    let provider_manager = MetadataBackupProviderManager::from_env().await?;
+    warn!(
+        "local SQLite database is missing; attempting automatic metadata restore into {}",
+        db_path.display()
+    );
+    restore_metadata_from_cloud(&provider_manager, &passphrase, &db_path).await?;
+    info!("automatic metadata restore completed for {}", db_path.display());
+    Ok(true)
 }
 
 fn should_secure_db_directory(path: &std::path::Path) -> bool {

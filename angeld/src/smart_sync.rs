@@ -78,6 +78,19 @@ pub fn shutdown_sync_root() -> Result<(), SmartSyncError> {
     }
 }
 
+pub fn unregister_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::unregister_sync_root(sync_root_path)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = sync_root_path;
+        Err(SmartSyncError::UnsupportedPlatform)
+    }
+}
+
 pub fn install_hydration_runtime(
     pool: SqlitePool,
     downloader: Arc<Downloader>,
@@ -177,6 +190,7 @@ mod imp {
     use crate::downloader::Downloader;
     use crate::win_acl;
     use sqlx::SqlitePool;
+    use sha2::{Digest, Sha256};
     use std::ffi::OsStr;
     use std::iter;
     use std::mem::size_of;
@@ -190,9 +204,9 @@ mod imp {
     use std::sync::{Arc, OnceLock};
     use std::time::{Duration, UNIX_EPOCH};
     use tokio::runtime::Handle;
-    use tracing::{info, trace, warn};
+    use tracing::{error, info, trace, warn};
     use windows::core::{GUID, HRESULT, PCWSTR};
-    use windows::Win32::Foundation::{HANDLE, NTSTATUS, S_OK};
+    use windows::Win32::Foundation::{HANDLE, NTSTATUS, RPC_E_CHANGED_MODE, S_FALSE, S_OK};
     use windows::Win32::Storage::CloudFilters::{
         CfConnectSyncRoot, CfCreatePlaceholders, CfDisconnectSyncRoot, CfExecute,
         CfGetSyncRootInfoByPath,
@@ -209,7 +223,6 @@ mod imp {
         CF_INSYNC_POLICY_NONE, CF_OPERATION_INFO, CF_OPERATION_PARAMETERS, CF_PIN_STATE,
         CF_PIN_STATE_PINNED, CF_PIN_STATE_UNPINNED, CF_OPERATION_TRANSFER_DATA_FLAGS,
         CF_OPERATION_TYPE_TRANSFER_DATA, CF_PLACEHOLDER_CREATE_FLAGS,
-        CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC, CF_PLACEHOLDER_CREATE_FLAG_SUPERSEDE,
         CF_PLACEHOLDER_CREATE_INFO, CF_PLACEHOLDER_MANAGEMENT_POLICY,
         CF_PLACEHOLDER_MANAGEMENT_POLICY_CREATE_UNRESTRICTED, CF_POPULATION_POLICY,
         CF_POPULATION_POLICY_FULL, CF_POPULATION_POLICY_MODIFIER,
@@ -219,6 +232,7 @@ mod imp {
         CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
     };
     use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_ARCHIVE, FILE_BASIC_INFO};
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     use windows::Win32::UI::Shell::{SHCNE_UPDATEITEM, SHCNF_PATHW, SHChangeNotify};
 
     const PROVIDER_NAME: &str = "OmniDrive";
@@ -253,6 +267,10 @@ mod imp {
         revision_id: i64,
         offset: i64,
         length: i64,
+    }
+
+    struct ComApartmentGuard {
+        should_uninitialize: bool,
     }
 
     pub fn install_hydration_runtime(
@@ -425,18 +443,61 @@ mod imp {
     }
 
     pub async fn register_sync_root_public(sync_root_path: &Path) -> Result<(), SmartSyncError> {
+        let _com_guard = initialize_com_apartment()?;
         let sync_root = normalize_sync_root_path(sync_root_path)?;
         debug_log_sync_root_security(&sync_root);
         info!("smart-sync: registering {}", sync_root.display());
-        register_sync_root(&sync_root).map_err(|err| {
-            SmartSyncError::InvalidPathWithContext("CfRegisterSyncRoot", err.to_string())
-        })?;
+        if let Err(register_err) = register_sync_root(&sync_root) {
+            warn!(
+                "smart-sync: register attempt failed for {}, trying direct connect fallback: {}",
+                sync_root.display(),
+                register_err
+            );
+            connect_sync_root(&sync_root).map_err(|connect_err| {
+                SmartSyncError::InvalidPathWithContext(
+                    "CfRegisterSyncRoot",
+                    format!(
+                        "{}; connect fallback also failed: {}",
+                        register_err, connect_err
+                    ),
+                )
+            })?;
+            info!(
+                "smart-sync: connect fallback succeeded for {} after registration warning",
+                sync_root.display()
+            );
+            return Ok(());
+        }
         info!("smart-sync: connecting {}", sync_root.display());
         connect_sync_root(&sync_root).map_err(|err| {
             SmartSyncError::InvalidPathWithContext("CfConnectSyncRoot", err.to_string())
         })?;
         info!("smart-sync: connected {}", sync_root.display());
         Ok(())
+    }
+
+    fn initialize_com_apartment() -> Result<ComApartmentGuard, SmartSyncError> {
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if hr == S_OK || hr == S_FALSE {
+            Ok(ComApartmentGuard {
+                should_uninitialize: true,
+            })
+        } else if hr == RPC_E_CHANGED_MODE {
+            trace!("smart-sync: COM apartment already initialized in a different mode");
+            Ok(ComApartmentGuard {
+                should_uninitialize: false,
+            })
+        } else {
+            Err(SmartSyncError::Windows(hr.into()))
+        }
+    }
+
+    impl Drop for ComApartmentGuard {
+        fn drop(&mut self) {
+            if self.should_uninitialize {
+                unsafe { CoUninitialize() };
+            }
+        }
     }
 
     pub fn shutdown_sync_root() -> Result<(), SmartSyncError> {
@@ -446,6 +507,25 @@ mod imp {
             }
         }
         Ok(())
+    }
+
+    pub fn unregister_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncError> {
+        let sync_root = normalize_sync_root_path(sync_root_path)?;
+        let sync_root_wide = wide_path(&sync_root)?;
+        match unsafe { CfUnregisterSyncRoot(PCWSTR(sync_root_wide.as_ptr())) } {
+            Ok(()) => {
+                info!("smart-sync: unregistered {}", sync_root.display());
+                Ok(())
+            }
+            Err(err) => {
+                trace!(
+                    "smart-sync: unregister skipped/failed for {}: {}",
+                    sync_root.display(),
+                    err
+                );
+                Ok(())
+            }
+        }
     }
 
     pub async fn project_vault_to_sync_root(
@@ -584,13 +664,15 @@ mod imp {
         let relative_path = normalize_relative_placeholder_path(&file.path)?;
         let target_path = sync_root.join(&relative_path);
         if !target_path.exists() {
-            if let Some(parent) = target_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            let sync_root_wide = wide_path(sync_root)?;
-            let relative_name_wide = wide_str(OsStr::new(&relative_path));
             let file_time = file_time_from_unix_millis(file.created_at)?;
+            ensure_placeholder_directory_chain(sync_root, &relative_path, file_time)?;
+
+            let base_directory = target_path.parent().unwrap_or(sync_root);
+            let base_directory_wide = wide_path(base_directory)?;
+            let file_name = target_path.file_name().ok_or(SmartSyncError::InvalidPath(
+                "placeholder target is missing a file name",
+            ))?;
+            let relative_name_wide = wide_str(file_name);
             let identity = PlaceholderIdentity {
                 inode_id: file.inode_id,
                 revision_id: file.revision_id,
@@ -622,13 +704,23 @@ mod imp {
                 CreateUsn: 0,
             }];
 
-            unsafe {
+            let create_result = unsafe {
                 CfCreatePlaceholders(
-                    PCWSTR(sync_root_wide.as_ptr()),
+                    PCWSTR(base_directory_wide.as_ptr()),
                     &mut placeholder,
                     create_flags(),
                     Some(&mut entries_processed),
-                )?;
+                )
+            };
+            if let Err(err) = create_result {
+                error!(
+                    "smart-sync: CfCreatePlaceholders failed for file '{}' in base {} (sync root {}): {}",
+                    relative_path,
+                    base_directory.display(),
+                    sync_root.display(),
+                    err
+                );
+                return Err(SmartSyncError::Windows(err));
             }
 
             if entries_processed != 1 {
@@ -639,6 +731,13 @@ mod imp {
             }
 
             if placeholder[0].Result != S_OK {
+                error!(
+                    "smart-sync: file placeholder '{}' failed with HRESULT 0x{:08X} in base {} (sync root {})",
+                    relative_path,
+                    placeholder[0].Result.0 as u32,
+                    base_directory.display(),
+                    sync_root.display()
+                );
                 return Err(SmartSyncError::InvalidPathWithContext(
                     "CfCreatePlaceholders",
                     format!(
@@ -656,11 +755,46 @@ mod imp {
         Ok(())
     }
 
+    fn ensure_placeholder_directory_chain(
+        sync_root: &Path,
+        relative_file_path: &str,
+        file_time: i64,
+    ) -> Result<(), SmartSyncError> {
+        let _ = file_time;
+        let mut current = PathBuf::new();
+
+        if let Some(parent) = Path::new(relative_file_path).parent() {
+            for component in parent.components() {
+                let Component::Normal(segment) = component else {
+                    continue;
+                };
+                current.push(segment);
+                let target_path = sync_root.join(&current);
+                if target_path.exists() {
+                    continue;
+                }
+
+                std::fs::create_dir_all(&target_path)?;
+                info!(
+                    "smart-sync: physical directory ready {} under {}",
+                    current.display(),
+                    sync_root.display()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     fn register_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncError> {
+        std::fs::create_dir_all(sync_root_path).map_err(SmartSyncError::Io)?;
         let sync_root_wide = wide_path(sync_root_path)?;
-        let provider_name_wide = wide_str(OsStr::new(PROVIDER_NAME));
-        let provider_version_wide = wide_str(OsStr::new(PROVIDER_VERSION));
+        let provider_name = sync_provider_name();
+        let provider_version = sync_provider_version();
+        let provider_id = sync_provider_id();
         let sync_root_identity = sync_root_identity_bytes();
+        let provider_name_wide = wide_str(OsStr::new(&provider_name));
+        let provider_version_wide = wide_str(OsStr::new(&provider_version));
 
         let registration = CF_SYNC_REGISTRATION {
             StructSize: size_of::<CF_SYNC_REGISTRATION>() as u32,
@@ -670,7 +804,7 @@ mod imp {
             SyncRootIdentityLength: sync_root_identity.len() as u32,
             FileIdentity: ptr::null(),
             FileIdentityLength: 0,
-            ProviderId: PROVIDER_ID,
+            ProviderId: provider_id,
         };
 
         let policies = CF_SYNC_POLICIES {
@@ -691,7 +825,7 @@ mod imp {
         };
 
         let path = PCWSTR(sync_root_wide.as_ptr());
-        if inspect_existing_sync_root(sync_root_path, path) {
+        if inspect_existing_sync_root(sync_root_path, path, &provider_name, &provider_version, &sync_root_identity) {
             info!(
                 "smart-sync: existing sync root detected, registration skipped for {}",
                 sync_root_path.display()
@@ -722,7 +856,7 @@ mod imp {
         warn!(
             "smart-sync: initial register failed for {} (provider={}, account={ACCOUNT_NAME}): {}",
             sync_root_path.display(),
-            PROVIDER_NAME,
+            provider_name,
             first_error
         );
 
@@ -735,7 +869,13 @@ mod imp {
         Ok(())
     }
 
-    fn inspect_existing_sync_root(sync_root_path: &Path, path: PCWSTR) -> bool {
+    fn inspect_existing_sync_root(
+        sync_root_path: &Path,
+        path: PCWSTR,
+        expected_provider_name: &str,
+        expected_provider_version: &str,
+        expected_identity: &[u8],
+    ) -> bool {
         let mut buffer = vec![0u8; size_of::<CF_SYNC_ROOT_STANDARD_INFO>() + 512];
         let mut returned = 0u32;
         let result = unsafe {
@@ -765,7 +905,22 @@ mod imp {
                     info.SyncRootIdentityLength,
                     String::from_utf8_lossy(identity_bytes)
                 );
-                true
+                let identity_matches = identity_bytes == expected_identity;
+                let provider_name_matches =
+                    provider_name.eq_ignore_ascii_case(expected_provider_name);
+                let provider_version_matches = provider_version == expected_provider_version;
+                if provider_name_matches && provider_version_matches && identity_matches {
+                    true
+                } else {
+                    trace!(
+                        "smart-sync: existing root metadata mismatch for {} => expected provider_name='{}', provider_version='{}', identity='{}'",
+                        sync_root_path.display(),
+                        expected_provider_name,
+                        expected_provider_version,
+                        String::from_utf8_lossy(expected_identity)
+                    );
+                    false
+                }
             }
             Err(err) => {
                 trace!(
@@ -788,12 +943,40 @@ mod imp {
             "smart-sync: register context [{}] path={}, provider_name='{}', provider_version='{}', provider_id={:?}, sync_root_identity_len={}, flags=0x{:x}",
             phase,
             sync_root_path.display(),
-            PROVIDER_NAME,
-            PROVIDER_VERSION,
+            sync_provider_name(),
+            sync_provider_version(),
             registration.ProviderId,
             registration.SyncRootIdentityLength,
             flags.0
         );
+    }
+
+    fn sync_provider_name() -> String {
+        std::env::var("OMNIDRIVE_SYNC_PROVIDER_NAME")
+            .unwrap_or_else(|_| PROVIDER_NAME.to_string())
+    }
+
+    fn sync_provider_version() -> String {
+        std::env::var("OMNIDRIVE_SYNC_PROVIDER_VERSION")
+            .unwrap_or_else(|_| PROVIDER_VERSION.to_string())
+    }
+
+    fn sync_root_identity_bytes() -> Vec<u8> {
+        std::env::var("OMNIDRIVE_SYNC_ROOT_IDENTITY")
+            .unwrap_or_else(|_| "OmniDrive_Vault".to_string())
+            .into_bytes()
+    }
+
+    fn sync_provider_id() -> GUID {
+        if let Ok(seed) = std::env::var("OMNIDRIVE_SYNC_PROVIDER_ID_SEED") {
+            let digest = Sha256::digest(seed.as_bytes());
+            let mut bytes = [0u8; 16];
+            bytes.copy_from_slice(&digest[..16]);
+            bytes[6] = (bytes[6] & 0x0F) | 0x40;
+            bytes[8] = (bytes[8] & 0x3F) | 0x80;
+            return GUID::from_u128(u128::from_be_bytes(bytes));
+        }
+        PROVIDER_ID
     }
 
     fn utf16_trimmed(raw: &[u16]) -> String {
@@ -1006,13 +1189,6 @@ mod imp {
         Ok(without_leading.to_string())
     }
 
-    fn sync_root_identity_bytes() -> Vec<u8> {
-        let vault_id = std::env::var("OMNIDRIVE_VAULT_ID")
-            .unwrap_or_else(|_| "default-vault".to_string());
-        format!("{PROVIDER_NAME}|{ACCOUNT_NAME}|{vault_id}")
-            .into_bytes()
-    }
-
     fn file_time_from_unix_millis(unix_millis: i64) -> Result<i64, SmartSyncError> {
         if unix_millis < 0 {
             return Err(SmartSyncError::InvalidPath("negative unix timestamp"));
@@ -1168,9 +1344,7 @@ mod imp {
     }
 
     fn placeholder_create_flags() -> CF_PLACEHOLDER_CREATE_FLAGS {
-        CF_PLACEHOLDER_CREATE_FLAGS(
-            CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC.0 | CF_PLACEHOLDER_CREATE_FLAG_SUPERSEDE.0,
-        )
+        CF_PLACEHOLDER_CREATE_FLAGS(0)
     }
 
     fn apply_pin_state(path: &Path, pin_state: CF_PIN_STATE) -> Result<(), SmartSyncError> {

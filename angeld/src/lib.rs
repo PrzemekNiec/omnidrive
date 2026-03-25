@@ -1,4 +1,6 @@
 pub mod aws_http;
+pub mod cache;
+pub mod downloader;
 pub mod diagnostics;
 pub mod logging;
 pub mod config;
@@ -6,5 +8,7 @@ pub mod db;
 pub mod disaster_recovery;
 pub mod packer;
 pub mod secure_fs;
+pub mod smart_sync;
 pub mod uploader;
 pub mod vault;
+mod win_acl;

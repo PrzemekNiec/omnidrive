@@ -25,6 +25,7 @@ impl From<std::io::Error> for AclError {
     }
 }
 
+#[allow(dead_code)]
 pub fn secure_directory(path: &Path) -> Result<(), AclError> {
     std::fs::create_dir_all(path)?;
 
@@ -47,7 +48,15 @@ pub fn secure_directory(path: &Path) -> Result<(), AclError> {
 pub fn prepare_sync_root_directory(path: &Path) -> Result<(), AclError> {
     std::fs::create_dir_all(path)?;
 
-    #[cfg(target_os = "windows")]
+    #[cfg(debug_assertions)]
+    {
+        debug!(
+            "skipping sync-root ACL hardening in debug build for {}",
+            path.display()
+        );
+    }
+
+    #[cfg(all(target_os = "windows", not(debug_assertions)))]
     {
         let normalized = normalize_directory_path(path)?;
         apply_sync_root_acl_windows(&normalized)?;
@@ -61,6 +70,7 @@ pub fn prepare_sync_root_directory(path: &Path) -> Result<(), AclError> {
     Ok(())
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
 fn normalize_directory_path(path: &Path) -> Result<std::path::PathBuf, AclError> {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return Ok(canonical);
@@ -81,6 +91,7 @@ fn secure_directory_inner(path: &Path) -> Result<(), AclError> {
 }
 
 #[cfg(target_os = "windows")]
+#[cfg_attr(debug_assertions, allow(dead_code))]
 fn apply_sync_root_acl_windows(path: &Path) -> Result<(), AclError> {
     let sddl = build_sync_root_sddl()?;
     match apply_sddl_to_directory(path, &sddl, false) {
@@ -108,6 +119,7 @@ fn build_runtime_directory_sddl() -> Result<String, AclError> {
 }
 
 #[cfg(target_os = "windows")]
+#[cfg_attr(debug_assertions, allow(dead_code))]
 fn build_sync_root_sddl() -> Result<String, AclError> {
     let current_user_sid = current_user_sid_string()?;
     Ok(format!(
@@ -239,6 +251,7 @@ fn secure_directory_inner(_path: &Path) -> Result<(), AclError> {
 }
 
 #[cfg(target_os = "windows")]
+#[cfg_attr(debug_assertions, allow(dead_code))]
 fn apply_sync_root_acl_with_icacls(path: &Path) -> Result<(), String> {
     let current_user_sid =
         current_user_sid_string().map_err(|err| err.to_string())?;

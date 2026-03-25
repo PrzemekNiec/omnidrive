@@ -1230,6 +1230,28 @@ Current progress:
 - In E2E mode, the HTTP API starts even when Smart Sync only reports a bootstrap warning, which keeps diagnostics reachable during driver-state investigations.
 - The SyncRoot E2E test now passes under:
   - `cargo test -p angeld --test e2e_sync -- --nocapture`
+- `Task 26.5` is implemented.
+- A dedicated full-stack disaster-recovery harness now exists in `angeld/tests/e2e_recovery.rs`.
+- The daemon can now auto-restore the metadata database on startup when the local SQLite file is missing and a recovery passphrase is provided.
+- The recovery E2E flow now validates:
+  - metadata backup creation
+  - deletion of the local SQLite database and cache
+  - automatic metadata restore from the provider-backed recovery store
+  - full SyncRoot re-registration and recursive placeholder projection after restore
+- Smart Sync projection was hardened for recovery by:
+  - creating physical parent directories inside the SyncRoot
+  - creating file placeholders relative to their immediate parent directory, as expected by `CfCreatePlaceholders`
+  - treating modern Cloud Files placeholder attributes such as `UNPINNED` and `RECALL_ON_DATA_ACCESS` as valid placeholder state in the Windows test assertions
+- The full-stack DR E2E test now passes under:
+  - `cargo test -p angeld --test e2e_recovery -- --nocapture`
+- Next recommended step:
+  - `Task 26.6: Policy Reconciliation E2E`
+- Planned scope for the next task:
+  - seed files under one protection mode
+  - switch policy between `PARANOIA`, `STANDARD`, and `LOCAL`
+  - wait for background reconciliation to create the new target pack mode
+  - verify reads still succeed during and after transitions
+  - verify old physical variants become GC candidates after repointing live chunk mappings
 
 ## PHASE 8: EXPLORER RELIABILITY AND OPERATIONS
 
