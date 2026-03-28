@@ -386,9 +386,6 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|err| io::Error::other(format!("virtual drive hide sync root failed: {err}")))?;
         virtual_drive::mount_virtual_drive(&drive_letter, &sync_root)
             .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
-        if let Err(err) = shell_state::repair_explorer_integration() {
-            warn!("shell repair warning for {}: {}", drive_letter, err);
-        }
     } else {
         info!(
             "setup/local-only mode: skipping Smart Sync and mounting a plain local drive view at {}",
@@ -396,11 +393,85 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         );
         virtual_drive::mount_virtual_drive(&drive_letter, &plain_local_drive_target)
             .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
-        if let Err(err) = shell_state::repair_virtual_drive() {
-            warn!("virtual drive self-heal warning for {}: {}", drive_letter, err);
+    }
+
+    if !no_sync {
+        match shell_state::startup_recover_shell() {
+            Ok(report) => {
+                if report.actions.is_empty() && report.shell_state.is_healthy() {
+                    info!(
+                        "startup shell audit healthy for {} (target={}, browsable={}, context_menu={}, icon={}, label={})",
+                        report.shell_state.preferred_drive_letter,
+                        report.shell_state.expected_target,
+                        report.shell_state.drive_browsable,
+                        report.shell_state.context_menu_registered,
+                        report.shell_state.drive_icon_registered,
+                        report.shell_state.drive_label_registered
+                    );
+                } else if report.actions.is_empty() {
+                    warn!(
+                        "startup shell audit detected residual drift for {} (target_matches={}, browsable={}, autostart={}, context_menu={}, icon={}, label={})",
+                        report.shell_state.preferred_drive_letter,
+                        report.shell_state.drive_target_matches,
+                        report.shell_state.drive_browsable,
+                        report.shell_state.autostart_registered,
+                        report.shell_state.context_menu_registered,
+                        report.shell_state.drive_icon_registered,
+                        report.shell_state.drive_label_registered
+                    );
+                } else {
+                    for action in &report.actions {
+                        info!("startup shell recovery: {}", action);
+                    }
+                    info!(
+                        "startup shell recovery complete for {} (target={})",
+                        report.shell_state.preferred_drive_letter,
+                        report.shell_state.expected_target
+                    );
+                }
+            }
+            Err(err) => {
+                warn!("startup shell recovery warning for {}: {}", drive_letter, err);
+            }
         }
-        if let Err(err) = shell_state::repair_explorer_integration() {
-            warn!("shell repair warning for {}: {}", drive_letter, err);
+
+        if smart_sync_enabled {
+            match smart_sync::audit_sync_root_state(&sync_root) {
+                Ok(snapshot) if snapshot.registered_for_provider && snapshot.connected => {
+                    info!(
+                        "startup sync-root audit healthy for {} (registered={}, connected={})",
+                        snapshot.path,
+                        snapshot.registered_for_provider,
+                        snapshot.connected
+                    );
+                }
+                Ok(snapshot) => {
+                    warn!(
+                        "startup sync-root audit detected drift for {} (registered={}, registered_for_provider={}, connected={})",
+                        snapshot.path,
+                        snapshot.registered,
+                        snapshot.registered_for_provider,
+                        snapshot.connected
+                    );
+                    match smart_sync::repair_sync_root(&pool, &sync_root).await {
+                        Ok(report) => {
+                            for action in &report.actions {
+                                info!("startup sync-root recovery: {}", action);
+                            }
+                            info!(
+                                "startup sync-root recovery complete for {}",
+                                report.sync_root_state.path
+                            );
+                        }
+                        Err(err) => {
+                            warn!("startup sync-root recovery warning for {}: {}", sync_root.display(), err);
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!("startup sync-root audit warning for {}: {}", sync_root.display(), err);
+                }
+            }
         }
     }
 

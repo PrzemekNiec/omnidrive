@@ -1,4 +1,5 @@
 use crate::downloader::Downloader;
+use serde::Serialize;
 use sqlx::SqlitePool;
 use std::fmt;
 use std::path::Path;
@@ -53,6 +54,24 @@ impl From<windows::core::Error> for SmartSyncError {
     }
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct SyncRootStateSnapshot {
+    pub path: String,
+    pub path_exists: bool,
+    pub registered: bool,
+    pub registered_for_provider: bool,
+    pub connected: bool,
+    pub provider_name: Option<String>,
+    pub provider_version: Option<String>,
+    pub identity: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SyncRootRepairReport {
+    pub actions: Vec<String>,
+    pub sync_root_state: SyncRootStateSnapshot,
+}
+
 pub async fn register_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncError> {
     #[cfg(windows)]
     {
@@ -61,6 +80,36 @@ pub async fn register_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncEr
 
     #[cfg(not(windows))]
     {
+        let _ = sync_root_path;
+        Err(SmartSyncError::UnsupportedPlatform)
+    }
+}
+
+pub fn audit_sync_root_state(sync_root_path: &Path) -> Result<SyncRootStateSnapshot, SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::audit_sync_root_state(sync_root_path)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = sync_root_path;
+        Err(SmartSyncError::UnsupportedPlatform)
+    }
+}
+
+pub async fn repair_sync_root(
+    pool: &SqlitePool,
+    sync_root_path: &Path,
+) -> Result<SyncRootRepairReport, SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::repair_sync_root(pool, sync_root_path).await
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = pool;
         let _ = sync_root_path;
         Err(SmartSyncError::UnsupportedPlatform)
     }
@@ -185,7 +234,7 @@ pub async fn hydrate_placeholder_now(
 
 #[cfg(windows)]
 mod imp {
-    use super::SmartSyncError;
+    use super::{SmartSyncError, SyncRootRepairReport, SyncRootStateSnapshot};
     use crate::db::{self, ProjectionFileRecord};
     use crate::downloader::Downloader;
     use crate::win_acl;
@@ -244,6 +293,12 @@ mod imp {
     const STATUS_SUCCESS: i32 = 0;
     static CONNECTION_KEY: OnceLock<CF_CONNECTION_KEY> = OnceLock::new();
     static HYDRATION_CONTEXT: OnceLock<HydrationContext> = OnceLock::new();
+
+    struct ExistingSyncRootInfo {
+        provider_name: String,
+        provider_version: String,
+        identity_bytes: Vec<u8>,
+    }
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -971,6 +1026,41 @@ mod imp {
         expected_provider_version: &str,
         expected_identity: &[u8],
     ) -> bool {
+        match get_existing_sync_root_info(sync_root_path, path) {
+            Ok(Some(info)) => {
+                let identity_matches = info.identity_bytes == expected_identity;
+                let provider_name_matches =
+                    info.provider_name.eq_ignore_ascii_case(expected_provider_name);
+                let provider_version_matches = info.provider_version == expected_provider_version;
+                if provider_name_matches && provider_version_matches && identity_matches {
+                    true
+                } else {
+                    trace!(
+                        "smart-sync: existing root metadata mismatch for {} => expected provider_name='{}', provider_version='{}', identity='{}'",
+                        sync_root_path.display(),
+                        expected_provider_name,
+                        expected_provider_version,
+                        String::from_utf8_lossy(expected_identity)
+                    );
+                    false
+                }
+            }
+            Ok(None) => false,
+            Err(err) => {
+                trace!(
+                    "smart-sync: existing root inspection failed for {}: {}",
+                    sync_root_path.display(),
+                    err
+                );
+                false
+            }
+        }
+    }
+
+    fn get_existing_sync_root_info(
+        sync_root_path: &Path,
+        path: PCWSTR,
+    ) -> Result<Option<ExistingSyncRootInfo>, SmartSyncError> {
         let mut buffer = vec![0u8; size_of::<CF_SYNC_ROOT_STANDARD_INFO>() + 512];
         let mut returned = 0u32;
         let result = unsafe {
@@ -990,7 +1080,8 @@ mod imp {
                 let provider_version = utf16_trimmed(&info.ProviderVersion);
                 let identity_len = usize::try_from(info.SyncRootIdentityLength).unwrap_or(0);
                 let identity_ptr = info.SyncRootIdentity.as_ptr();
-                let identity_bytes = unsafe { std::slice::from_raw_parts(identity_ptr, identity_len) };
+                let identity_bytes =
+                    unsafe { std::slice::from_raw_parts(identity_ptr, identity_len) }.to_vec();
                 trace!(
                     "smart-sync: CfGetSyncRootInfoByPath found existing root for {} => provider_name='{}', provider_version='{}', file_id={}, identity_len={}, identity={}",
                     sync_root_path.display(),
@@ -998,24 +1089,13 @@ mod imp {
                     provider_version,
                     info.SyncRootFileId,
                     info.SyncRootIdentityLength,
-                    String::from_utf8_lossy(identity_bytes)
+                    String::from_utf8_lossy(&identity_bytes)
                 );
-                let identity_matches = identity_bytes == expected_identity;
-                let provider_name_matches =
-                    provider_name.eq_ignore_ascii_case(expected_provider_name);
-                let provider_version_matches = provider_version == expected_provider_version;
-                if provider_name_matches && provider_version_matches && identity_matches {
-                    true
-                } else {
-                    trace!(
-                        "smart-sync: existing root metadata mismatch for {} => expected provider_name='{}', provider_version='{}', identity='{}'",
-                        sync_root_path.display(),
-                        expected_provider_name,
-                        expected_provider_version,
-                        String::from_utf8_lossy(expected_identity)
-                    );
-                    false
-                }
+                Ok(Some(ExistingSyncRootInfo {
+                    provider_name,
+                    provider_version,
+                    identity_bytes,
+                }))
             }
             Err(err) => {
                 trace!(
@@ -1023,7 +1103,7 @@ mod imp {
                     sync_root_path.display(),
                     err
                 );
-                false
+                Ok(None)
             }
         }
     }
@@ -1173,6 +1253,83 @@ mod imp {
         };
         let _ = CONNECTION_KEY.set(connection);
         Ok(())
+    }
+
+    pub fn audit_sync_root_state(sync_root_path: &Path) -> Result<SyncRootStateSnapshot, SmartSyncError> {
+        let provider_name = sync_provider_name();
+        let provider_version = sync_provider_version();
+        let expected_identity = sync_root_identity_bytes();
+        let path_exists = sync_root_path.exists();
+        let existing = if path_exists {
+            let sync_root_wide = wide_path(sync_root_path)?;
+            get_existing_sync_root_info(sync_root_path, PCWSTR(sync_root_wide.as_ptr()))?
+        } else {
+            None
+        };
+
+        let registered = existing.is_some();
+        let registered_for_provider = existing
+            .as_ref()
+            .map(|info| {
+                info.provider_name.eq_ignore_ascii_case(&provider_name)
+                    && info.provider_version == provider_version
+                    && info.identity_bytes == expected_identity
+            })
+            .unwrap_or(false);
+
+        Ok(SyncRootStateSnapshot {
+            path: sync_root_path.display().to_string(),
+            path_exists,
+            registered,
+            registered_for_provider,
+            connected: CONNECTION_KEY.get().is_some(),
+            provider_name: existing.as_ref().map(|info| info.provider_name.clone()),
+            provider_version: existing.as_ref().map(|info| info.provider_version.clone()),
+            identity: existing
+                .as_ref()
+                .map(|info| String::from_utf8_lossy(&info.identity_bytes).to_string()),
+        })
+    }
+
+    pub async fn repair_sync_root(
+        pool: &SqlitePool,
+        sync_root_path: &Path,
+    ) -> Result<SyncRootRepairReport, SmartSyncError> {
+        let mut actions = Vec::new();
+        let state = audit_sync_root_state(sync_root_path)?;
+
+        if CONNECTION_KEY.get().is_some() {
+            shutdown_sync_root()?;
+            actions.push(format!(
+                "disconnected existing sync root connection for {}",
+                sync_root_path.display()
+            ));
+        }
+
+        if state.registered && !state.registered_for_provider {
+            unregister_sync_root(sync_root_path)?;
+            actions.push(format!(
+                "unregistered stale sync root registration for {}",
+                sync_root_path.display()
+            ));
+        }
+
+        register_sync_root_public(sync_root_path).await?;
+        actions.push(format!(
+            "registered and connected sync root {}",
+            sync_root_path.display()
+        ));
+
+        project_vault_to_sync_root(pool, sync_root_path).await?;
+        actions.push(format!(
+            "projected vault into sync root {}",
+            sync_root_path.display()
+        ));
+
+        Ok(SyncRootRepairReport {
+            actions,
+            sync_root_state: audit_sync_root_state(sync_root_path)?,
+        })
     }
 
     fn normalize_sync_root_path(path: &Path) -> Result<PathBuf, SmartSyncError> {

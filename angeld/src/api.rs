@@ -3,6 +3,7 @@ use crate::config::AppConfig;
 use crate::db;
 use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
 use crate::disaster_recovery;
+use crate::runtime_paths::RuntimePaths;
 use crate::scrubber;
 use crate::shell_state;
 use crate::smart_sync;
@@ -300,6 +301,7 @@ impl ApiServer {
             .route("/api/health", get(get_health))
             .route("/api/diagnostics/health", get(get_diagnostics_health))
             .route("/api/diagnostics/shell", get(get_shell_state))
+            .route("/api/diagnostics/sync-root", get(get_sync_root_state))
             .route("/api/health/vault", get(get_vault_health))
             .route("/api/files", get(get_files))
             .route("/api/files/{inode_id}", delete(delete_file))
@@ -320,6 +322,7 @@ impl ApiServer {
             .route("/api/maintenance/scrub-errors", get(get_scrub_errors))
             .route("/api/maintenance/scrub-now", post(post_scrub_now))
             .route("/api/maintenance/repair-shell", post(post_repair_shell))
+            .route("/api/maintenance/repair-sync-root", post(post_repair_sync_root))
             .route("/api/recovery/status", get(get_recovery_status))
             .route("/api/recovery/backup-now", post(post_backup_now))
             .route("/api/recovery/snapshot-local", post(post_snapshot_local))
@@ -480,6 +483,21 @@ async fn get_diagnostics_health(State(state): State<ApiState>) -> impl IntoRespo
 
 async fn get_shell_state() -> impl IntoResponse {
     (StatusCode::OK, Json(shell_state::audit_shell_state())).into_response()
+}
+
+async fn get_sync_root_state() -> impl IntoResponse {
+    let runtime_paths = RuntimePaths::detect();
+    match smart_sync::audit_sync_root_state(&runtime_paths.sync_root) {
+        Ok(snapshot) => (StatusCode::OK, Json(serde_json::json!(snapshot))).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "status": "error",
+                "message": err.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn get_vault_health(State(state): State<ApiState>) -> impl IntoResponse {
@@ -1160,6 +1178,29 @@ async fn post_repair_shell() -> impl IntoResponse {
         })),
     )
         .into_response()
+}
+
+async fn post_repair_sync_root(State(state): State<ApiState>) -> impl IntoResponse {
+    let runtime_paths = RuntimePaths::detect();
+    match smart_sync::repair_sync_root(&state.pool, &runtime_paths.sync_root).await {
+        Ok(report) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "ok",
+                "actions": report.actions,
+                "sync_root_state": report.sync_root_state,
+            })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "status": "error",
+                "message": err.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn get_scrub_errors(State(state): State<ApiState>) -> impl IntoResponse {

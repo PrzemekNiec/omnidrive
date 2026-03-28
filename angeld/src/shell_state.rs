@@ -70,6 +70,19 @@ pub struct ShellRepairReport {
     pub shell_state: ShellStateSnapshot,
 }
 
+impl ShellStateSnapshot {
+    pub fn is_healthy(&self) -> bool {
+        self.drive_present
+            && self.drive_browsable
+            && self.drive_target_matches
+            && self.autostart_registered
+            && self.drive_icon_registered
+            && self.drive_label_registered
+            && self.context_menu_registered
+            && self.duplicate_drive_mappings.is_empty()
+    }
+}
+
 pub fn audit_shell_state() -> ShellStateSnapshot {
     let expected_target = expected_drive_target();
     let preferred_drive_letter = preferred_drive_letter();
@@ -222,6 +235,36 @@ pub fn repair_explorer_integration() -> Result<ShellRepairReport, ShellStateErro
     Ok(ShellRepairReport {
         actions,
         shell_state: audit_shell_state(),
+    })
+}
+
+pub fn startup_recover_shell() -> Result<ShellRepairReport, ShellStateError> {
+    let initial = audit_shell_state();
+    let mut actions = Vec::new();
+    let mut current = initial.clone();
+
+    if !initial.drive_present
+        || !initial.drive_browsable
+        || !initial.drive_target_matches
+        || !initial.duplicate_drive_mappings.is_empty()
+    {
+        let report = repair_virtual_drive()?;
+        actions.extend(report.actions);
+        current = report.shell_state;
+    }
+
+    if !current.drive_icon_registered
+        || !current.drive_label_registered
+        || !current.context_menu_registered
+    {
+        let report = repair_explorer_integration()?;
+        actions.extend(report.actions);
+        current = report.shell_state;
+    }
+
+    Ok(ShellRepairReport {
+        actions,
+        shell_state: current,
     })
 }
 

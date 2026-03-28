@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde_json::Value;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,26 +9,16 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
 
-#[derive(Debug, Deserialize)]
-struct DiagnosticsHealth {
-    uptime_seconds: u64,
-    worker_statuses: WorkerStatuses,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkerStatuses {
-    api: String,
-}
-
-struct SyncHarness {
+struct ShellHarness {
     temp_root: PathBuf,
     child: Child,
     base_url: String,
+    drive_letter: String,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
 }
 
-impl SyncHarness {
+impl ShellHarness {
     async fn spawn() -> Result<Self, Box<dyn std::error::Error>> {
         let temp_root = create_temp_root()?;
         let localapp = temp_root.join("localapp");
@@ -38,37 +28,49 @@ impl SyncHarness {
         std::fs::create_dir_all(base.join("Spool"))?;
         std::fs::create_dir_all(base.join("download-spool"))?;
 
-        let db_path = base.join("e2e-sync.db");
+        let db_path = base.join("e2e-shell.db");
         let db_url = format!("sqlite:///{}", normalize_for_sqlite_url(&db_path));
-        let real_localapp = std::env::var_os("LOCALAPPDATA")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
-        let sync_root = PathBuf::from(real_localapp).join("OmniDrive").join("OmniSync");
-        std::fs::create_dir_all(&sync_root)?;
-
+        let watch_dir = temp_root.join("vault");
         let api_port = reserve_port().await?;
         let base_url = format!("http://127.0.0.1:{api_port}");
+        let drive_letter = "W:".to_string();
         let stdout_path = temp_root.join("angeld.stdout.log");
         let stderr_path = temp_root.join("angeld.stderr.log");
-
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("repo root");
 
         let stdout = File::create(&stdout_path)?;
         let stderr = File::create(&stderr_path)?;
 
         let child = Command::new(env!("CARGO_BIN_EXE_angeld"))
-            .current_dir(repo_root)
+            .current_dir(&temp_root)
             .env("LOCALAPPDATA", &localapp)
+            .env("OMNIDRIVE_RUNTIME_MODE", "installed")
             .env("OMNIDRIVE_DB_URL", &db_url)
-            .env("OMNIDRIVE_SYNC_ROOT", &sync_root)
+            .env("OMNIDRIVE_WATCH_DIR", &watch_dir)
             .env("OMNIDRIVE_SPOOL_DIR", base.join("Spool"))
             .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", base.join("download-spool"))
             .env("OMNIDRIVE_CACHE_DIR", base.join("Cache"))
+            .env("OMNIDRIVE_LOG_DIR", base.join("logs"))
             .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
-            .env("OMNIDRIVE_DRIVE_LETTER", "Y:")
-            .env("OMNIDRIVE_E2E_TEST_MODE", "1")
-            .env("RUST_LOG", "trace")
+            .env("OMNIDRIVE_DRIVE_LETTER", &drive_letter)
+            .env_remove("OMNIDRIVE_R2_ENDPOINT")
+            .env_remove("OMNIDRIVE_R2_REGION")
+            .env_remove("OMNIDRIVE_R2_BUCKET")
+            .env_remove("OMNIDRIVE_R2_ACCESS_KEY_ID")
+            .env_remove("OMNIDRIVE_R2_SECRET_ACCESS_KEY")
+            .env_remove("OMNIDRIVE_R2_FORCE_PATH_STYLE")
+            .env_remove("OMNIDRIVE_SCALEWAY_ENDPOINT")
+            .env_remove("OMNIDRIVE_SCALEWAY_REGION")
+            .env_remove("OMNIDRIVE_SCALEWAY_BUCKET")
+            .env_remove("OMNIDRIVE_SCALEWAY_ACCESS_KEY_ID")
+            .env_remove("OMNIDRIVE_SCALEWAY_SECRET_ACCESS_KEY")
+            .env_remove("OMNIDRIVE_SCALEWAY_FORCE_PATH_STYLE")
+            .env_remove("OMNIDRIVE_B2_ENDPOINT")
+            .env_remove("OMNIDRIVE_B2_REGION")
+            .env_remove("OMNIDRIVE_B2_BUCKET")
+            .env_remove("OMNIDRIVE_B2_ACCESS_KEY_ID")
+            .env_remove("OMNIDRIVE_B2_SECRET_ACCESS_KEY")
+            .env_remove("OMNIDRIVE_B2_FORCE_PATH_STYLE")
+            .env("RUST_LOG", "info")
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()?;
@@ -77,6 +79,7 @@ impl SyncHarness {
             temp_root,
             child,
             base_url,
+            drive_letter,
             stdout_path,
             stderr_path,
         };
@@ -87,17 +90,12 @@ impl SyncHarness {
     async fn wait_for_api_ready(&self) -> Result<(), Box<dyn std::error::Error>> {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            match http_get_json::<DiagnosticsHealth>(&format!(
-                "{}/api/diagnostics/health",
-                self.base_url
-            ))
-            .await
-            {
+            match http_get_json(&format!("{}/api/diagnostics/health", self.base_url)).await {
                 Ok(_) => return Ok(()),
                 Err(_) if Instant::now() < deadline => sleep(Duration::from_millis(100)).await,
                 Err(err) => {
                     return Err(format!(
-                        "sync daemon API did not become ready.\nstdout:\n{}\nstderr:\n{}\nlast error: {err}",
+                        "shell daemon API did not become ready.\nstdout:\n{}\nstderr:\n{}\nlast error: {err}",
                         std::fs::read_to_string(&self.stdout_path).unwrap_or_default(),
                         std::fs::read_to_string(&self.stderr_path).unwrap_or_default()
                     )
@@ -107,22 +105,23 @@ impl SyncHarness {
         }
     }
 
-    async fn health(&self) -> Result<DiagnosticsHealth, Box<dyn std::error::Error>> {
-        Ok(http_get_json::<DiagnosticsHealth>(&format!(
-            "{}/api/diagnostics/health",
-            self.base_url
-        ))
-        .await?)
+    async fn get_json(&self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
+        http_get_json(&format!("{}{}", self.base_url, path)).await
+    }
+
+    async fn post_json(&self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
+        http_post_json(&format!("{}{}", self.base_url, path)).await
     }
 
     async fn shutdown(&mut self) {
+        let _ = Command::new("subst").arg(&self.drive_letter).arg("/D").output().await;
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
         let _ = std::fs::remove_dir_all(&self.temp_root);
     }
 }
 
-impl Drop for SyncHarness {
+impl Drop for ShellHarness {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
         let _ = std::fs::remove_dir_all(&self.temp_root);
@@ -130,37 +129,52 @@ impl Drop for SyncHarness {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn full_stack_sync_root_registers_and_api_reaches_listening_state(
+#[ignore = "requires an unrestricted desktop session for subst-backed virtual drive mapping"]
+async fn shell_repair_restores_drive_and_context_menu_after_local_drift(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut harness = SyncHarness::spawn().await?;
-    let health = harness.health().await?;
-    assert_eq!(health.worker_statuses.api, "idle");
-    assert!(health.uptime_seconds <= 30);
+    let mut harness = ShellHarness::spawn().await?;
 
-    let sync_root_state = http_get_json::<serde_json::Value>(&format!(
-        "{}/api/diagnostics/sync-root",
-        harness.base_url
-    ))
-    .await?;
-    assert_eq!(sync_root_state["registered"], true);
+    let initial = harness.get_json("/api/diagnostics/shell").await?;
+    assert_eq!(initial["drive_present"], true);
+    assert_eq!(initial["drive_browsable"], true);
+    assert_eq!(initial["drive_target_matches"], true);
+    assert_eq!(initial["context_menu_registered"], true);
 
-    let repair_sync_root = http_post_json::<serde_json::Value>(&format!(
-        "{}/api/maintenance/repair-sync-root",
-        harness.base_url
-    ))
-    .await?;
-    assert_eq!(repair_sync_root["status"], "ok");
+    Command::new("subst")
+        .arg(&harness.drive_letter)
+        .arg("/D")
+        .output()
+        .await?;
+    Command::new("reg")
+        .args([
+            "delete",
+            r"HKCU\Software\Classes\Directory\shell\OmniDrive",
+            "/f",
+        ])
+        .output()
+        .await?;
 
-    let stdout = std::fs::read_to_string(&harness.stdout_path).unwrap_or_default();
-    let stderr = std::fs::read_to_string(&harness.stderr_path).unwrap_or_default();
-    let combined = format!("{stdout}\n{stderr}");
+    let drifted = harness.get_json("/api/diagnostics/shell").await?;
+    assert_eq!(drifted["drive_present"], false);
+    assert_eq!(drifted["context_menu_registered"], false);
+
+    let repaired = harness.post_json("/api/maintenance/repair-shell").await?;
+    assert_eq!(repaired["status"], "ok");
+    let actions = repaired["actions"]
+        .as_array()
+        .ok_or_else(|| io::Error::other("repair-shell actions missing"))?;
     assert!(
-        combined.contains("smart sync bootstrap ready")
-            || combined.contains("smart sync bootstrap warning"),
-        "missing sync-root bootstrap log\nstdout:\n{}\nstderr:\n{}",
-        stdout,
-        stderr
+        !actions.is_empty(),
+        "expected shell repair actions, got none: {}",
+        repaired
     );
+
+    let final_state = harness.get_json("/api/diagnostics/shell").await?;
+    assert_eq!(final_state["drive_present"], true);
+    assert_eq!(final_state["drive_browsable"], true);
+    assert_eq!(final_state["drive_target_matches"], true);
+    assert_eq!(final_state["context_menu_registered"], true);
+    assert_eq!(final_state["duplicate_drive_mappings"], serde_json::json!([]));
 
     harness.shutdown().await;
     Ok(())
@@ -173,22 +187,15 @@ async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
     Ok(port)
 }
 
-async fn http_get_json<T: for<'de> Deserialize<'de>>(
-    url: &str,
-) -> Result<T, Box<dyn std::error::Error>> {
+async fn http_get_json(url: &str) -> Result<Value, Box<dyn std::error::Error>> {
     http_request_json("GET", url).await
 }
 
-async fn http_post_json<T: for<'de> Deserialize<'de>>(
-    url: &str,
-) -> Result<T, Box<dyn std::error::Error>> {
+async fn http_post_json(url: &str) -> Result<Value, Box<dyn std::error::Error>> {
     http_request_json("POST", url).await
 }
 
-async fn http_request_json<T: for<'de> Deserialize<'de>>(
-    method: &str,
-    url: &str,
-) -> Result<T, Box<dyn std::error::Error>> {
+async fn http_request_json(method: &str, url: &str) -> Result<Value, Box<dyn std::error::Error>> {
     let without_scheme = url
         .strip_prefix("http://")
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http:// URLs are supported"))?;
@@ -215,7 +222,7 @@ async fn http_request_json<T: for<'de> Deserialize<'de>>(
 
 fn create_temp_root() -> io::Result<PathBuf> {
     let unique = format!(
-        "angeld-e2e-sync-{}-{}",
+        "angeld-e2e-shell-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

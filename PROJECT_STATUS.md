@@ -116,30 +116,40 @@ Delivered:
 Outcome:
 - OmniDrive is now installable and operational on a clean Windows machine without manual terminal setup
 
-### Next Epic
+### Epic 28: Self-Healing Shell Integration [x] Completed
 Goal:
 - make Windows shell integration self-healing and resilient to system drift, stale registry state, and partial shell failures
 
-Scope:
-- implement `Epic 28` pragmatically on a single local machine first
-- prioritize:
-  - `Task 28.1: Shell State Audit`
-  - `Task 28.2: Virtual Drive Self-Heal`
-  - `Task 28.4: Explorer Integration Repair`
-  - local startup/recovery validation without requiring a second laptop
-- defer multi-machine validation until the local self-healing path is stable
+Delivered:
+- `Task 28.1: Shell State Audit`
+  - new diagnostics endpoint for shell state:
+    - `/api/diagnostics/shell`
+- `Task 28.2: Virtual Drive Self-Heal`
+  - duplicate/stale drive mapping cleanup
+  - automatic `O:\` remount to the expected target
+- `Task 28.3: SyncRoot Self-Heal`
+  - new diagnostics endpoint for sync-root state:
+    - `/api/diagnostics/sync-root`
+  - repair endpoint:
+    - `/api/maintenance/repair-sync-root`
+  - startup audit/recovery path for cloud-mode `SyncRoot`
+- `Task 28.4: Explorer Integration Repair`
+  - repair endpoint:
+    - `/api/maintenance/repair-shell`
+  - restores drive appearance and Explorer context menu entries
+- `Task 28.5: Startup Recovery`
+  - daemon now performs startup shell/sync-root audit and logs whether recovery actions were needed
+- `Task 28.6: Recovery Matrix`
+  - local validation passed for audit + repair APIs
+  - dedicated `e2e_shell_recovery` harness added for unrestricted desktop sessions
+  - `e2e_sync` extended to cover sync-root audit/repair endpoints
 
 Outcome:
-- OmniDrive can audit and repair its Windows shell state locally before broader clean-machine or multi-device validation
-- current local implementation focus already includes:
-  - `Task 28.1: Shell State Audit`
-  - `Task 28.2: Virtual Drive Self-Heal`
-  - `Task 28.4: Explorer Integration Repair`
-  - new API visibility and repair hooks for local validation
- - local validation is green for this phase:
-   - `/api/diagnostics/shell` reports a healthy local-only shell state
-   - `/api/maintenance/repair-shell` returns `200 OK`
-   - repair confirms virtual-drive appearance and Explorer context menu registration for `O:\`
+- OmniDrive can now audit and repair its Windows shell state and sync-root state locally, with startup recovery hooks and API-triggered repair paths
+
+### Next Epic
+Goal:
+- expose maintenance and support flows cleanly so repair, scrub, backup, and diagnostics can be triggered without manual registry or filesystem intervention
 
 ## ROADMAP
 
