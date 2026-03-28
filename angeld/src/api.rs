@@ -4,6 +4,7 @@ use crate::db;
 use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
 use crate::disaster_recovery;
 use crate::scrubber;
+use crate::shell_state;
 use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
 use crate::vault::{VaultError, VaultKeyStore};
@@ -298,6 +299,7 @@ impl ApiServer {
             .route("/api/transfers", get(get_transfers))
             .route("/api/health", get(get_health))
             .route("/api/diagnostics/health", get(get_diagnostics_health))
+            .route("/api/diagnostics/shell", get(get_shell_state))
             .route("/api/health/vault", get(get_vault_health))
             .route("/api/files", get(get_files))
             .route("/api/files/{inode_id}", delete(delete_file))
@@ -317,6 +319,7 @@ impl ApiServer {
             .route("/api/maintenance/scrub-status", get(get_scrub_status))
             .route("/api/maintenance/scrub-errors", get(get_scrub_errors))
             .route("/api/maintenance/scrub-now", post(post_scrub_now))
+            .route("/api/maintenance/repair-shell", post(post_repair_shell))
             .route("/api/recovery/status", get(get_recovery_status))
             .route("/api/recovery/backup-now", post(post_backup_now))
             .route("/api/recovery/snapshot-local", post(post_snapshot_local))
@@ -473,6 +476,10 @@ async fn get_diagnostics_health(State(state): State<ApiState>) -> impl IntoRespo
         }),
     )
         .into_response()
+}
+
+async fn get_shell_state() -> impl IntoResponse {
+    (StatusCode::OK, Json(shell_state::audit_shell_state())).into_response()
 }
 
 async fn get_vault_health(State(state): State<ApiState>) -> impl IntoResponse {
@@ -1097,6 +1104,62 @@ async fn post_scrub_now(State(state): State<ApiState>) -> impl IntoResponse {
             .into_response(),
         Err(err) => internal_server_error(err),
     }
+}
+
+async fn post_repair_shell() -> impl IntoResponse {
+    let mut actions = Vec::new();
+    let mut last_state = shell_state::audit_shell_state();
+
+    match shell_state::repair_virtual_drive() {
+        Ok(report) => {
+            actions.extend(report.actions);
+            last_state = report.shell_state;
+        }
+        Err(err) => {
+            error!("shell repair virtual drive failed: {}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "step": "virtual_drive",
+                    "message": err.to_string(),
+                    "shell_state": last_state,
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    match shell_state::repair_explorer_integration() {
+        Ok(report) => {
+            actions.extend(report.actions);
+            last_state = report.shell_state;
+        }
+        Err(err) => {
+            error!("shell repair explorer integration failed: {}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "step": "explorer_integration",
+                    "message": err.to_string(),
+                    "actions": actions,
+                    "shell_state": last_state,
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ok",
+            "actions": actions,
+            "shell_state": last_state,
+        })),
+    )
+        .into_response()
 }
 
 async fn get_scrub_errors(State(state): State<ApiState>) -> impl IntoResponse {

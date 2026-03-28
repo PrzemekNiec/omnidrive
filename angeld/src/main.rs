@@ -13,6 +13,7 @@ mod repair;
 mod runtime_paths;
 mod scrubber;
 mod secure_fs;
+mod shell_state;
 mod shell_integration;
 mod smart_sync;
 mod uploader;
@@ -385,22 +386,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|err| io::Error::other(format!("virtual drive hide sync root failed: {err}")))?;
         virtual_drive::mount_virtual_drive(&drive_letter, &sync_root)
             .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
-        if let Err(err) = virtual_drive::configure_virtual_drive_appearance(
-            &drive_letter,
-            "OmniDrive",
-            &virtual_drive_icon_path(),
-        ) {
-            warn!("virtual drive appearance warning for {}: {}", drive_letter, err);
-        }
-        if let Err(err) = shell_integration::register_explorer_context_menu(
-            &drive_letter,
-            &shell_api_base(),
-            &virtual_drive_icon_path(),
-        ) {
-            warn!(
-                "shell integration registration warning for {}: {}",
-                drive_letter, err
-            );
+        if let Err(err) = shell_state::repair_explorer_integration() {
+            warn!("shell repair warning for {}: {}", drive_letter, err);
         }
     } else {
         info!(
@@ -409,22 +396,11 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         );
         virtual_drive::mount_virtual_drive(&drive_letter, &plain_local_drive_target)
             .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
-        if let Err(err) = virtual_drive::configure_virtual_drive_appearance(
-            &drive_letter,
-            "OmniDrive",
-            &virtual_drive_icon_path(),
-        ) {
-            warn!("virtual drive appearance warning for {}: {}", drive_letter, err);
+        if let Err(err) = shell_state::repair_virtual_drive() {
+            warn!("virtual drive self-heal warning for {}: {}", drive_letter, err);
         }
-        if let Err(err) = shell_integration::register_explorer_context_menu(
-            &drive_letter,
-            &shell_api_base(),
-            &virtual_drive_icon_path(),
-        ) {
-            warn!(
-                "shell integration registration warning for {}: {}",
-                drive_letter, err
-            );
+        if let Err(err) = shell_state::repair_explorer_integration() {
+            warn!("shell repair warning for {}: {}", drive_letter, err);
         }
     }
 
@@ -782,23 +758,6 @@ fn virtual_drive_letter() -> String {
     env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string())
 }
 
-fn virtual_drive_icon_path() -> PathBuf {
-    if let Ok(path) = env::var("OMNIDRIVE_DRIVE_ICON") {
-        return PathBuf::from(path);
-    }
-
-    if let Ok(current_exe) = env::current_exe() {
-        if let Some(exe_dir) = current_exe.parent() {
-            let installed_icon = exe_dir.join("icons").join("omnidrive.ico");
-            if installed_icon.exists() {
-                return installed_icon;
-            }
-        }
-    }
-
-    PathBuf::from("icons").join("omnidrive.ico")
-}
-
 
 async fn maybe_auto_restore_database(db_url: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let Some(passphrase) = env::var("OMNIDRIVE_AUTO_RESTORE_PASSPHRASE").ok() else {
@@ -820,15 +779,6 @@ async fn maybe_auto_restore_database(db_url: &str) -> Result<bool, Box<dyn std::
     restore_metadata_from_cloud(&provider_manager, &passphrase, &db_path).await?;
     info!("automatic metadata restore completed for {}", db_path.display());
     Ok(true)
-}
-
-fn shell_api_base() -> String {
-    let bind = env::var("OMNIDRIVE_API_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
-    let host_port = bind
-        .strip_prefix("0.0.0.0:")
-        .map(|port| format!("127.0.0.1:{port}"))
-        .unwrap_or(bind);
-    format!("http://{host_port}")
 }
 
 fn absolute_path_to_policy_key(path: &std::path::Path) -> io::Result<String> {

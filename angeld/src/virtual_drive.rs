@@ -84,6 +84,33 @@ pub fn unmount_virtual_drive(drive_letter: &str) -> Result<(), VirtualDriveError
     }
 }
 
+pub fn get_virtual_drive_target(
+    drive_letter: &str,
+) -> Result<Option<std::path::PathBuf>, VirtualDriveError> {
+    #[cfg(windows)]
+    {
+        imp::get_virtual_drive_target(drive_letter)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = drive_letter;
+        Err(VirtualDriveError::UnsupportedPlatform)
+    }
+}
+
+pub fn list_virtual_drives() -> Result<Vec<(String, std::path::PathBuf)>, VirtualDriveError> {
+    #[cfg(windows)]
+    {
+        imp::list_virtual_drives()
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err(VirtualDriveError::UnsupportedPlatform)
+    }
+}
+
 pub fn hide_sync_root(target_path: &Path) -> Result<(), VirtualDriveError> {
     #[cfg(windows)]
     {
@@ -211,6 +238,43 @@ mod imp {
         }
 
         Ok(())
+    }
+
+    pub fn get_virtual_drive_target(
+        drive_letter: &str,
+    ) -> Result<Option<PathBuf>, VirtualDriveError> {
+        let normalized = normalize_drive_letter(drive_letter)?;
+        Ok(list_virtual_drives()?
+            .into_iter()
+            .find_map(|(letter, target)| (letter == normalized).then_some(target)))
+    }
+
+    pub fn list_virtual_drives() -> Result<Vec<(String, PathBuf)>, VirtualDriveError> {
+        let output = Command::new("subst").output()?;
+        if !output.status.success() {
+            return Err(VirtualDriveError::CommandFailed(format!(
+                "subst query failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut mappings = Vec::new();
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let Some((drive, target)) = trimmed.split_once("=>") else {
+                continue;
+            };
+            let drive = normalize_drive_letter(drive.trim().trim_end_matches(':'))?;
+            let target = PathBuf::from(target.trim());
+            mappings.push((drive, target));
+        }
+
+        Ok(mappings)
     }
 
     pub fn hide_sync_root(target_path: &Path) -> Result<(), VirtualDriveError> {

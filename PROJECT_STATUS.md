@@ -120,6 +120,27 @@ Outcome:
 Goal:
 - make Windows shell integration self-healing and resilient to system drift, stale registry state, and partial shell failures
 
+Scope:
+- implement `Epic 28` pragmatically on a single local machine first
+- prioritize:
+  - `Task 28.1: Shell State Audit`
+  - `Task 28.2: Virtual Drive Self-Heal`
+  - `Task 28.4: Explorer Integration Repair`
+  - local startup/recovery validation without requiring a second laptop
+- defer multi-machine validation until the local self-healing path is stable
+
+Outcome:
+- OmniDrive can audit and repair its Windows shell state locally before broader clean-machine or multi-device validation
+- current local implementation focus already includes:
+  - `Task 28.1: Shell State Audit`
+  - `Task 28.2: Virtual Drive Self-Heal`
+  - `Task 28.4: Explorer Integration Repair`
+  - new API visibility and repair hooks for local validation
+ - local validation is green for this phase:
+   - `/api/diagnostics/shell` reports a healthy local-only shell state
+   - `/api/maintenance/repair-shell` returns `200 OK`
+   - repair confirms virtual-drive appearance and Explorer context menu registration for `O:\`
+
 ## ROADMAP
 
 ### Epic 9: New EC core
