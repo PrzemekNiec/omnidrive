@@ -79,7 +79,7 @@ impl RuntimePaths {
         });
 
         let sync_root = env_path("OMNIDRIVE_SYNC_ROOT")
-            .unwrap_or_else(|| local_app_base.join("SyncRoot"));
+            .unwrap_or_else(|| local_app_base.join("OmniSync"));
         let default_watch_dir = env_path("OMNIDRIVE_WATCH_DIR").or_else(|| {
             if mode == RuntimeMode::Installed {
                 Some(default_local_vault_root())

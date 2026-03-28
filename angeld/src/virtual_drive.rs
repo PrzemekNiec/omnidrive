@@ -6,6 +6,7 @@ pub enum VirtualDriveError {
     Io(std::io::Error),
     InvalidDriveLetter,
     InvalidPath,
+    CommandFailed(String),
     #[cfg_attr(windows, allow(dead_code))]
     UnsupportedPlatform,
     #[cfg(windows)]
@@ -18,6 +19,7 @@ impl fmt::Display for VirtualDriveError {
             Self::Io(err) => write!(f, "i/o error: {err}"),
             Self::InvalidDriveLetter => write!(f, "invalid drive letter"),
             Self::InvalidPath => write!(f, "invalid target path"),
+            Self::CommandFailed(message) => write!(f, "command failed: {message}"),
             Self::UnsupportedPlatform => {
                 write!(f, "virtual drive mapping is only supported on Windows")
             }
@@ -121,10 +123,11 @@ mod imp {
     use std::iter;
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
-        DefineDosDeviceW, GetFileAttributesW, GetLogicalDrives, SetFileAttributesW, DDD_REMOVE_DEFINITION,
-        DDD_RAW_TARGET_PATH, FILE_ATTRIBUTE_HIDDEN, FILE_FLAGS_AND_ATTRIBUTES,
+        GetFileAttributesW, GetLogicalDrives, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN,
+        FILE_FLAGS_AND_ATTRIBUTES,
     };
     use windows::Win32::System::Registry::{
         RegCloseKey, RegCreateKeyW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, REG_SZ,
@@ -137,17 +140,25 @@ mod imp {
     ) -> Result<(), VirtualDriveError> {
         let device_name = normalize_drive_letter(drive_letter)?;
         let normalized = normalize_path(target_path)?;
-        let raw_target = raw_target_path(&normalized);
-        let device_name_w = wide_null(&device_name);
-        let raw_target_w = wide_null(&raw_target);
-
-        unsafe {
-            DefineDosDeviceW(
-                DDD_RAW_TARGET_PATH,
-                PCWSTR(device_name_w.as_ptr()),
-                PCWSTR(raw_target_w.as_ptr()),
-            )?;
+        let _ = unmount_virtual_drive(&device_name);
+        let output = Command::new("subst")
+            .arg(&device_name)
+            .arg(&normalized)
+            .output()?;
+        if !output.status.success() {
+            return Err(VirtualDriveError::CommandFailed(format!(
+                "subst {} {} failed: {}",
+                device_name,
+                normalized.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
         }
+
+        let drive_root = format!(r"{}\",
+            device_name
+        );
+        std::fs::read_dir(&drive_root)
+            .map_err(|err| VirtualDriveError::CommandFailed(format!("mounted drive {} is not browsable: {}", drive_root, err)))?;
 
         Ok(())
     }
@@ -181,14 +192,22 @@ mod imp {
 
     pub fn unmount_virtual_drive(drive_letter: &str) -> Result<(), VirtualDriveError> {
         let device_name = normalize_drive_letter(drive_letter)?;
-        let device_name_w = wide_null(&device_name);
-
-        unsafe {
-            DefineDosDeviceW(
-                DDD_REMOVE_DEFINITION,
-                PCWSTR(device_name_w.as_ptr()),
-                PCWSTR::null(),
-            )?;
+        let output = Command::new("subst")
+            .arg(&device_name)
+            .arg("/D")
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr_trimmed = stderr.trim();
+            if !stderr_trimmed.is_empty()
+                && !stderr_trimmed.contains("The system cannot find the drive specified")
+                && !stderr_trimmed.contains("Nie można odnaleźć określonego dysku")
+            {
+                return Err(VirtualDriveError::CommandFailed(format!(
+                    "subst {} /D failed: {}",
+                    device_name, stderr_trimmed
+                )));
+            }
         }
 
         Ok(())
@@ -270,12 +289,6 @@ mod imp {
 
         Ok(normalized)
     }
-
-    fn raw_target_path(path: &Path) -> String {
-        let rendered = path.to_string_lossy().replace('/', "\\");
-        format!(r"\??\{rendered}")
-    }
-
     fn set_registry_default_value(path: &str, value: &str) -> Result<(), VirtualDriveError> {
         let path_w = wide_null(path);
         let value_w = wide_null(value);

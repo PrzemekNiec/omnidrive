@@ -42,7 +42,7 @@ impl SyncHarness {
         let db_url = format!("sqlite:///{}", normalize_for_sqlite_url(&db_path));
         let real_localapp = std::env::var_os("LOCALAPPDATA")
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
-        let sync_root = PathBuf::from(real_localapp).join("OmniDrive").join("SyncRoot");
+        let sync_root = PathBuf::from(real_localapp).join("OmniDrive").join("OmniSync");
         std::fs::create_dir_all(&sync_root)?;
 
         let api_port = reserve_port().await?;

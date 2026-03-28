@@ -150,6 +150,10 @@ impl From<reed_solomon_erasure::Error> for DownloaderError {
 }
 
 impl Downloader {
+    pub fn has_remote_providers(&self) -> bool {
+        !self.providers.is_empty()
+    }
+
     pub async fn from_env(
         pool: SqlitePool,
         vault_keys: VaultKeyStore,
@@ -188,10 +192,6 @@ impl Downloader {
         provider_timeout: Duration,
         configs: Vec<ProviderConfig>,
     ) -> Result<Self, DownloaderError> {
-        if configs.is_empty() {
-            return Err(DownloaderError::MissingProviderConfig);
-        }
-
         let download_spool_dir = download_spool_dir.into();
         fs::create_dir_all(&download_spool_dir).await?;
         let cache = CacheManager::from_env(pool.clone(), vault_keys.clone()).await?;

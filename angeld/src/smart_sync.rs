@@ -197,6 +197,7 @@ mod imp {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::MetadataExt;
     use std::os::windows::io::AsRawHandle;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::Component;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -287,7 +288,33 @@ mod imp {
         Ok(())
     }
 
+    fn flush_smart_sync_logs() {
+        crate::logging::flush_logs_best_effort();
+    }
+
     unsafe extern "system" fn fetch_data_callback(
+        callback_info: *const CF_CALLBACK_INFO,
+        callback_parameters: *const CF_CALLBACK_PARAMETERS,
+    ) {
+        let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+            fetch_data_callback_inner(callback_info, callback_parameters)
+        }));
+        if let Err(panic_payload) = result {
+            log_callback_panic("FETCH_DATA", panic_payload);
+            if !callback_info.is_null() && !callback_parameters.is_null() {
+                let callback_info = unsafe { &*callback_info };
+                let callback_parameters = unsafe { &*callback_parameters };
+                let fetch = unsafe { callback_parameters.Anonymous.FetchData };
+                let _ = complete_transfer_failure(
+                    callback_info,
+                    fetch.RequiredFileOffset,
+                    fetch.RequiredLength,
+                );
+            }
+        }
+    }
+
+    unsafe fn fetch_data_callback_inner(
         callback_info: *const CF_CALLBACK_INFO,
         callback_parameters: *const CF_CALLBACK_PARAMETERS,
     ) {
@@ -335,9 +362,22 @@ mod imp {
                 "smart-sync: hydration runtime missing, request_key={}",
                 request.request_key
             );
+            flush_smart_sync_logs();
             let _ = complete_transfer_failure_from_request(&request);
             return;
         };
+
+        if !context.downloader.has_remote_providers() {
+            warn!(
+                "smart-sync: no remote providers configured for request_key={}, inode={}, revision={}; returning empty hydration result in setup/local-only mode",
+                request.request_key,
+                request.inode_id,
+                request.revision_id
+            );
+            flush_smart_sync_logs();
+            let _ = complete_transfer_success(&request, &[]);
+            return;
+        }
 
         context.runtime.spawn(async move {
             let offset = match u64::try_from(request.offset) {
@@ -347,6 +387,7 @@ mod imp {
                         "smart-sync: invalid negative offset for inode={}, revision={}",
                         request.inode_id, request.revision_id
                     );
+                    flush_smart_sync_logs();
                     let _ = complete_transfer_failure_from_request(&request);
                     return;
                 }
@@ -358,6 +399,7 @@ mod imp {
                         "smart-sync: invalid negative length for inode={}, revision={}",
                         request.inode_id, request.revision_id
                     );
+                    flush_smart_sync_logs();
                     let _ = complete_transfer_failure_from_request(&request);
                     return;
                 }
@@ -379,6 +421,7 @@ mod imp {
                             "smart-sync: transfer writeback failed for inode={}, revision={}: {}",
                             request.inode_id, request.revision_id, err
                         );
+                        flush_smart_sync_logs();
                         let _ = complete_transfer_failure_from_request(&request);
                         return;
                     }
@@ -394,10 +437,17 @@ mod imp {
                     }
                 }
                 Err(err) => {
+                    if !context.downloader.has_remote_providers() {
+                        warn!(
+                            "smart-sync: local-only setup mode could not hydrate inode={}, revision={} without configured remote providers: {}",
+                            request.inode_id, request.revision_id, err
+                        );
+                    }
                     warn!(
                         "smart-sync: read_range failed for inode={}, revision={}, offset={}, length={}: {}",
                         request.inode_id, request.revision_id, request.offset, request.length, err
                     );
+                    flush_smart_sync_logs();
                     let _ = complete_transfer_failure_from_request(&request);
                 }
             }
@@ -405,6 +455,18 @@ mod imp {
     }
 
     unsafe extern "system" fn cancel_fetch_data_callback(
+        callback_info: *const CF_CALLBACK_INFO,
+        callback_parameters: *const CF_CALLBACK_PARAMETERS,
+    ) {
+        let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+            cancel_fetch_data_callback_inner(callback_info, callback_parameters)
+        }));
+        if let Err(panic_payload) = result {
+            log_callback_panic("CANCEL_FETCH_DATA", panic_payload);
+        }
+    }
+
+    unsafe fn cancel_fetch_data_callback_inner(
         callback_info: *const CF_CALLBACK_INFO,
         callback_parameters: *const CF_CALLBACK_PARAMETERS,
     ) {
@@ -442,17 +504,37 @@ mod imp {
         }
     }
 
+    fn log_callback_panic(callback_name: &str, panic_payload: Box<dyn std::any::Any + Send>) {
+        let message = if let Some(text) = panic_payload.downcast_ref::<&str>() {
+            (*text).to_string()
+        } else if let Some(text) = panic_payload.downcast_ref::<String>() {
+            text.clone()
+        } else {
+            "non-string panic payload".to_string()
+        };
+
+        error!(
+            "smart-sync: {} callback panicked: {}",
+            callback_name,
+            message
+        );
+        eprintln!("smart-sync: {} callback panicked: {}", callback_name, message);
+        crate::logging::flush_logs_best_effort();
+    }
+
     pub async fn register_sync_root_public(sync_root_path: &Path) -> Result<(), SmartSyncError> {
         let _com_guard = initialize_com_apartment()?;
         let sync_root = normalize_sync_root_path(sync_root_path)?;
         debug_log_sync_root_security(&sync_root);
         info!("smart-sync: registering {}", sync_root.display());
+        flush_smart_sync_logs();
         if let Err(register_err) = register_sync_root(&sync_root) {
             warn!(
                 "smart-sync: register attempt failed for {}, trying direct connect fallback: {}",
                 sync_root.display(),
                 register_err
             );
+            flush_smart_sync_logs();
             connect_sync_root(&sync_root).map_err(|connect_err| {
                 SmartSyncError::InvalidPathWithContext(
                     "CfRegisterSyncRoot",
@@ -466,13 +548,16 @@ mod imp {
                 "smart-sync: connect fallback succeeded for {} after registration warning",
                 sync_root.display()
             );
+            flush_smart_sync_logs();
             return Ok(());
         }
         info!("smart-sync: connecting {}", sync_root.display());
+        flush_smart_sync_logs();
         connect_sync_root(&sync_root).map_err(|err| {
             SmartSyncError::InvalidPathWithContext("CfConnectSyncRoot", err.to_string())
         })?;
         info!("smart-sync: connected {}", sync_root.display());
+        flush_smart_sync_logs();
         Ok(())
     }
 
@@ -539,6 +624,16 @@ mod imp {
             files.len(),
             sync_root.display()
         );
+        flush_smart_sync_logs();
+
+        if files.is_empty() {
+            trace!(
+                "smart-sync: projection skipped for {} because there are no active file placeholders",
+                sync_root.display()
+            );
+            flush_smart_sync_logs();
+            return Ok(());
+        }
 
         for file in files {
             let state = db::ensure_smart_sync_state(pool, file.inode_id, file.revision_id).await?;
@@ -1408,7 +1503,7 @@ mod imp {
                             .unwrap_or_else(|_| PathBuf::from(r"C:\Users\Default"))
                     })
                     .join("OmniDrive")
-                    .join("SyncRoot")
+                    .join("OmniSync")
             });
         let sync_root = normalize_sync_root_path(&sync_root)?;
         let file = db::get_active_file_for_projection_by_inode(pool, inode_id)

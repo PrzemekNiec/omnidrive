@@ -45,7 +45,7 @@ impl RecoveryEnv {
         );
         let real_localapp = std::env::var_os("LOCALAPPDATA")
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
-        let sync_root = PathBuf::from(real_localapp).join("OmniDrive").join("SyncRoot");
+        let sync_root = PathBuf::from(real_localapp).join("OmniDrive").join("OmniSync");
 
         tokio::fs::create_dir_all(base.join("logs")).await?;
         tokio::fs::create_dir_all(base.join("Cache")).await?;

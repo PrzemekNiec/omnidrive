@@ -113,6 +113,14 @@ Scope:
 
 Outcome:
 - a stable installable OmniDrive desktop product, ready for first-run UX and shell hardening
+- latest clean-machine hotfix direction:
+  - `setup/local-only mode` now avoids `CFAPI` entirely and mounts `O:\` as a plain local vault view until a real remote provider is configured
+  - clean-machine validation confirms:
+    - daemon starts without remote providers
+    - `O:\` mounts successfully as a plain local vault view
+    - `/api/diagnostics/health` responds correctly
+    - default local vault path is `C:\Users\<user>\OmniDrive Vault`
+  - remaining installer work is now primarily `Task 27.6: Clean-Machine Validation Matrix`
 
 ## ROADMAP
 
@@ -1428,6 +1436,12 @@ Current progress:
 - Installed-mode runtime directories are ACL-hardened through `win_acl.rs`.
 - Logging now uses the shared runtime path resolver and writes rotating `angeld.log*` files under the installed runtime log directory.
 - The CLI recovery path now resolves the same SQLite location as the daemon by default.
+- Clean-machine hotfix:
+  - installed-mode startup no longer fails when no remote providers are configured
+  - OmniDrive now enters a `setup/local-only` mode and keeps the daemon, API, and runtime bootstrap alive
+  - runtime ACLs now explicitly grant full access to the current user and `SYSTEM`
+  - installed-mode logs stay readable while `angeld` is running
+  - a best-effort panic hook now flushes logging output before process exit
 
 #### Task 27.3: Daemon Autostart and Process Lifecycle
 Goal:
@@ -1488,6 +1502,11 @@ Current progress:
   - initializes default local-vault metadata
   - creates the installed runtime directory layout under `%LOCALAPPDATA%\OmniDrive`
   - bootstraps a default local watch root under the current user profile
+- Clean-machine hotfix:
+  - a fresh install with no configured providers now boots into a usable local-only setup mode instead of exiting
+  - the default watch-root policy is initialized as `LOCAL`, so the first machine can come up before cloud credentials are added
+  - CFAPI callback paths are now guarded against panics in local-only setup mode
+  - Smart Sync now treats `0` projected files as an explicit no-op instead of entering any placeholder path assumptions
 - This gives OmniDrive a usable empty local vault immediately after installation, even before the dedicated first-run UI is added.
 - Remaining scope for the future UI layer:
   - explicit create / unlock / restore screens
@@ -1522,6 +1541,11 @@ Current progress:
   - refreshes placeholder projection through the existing recursive projection path
   - mounts the virtual drive to `O:\` or the first available drive letter if `O:` is already occupied
   - applies the existing drive label, drive icon, and Explorer shell integration
+- Clean-machine hotfix:
+  - Smart Sync projection and virtual-drive mount now continue to initialize even when no remote providers are active yet
+  - this keeps the installed experience centered on a visible working `O:\` drive while onboarding is still incomplete
+  - SyncRoot ACLs now explicitly preserve full access for `SYSTEM`, which the Windows Cloud Files driver relies on
+  - Smart Sync now flushes logs after major registration and projection milestones for easier crash forensics
 - This means an installed OmniDrive instance can self-initialize into a working Windows-integrated vault without manual terminal setup.
 
 #### Task 27.6: Clean-Machine Validation Matrix

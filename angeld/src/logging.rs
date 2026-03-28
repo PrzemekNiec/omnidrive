@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
@@ -20,10 +21,9 @@ pub fn init_logging() -> io::Result<PathBuf> {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn,hyper=warn,h2=warn,aws_config=warn"));
 
-    let file_appender =
-        std::panic::catch_unwind(|| tracing_appender::rolling::daily(&log_dir, LOG_BASENAME));
+    let file_appender = std::panic::catch_unwind(|| open_log_file(&log_dir));
     match file_appender {
-        Ok(file_appender) => {
+        Ok(Ok(file_appender)) => {
             let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
             let stdout_writer = std::io::stdout.with_max_level(tracing::Level::TRACE);
             let combined_writer = stdout_writer.and(file_writer);
@@ -41,6 +41,7 @@ pub fn init_logging() -> io::Result<PathBuf> {
 
             let _ = LOG_GUARDS.set(vec![guard]);
         }
+        Ok(Err(err)) => return Err(err),
         Err(_) => {
             #[cfg(debug_assertions)]
             {
@@ -74,6 +75,40 @@ pub fn init_logging() -> io::Result<PathBuf> {
 
 pub fn default_log_dir() -> PathBuf {
     crate::runtime_paths::RuntimePaths::detect().log_dir
+}
+
+pub fn flush_logs_best_effort() {
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    std::thread::sleep(Duration::from_millis(150));
+}
+
+fn open_log_file(log_dir: &Path) -> io::Result<std::fs::File> {
+    let log_path = log_dir.join(LOG_BASENAME);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
+            .open(log_path)
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(log_path)
+    }
 }
 
 fn prune_old_logs(log_dir: &Path, max_age: Duration) -> io::Result<()> {

@@ -115,7 +115,9 @@ fn apply_sync_root_acl_windows(path: &Path) -> Result<(), AclError> {
 #[cfg(target_os = "windows")]
 fn build_runtime_directory_sddl() -> Result<String, AclError> {
     let current_user_sid = current_user_sid_string()?;
-    Ok(format!("D:P(A;;GA;;;SY)(A;;GA;;;{current_user_sid})"))
+    Ok(format!(
+        "D:PAI(A;;FA;;;SY)(A;OICIIO;FA;;;SY)(A;;FA;;;{current_user_sid})(A;OICIIO;FA;;;{current_user_sid})"
+    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -123,7 +125,7 @@ fn build_runtime_directory_sddl() -> Result<String, AclError> {
 fn build_sync_root_sddl() -> Result<String, AclError> {
     let current_user_sid = current_user_sid_string()?;
     Ok(format!(
-        "D:AI(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)(A;OICI;GA;;;{current_user_sid})(A;OICI;GRGWGX;;;AU)"
+        "D:AI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{current_user_sid})(A;OICI;GRGWGX;;;AU)"
     ))
 }
 

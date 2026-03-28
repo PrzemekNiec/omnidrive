@@ -34,6 +34,7 @@ use crate::repair::RepairWorker;
 use crate::runtime_paths::{RuntimePaths, sqlite_db_file_path};
 use crate::scrubber::ScrubberWorker;
 use crate::uploader::{UploadWorker, Uploader};
+use crate::uploader::ProviderConfig;
 use crate::vault::{VaultKeyStore, bootstrap_local_vault};
 use crate::watcher::FileWatcher;
 use std::env;
@@ -54,6 +55,7 @@ async fn main() {
         eprintln!("failed to initialize logging: {err}");
         std::process::exit(1);
     }
+    install_panic_hook();
 
     if should_run_r2_smoke_test() {
         if let Err(err) = smoke_test_r2_upload().await {
@@ -75,6 +77,26 @@ async fn main() {
         error!("angeld failed: {err}");
         std::process::exit(1);
     }
+}
+
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|panic_info| {
+        let location = panic_info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let payload = if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
+            (*message).to_string()
+        } else if let Some(message) = panic_info.payload().downcast_ref::<String>() {
+            message.clone()
+        } else {
+            "non-string panic payload".to_string()
+        };
+
+        error!("panic: {} at {}", payload, location);
+        eprintln!("panic: {} at {}", payload, location);
+        crate::logging::flush_logs_best_effort();
+    }));
 }
 
 fn should_run_r2_smoke_test() -> bool {
@@ -102,6 +124,12 @@ fn env_flag(key: &str) -> bool {
             .as_deref(),
         Some("1" | "true" | "yes")
     )
+}
+
+fn has_any_remote_provider_config() -> bool {
+    ProviderConfig::from_r2_env().is_ok()
+        || ProviderConfig::from_scaleway_env().is_ok()
+        || ProviderConfig::from_b2_env().is_ok()
 }
 
 async fn smoke_test_r2_upload() -> Result<(), Box<dyn std::error::Error>> {
@@ -161,8 +189,16 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     runtime_paths.export_env_defaults();
 
     let sync_root = runtime_paths.sync_root.clone();
+    let plain_local_drive_target = runtime_paths
+        .default_watch_dir
+        .clone()
+        .unwrap_or_else(|| sync_root.clone());
     let preferred_drive_letter = virtual_drive_letter();
-    runtime_paths.bootstrap_directories(!no_sync).await?;
+    let remote_providers_configured = has_any_remote_provider_config();
+    let smart_sync_enabled = !no_sync && remote_providers_configured;
+    runtime_paths
+        .bootstrap_directories(smart_sync_enabled)
+        .await?;
     runtime_paths.secure_runtime_directories()?;
     let database_missing_on_start = runtime_paths
         .db_file_path
@@ -308,7 +344,19 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         return result;
     }
 
-    let downloader = Arc::new(Downloader::from_env(pool.clone(), vault_keys.clone()).await?);
+    let downloader = Arc::new(if remote_providers_configured {
+        Downloader::from_env(pool.clone(), vault_keys.clone()).await?
+    } else {
+        warn!("starting OmniDrive in setup/local-only mode: no remote providers configured");
+        Downloader::from_provider_configs(
+            pool.clone(),
+            vault_keys.clone(),
+            env_path("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", ".omnidrive/download-spool"),
+            Duration::from_millis(120_000),
+            Vec::new(),
+        )
+        .await?
+    });
     let drive_letter = if no_sync {
         preferred_drive_letter.clone()
     } else {
@@ -317,7 +365,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     };
     if no_sync {
         warn!("starting angeld with --no-sync; skipping Smart Sync and virtual drive bootstrap");
-    } else {
+    } else if smart_sync_enabled {
         smart_sync::install_hydration_runtime(pool.clone(), downloader)
             .map_err(|err| io::Error::other(format!("smart sync hydration setup failed: {err}")))?;
         smart_sync::register_sync_root(&sync_root).await
@@ -346,6 +394,99 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             &virtual_drive_icon_path(),
         )
         .map_err(|err| io::Error::other(format!("shell integration registration failed: {err}")))?;
+    } else {
+        info!(
+            "setup/local-only mode: skipping Smart Sync and mounting a plain local drive view at {}",
+            plain_local_drive_target.display()
+        );
+        virtual_drive::mount_virtual_drive(&drive_letter, &plain_local_drive_target)
+            .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
+        virtual_drive::configure_virtual_drive_appearance(
+            &drive_letter,
+            "OmniDrive",
+            &virtual_drive_icon_path(),
+        )
+        .map_err(|err| io::Error::other(format!("virtual drive appearance failed: {err}")))?;
+        shell_integration::register_explorer_context_menu(
+            &drive_letter,
+            &shell_api_base(),
+            &virtual_drive_icon_path(),
+        )
+        .map_err(|err| io::Error::other(format!("shell integration registration failed: {err}")))?;
+    }
+
+    let watcher = FileWatcher::from_env(pool.clone(), vault_keys.clone()).await?;
+    let api = ApiServer::from_env(pool.clone(), vault_keys.clone(), diagnostics.clone())?;
+
+    if no_sync {
+        info!("smart sync bootstrap skipped by --no-sync");
+    } else if smart_sync_enabled {
+        info!("smart sync bootstrap ready at {}", sync_root.display());
+        info!("virtual drive mounted at {}", drive_letter);
+    } else {
+        info!(
+            "plain local vault drive mounted at {} -> {}",
+            drive_letter,
+            plain_local_drive_target.display()
+        );
+    }
+    if local_vault_bootstrapped {
+        info!("default local vault bootstrap is ready");
+    }
+    if !remote_providers_configured {
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Uploader, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Repair, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Scrubber, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Gc, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::MetadataBackup, crate::diagnostics::WorkerStatus::Idle);
+        info!("setup/local-only mode enabled: remote provider workers are idle until a provider is configured");
+        info!("file watcher and api server started");
+
+        let mut api_task = tokio::spawn(async move { api.run().await });
+        let watcher_future = watcher.run();
+        tokio::pin!(watcher_future);
+
+        let result = tokio::select! {
+            result = &mut watcher_future => {
+                api_task.abort();
+                let outcome = result?;
+                Ok(outcome)
+            }
+            result = &mut api_task => {
+                let outcome = result??;
+                Ok(outcome)
+            }
+            signal = signal::ctrl_c() => {
+                signal?;
+                api_task.abort();
+                info!("shutdown signal received");
+                Ok(())
+            }
+        };
+
+        if !no_sync {
+            if smart_sync_enabled {
+                if let Err(err) = smart_sync::shutdown_sync_root() {
+                    warn!("smart sync shutdown warning: {}", err);
+                }
+
+                if e2e_test_mode {
+                    if let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
+                        warn!(
+                            "smart sync unregister warning for {}: {}",
+                            sync_root.display(),
+                            err
+                        );
+                    }
+                }
+            }
+
+            if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
+                warn!("virtual drive unmount warning for {}: {}", drive_letter, err);
+            }
+        }
+
+        return result;
     }
 
     let worker = UploadWorker::from_env(pool.clone()).await?;
@@ -359,18 +500,6 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         metadata_backup_provider_manager,
         Arc::new(vault_keys.clone()),
     );
-    let watcher = FileWatcher::from_env(pool.clone(), vault_keys.clone()).await?;
-    let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone())?;
-
-    if no_sync {
-        info!("smart sync bootstrap skipped by --no-sync");
-    } else {
-        info!("smart sync bootstrap ready at {}", sync_root.display());
-        info!("virtual drive mounted at {}", drive_letter);
-    }
-    if local_vault_bootstrapped {
-        info!("default local vault bootstrap is ready");
-    }
     info!("upload worker, repair worker, scrubber worker, gc worker, file watcher, and api server started");
 
     let mut upload_task = tokio::spawn(async move { worker.run().await });
@@ -461,17 +590,19 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if !no_sync {
-        if let Err(err) = smart_sync::shutdown_sync_root() {
-            warn!("smart sync shutdown warning: {}", err);
-        }
+        if smart_sync_enabled {
+            if let Err(err) = smart_sync::shutdown_sync_root() {
+                warn!("smart sync shutdown warning: {}", err);
+            }
 
-        if e2e_test_mode {
-            if let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
-                warn!(
-                    "smart sync unregister warning for {}: {}",
-                    sync_root.display(),
-                    err
-                );
+            if e2e_test_mode {
+                if let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
+                    warn!(
+                        "smart sync unregister warning for {}: {}",
+                        sync_root.display(),
+                        err
+                    );
+                }
             }
         }
 
@@ -509,7 +640,7 @@ async fn bootstrap_default_local_vault(
         if let Some(default_watch_dir) = &runtime_paths.default_watch_dir {
             fs::create_dir_all(default_watch_dir).await?;
             let policy_path = absolute_path_to_policy_key(default_watch_dir)?;
-            db::upsert_sync_policy(pool, &policy_path, true, true).await?;
+            db::set_sync_policy_type_for_path(pool, &policy_path, "LOCAL").await?;
             info!(
                 "bootstrapped default local vault watch root at {}",
                 default_watch_dir.display()
