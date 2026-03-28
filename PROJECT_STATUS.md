@@ -99,28 +99,26 @@ Core assumptions:
 
 ## CURRENT FOCUS
 
-### Next Epic
+### Epic 27: Installer and First-Run Bootstrap [x] Completed
 Goal:
 - turn OmniDrive into an installable desktop product and make installed-mode runtime bootstrap reliable
 
-Scope:
-- next recommended implementation areas:
-  - installer packaging
-  - installed-mode runtime path resolution
-  - `%LOCALAPPDATA%\OmniDrive` bootstrap
-  - autostart and headless daemon lifecycle
-  - first-run bootstrap and restore readiness
+Delivered:
+- per-user installer to `%LOCALAPPDATA%\Programs\OmniDrive`
+- unified installed-mode runtime paths under `%LOCALAPPDATA%\OmniDrive`
+- autostart and headless daemon bootstrap
+- automatic local-vault bootstrap on a fresh machine
+- stable `setup/local-only mode` without configured remote providers
+- `O:\` mounted as a plain local vault view until real cloud providers are configured
+- working diagnostics API on clean-machine installs
+- successful restart validation: daemon, autostart, API, and `O:\` survive reboot
 
 Outcome:
-- a stable installable OmniDrive desktop product, ready for first-run UX and shell hardening
-- latest clean-machine hotfix direction:
-  - `setup/local-only mode` now avoids `CFAPI` entirely and mounts `O:\` as a plain local vault view until a real remote provider is configured
-  - clean-machine validation confirms:
-    - daemon starts without remote providers
-    - `O:\` mounts successfully as a plain local vault view
-    - `/api/diagnostics/health` responds correctly
-    - default local vault path is `C:\Users\<user>\OmniDrive Vault`
-  - remaining installer work is now primarily `Task 27.6: Clean-Machine Validation Matrix`
+- OmniDrive is now installable and operational on a clean Windows machine without manual terminal setup
+
+### Next Epic
+Goal:
+- make Windows shell integration self-healing and resilient to system drift, stale registry state, and partial shell failures
 
 ## ROADMAP
 
