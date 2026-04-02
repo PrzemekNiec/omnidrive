@@ -157,6 +157,158 @@ Outcome:
 Goal:
 - expose maintenance and support flows cleanly so repair, scrub, backup, and diagnostics can be triggered without manual registry or filesystem intervention
 
+Implementation plan:
+
+#### Task 30.1: Maintenance API Consolidation
+Goal:
+- unify maintenance and diagnostics endpoints into a coherent operator-facing API surface
+
+Scope:
+- standardize the response format for:
+  - health
+  - shell
+  - sync-root
+  - backup-now
+  - scrub-now
+  - repair-shell
+  - repair-sync-root
+  - optional repair/reconcile actions
+- normalize fields such as:
+  - `status`
+  - `actions`
+  - `warnings`
+  - `errors`
+  - `timestamp`
+
+Outcome:
+- one predictable API contract for all maintenance actions
+
+Current progress:
+- `Task 30.1` is implemented.
+- A unified maintenance envelope now wraps key diagnostics with:
+  - `status`
+  - `message`
+  - `last_run`
+- The following endpoints now expose a consistent operator-facing status model:
+  - `/api/diagnostics/health`
+  - `/api/diagnostics/shell`
+  - `/api/diagnostics/sync-root`
+  - `/api/recovery/status`
+- A new aggregate maintenance endpoint now exists:
+  - `/api/maintenance/status`
+- Maintenance actions now also return the same top-level status fields:
+  - `/api/maintenance/repair-shell`
+  - `/api/maintenance/repair-sync-root`
+  - `/api/maintenance/scrub-now`
+  - `/api/recovery/backup-now`
+
+#### Task 30.2: Maintenance UI Page
+Goal:
+- add a dedicated web UI page for maintenance and support operations
+
+Scope:
+- add a `Maintenance` screen with sections for:
+  - system health
+  - shell integration
+  - smart sync
+  - data integrity
+  - backups
+- surface the latest action result inline in the UI
+
+Outcome:
+- maintenance actions become discoverable and usable without terminal commands
+
+Current progress:
+- `Task 30.2` is implemented.
+- The local dashboard now includes a dedicated `Maintenance Console` section above the main vault widgets.
+- The maintenance console uses a graphitic glassmorphism visual style:
+  - deep radial dark background
+  - translucent graphite cards
+  - soft blur and crisp glass borders
+  - monochrome typography with restrained amber/red state accents
+- The UI now surfaces live maintenance cards for:
+  - system health
+  - shell integration
+  - sync-root
+  - backup readiness
+- The first interactive maintenance actions are now available directly from the UI:
+  - `Repair Drive`
+  - `Repair SyncRoot`
+  - `Backup Metadata Now`
+  - `Run Light Scrub`
+- Action results are shown inline in the maintenance panel instead of requiring terminal inspection
+
+#### Task 30.3: Repair Actions
+Goal:
+- expose Windows integration repair actions as first-class UI controls
+
+Scope:
+- add UI actions for:
+  - `Repair Drive`
+  - `Repair SyncRoot`
+  - `Repair Explorer Integration`
+  - optional `Full Shell Repair`
+- show what was repaired and whether follow-up action is needed
+
+Outcome:
+- shell and drive recovery can be triggered safely from the UI
+
+#### Task 30.4: Integrity Actions
+Goal:
+- expose integrity and reconciliation operations through the same console
+
+Scope:
+- add actions for:
+  - `Run Scrub Now`
+  - `Run Repair Now`
+  - `Run Reconcile Now`
+- display last run result and current activity state
+
+Outcome:
+- integrity workflows no longer require direct API or CLI calls
+
+#### Task 30.5: Backup & Recovery Actions
+Goal:
+- expose metadata backup and recovery-readiness controls
+
+Scope:
+- add:
+  - `Backup Metadata Now`
+  - last-backup visibility
+  - recovery-readiness summary
+
+Outcome:
+- backup operations become visible and manually triggerable from the product UI
+
+#### Task 30.6: Operator Diagnostics
+Goal:
+- present the most important operational state in one place
+
+Scope:
+- aggregate:
+  - worker states
+  - queue sizes
+  - cache stats
+  - last errors
+  - shell state
+  - sync-root state
+
+Outcome:
+- operators can assess daemon health quickly without piecing together multiple endpoints
+
+#### Task 30.7: E2E / Acceptance Pass
+Goal:
+- validate that maintenance actions work end-to-end in the real product flow
+
+Scope:
+- verify locally and on the test machine that:
+  - actions execute successfully
+  - UI status updates reflect reality
+  - no maintenance action silently fails
+
+Outcome:
+- the Maintenance Console is product-ready, not just internally wired
+
 ## ROADMAP
 
 ### Epic 9: New EC core

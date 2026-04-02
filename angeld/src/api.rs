@@ -21,6 +21,7 @@ use std::env;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info};
 
 #[derive(Clone)]
@@ -198,11 +199,6 @@ struct SnapshotLocalResponse {
 }
 
 #[derive(Serialize)]
-struct BackupNowResponse {
-    uploaded: bool,
-}
-
-#[derive(Serialize)]
 struct RecoveryStatusResponse {
     last_successful_backup: Option<i64>,
     recent_attempts: Vec<MetadataBackupAttemptResponse>,
@@ -217,11 +213,6 @@ struct ScrubStatusResponse {
     verified_light_shards: i64,
     verified_deep_shards: i64,
     last_scrub_timestamp: Option<i64>,
-}
-
-#[derive(Serialize)]
-struct ScrubNowResponse {
-    processed_shards: usize,
 }
 
 #[derive(Serialize)]
@@ -267,6 +258,50 @@ struct DiagnosticsWorkerStatusesResponse {
     api: String,
 }
 
+#[derive(Clone, Copy)]
+enum MaintenanceLevel {
+    Ok,
+    Warn,
+    Error,
+}
+
+impl MaintenanceLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::Warn => "WARN",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct MaintenanceStatus<T>
+where
+    T: Serialize,
+{
+    status: String,
+    message: String,
+    last_run: i64,
+    #[serde(flatten)]
+    details: T,
+}
+
+#[derive(Serialize)]
+struct MaintenanceOverviewResponse {
+    health: MaintenanceOverviewItem,
+    shell: MaintenanceOverviewItem,
+    sync_root: MaintenanceOverviewItem,
+    backup: MaintenanceOverviewItem,
+}
+
+#[derive(Serialize)]
+struct MaintenanceOverviewItem {
+    status: String,
+    message: String,
+    last_run: i64,
+}
+
 impl ApiServer {
     pub fn from_env(
         pool: SqlitePool,
@@ -302,6 +337,7 @@ impl ApiServer {
             .route("/api/diagnostics/health", get(get_diagnostics_health))
             .route("/api/diagnostics/shell", get(get_shell_state))
             .route("/api/diagnostics/sync-root", get(get_sync_root_state))
+            .route("/api/maintenance/status", get(get_maintenance_status))
             .route("/api/health/vault", get(get_vault_health))
             .route("/api/files", get(get_files))
             .route("/api/files/{inode_id}", delete(delete_file))
@@ -440,64 +476,57 @@ async fn get_health(State(state): State<ApiState>) -> impl IntoResponse {
 }
 
 async fn get_diagnostics_health(State(state): State<ApiState>) -> impl IntoResponse {
-    let snapshot = state.diagnostics.snapshot();
-    let pending_uploads_queue_size = match db::get_pending_upload_queue_size(&state.pool).await {
-        Ok(value) => value,
-        Err(err) => return internal_server_error(err),
+    match build_diagnostics_health_response(&state).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn get_shell_state() -> impl IntoResponse {
+    let response = build_shell_state_response();
+    (StatusCode::OK, Json(response)).into_response()
+}
+
+async fn get_sync_root_state() -> impl IntoResponse {
+    match build_sync_root_state_response() {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "status": "ERROR",
+                "message": err.to_string(),
+                "last_run": unix_timestamp_millis(),
+            })),
+        )
+        .into_response(),
+    }
+}
+
+async fn get_maintenance_status(State(state): State<ApiState>) -> impl IntoResponse {
+    let health = match build_diagnostics_health_response(&state).await {
+        Ok(response) => maintenance_overview_item(&response),
+        Err(err) => maintenance_error_item(format!("Health diagnostics failed: {err}")),
     };
-    let cache_summary = match db::get_cache_status_summary(&state.pool).await {
-        Ok(summary) => summary,
-        Err(err) => return internal_server_error(err),
+    let shell = maintenance_overview_item(&build_shell_state_response());
+    let sync_root = match build_sync_root_state_response() {
+        Ok(response) => maintenance_overview_item(&response),
+        Err(err) => maintenance_error_item(format!("Sync root diagnostics failed: {err}")),
     };
-    let runtime_cache = cache::cache_runtime_stats();
-    let last_upload_error = match &snapshot.last_upload_error {
-        Some(value) => Some(value.clone()),
-        None => match db::get_latest_upload_error(&state.pool).await {
-            Ok(value) => value,
-            Err(err) => return internal_server_error(err),
-        },
+    let backup = match build_recovery_status_response(&state).await {
+        Ok(response) => maintenance_overview_item(&response),
+        Err(err) => maintenance_error_item(format!("Recovery diagnostics failed: {err}")),
     };
 
     (
         StatusCode::OK,
-        Json(DiagnosticsHealthResponse {
-            uptime_seconds: snapshot.uptime_seconds,
-            pending_uploads_queue_size,
-            last_upload_error,
-            cache_size_bytes: cache_summary.total_bytes,
-            cache_hit_count: runtime_cache.hit_count,
-            cache_miss_count: runtime_cache.miss_count,
-            worker_statuses: DiagnosticsWorkerStatusesResponse {
-                uploader: snapshot.uploader.as_str().to_string(),
-                repair: snapshot.repair.as_str().to_string(),
-                scrubber: snapshot.scrubber.as_str().to_string(),
-                gc: snapshot.gc.as_str().to_string(),
-                watcher: snapshot.watcher.as_str().to_string(),
-                metadata_backup: snapshot.metadata_backup.as_str().to_string(),
-                api: snapshot.api.as_str().to_string(),
-            },
+        Json(MaintenanceOverviewResponse {
+            health,
+            shell,
+            sync_root,
+            backup,
         }),
     )
         .into_response()
-}
-
-async fn get_shell_state() -> impl IntoResponse {
-    (StatusCode::OK, Json(shell_state::audit_shell_state())).into_response()
-}
-
-async fn get_sync_root_state() -> impl IntoResponse {
-    let runtime_paths = RuntimePaths::detect();
-    match smart_sync::audit_sync_root_state(&runtime_paths.sync_root) {
-        Ok(snapshot) => (StatusCode::OK, Json(serde_json::json!(snapshot))).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "status": "error",
-                "message": err.to_string(),
-            })),
-        )
-            .into_response(),
-    }
 }
 
 async fn get_vault_health(State(state): State<ApiState>) -> impl IntoResponse {
@@ -1061,37 +1090,10 @@ async fn get_cache_status(State(state): State<ApiState>) -> impl IntoResponse {
 }
 
 async fn get_recovery_status(State(state): State<ApiState>) -> impl IntoResponse {
-    let last_successful_backup = match db::get_last_successful_metadata_backup_at(&state.pool).await
-    {
-        Ok(value) => value,
-        Err(err) => return internal_server_error(err),
-    };
-
-    let recent_attempts = match db::list_recent_metadata_backups(&state.pool, 10).await {
-        Ok(records) => records
-            .into_iter()
-            .map(|record| MetadataBackupAttemptResponse {
-                backup_id: record.backup_id,
-                created_at: record.created_at,
-                snapshot_version: record.snapshot_version,
-                object_key: record.object_key,
-                provider: record.provider,
-                encrypted_size: record.encrypted_size,
-                status: record.status,
-                last_error: record.last_error,
-            })
-            .collect(),
-        Err(err) => return internal_server_error(err),
-    };
-
-    (
-        StatusCode::OK,
-        Json(RecoveryStatusResponse {
-            last_successful_backup,
-            recent_attempts,
-        }),
-    )
-        .into_response()
+    match build_recovery_status_response(&state).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => internal_server_error(err),
+    }
 }
 
 async fn get_scrub_status(State(state): State<ApiState>) -> impl IntoResponse {
@@ -1117,9 +1119,14 @@ async fn post_scrub_now(State(state): State<ApiState>) -> impl IntoResponse {
     match scrubber::run_scrub_batch_now(state.pool.clone()).await {
         Ok(processed_shards) => (
             StatusCode::OK,
-            Json(ScrubNowResponse { processed_shards }),
+            Json(serde_json::json!({
+                "status": "OK",
+                "message": format!("Light scrub completed. Processed {} shard(s).", processed_shards),
+                "last_run": unix_timestamp_millis(),
+                "processed_shards": processed_shards,
+            })),
         )
-            .into_response(),
+        .into_response(),
         Err(err) => internal_server_error(err),
     }
 }
@@ -1138,9 +1145,10 @@ async fn post_repair_shell() -> impl IntoResponse {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
-                    "status": "error",
+                    "status": "ERROR",
                     "step": "virtual_drive",
                     "message": err.to_string(),
+                    "last_run": unix_timestamp_millis(),
                     "shell_state": last_state,
                 })),
             )
@@ -1158,9 +1166,10 @@ async fn post_repair_shell() -> impl IntoResponse {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
-                    "status": "error",
+                    "status": "ERROR",
                     "step": "explorer_integration",
                     "message": err.to_string(),
+                    "last_run": unix_timestamp_millis(),
                     "actions": actions,
                     "shell_state": last_state,
                 })),
@@ -1172,7 +1181,13 @@ async fn post_repair_shell() -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(serde_json::json!({
-            "status": "ok",
+            "status": "OK",
+            "message": if actions.is_empty() {
+                "Shell state was already healthy.".to_string()
+            } else {
+                format!("Shell repair applied {} action(s).", actions.len())
+            },
+            "last_run": unix_timestamp_millis(),
             "actions": actions,
             "shell_state": last_state,
         })),
@@ -1186,7 +1201,13 @@ async fn post_repair_sync_root(State(state): State<ApiState>) -> impl IntoRespon
         Ok(report) => (
             StatusCode::OK,
             Json(serde_json::json!({
-                "status": "ok",
+                "status": "OK",
+                "message": if report.actions.is_empty() {
+                    "Sync root was already healthy.".to_string()
+                } else {
+                    format!("Sync root repair applied {} action(s).", report.actions.len())
+                },
+                "last_run": unix_timestamp_millis(),
                 "actions": report.actions,
                 "sync_root_state": report.sync_root_state,
             })),
@@ -1195,8 +1216,9 @@ async fn post_repair_sync_root(State(state): State<ApiState>) -> impl IntoRespon
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
-                "status": "error",
+                "status": "ERROR",
                 "message": err.to_string(),
+                "last_run": unix_timestamp_millis(),
             })),
         )
             .into_response(),
@@ -1301,9 +1323,253 @@ async fn post_backup_now(State(state): State<ApiState>) -> impl IntoResponse {
     )
     .await
     {
-        Ok(()) => (StatusCode::OK, Json(BackupNowResponse { uploaded: true })).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "OK",
+                "message": "Encrypted metadata backup uploaded successfully.",
+                "last_run": unix_timestamp_millis(),
+                "uploaded": true
+            })),
+        )
+        .into_response(),
         Err(err) => internal_server_error(err),
     }
+}
+
+async fn build_diagnostics_health_response(
+    state: &ApiState,
+) -> Result<MaintenanceStatus<DiagnosticsHealthResponse>, sqlx::Error> {
+    let snapshot = state.diagnostics.snapshot();
+    let pending_uploads_queue_size = db::get_pending_upload_queue_size(&state.pool).await?;
+    let cache_summary = db::get_cache_status_summary(&state.pool).await?;
+    let runtime_cache = cache::cache_runtime_stats();
+    let last_upload_error = match &snapshot.last_upload_error {
+        Some(value) => Some(value.clone()),
+        None => db::get_latest_upload_error(&state.pool).await?,
+    };
+
+    let health = DiagnosticsHealthResponse {
+        uptime_seconds: snapshot.uptime_seconds,
+        pending_uploads_queue_size,
+        last_upload_error: last_upload_error.clone(),
+        cache_size_bytes: cache_summary.total_bytes,
+        cache_hit_count: runtime_cache.hit_count,
+        cache_miss_count: runtime_cache.miss_count,
+        worker_statuses: DiagnosticsWorkerStatusesResponse {
+            uploader: snapshot.uploader.as_str().to_string(),
+            repair: snapshot.repair.as_str().to_string(),
+            scrubber: snapshot.scrubber.as_str().to_string(),
+            gc: snapshot.gc.as_str().to_string(),
+            watcher: snapshot.watcher.as_str().to_string(),
+            metadata_backup: snapshot.metadata_backup.as_str().to_string(),
+            api: snapshot.api.as_str().to_string(),
+        },
+    };
+
+    let (level, message) = if let Some(error) = last_upload_error {
+        (
+            MaintenanceLevel::Warn,
+            format!(
+                "Background services are running, but the latest upload reported an error: {}",
+                error
+            ),
+        )
+    } else if pending_uploads_queue_size > 0 {
+        (
+            MaintenanceLevel::Warn,
+            format!(
+                "{} upload(s) are still queued for processing.",
+                pending_uploads_queue_size
+            ),
+        )
+    } else {
+        (
+            MaintenanceLevel::Ok,
+            "Background services are healthy and no upload backlog is pending.".to_string(),
+        )
+    };
+
+    Ok(MaintenanceStatus {
+        status: level.as_str().to_string(),
+        message,
+        last_run: unix_timestamp_millis(),
+        details: health,
+    })
+}
+
+fn build_shell_state_response() -> MaintenanceStatus<shell_state::ShellStateSnapshot> {
+    let snapshot = shell_state::audit_shell_state();
+    let message = if snapshot.is_healthy() {
+        format!(
+            "Drive {} is mounted and Explorer integration is healthy.",
+            snapshot.preferred_drive_letter
+        )
+    } else if !snapshot.drive_present {
+        format!(
+            "Drive {} is missing and should be repaired.",
+            snapshot.preferred_drive_letter
+        )
+    } else if !snapshot.drive_target_matches {
+        format!(
+            "Drive {} points to an unexpected target and needs repair.",
+            snapshot.preferred_drive_letter
+        )
+    } else if !snapshot.drive_browsable {
+        format!(
+            "Drive {} exists but is not browseable by Explorer.",
+            snapshot.preferred_drive_letter
+        )
+    } else {
+        "Explorer integration drift was detected and can be repaired.".to_string()
+    };
+
+    MaintenanceStatus {
+        status: if snapshot.is_healthy() {
+            MaintenanceLevel::Ok
+        } else {
+            MaintenanceLevel::Warn
+        }
+        .as_str()
+        .to_string(),
+        message,
+        last_run: unix_timestamp_millis(),
+        details: snapshot,
+    }
+}
+
+fn build_sync_root_state_response(
+) -> Result<MaintenanceStatus<smart_sync::SyncRootStateSnapshot>, smart_sync::SmartSyncError> {
+    let runtime_paths = RuntimePaths::detect();
+    let snapshot = smart_sync::audit_sync_root_state(&runtime_paths.sync_root)?;
+    let shell_mode = shell_state::audit_shell_state().mode;
+
+    let (level, message) = if shell_mode == "local_only" {
+        (
+            MaintenanceLevel::Ok,
+            "Smart Sync is intentionally idle until remote providers are configured.".to_string(),
+        )
+    } else if snapshot.registered && snapshot.connected && snapshot.registered_for_provider {
+        (
+            MaintenanceLevel::Ok,
+            format!("Sync root {} is registered and connected.", snapshot.path),
+        )
+    } else if snapshot.path_exists {
+        (
+            MaintenanceLevel::Warn,
+            format!(
+                "Sync root {} exists, but registration or connection is incomplete.",
+                snapshot.path
+            ),
+        )
+    } else {
+        (
+            MaintenanceLevel::Error,
+            format!("Sync root {} is missing and requires repair.", snapshot.path),
+        )
+    };
+
+    Ok(MaintenanceStatus {
+        status: level.as_str().to_string(),
+        message,
+        last_run: unix_timestamp_millis(),
+        details: snapshot,
+    })
+}
+
+async fn build_recovery_status_response(
+    state: &ApiState,
+) -> Result<MaintenanceStatus<RecoveryStatusResponse>, sqlx::Error> {
+    let last_successful_backup = db::get_last_successful_metadata_backup_at(&state.pool).await?;
+    let recent_attempts: Vec<MetadataBackupAttemptResponse> =
+        db::list_recent_metadata_backups(&state.pool, 10)
+            .await?
+            .into_iter()
+            .map(|record| MetadataBackupAttemptResponse {
+                backup_id: record.backup_id,
+                created_at: record.created_at,
+                snapshot_version: record.snapshot_version,
+                object_key: record.object_key,
+                provider: record.provider,
+                encrypted_size: record.encrypted_size,
+                status: record.status,
+                last_error: record.last_error,
+            })
+            .collect();
+
+    let last_run = recent_attempts
+        .iter()
+        .map(|attempt| attempt.created_at)
+        .max()
+        .or(last_successful_backup)
+        .unwrap_or_else(unix_timestamp_millis);
+
+    let latest_failed = recent_attempts
+        .iter()
+        .find(|attempt| attempt.status.eq_ignore_ascii_case("FAILED"));
+    let (level, message) = if let Some(attempt) = latest_failed {
+        (
+            MaintenanceLevel::Warn,
+            format!(
+                "The latest metadata backup to {} failed{}",
+                attempt.provider,
+                attempt
+                    .last_error
+                    .as_deref()
+                    .map(|err| format!(": {}", err))
+                    .unwrap_or_default()
+            ),
+        )
+    } else if let Some(timestamp) = last_successful_backup {
+        (
+            MaintenanceLevel::Ok,
+            format!(
+                "Metadata backup is available. Last successful run: {}.",
+                timestamp
+            ),
+        )
+    } else {
+        (
+            MaintenanceLevel::Warn,
+            "No metadata backup has been recorded yet.".to_string(),
+        )
+    };
+
+    Ok(MaintenanceStatus {
+        status: level.as_str().to_string(),
+        message,
+        last_run,
+        details: RecoveryStatusResponse {
+            last_successful_backup,
+            recent_attempts,
+        },
+    })
+}
+
+fn maintenance_overview_item<T>(status: &MaintenanceStatus<T>) -> MaintenanceOverviewItem
+where
+    T: Serialize,
+{
+    MaintenanceOverviewItem {
+        status: status.status.clone(),
+        message: status.message.clone(),
+        last_run: status.last_run,
+    }
+}
+
+fn maintenance_error_item(message: String) -> MaintenanceOverviewItem {
+    MaintenanceOverviewItem {
+        status: MaintenanceLevel::Error.as_str().to_string(),
+        message,
+        last_run: unix_timestamp_millis(),
+    }
+}
+
+fn unix_timestamp_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn provider_connection_status(target_status: &str, has_error: bool) -> String {
