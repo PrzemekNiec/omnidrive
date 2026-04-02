@@ -4,6 +4,7 @@ use crate::db;
 use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
 use crate::disaster_recovery;
 use crate::runtime_paths::RuntimePaths;
+use crate::repair::{self, RepairError};
 use crate::scrubber;
 use crate::shell_state;
 use crate::smart_sync;
@@ -338,6 +339,7 @@ impl ApiServer {
             .route("/api/diagnostics/shell", get(get_shell_state))
             .route("/api/diagnostics/sync-root", get(get_sync_root_state))
             .route("/api/maintenance/status", get(get_maintenance_status))
+            .route("/api/maintenance/diagnostics", get(get_maintenance_diagnostics))
             .route("/api/health/vault", get(get_vault_health))
             .route("/api/files", get(get_files))
             .route("/api/files/{inode_id}", delete(delete_file))
@@ -357,6 +359,8 @@ impl ApiServer {
             .route("/api/maintenance/scrub-status", get(get_scrub_status))
             .route("/api/maintenance/scrub-errors", get(get_scrub_errors))
             .route("/api/maintenance/scrub-now", post(post_scrub_now))
+            .route("/api/maintenance/repair-now", post(post_repair_now))
+            .route("/api/maintenance/reconcile-now", post(post_reconcile_now))
             .route("/api/maintenance/repair-shell", post(post_repair_shell))
             .route("/api/maintenance/repair-sync-root", post(post_repair_sync_root))
             .route("/api/recovery/status", get(get_recovery_status))
@@ -525,6 +529,125 @@ async fn get_maintenance_status(State(state): State<ApiState>) -> impl IntoRespo
             sync_root,
             backup,
         }),
+    )
+        .into_response()
+}
+
+async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl IntoResponse {
+    let health = match build_diagnostics_health_response(&state).await {
+        Ok(response) => serde_json::to_value(response).unwrap_or_default(),
+        Err(err) => serde_json::json!({
+            "status": "ERROR",
+            "message": format!("Health diagnostics failed: {err}"),
+            "last_run": unix_timestamp_millis(),
+        }),
+    };
+
+    let shell = serde_json::to_value(build_shell_state_response()).unwrap_or_default();
+    let sync_root = match build_sync_root_state_response() {
+        Ok(response) => serde_json::to_value(response).unwrap_or_default(),
+        Err(err) => serde_json::json!({
+            "status": "ERROR",
+            "message": format!("Sync root diagnostics failed: {err}"),
+            "last_run": unix_timestamp_millis(),
+        }),
+    };
+
+    let backup = match build_recovery_status_response(&state).await {
+        Ok(response) => serde_json::to_value(response).unwrap_or_default(),
+        Err(err) => serde_json::json!({
+            "status": "ERROR",
+            "message": format!("Recovery diagnostics failed: {err}"),
+            "last_run": unix_timestamp_millis(),
+        }),
+    };
+
+    let cache = match db::get_cache_status_summary(&state.pool).await {
+        Ok(summary) => {
+            let config = AppConfig::from_env();
+            let runtime = cache::cache_runtime_stats();
+            serde_json::json!({
+                "status": "OK",
+                "message": "Cache telemetry collected successfully.",
+                "last_run": unix_timestamp_millis(),
+                "total_entries": summary.total_entries,
+                "total_bytes": summary.total_bytes,
+                "max_bytes": config.max_cache_bytes,
+                "prefetched_entries": summary.prefetched_entries,
+                "hit_count": runtime.hit_count,
+                "miss_count": runtime.miss_count,
+            })
+        }
+        Err(err) => serde_json::json!({
+            "status": "ERROR",
+            "message": format!("Cache diagnostics failed: {err}"),
+            "last_run": unix_timestamp_millis(),
+        }),
+    };
+
+    let scrub = match db::get_scrub_status_summary(&state.pool).await {
+        Ok(summary) => serde_json::json!({
+            "status": "OK",
+            "message": "Scrub telemetry collected successfully.",
+            "last_run": unix_timestamp_millis(),
+            "total_shards": summary.total_shards,
+            "verified_shards": summary.verified_shards,
+            "healthy_shards": summary.healthy_shards,
+            "corrupted_or_missing": summary.corrupted_or_missing,
+            "verified_light_shards": summary.verified_light_shards,
+            "verified_deep_shards": summary.verified_deep_shards,
+            "last_scrub_timestamp": summary.last_scrub_timestamp,
+        }),
+        Err(err) => serde_json::json!({
+            "status": "ERROR",
+            "message": format!("Scrub diagnostics failed: {err}"),
+            "last_run": unix_timestamp_millis(),
+        }),
+    };
+
+    let vault_health = match db::get_vault_health_summary(&state.pool).await {
+        Ok(summary) => serde_json::json!({
+            "status": if summary.unreadable_packs > 0 {
+                "ERROR"
+            } else if summary.degraded_packs > 0 {
+                "WARN"
+            } else {
+                "OK"
+            },
+            "message": if summary.unreadable_packs > 0 {
+                format!("{} pack(s) are unreadable.", summary.unreadable_packs)
+            } else if summary.degraded_packs > 0 {
+                format!("{} pack(s) are degraded but recoverable.", summary.degraded_packs)
+            } else {
+                "All active packs are healthy.".to_string()
+            },
+            "last_run": unix_timestamp_millis(),
+            "total_packs": summary.total_packs,
+            "healthy_packs": summary.healthy_packs,
+            "degraded_packs": summary.degraded_packs,
+            "unreadable_packs": summary.unreadable_packs,
+        }),
+        Err(err) => serde_json::json!({
+            "status": "ERROR",
+            "message": format!("Vault health diagnostics failed: {err}"),
+            "last_run": unix_timestamp_millis(),
+        }),
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "OK",
+            "message": "Maintenance diagnostics snapshot collected successfully.",
+            "last_run": unix_timestamp_millis(),
+            "health": health,
+            "shell": shell,
+            "sync_root": sync_root,
+            "backup": backup,
+            "cache": cache,
+            "scrub": scrub,
+            "vault_health": vault_health,
+        })),
     )
         .into_response()
 }
@@ -1124,6 +1247,74 @@ async fn post_scrub_now(State(state): State<ApiState>) -> impl IntoResponse {
                 "message": format!("Light scrub completed. Processed {} shard(s).", processed_shards),
                 "last_run": unix_timestamp_millis(),
                 "processed_shards": processed_shards,
+            })),
+        )
+        .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn post_repair_now(State(state): State<ApiState>) -> impl IntoResponse {
+    match repair::RepairWorker::run_repair_batch_now(state.pool.clone()).await {
+        Ok(report) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "OK",
+                "message": if report.repaired_packs == 0 {
+                    "No degraded packs required immediate repair.".to_string()
+                } else {
+                    format!("Repair processed {} degraded pack(s).", report.repaired_packs)
+                },
+                "last_run": unix_timestamp_millis(),
+                "processed_packs": report.processed_packs,
+                "repaired_packs": report.repaired_packs,
+                "reconciled_packs": report.reconciled_packs,
+            })),
+        )
+        .into_response(),
+        Err(RepairError::MissingProviderConfig) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "WARN",
+                "message": "Repair is idle because no remote providers are configured.",
+                "last_run": unix_timestamp_millis(),
+                "processed_packs": 0,
+                "repaired_packs": 0,
+                "reconciled_packs": 0,
+            })),
+        )
+        .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn post_reconcile_now(State(state): State<ApiState>) -> impl IntoResponse {
+    match repair::RepairWorker::run_reconcile_batch_now(state.pool.clone()).await {
+        Ok(report) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "OK",
+                "message": if report.reconciled_packs == 0 {
+                    "No pack policy drift required reconciliation.".to_string()
+                } else {
+                    format!("Reconciliation processed {} pack(s).", report.reconciled_packs)
+                },
+                "last_run": unix_timestamp_millis(),
+                "processed_packs": report.processed_packs,
+                "repaired_packs": report.repaired_packs,
+                "reconciled_packs": report.reconciled_packs,
+            })),
+        )
+        .into_response(),
+        Err(RepairError::MissingProviderConfig) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "WARN",
+                "message": "Reconciliation is idle because no remote providers are configured.",
+                "last_run": unix_timestamp_millis(),
+                "processed_packs": 0,
+                "repaired_packs": 0,
+                "reconciled_packs": 0,
             })),
         )
         .into_response(),

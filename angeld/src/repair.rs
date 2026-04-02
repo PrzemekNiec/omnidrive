@@ -33,6 +33,19 @@ pub struct RepairWorker {
     retry_delay: Duration,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RepairBatchMode {
+    RepairOnly,
+    ReconcileOnly,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RepairBatchReport {
+    pub processed_packs: usize,
+    pub repaired_packs: usize,
+    pub reconciled_packs: usize,
+}
+
 struct ProviderClient {
     provider_name: &'static str,
     bucket: String,
@@ -178,6 +191,61 @@ impl RepairWorker {
                 sleep(self.poll_interval).await;
             }
         }
+    }
+
+    pub async fn run_repair_batch_now(pool: SqlitePool) -> Result<RepairBatchReport, RepairError> {
+        let worker = Self::from_env(pool).await?;
+        worker.run_batch_now(RepairBatchMode::RepairOnly).await
+    }
+
+    pub async fn run_reconcile_batch_now(
+        pool: SqlitePool,
+    ) -> Result<RepairBatchReport, RepairError> {
+        let worker = Self::from_env(pool).await?;
+        worker.run_batch_now(RepairBatchMode::ReconcileOnly).await
+    }
+
+    async fn run_batch_now(
+        self,
+        mode: RepairBatchMode,
+    ) -> Result<RepairBatchReport, RepairError> {
+        let mut report = RepairBatchReport {
+            processed_packs: 0,
+            repaired_packs: 0,
+            reconciled_packs: 0,
+        };
+
+        diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Active);
+
+        loop {
+            match mode {
+                RepairBatchMode::ReconcileOnly => {
+                    let Some(pack) = db::get_next_pack_requiring_reconciliation(&self.pool).await?
+                    else {
+                        break;
+                    };
+                    self.reconcile_pack_mode(&pack).await?;
+                    report.processed_packs += 1;
+                    report.reconciled_packs += 1;
+                }
+                RepairBatchMode::RepairOnly => {
+                    let Some(pack) = db::get_next_degraded_pack(&self.pool).await? else {
+                        break;
+                    };
+
+                    if !db::pack_requires_healthy(&self.pool, &pack.pack_id).await? {
+                        continue;
+                    }
+
+                    self.repair_pack(&pack).await?;
+                    report.processed_packs += 1;
+                    report.repaired_packs += 1;
+                }
+            }
+        }
+
+        diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Idle);
+        Ok(report)
     }
 
     async fn repair_pack(&self, pack: &db::PackRecord) -> Result<(), RepairError> {

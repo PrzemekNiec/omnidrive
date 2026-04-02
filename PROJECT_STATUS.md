@@ -253,6 +253,18 @@ Scope:
 Outcome:
 - shell and drive recovery can be triggered safely from the UI
 
+Current progress:
+- `Task 30.3` is implemented.
+- The maintenance console now exposes direct UI actions for:
+  - `Repair Drive`
+  - `Repair SyncRoot`
+- Repair actions now return structured maintenance results with:
+  - `status`
+  - `message`
+  - `last_run`
+  - action counts / action lists
+- Shell and sync-root repair continue to use the existing API-backed self-heal logic, but are now visible and triggerable from the dashboard.
+
 #### Task 30.4: Integrity Actions
 Goal:
 - expose integrity and reconciliation operations through the same console
@@ -267,6 +279,17 @@ Scope:
 Outcome:
 - integrity workflows no longer require direct API or CLI calls
 
+Current progress:
+- `Task 30.4` is implemented.
+- The maintenance console now exposes:
+  - `Run Light Scrub`
+  - `Run Repair Now`
+  - `Run Reconcile Now`
+- New maintenance endpoints now exist for on-demand integrity operations:
+  - `/api/maintenance/repair-now`
+  - `/api/maintenance/reconcile-now`
+- Manual repair/reconciliation runs now reuse the existing repair worker logic instead of introducing a separate maintenance-only code path.
+
 #### Task 30.5: Backup & Recovery Actions
 Goal:
 - expose metadata backup and recovery-readiness controls
@@ -279,6 +302,12 @@ Scope:
 
 Outcome:
 - backup operations become visible and manually triggerable from the product UI
+
+Current progress:
+- `Task 30.5` is implemented.
+- The maintenance console now surfaces backup readiness directly from:
+  - `/api/recovery/status`
+- `Backup Metadata Now` is available as a first-class maintenance action with inline status feedback.
 
 #### Task 30.6: Operator Diagnostics
 Goal:
@@ -295,6 +324,20 @@ Scope:
 
 Outcome:
 - operators can assess daemon health quickly without piecing together multiple endpoints
+
+Current progress:
+- `Task 30.6` is implemented.
+- A new aggregate diagnostics endpoint now exists:
+  - `/api/maintenance/diagnostics`
+- The maintenance console now renders a dedicated operator diagnostics area showing:
+  - vault health summary
+  - pending uploads
+  - last upload error
+  - cache usage
+  - scrub coverage
+  - backup readiness
+  - worker state grid
+- This gives operators one maintenance-focused surface instead of forcing them to manually combine separate health and diagnostics endpoints.
 
 #### Task 30.7: E2E / Acceptance Pass
 Goal:
