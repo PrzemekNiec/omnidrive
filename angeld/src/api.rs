@@ -1250,6 +1250,16 @@ async fn post_scrub_now(State(state): State<ApiState>) -> impl IntoResponse {
             })),
         )
         .into_response(),
+        Err(scrubber::ScrubberError::MissingProviderConfig) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "WARN",
+                "message": "Scrub is idle because no remote providers are configured.",
+                "last_run": unix_timestamp_millis(),
+                "processed_shards": 0,
+            })),
+        )
+        .into_response(),
         Err(err) => internal_server_error(err),
     }
 }
