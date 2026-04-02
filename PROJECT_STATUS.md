@@ -146,6 +146,12 @@ Delivered:
 
 Outcome:
 - OmniDrive can now audit and repair its Windows shell state and sync-root state locally, with startup recovery hooks and API-triggered repair paths
+- Operational validation passed on the second Windows machine with installer `0.1.6`:
+  - daemon autostart remained stable after reboot
+  - `O:\` stayed browseable as the local vault view
+  - `/api/diagnostics/shell` reported a healthy shell state
+  - `/api/maintenance/repair-shell` and `/api/maintenance/repair-sync-root` responded successfully
+  - no duplicate drive mappings or shell drift remained after validation
 
 ### Next Epic
 Goal:
