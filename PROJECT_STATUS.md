@@ -94,31 +94,138 @@ Known product posture:
 
 ## Open Epics
 
-### Epic 31: P2P LAN Cache
+### Epic 31 + Epic 32: Multi-Device Core
 Goal:
-- prefer trusted local peers before cloud downloads
+- make OmniDrive safely multi-device by combining LAN-aware reads with conflict-safe revision handling
+
+Implementation plan:
+
+#### Task 31.1: Device Identity and Trust
+Goal:
+- give each installation a durable device identity and a basis for trusted peer relationships
 
 Scope:
-- peer discovery
-- mutual authentication
-- LAN transfer of encrypted chunks or shards
-- downloader preference for LAN before cloud
+- persistent `device_id`
+- device key / identity metadata
+- local device descriptor
+- trusted peer model
 
 Outcome:
-- lower egress cost and faster reads in home/office networks
+- OmniDrive can distinguish devices reliably
 
-### Epic 32: Sync Conflict Handling
+#### Task 31.2: Peer Discovery
 Goal:
-- prevent silent overwrite ambiguity across devices
+- detect trusted peers in the local network
 
 Scope:
-- conflict detection
-- conflict naming / conflict copies
-- revision ordering rules
-- optional lock / lease semantics where justified
+- LAN discovery
+- peer announcement
+- handshake and identity verification
 
 Outcome:
-- safe multi-device behavior
+- nearby OmniDrive nodes can find each other safely
+
+#### Task 31.3: Peer Read Path
+Goal:
+- prefer a trusted LAN peer before cloud for reads
+
+Scope:
+- downloader asks peer for chunk or shard first
+- fallback to cloud if peer is unavailable
+- read-only peer path in the first version
+
+Outcome:
+- lower egress cost and faster local-network reads
+
+#### Task 31.4: Peer Cache Policy
+Goal:
+- make LAN peer usage predictable and safe
+
+Scope:
+- retry rules
+- timeout rules
+- peer health scoring
+- source preference policy:
+  - LAN
+  - local cache
+  - cloud
+
+Outcome:
+- peer-assisted reads behave predictably instead of opportunistically
+
+#### Task 32.1: Revision Lineage
+Goal:
+- track the origin and parentage of file revisions across devices
+
+Scope:
+- `device_id` on revisions
+- parent revision tracking
+- timestamp and lineage metadata
+
+Outcome:
+- OmniDrive can tell linear updates from true conflicts
+
+#### Task 32.2: Conflict Detection
+Goal:
+- detect when two devices create competing updates
+
+Scope:
+- identify parallel revision heads
+- distinguish safe linear updates from conflicts
+
+Outcome:
+- multi-device writes stop being ambiguous
+
+#### Task 32.3: Conflict Materialization
+Goal:
+- preserve both versions instead of silently overwriting one
+
+Scope:
+- conflict-copy naming
+- inode/materialization strategy
+- user-visible conflict files
+
+Outcome:
+- no silent overwrite on concurrent edits
+
+#### Task 32.4: Multi-Device Policy Rules
+Goal:
+- define clear winner/conflict rules for revision application
+
+Scope:
+- linear lineage update rules
+- competing-head conflict rules
+- no aggressive content auto-merge
+
+Outcome:
+- revision behavior stays understandable and safe
+
+#### Task 32.5: Multi-Device Diagnostics
+Goal:
+- expose peer and conflict state through API and UI
+
+Scope:
+- known devices
+- peer health
+- LAN read activity
+- conflict counters
+- last sync activity
+
+Outcome:
+- operators can see whether multi-device behavior is healthy
+
+#### Task 31/32.6: Acceptance Pass
+Goal:
+- prove that LAN reads and conflict-safe writes work across real devices
+
+Scope:
+- two devices on one network
+- LAN-assisted read path
+- concurrent edit conflict scenario
+- conflict copy verification
+
+Outcome:
+- OmniDrive becomes operationally credible as a multi-device system
 
 ### Epic 33: Zero-Knowledge Link Sharing
 Goal:
@@ -149,13 +256,12 @@ Outcome:
 
 ## Recommended Order
 
-1. `Epic 31: P2P LAN Cache`
-2. `Epic 32: Sync Conflict Handling`
+1. `Epic 31 + Epic 32: Multi-Device Core`
 3. `Epic 33: Zero-Knowledge Link Sharing`
 4. `Epic 34: Secure Authentication and Google Login`
 
 Why this order:
-- `Epic 31` and `Epic 32` directly improve the core storage product
+- `Epic 31` and `Epic 32` are strongest when delivered together as one multi-device foundation
 - `Epic 33` expands product value after the multi-device model is safer
 - `Epic 34` is the most optional and should only happen when account-backed product direction is confirmed
 
