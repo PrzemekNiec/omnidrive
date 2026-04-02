@@ -65,7 +65,7 @@ Name: "{group}\OmniDrive Daemon"; Filename: "{app}\{#AppExeName}"
 Name: "{group}\OmniDrive CLI"; Filename: "{app}\{#CliExeName}"
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Start OmniDrive after installation"; Flags: nowait postinstall skipifsilent unchecked
+Filename: "{sys}\wscript.exe"; Parameters: "//B ""{app}\{#AutostartLauncherName}"""; Description: "Start OmniDrive after installation"; Flags: nowait postinstall skipifsilent unchecked
 
 [Code]
 const

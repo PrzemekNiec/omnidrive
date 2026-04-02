@@ -153,11 +153,42 @@ Outcome:
   - `/api/maintenance/repair-shell` and `/api/maintenance/repair-sync-root` responded successfully
   - no duplicate drive mappings or shell drift remained after validation
 
-### Next Epic
+### Epic 29: Storage Cost and Policy Dashboard [x] Completed
+Goal:
+- expose the cost and behavior of storage policies in a product-readable way
+
+Delivered:
+- `/api/storage/cost` aggregates:
+  - logical bytes
+  - physical bytes
+  - physical-to-logical ratio
+  - per-provider physical usage
+  - active pack counts by `storage_mode`
+  - estimated monthly cost
+  - reconcile backlog
+  - orphaned / GC-candidate pack counts
+- the dashboard now includes a dedicated `Storage Economics` section
+- the UI now shows:
+  - logical footprint
+  - physical footprint
+  - policy efficiency
+  - estimated monthly cost
+  - bytes avoided
+  - provider distribution
+  - reconciliation / GC backlog
+- acceptance validation passed on the test machine:
+  - `/api/storage/cost` returned a correct empty-vault envelope in `local-only`
+  - the `Storage Economics` panel rendered correctly
+  - values remained stable after restart
+
+Outcome:
+- storage policy consequences are now visible and decision-grade instead of hidden in worker internals
+
+### Epic 30: Maintenance Console [x] Completed
 Goal:
 - expose maintenance and support flows cleanly so repair, scrub, backup, and diagnostics can be triggered without manual registry or filesystem intervention
 
-Implementation plan:
+Implementation summary:
 
 #### Task 30.1: Maintenance API Consolidation
 Goal:
@@ -351,6 +382,34 @@ Scope:
 
 Outcome:
 - the Maintenance Console is product-ready, not just internally wired
+
+Current progress:
+- `Task 30.7` passed on the test machine.
+- Verified in practice:
+  - `/api/maintenance/status`
+  - `/api/maintenance/diagnostics`
+  - `Repair Drive`
+  - `Repair SyncRoot`
+  - `Backup Metadata Now`
+  - `Run Light Scrub`
+  - `Run Repair Now`
+  - `Run Reconcile Now`
+- The maintenance dashboard stayed responsive during the whole pass.
+- `O:\` remained browseable and writable.
+- Reboot validation passed:
+  - daemon came back
+  - dashboard loaded
+  - maintenance actions remained available
+- The only non-blocking polish items discovered were:
+  - post-install launch should stay headless
+  - remaining legacy dashboard cards should match the new graphite glass style
+
+Outcome:
+- OmniDrive now has a working maintenance console for real repair, backup, and diagnostics flows.
+
+### Next Epic
+Goal:
+- add LAN-aware multi-device acceleration so reads can prefer trusted local peers before cloud downloads
 
 ## ROADMAP
 
