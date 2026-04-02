@@ -1853,6 +1853,127 @@ Scope:
 Outcome:
 - policy decisions become explainable in terms of storage and cost
 
+Implementation plan:
+
+#### Task 29.1: Storage Cost API
+Goal:
+- aggregate storage usage, policy mix, and cost-relevant telemetry into one operator-friendly API surface
+
+Scope:
+- add an API endpoint that reports:
+  - logical bytes
+  - physical bytes
+  - per-provider physical usage
+  - active pack counts by `storage_mode`
+  - estimated savings from local-only and single-replica modes
+  - reconcile backlog and orphaned-pack / GC-candidate counts
+
+Outcome:
+- one API response describes the current storage shape and cost posture of the vault
+
+Current progress:
+- `Task 29.1` is implemented.
+- A dedicated storage dashboard endpoint now exists:
+  - `/api/storage/cost`
+- The API now aggregates:
+  - logical bytes
+  - physical bytes
+  - physical-to-logical ratio
+  - per-provider physical usage
+  - active pack counts by `storage_mode`
+  - estimated provider bytes avoided by `STANDARD` and `LOCAL`
+  - reconciliation backlog
+  - orphaned / GC-candidate pack counts
+- Cost estimation is now driven by configurable per-provider or default `cost-per-GiB-per-month` rates from environment-backed config.
+
+#### Task 29.2: Policy Dashboard UI
+Goal:
+- visualize storage mode distribution and policy consequences clearly in the dashboard
+
+Scope:
+- add cards and charts for:
+  - `PARANOIA`
+  - `STANDARD`
+  - `LOCAL`
+- show logical vs physical footprint
+- show provider distribution and active policy mix
+
+Outcome:
+- the user can see how storage policy choices translate into actual storage behavior
+
+Current progress:
+- `Task 29.2` is implemented.
+- The dashboard now includes a dedicated `Storage Economics` section.
+- It surfaces:
+  - logical footprint
+  - physical footprint
+  - policy efficiency ratio
+  - estimated monthly cost
+- It also visualizes active pack distribution by:
+  - `PARANOIA`
+  - `STANDARD`
+  - `LOCAL`
+- Provider distribution is now shown with both footprint and estimated monthly cost.
+
+#### Task 29.3: Reconciliation and GC Visibility
+Goal:
+- make policy transitions and cleanup debt visible
+
+Scope:
+- show:
+  - packs waiting for reconciliation
+  - packs already reconciled but left as orphaned physical variants
+  - GC-ready candidates
+- expose these counts through both API and UI
+
+Outcome:
+- storage drift and cleanup backlog become measurable
+
+Current progress:
+- `Task 29.3` is implemented.
+- The storage dashboard now exposes:
+  - reconcile backlog packs
+  - orphaned packs
+  - orphaned physical bytes
+  - GC-candidate pack count
+- This makes storage drift and cleanup debt visible without reading raw worker logs.
+
+#### Task 29.4: Estimated Cost Model
+Goal:
+- present a simple but useful estimate of ongoing storage cost
+
+Scope:
+- derive rough monthly usage estimates from:
+  - per-provider physical usage
+  - current storage-mode mix
+- keep the first model simple and transparent
+- present cost as guidance, not as billing-grade truth
+
+Outcome:
+- the user can compare the expected cost impact of `PARANOIA`, `STANDARD`, and `LOCAL`
+
+Current progress:
+- `Task 29.4` is implemented.
+- OmniDrive now computes a lightweight estimated monthly cost model from:
+  - per-provider physical usage
+  - configurable provider rates
+  - current storage-mode mix
+- The first model is intentionally simple and transparent, intended for operator guidance rather than billing-grade accounting.
+
+#### Task 29.5: Acceptance Pass
+Goal:
+- validate that the dashboard numbers match the actual storage model closely enough to trust operationally
+
+Scope:
+- verify on real data that:
+  - totals are internally consistent
+  - provider usage matches known state
+  - policy mix reflects actual packs
+  - reconciliation and GC counters are believable
+
+Outcome:
+- the storage dashboard becomes decision-grade rather than decorative
+
 ### Epic 30: Maintenance Console
 Goal:
 - centralize all maintenance actions for the user and operator

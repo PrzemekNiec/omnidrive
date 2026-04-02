@@ -303,6 +303,45 @@ struct MaintenanceOverviewItem {
     last_run: i64,
 }
 
+#[derive(Serialize)]
+struct StorageCostResponse {
+    status: String,
+    message: String,
+    last_run: i64,
+    logical_bytes: u64,
+    physical_bytes: u64,
+    physical_to_logical_ratio: f64,
+    estimated_monthly_cost_usd: f64,
+    estimated_provider_bytes_avoided: u64,
+    estimated_paranoia_physical_bytes: u64,
+    reconcile_backlog_packs: usize,
+    orphaned_packs: i64,
+    orphaned_physical_bytes: u64,
+    gc_candidate_packs: i64,
+    providers: Vec<StorageCostProviderResponse>,
+    storage_modes: Vec<StorageCostModeResponse>,
+}
+
+#[derive(Serialize)]
+struct StorageCostProviderResponse {
+    provider: String,
+    used_physical_bytes: u64,
+    usage_share_percent: f64,
+    estimated_monthly_cost_usd: f64,
+    configured_cost_per_gib_month: f64,
+}
+
+#[derive(Serialize)]
+struct StorageCostModeResponse {
+    storage_mode: String,
+    active_packs: i64,
+    logical_bytes: u64,
+    physical_bytes: u64,
+    estimated_paranoia_physical_bytes: u64,
+    estimated_provider_bytes_avoided: u64,
+    estimated_monthly_cost_usd: f64,
+}
+
 impl ApiServer {
     pub fn from_env(
         pool: SqlitePool,
@@ -340,6 +379,7 @@ impl ApiServer {
             .route("/api/diagnostics/sync-root", get(get_sync_root_state))
             .route("/api/maintenance/status", get(get_maintenance_status))
             .route("/api/maintenance/diagnostics", get(get_maintenance_diagnostics))
+            .route("/api/storage/cost", get(get_storage_cost))
             .route("/api/health/vault", get(get_vault_health))
             .route("/api/files", get(get_files))
             .route("/api/files/{inode_id}", delete(delete_file))
@@ -650,6 +690,13 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
         })),
     )
         .into_response()
+}
+
+async fn get_storage_cost(State(state): State<ApiState>) -> impl IntoResponse {
+    match build_storage_cost_response(&state).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => internal_server_error(err),
+    }
 }
 
 async fn get_vault_health(State(state): State<ApiState>) -> impl IntoResponse {
@@ -1747,6 +1794,99 @@ async fn build_recovery_status_response(
     })
 }
 
+async fn build_storage_cost_response(
+    state: &ApiState,
+) -> Result<StorageCostResponse, sqlx::Error> {
+    let app_config = AppConfig::from_env();
+    let mode_summaries = db::get_active_storage_mode_summaries(&state.pool).await?;
+    let orphaned_summary = db::get_orphaned_pack_summary(&state.pool).await?;
+    let active_packs = db::list_active_packs(&state.pool, 100_000).await?;
+
+    let reconcile_backlog_packs = count_reconcile_backlog(&state.pool, &active_packs).await?;
+
+    let mut logical_bytes = 0u64;
+    let mut physical_bytes = 0u64;
+    let mut estimated_paranoia_physical_bytes = 0u64;
+    let mut estimated_provider_bytes_avoided = 0u64;
+    let mut storage_modes = Vec::with_capacity(mode_summaries.len());
+
+    for summary in mode_summaries {
+        let summary_logical_bytes = u64::try_from(summary.logical_bytes).unwrap_or(0);
+        let summary_physical_bytes = u64::try_from(summary.physical_bytes).unwrap_or(0);
+        let total_shard_bytes = u64::try_from(summary.total_shard_bytes).unwrap_or(0);
+        let estimated_paranoia_bytes = match summary.storage_mode.as_str() {
+            "EC_2_1" => summary_physical_bytes,
+            "SINGLE_REPLICA" | "LOCAL_ONLY" => total_shard_bytes.saturating_mul(3),
+            _ => summary_physical_bytes,
+        };
+        let avoided_bytes = estimated_paranoia_bytes.saturating_sub(summary_physical_bytes);
+
+        logical_bytes = logical_bytes.saturating_add(summary_logical_bytes);
+        physical_bytes = physical_bytes.saturating_add(summary_physical_bytes);
+        estimated_paranoia_physical_bytes =
+            estimated_paranoia_physical_bytes.saturating_add(estimated_paranoia_bytes);
+        estimated_provider_bytes_avoided =
+            estimated_provider_bytes_avoided.saturating_add(avoided_bytes);
+
+        storage_modes.push(StorageCostModeResponse {
+            storage_mode: summary.storage_mode.clone(),
+            active_packs: summary.active_packs,
+            logical_bytes: summary_logical_bytes,
+            physical_bytes: summary_physical_bytes,
+            estimated_paranoia_physical_bytes: estimated_paranoia_bytes,
+            estimated_provider_bytes_avoided: avoided_bytes,
+            estimated_monthly_cost_usd: round_cost_estimate(
+                bytes_to_gib(summary_physical_bytes) * app_config.estimated_cost_per_gib_month_default,
+            ),
+        });
+    }
+
+    let mut providers = Vec::with_capacity(KNOWN_PROVIDERS.len());
+    let mut estimated_monthly_cost_usd = 0.0f64;
+    for provider in KNOWN_PROVIDERS {
+        let used_physical_bytes = db::get_physical_usage_for_provider(&state.pool, provider).await?;
+        let rate = provider_cost_rate(&app_config, provider);
+        let provider_cost = round_cost_estimate(bytes_to_gib(used_physical_bytes) * rate);
+        estimated_monthly_cost_usd += provider_cost;
+        providers.push(StorageCostProviderResponse {
+            provider: provider.to_string(),
+            used_physical_bytes,
+            usage_share_percent: percent_of(used_physical_bytes, physical_bytes),
+            estimated_monthly_cost_usd: provider_cost,
+            configured_cost_per_gib_month: rate,
+        });
+    }
+
+    let message = if logical_bytes == 0 {
+        "No active packs exist yet, so the storage dashboard is showing an empty vault footprint.".to_string()
+    } else {
+        format!(
+            "Vault footprint is {:.2} GiB logical vs {:.2} GiB physical with an estimated ${:.2}/month remote cost.",
+            bytes_to_gib(logical_bytes),
+            bytes_to_gib(physical_bytes),
+            round_cost_estimate(estimated_monthly_cost_usd)
+        )
+    };
+
+    Ok(StorageCostResponse {
+        status: "OK".to_string(),
+        message,
+        last_run: unix_timestamp_millis(),
+        logical_bytes,
+        physical_bytes,
+        physical_to_logical_ratio: ratio_of(physical_bytes, logical_bytes),
+        estimated_monthly_cost_usd: round_cost_estimate(estimated_monthly_cost_usd),
+        estimated_provider_bytes_avoided,
+        estimated_paranoia_physical_bytes,
+        reconcile_backlog_packs,
+        orphaned_packs: orphaned_summary.pack_count,
+        orphaned_physical_bytes: u64::try_from(orphaned_summary.physical_bytes).unwrap_or(0),
+        gc_candidate_packs: orphaned_summary.pack_count,
+        providers,
+        storage_modes,
+    })
+}
+
 fn maintenance_overview_item<T>(status: &MaintenanceStatus<T>) -> MaintenanceOverviewItem
 where
     T: Serialize,
@@ -1771,6 +1911,53 @@ fn unix_timestamp_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+async fn count_reconcile_backlog(
+    pool: &SqlitePool,
+    active_packs: &[db::PackRecord],
+) -> Result<usize, sqlx::Error> {
+    let mut count = 0usize;
+    for pack in active_packs {
+        let desired = db::get_desired_storage_mode_for_pack(pool, &pack.pack_id).await?;
+        if db::StorageMode::from_str(&pack.storage_mode) != desired {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn bytes_to_gib(bytes: u64) -> f64 {
+    bytes as f64 / 1024.0 / 1024.0 / 1024.0
+}
+
+fn ratio_of(numerator: u64, denominator: u64) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
+    }
+}
+
+fn percent_of(value: u64, total: u64) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (value as f64 / total as f64) * 100.0
+    }
+}
+
+fn round_cost_estimate(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn provider_cost_rate(config: &AppConfig, provider: &str) -> f64 {
+    match provider {
+        "cloudflare-r2" => config.estimated_cost_per_gib_month_r2,
+        "backblaze-b2" => config.estimated_cost_per_gib_month_b2,
+        "scaleway" => config.estimated_cost_per_gib_month_scaleway,
+        _ => config.estimated_cost_per_gib_month_default,
+    }
 }
 
 fn provider_connection_status(target_status: &str, has_error: bool) -> String {

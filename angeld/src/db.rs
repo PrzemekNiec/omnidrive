@@ -353,6 +353,22 @@ pub struct ScrubErrorRecord {
     pub last_verification_status: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct ActiveStorageModeSummary {
+    pub storage_mode: String,
+    pub active_packs: i64,
+    pub logical_bytes: i64,
+    pub cipher_bytes: i64,
+    pub total_shard_bytes: i64,
+    pub physical_bytes: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct OrphanedPackSummary {
+    pub pack_count: i64,
+    pub physical_bytes: i64,
+}
+
 #[allow(dead_code)]
 pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let options = SqliteConnectOptions::from_str(db_url)
@@ -1907,6 +1923,77 @@ pub async fn get_physical_usage_for_provider(
     .unwrap_or(0);
 
     Ok(u64::try_from(total).unwrap_or(0))
+}
+
+#[allow(dead_code)]
+pub async fn get_active_storage_mode_summaries(
+    pool: &SqlitePool,
+) -> Result<Vec<ActiveStorageModeSummary>, sqlx::Error> {
+    sqlx::query_as::<_, ActiveStorageModeSummary>(
+        r#"
+        WITH active_packs AS (
+            SELECT DISTINCT
+                p.pack_id,
+                p.storage_mode,
+                p.logical_size,
+                p.cipher_size,
+                p.shard_size
+            FROM packs p
+            INNER JOIN pack_locations pl
+                ON pl.pack_id = p.pack_id
+        ),
+        physical_by_pack AS (
+            SELECT
+                pack_id,
+                COALESCE(SUM(size), 0) AS physical_bytes
+            FROM pack_shards
+            WHERE status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED')
+            GROUP BY pack_id
+        )
+        SELECT
+            ap.storage_mode,
+            COUNT(*) AS active_packs,
+            COALESCE(SUM(ap.logical_size), 0) AS logical_bytes,
+            COALESCE(SUM(ap.cipher_size), 0) AS cipher_bytes,
+            COALESCE(SUM(ap.shard_size), 0) AS total_shard_bytes,
+            COALESCE(SUM(COALESCE(pb.physical_bytes, 0)), 0) AS physical_bytes
+        FROM active_packs ap
+        LEFT JOIN physical_by_pack pb
+            ON pb.pack_id = ap.pack_id
+        GROUP BY ap.storage_mode
+        ORDER BY ap.storage_mode ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_orphaned_pack_summary(pool: &SqlitePool) -> Result<OrphanedPackSummary, sqlx::Error> {
+    sqlx::query_as::<_, OrphanedPackSummary>(
+        r#"
+        WITH orphaned AS (
+            SELECT p.pack_id
+            FROM packs p
+            LEFT JOIN pack_locations pl
+                ON pl.pack_id = p.pack_id
+            WHERE pl.pack_id IS NULL
+              AND p.status != 'UPLOADING'
+        )
+        SELECT
+            COUNT(*) AS pack_count,
+            COALESCE((
+                SELECT SUM(ps.size)
+                FROM pack_shards ps
+                INNER JOIN orphaned o
+                    ON o.pack_id = ps.pack_id
+                WHERE ps.status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED')
+            ), 0) AS physical_bytes
+        FROM orphaned
+        "#,
+    )
+    .fetch_one(pool)
+    .await
 }
 
 #[allow(dead_code)]

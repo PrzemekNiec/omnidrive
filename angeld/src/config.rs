@@ -5,13 +5,18 @@ use crate::runtime_paths::RuntimePaths;
 pub const DEFAULT_MAX_PHYSICAL_BYTES_PER_PROVIDER: u64 = 80_530_636_800;
 pub const DEFAULT_MAX_UPLOAD_BYTES_PER_SEC: u64 = 0;
 pub const DEFAULT_CACHE_MAX_BYTES: u64 = 53_687_091_200;
+pub const DEFAULT_ESTIMATED_COST_PER_GIB_MONTH: f64 = 0.01;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AppConfig {
     pub max_physical_bytes_per_provider: u64,
     pub max_upload_bytes_per_sec: u64,
     pub max_cache_bytes: u64,
     pub default_watch_dir: Option<PathBuf>,
+    pub estimated_cost_per_gib_month_default: f64,
+    pub estimated_cost_per_gib_month_r2: f64,
+    pub estimated_cost_per_gib_month_b2: f64,
+    pub estimated_cost_per_gib_month_scaleway: f64,
 }
 
 impl AppConfig {
@@ -26,6 +31,31 @@ impl AppConfig {
                 DEFAULT_MAX_UPLOAD_BYTES_PER_SEC,
             ),
             max_cache_bytes: env_u64("OMNIDRIVE_CACHE_MAX_BYTES", DEFAULT_CACHE_MAX_BYTES),
+            estimated_cost_per_gib_month_default: env_f64(
+                "OMNIDRIVE_ESTIMATED_COST_PER_GIB_MONTH",
+                DEFAULT_ESTIMATED_COST_PER_GIB_MONTH,
+            ),
+            estimated_cost_per_gib_month_r2: env_f64(
+                "OMNIDRIVE_R2_COST_PER_GIB_MONTH",
+                env_f64(
+                    "OMNIDRIVE_ESTIMATED_COST_PER_GIB_MONTH",
+                    DEFAULT_ESTIMATED_COST_PER_GIB_MONTH,
+                ),
+            ),
+            estimated_cost_per_gib_month_b2: env_f64(
+                "OMNIDRIVE_B2_COST_PER_GIB_MONTH",
+                env_f64(
+                    "OMNIDRIVE_ESTIMATED_COST_PER_GIB_MONTH",
+                    DEFAULT_ESTIMATED_COST_PER_GIB_MONTH,
+                ),
+            ),
+            estimated_cost_per_gib_month_scaleway: env_f64(
+                "OMNIDRIVE_SCALEWAY_COST_PER_GIB_MONTH",
+                env_f64(
+                    "OMNIDRIVE_ESTIMATED_COST_PER_GIB_MONTH",
+                    DEFAULT_ESTIMATED_COST_PER_GIB_MONTH,
+                ),
+            ),
             default_watch_dir: env::var("OMNIDRIVE_WATCH_DIR")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
@@ -39,5 +69,12 @@ fn env_u64(key: &str, default: u64) -> u64 {
     env::var(key)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_f64(key: &str, default: f64) -> f64 {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(default)
 }

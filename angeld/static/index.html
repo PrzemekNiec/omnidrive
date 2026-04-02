@@ -185,6 +185,99 @@
       </div>
     </section>
 
+    <section class="glass-panel mb-8 rounded-[28px] p-6">
+      <div class="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.28em] text-slate-400">Storage Economics</p>
+          <h2 class="mt-2 text-2xl font-semibold text-white">Cost & Policy Dashboard</h2>
+          <p id="storageCostMessage" class="mt-2 max-w-3xl text-sm text-slate-300">Collecting storage footprint and cost signals...</p>
+        </div>
+        <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-right">
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Estimated Monthly Cost</p>
+          <p id="storageEstimatedCost" class="mt-2 text-2xl font-semibold text-white">$0.00</p>
+        </div>
+      </div>
+
+      <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div class="glass-muted rounded-2xl p-4">
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Logical Footprint</p>
+          <p id="storageLogicalBytes" class="mt-3 text-2xl font-semibold text-white">-</p>
+          <p class="mt-2 text-sm text-slate-300">User-visible payload represented by active packs.</p>
+        </div>
+        <div class="glass-muted rounded-2xl p-4">
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Physical Footprint</p>
+          <p id="storagePhysicalBytes" class="mt-3 text-2xl font-semibold text-white">-</p>
+          <p class="mt-2 text-sm text-slate-300">Remote shard bytes currently committed across providers.</p>
+        </div>
+        <div class="glass-muted rounded-2xl p-4">
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Policy Efficiency</p>
+          <p id="storageEfficiencyRatio" class="mt-3 text-2xl font-semibold text-white">-</p>
+          <p class="mt-2 text-sm text-slate-300">Physical-to-logical ratio of the current active pack set.</p>
+        </div>
+        <div class="glass-muted rounded-2xl p-4">
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Bytes Avoided</p>
+          <p id="storageAvoidedBytes" class="mt-3 text-2xl font-semibold text-white">-</p>
+          <p class="mt-2 text-sm text-slate-300">Provider bytes avoided by `STANDARD` and `LOCAL` instead of full `PARANOIA`.</p>
+        </div>
+      </div>
+
+      <div class="mt-6 grid gap-4 xl:grid-cols-[1.2fr,1fr]">
+        <section class="glass-muted rounded-2xl p-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Policy Mix</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Active packs by storage mode</h3>
+            </div>
+          </div>
+          <div id="storageModeGrid" class="mt-4 grid gap-3 md:grid-cols-3">
+            <div class="glass-panel rounded-2xl p-4">
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
+              <p class="mt-3 text-sm text-slate-300">Collecting storage mode summary...</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="glass-muted rounded-2xl p-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Cleanup Pressure</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Reconcile & GC backlog</h3>
+            </div>
+          </div>
+          <div class="mt-4 grid gap-3">
+            <div class="glass-panel rounded-2xl p-4">
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Reconcile Backlog</p>
+              <p id="storageReconcileBacklog" class="mt-3 text-2xl font-semibold text-white">-</p>
+            </div>
+            <div class="glass-panel rounded-2xl p-4">
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Orphaned Packs</p>
+              <p id="storageOrphanedPacks" class="mt-3 text-2xl font-semibold text-white">-</p>
+              <p id="storageOrphanedBytes" class="mt-2 text-sm text-slate-300">-</p>
+            </div>
+            <div class="glass-panel rounded-2xl p-4">
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">GC Candidates</p>
+              <p id="storageGcCandidates" class="mt-3 text-2xl font-semibold text-white">-</p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="glass-muted mt-6 rounded-2xl p-4">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Provider Distribution</p>
+            <h3 class="mt-2 text-lg font-semibold text-white">Remote footprint by provider</h3>
+          </div>
+        </div>
+        <div id="storageProvidersGrid" class="mt-4 grid gap-3 md:grid-cols-3">
+          <div class="glass-panel rounded-2xl p-4">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
+            <p class="mt-3 text-sm text-slate-300">Collecting provider storage summary...</p>
+          </div>
+        </div>
+      </section>
+    </section>
+
     <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <div class="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
         <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Total Packs</p>
@@ -462,6 +555,18 @@
     const maintenanceDiagnosticsGrid = document.getElementById("maintenanceDiagnosticsGrid");
     const maintenanceWorkersGrid = document.getElementById("maintenanceWorkersGrid");
     const maintenanceDiagnosticsTimestamp = document.getElementById("maintenanceDiagnosticsTimestamp");
+    const storageCostMessage = document.getElementById("storageCostMessage");
+    const storageEstimatedCost = document.getElementById("storageEstimatedCost");
+    const storageLogicalBytes = document.getElementById("storageLogicalBytes");
+    const storagePhysicalBytes = document.getElementById("storagePhysicalBytes");
+    const storageEfficiencyRatio = document.getElementById("storageEfficiencyRatio");
+    const storageAvoidedBytes = document.getElementById("storageAvoidedBytes");
+    const storageModeGrid = document.getElementById("storageModeGrid");
+    const storageProvidersGrid = document.getElementById("storageProvidersGrid");
+    const storageReconcileBacklog = document.getElementById("storageReconcileBacklog");
+    const storageOrphanedPacks = document.getElementById("storageOrphanedPacks");
+    const storageOrphanedBytes = document.getElementById("storageOrphanedBytes");
+    const storageGcCandidates = document.getElementById("storageGcCandidates");
     const modal = document.getElementById("detailsModal");
     const modalTitle = document.getElementById("modalTitle");
     const modalSubtitle = document.getElementById("modalSubtitle");
@@ -527,6 +632,7 @@
       await Promise.all([
         loadMaintenanceStatus(),
         loadMaintenanceDiagnostics(),
+        loadStorageCost(),
         loadHealth(),
         loadQuota(),
         loadCacheStatus(),
@@ -634,6 +740,52 @@
             <p class="text-xs uppercase tracking-[0.22em] text-slate-500">${escapeHtml(worker.replaceAll("_", " "))}</p>
             <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${statusClass(status === "active" ? "WARN" : "OK")}">${escapeHtml(status)}</span>
           </div>
+        </article>
+      `).join("");
+    }
+
+    async function loadStorageCost() {
+      const storage = await fetchJson("/api/storage/cost");
+      storageCostMessage.textContent = storage.message;
+      storageEstimatedCost.textContent = `$${Number(storage.estimated_monthly_cost_usd ?? 0).toFixed(2)}`;
+      storageLogicalBytes.textContent = humanBytes(storage.logical_bytes);
+      storagePhysicalBytes.textContent = humanBytes(storage.physical_bytes);
+      storageEfficiencyRatio.textContent = storage.physical_to_logical_ratio
+        ? `${Number(storage.physical_to_logical_ratio).toFixed(2)}x`
+        : "0.00x";
+      storageAvoidedBytes.textContent = humanBytes(storage.estimated_provider_bytes_avoided);
+      storageReconcileBacklog.textContent = storage.reconcile_backlog_packs ?? 0;
+      storageOrphanedPacks.textContent = storage.orphaned_packs ?? 0;
+      storageOrphanedBytes.textContent = `${humanBytes(storage.orphaned_physical_bytes ?? 0)} orphaned remote footprint`;
+      storageGcCandidates.textContent = storage.gc_candidate_packs ?? 0;
+
+      storageModeGrid.innerHTML = (storage.storage_modes || []).map((mode) => `
+        <article class="glass-panel rounded-2xl p-4">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">${escapeHtml(formatStorageMode(mode.storage_mode))}</p>
+            <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${storageModeClass(mode.storage_mode)}">${escapeHtml(mode.active_packs)} pack(s)</span>
+          </div>
+          <p class="mt-3 text-lg font-semibold text-white">${humanBytes(mode.logical_bytes)} logical</p>
+          <p class="mt-2 text-sm text-slate-300">${humanBytes(mode.physical_bytes)} physical</p>
+          <p class="mt-2 text-sm text-slate-400">Avoided: ${humanBytes(mode.estimated_provider_bytes_avoided)}</p>
+          <p class="mt-2 text-sm text-slate-400">Est. cost: $${Number(mode.estimated_monthly_cost_usd ?? 0).toFixed(2)}</p>
+        </article>
+      `).join("") || `
+        <article class="glass-panel rounded-2xl p-4">
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">No data</p>
+          <p class="mt-3 text-sm text-slate-300">No active packs are present yet.</p>
+        </article>
+      `;
+
+      storageProvidersGrid.innerHTML = (storage.providers || []).map((provider) => `
+        <article class="glass-panel rounded-2xl p-4">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">${escapeHtml(provider.provider)}</p>
+            <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium status-ok">${Number(provider.usage_share_percent ?? 0).toFixed(1)}%</span>
+          </div>
+          <p class="mt-3 text-lg font-semibold text-white">${humanBytes(provider.used_physical_bytes)}</p>
+          <p class="mt-2 text-sm text-slate-300">Est. cost: $${Number(provider.estimated_monthly_cost_usd ?? 0).toFixed(2)}/month</p>
+          <p class="mt-2 text-sm text-slate-400">Configured rate: $${Number(provider.configured_cost_per_gib_month ?? 0).toFixed(3)} / GiB</p>
         </article>
       `).join("");
     }
@@ -1036,6 +1188,19 @@
       maintenanceActionBanner.textContent = message;
       maintenanceActionBanner.className = `rounded-2xl border px-4 py-3 text-sm ${statusClass(status)}`;
       maintenanceActionBanner.classList.remove("hidden");
+    }
+
+    function formatStorageMode(mode) {
+      if (mode === "EC_2_1") return "Paranoia";
+      if (mode === "SINGLE_REPLICA") return "Standard";
+      if (mode === "LOCAL_ONLY") return "Local";
+      return mode;
+    }
+
+    function storageModeClass(mode) {
+      if (mode === "LOCAL_ONLY") return "status-ok";
+      if (mode === "SINGLE_REPLICA") return "status-warn";
+      return "status-error";
     }
 
     loadDashboard().catch((error) => {
