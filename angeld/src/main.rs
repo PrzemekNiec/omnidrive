@@ -35,6 +35,7 @@ use crate::disaster_recovery::{
 use crate::downloader::Downloader;
 use crate::gc::GcWorker;
 use crate::logging::init_logging;
+use crate::onboarding::initialize_onboarding_persistence;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::peer::{PeerClient, PeerService};
 use crate::repair::RepairWorker;
@@ -216,6 +217,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let just_restored = maybe_auto_restore_database(&runtime_paths.db_url).await?;
 
     let pool = db::init_db(&runtime_paths.db_url).await?;
+    initialize_onboarding_persistence(&pool).await?;
     let local_vault_bootstrapped =
         bootstrap_default_local_vault(&pool, &runtime_paths, database_missing_on_start, just_restored)
             .await?;

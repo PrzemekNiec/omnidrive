@@ -1,8 +1,22 @@
 #![allow(dead_code)]
 
+use aws_config::Region;
+use aws_config::timeout::TimeoutConfig;
+use aws_sdk_s3::Client;
+use aws_sdk_s3::config::Credentials;
+use aws_sdk_s3::error::ProvideErrorMetadata;
+use aws_sdk_s3::primitives::ByteStream;
 use crate::uploader::ProviderConfig;
+use crate::{db, db::ProviderConfigRecord};
+use reqwest::Url;
+use serde::Serialize;
+use sqlx::SqlitePool;
 use std::env;
 use std::fmt;
+use std::time::Duration;
+use tokio::net::{TcpStream, lookup_host};
+use tokio::time::timeout;
+use tracing::info;
 
 pub const SYSTEM_CONFIG_ONBOARDING_STATE: &str = "onboarding_state";
 pub const SYSTEM_CONFIG_ONBOARDING_MODE: &str = "onboarding_mode";
@@ -78,6 +92,20 @@ pub struct ProviderSecretMaterial {
     pub secret_access_key: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct ValidationReport {
+    pub status: String,
+    pub message: String,
+    pub last_run: i64,
+    pub provider_name: String,
+    pub endpoint_reachable: bool,
+    pub authenticated: bool,
+    pub list_objects_ok: bool,
+    pub put_object_ok: bool,
+    pub delete_object_ok: bool,
+    pub error_kind: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum OnboardingSecretError {
     EmptySecret(&'static str),
@@ -94,6 +122,74 @@ impl fmt::Display for OnboardingSecretError {
 }
 
 impl std::error::Error for OnboardingSecretError {}
+
+#[derive(Debug)]
+pub enum ProviderError {
+    MissingProviderConfig(String),
+    MissingSecrets(String),
+    InvalidCredentials(String),
+    BucketNotFound(String),
+    AccessDenied(String),
+    EndpointUnreachable(String),
+    ClockSkew(String),
+    Io(std::io::Error),
+    Url(String),
+    Aws(String),
+}
+
+impl fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingProviderConfig(message)
+            | Self::MissingSecrets(message)
+            | Self::InvalidCredentials(message)
+            | Self::BucketNotFound(message)
+            | Self::AccessDenied(message)
+            | Self::EndpointUnreachable(message)
+            | Self::ClockSkew(message)
+            | Self::Url(message)
+            | Self::Aws(message) => write!(f, "{message}"),
+            Self::Io(err) => write!(f, "i/o error: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+impl From<std::io::Error> for ProviderError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+#[derive(Debug)]
+pub enum OnboardingInitError {
+    Db(sqlx::Error),
+    Secret(OnboardingSecretError),
+}
+
+impl fmt::Display for OnboardingInitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Db(err) => write!(f, "sqlite error: {err}"),
+            Self::Secret(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for OnboardingInitError {}
+
+impl From<sqlx::Error> for OnboardingInitError {
+    fn from(value: sqlx::Error) -> Self {
+        Self::Db(value)
+    }
+}
+
+impl From<OnboardingSecretError> for OnboardingInitError {
+    fn from(value: OnboardingSecretError) -> Self {
+        Self::Secret(value)
+    }
+}
 
 impl ProviderDraft {
     pub fn is_complete(&self) -> bool {
@@ -198,6 +294,193 @@ pub(crate) fn provider_config_from_env(provider_name: &str) -> Option<ProviderCo
     }
 }
 
+pub async fn initialize_onboarding_persistence(
+    pool: &SqlitePool,
+) -> Result<(), OnboardingInitError> {
+    ensure_onboarding_defaults(pool).await?;
+
+    let onboarding_completed = db::get_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_STATE)
+        .await?
+        .is_some_and(|value| OnboardingState::from_str(&value) == OnboardingState::Completed);
+
+    if !onboarding_completed {
+        sync_env_provider_drafts_to_db(pool).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn sync_env_provider_drafts_to_db(pool: &SqlitePool) -> Result<usize, OnboardingInitError> {
+    let drafts = detect_env_provider_drafts();
+    db::set_system_config_value(
+        pool,
+        SYSTEM_CONFIG_DRAFT_ENV_DETECTED,
+        if drafts.is_empty() { "0" } else { "1" },
+    )
+    .await?;
+
+    let mut imported = 0usize;
+    for draft in drafts {
+        if should_import_draft(db::get_provider_config(pool, &draft.provider_name).await?.as_ref()) {
+            db::upsert_provider_config(
+                pool,
+                &draft.provider_name,
+                draft.endpoint.as_deref().unwrap_or(""),
+                draft.region.as_deref().unwrap_or(""),
+                draft.bucket.as_deref().unwrap_or(""),
+                draft.force_path_style,
+                false,
+                Some(&draft.source),
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+            if let (Some(access_key_id), Some(secret_access_key)) = (
+                draft.access_key_id.as_deref(),
+                draft.secret_access_key.as_deref(),
+            ) {
+                let (sealed_access_key_id, sealed_secret_access_key) =
+                    seal_provider_secrets(access_key_id, secret_access_key)?;
+                db::upsert_provider_secret(
+                    pool,
+                    &draft.provider_name,
+                    &sealed_access_key_id,
+                    &sealed_secret_access_key,
+                )
+                .await?;
+            }
+
+            imported += 1;
+        }
+    }
+
+    Ok(imported)
+}
+
+pub async fn validate_persisted_provider_connection(
+    pool: &SqlitePool,
+    provider_name: &str,
+) -> Result<ValidationReport, ProviderError> {
+    let config_record = db::get_provider_config(pool, provider_name)
+        .await
+        .map_err(|err| ProviderError::Aws(format!("failed to load provider config: {err}")))?
+        .ok_or_else(|| {
+            ProviderError::MissingProviderConfig(format!(
+                "provider configuration for {provider_name} is missing"
+            ))
+        })?;
+    let secret_record = db::get_provider_secret(pool, provider_name)
+        .await
+        .map_err(|err| ProviderError::Aws(format!("failed to load provider secret: {err}")))?
+        .ok_or_else(|| {
+            ProviderError::MissingSecrets(format!(
+                "provider secret for {provider_name} is missing"
+            ))
+        })?;
+    let secrets = unseal_provider_secrets(
+        &secret_record.access_key_id_ciphertext,
+        &secret_record.secret_access_key_ciphertext,
+    )
+    .map_err(|err| ProviderError::MissingSecrets(err.to_string()))?;
+    let config = provider_config_from_record(&config_record, &secrets);
+    validate_provider_connection(config, secrets).await
+}
+
+pub(crate) async fn validate_provider_connection(
+    config: ProviderConfig,
+    secrets: ProviderSecretMaterial,
+) -> Result<ValidationReport, ProviderError> {
+    info!(
+        "[ONBOARDING] Testing connection to {} at {}",
+        config.provider_name, config.endpoint
+    );
+
+    let endpoint_reachable = probe_endpoint_reachability(&config.endpoint).await?;
+    info!(
+        "[ONBOARDING] Reachability probe for {} succeeded",
+        config.provider_name
+    );
+    let client = build_validation_client(&config).await;
+
+    client
+        .head_bucket()
+        .bucket(&config.bucket)
+        .send()
+        .await
+        .map_err(|err| classify_provider_error("authentication", &config, &err))?;
+    info!(
+        "[ONBOARDING] Authentication probe for {} succeeded",
+        config.provider_name
+    );
+
+    client
+        .list_objects_v2()
+        .bucket(&config.bucket)
+        .max_keys(1)
+        .send()
+        .await
+        .map_err(|err| classify_provider_error("list", &config, &err))?;
+    info!(
+        "[ONBOARDING] ListObjects probe for {} succeeded",
+        config.provider_name
+    );
+
+    let probe_key = format!(
+        ".omnidrive_probe/{}_{}",
+        config.provider_name,
+        unix_timestamp_millis()
+    );
+    client
+        .put_object()
+        .bucket(&config.bucket)
+        .key(&probe_key)
+        .body(ByteStream::from(vec![]))
+        .send()
+        .await
+        .map_err(|err| classify_provider_error("put", &config, &err))?;
+    info!(
+        "[ONBOARDING] PutObject probe for {} succeeded",
+        config.provider_name
+    );
+
+    client
+        .delete_object()
+        .bucket(&config.bucket)
+        .key(&probe_key)
+        .send()
+        .await
+        .map_err(|err| classify_provider_error("delete", &config, &err))?;
+    info!(
+        "[ONBOARDING] DeleteObject probe for {} succeeded",
+        config.provider_name
+    );
+
+    let _ = secrets;
+
+    info!(
+        "[ONBOARDING] Connection test for {} completed successfully",
+        config.provider_name
+    );
+
+    Ok(ValidationReport {
+        status: "OK".to_string(),
+        message: format!(
+            "Connection to {} is verified for bucket {}.",
+            config.provider_name, config.bucket
+        ),
+        last_run: unix_timestamp_millis(),
+        provider_name: config.provider_name.to_string(),
+        endpoint_reachable,
+        authenticated: true,
+        list_objects_ok: true,
+        put_object_ok: true,
+        delete_object_ok: true,
+        error_kind: None,
+    })
+}
+
 pub fn seal_provider_secrets(
     access_key_id: &str,
     secret_access_key: &str,
@@ -252,6 +535,228 @@ fn env_flag(key: &str) -> bool {
             .as_deref(),
         Some("1" | "true" | "yes")
     )
+}
+
+async fn ensure_onboarding_defaults(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    if db::get_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_STATE)
+        .await?
+        .is_none()
+    {
+        db::set_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_STATE, OnboardingState::Initial.as_str()).await?;
+    }
+
+    if db::get_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_MODE)
+        .await?
+        .is_none()
+    {
+        db::set_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_MODE, OnboardingMode::LocalOnly.as_str()).await?;
+    }
+
+    if db::get_system_config_value(pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP)
+        .await?
+        .is_none()
+    {
+        db::set_system_config_value(pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "welcome").await?;
+    }
+
+    if db::get_system_config_value(pool, SYSTEM_CONFIG_CLOUD_ENABLED)
+        .await?
+        .is_none()
+    {
+        db::set_system_config_value(pool, SYSTEM_CONFIG_CLOUD_ENABLED, "0").await?;
+    }
+
+    if db::get_system_config_value(pool, SYSTEM_CONFIG_DRAFT_ENV_DETECTED)
+        .await?
+        .is_none()
+    {
+        db::set_system_config_value(pool, SYSTEM_CONFIG_DRAFT_ENV_DETECTED, "0").await?;
+    }
+
+    Ok(())
+}
+
+fn should_import_draft(existing: Option<&ProviderConfigRecord>) -> bool {
+    match existing {
+        None => true,
+        Some(record) => record.draft_source.as_deref() == Some(".env"),
+    }
+}
+
+fn provider_config_from_record(
+    record: &ProviderConfigRecord,
+    secrets: &ProviderSecretMaterial,
+) -> ProviderConfig {
+    ProviderConfig {
+        provider_name: provider_name_static(&record.provider_name),
+        endpoint: record.endpoint.clone(),
+        region: record.region.clone(),
+        bucket: record.bucket.clone(),
+        access_key_id: secrets.access_key_id.clone(),
+        secret_access_key: secrets.secret_access_key.clone(),
+        force_path_style: record.force_path_style != 0,
+    }
+}
+
+fn provider_name_static(provider_name: &str) -> &'static str {
+    match provider_name {
+        "cloudflare-r2" => "cloudflare-r2",
+        "backblaze-b2" => "backblaze-b2",
+        "scaleway" => "scaleway",
+        _ => "unknown",
+    }
+}
+
+async fn build_validation_client(config: &ProviderConfig) -> Client {
+    let timeout_config = TimeoutConfig::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(30))
+        .operation_attempt_timeout(Duration::from_secs(30))
+        .operation_timeout(Duration::from_secs(45))
+        .build();
+    let shared_config = crate::aws_http::load_shared_config(
+        Region::new(config.region.clone()),
+        timeout_config.clone(),
+        config.endpoint.starts_with("http://"),
+    )
+    .await;
+
+    let s3_config = aws_sdk_s3::config::Builder::from(&shared_config)
+        .credentials_provider(Credentials::new(
+            config.access_key_id.clone(),
+            config.secret_access_key.clone(),
+            None,
+            None,
+            config.provider_name,
+        ))
+        .endpoint_url(&config.endpoint)
+        .region(Region::new(config.region.clone()))
+        .timeout_config(timeout_config)
+        .force_path_style(config.force_path_style)
+        .build();
+
+    Client::from_conf(s3_config)
+}
+
+async fn probe_endpoint_reachability(endpoint: &str) -> Result<bool, ProviderError> {
+    let url =
+        Url::parse(endpoint).map_err(|err| ProviderError::Url(format!("invalid endpoint URL: {err}")))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| ProviderError::Url("endpoint URL is missing a hostname".to_string()))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| ProviderError::Url("endpoint URL is missing a known port".to_string()))?;
+
+    let addrs: Vec<_> = lookup_host((host, port))
+        .await
+        .map_err(|err| {
+            ProviderError::EndpointUnreachable(format!(
+                "failed to resolve {host}:{port}: {err}"
+            ))
+        })?
+        .collect();
+    if addrs.is_empty() {
+        return Err(ProviderError::EndpointUnreachable(format!(
+            "no network addresses resolved for {host}:{port}"
+        )));
+    }
+
+    timeout(Duration::from_secs(5), TcpStream::connect(addrs[0]))
+        .await
+        .map_err(|_| {
+            ProviderError::EndpointUnreachable(format!(
+                "timed out connecting to {host}:{port}"
+            ))
+        })?
+        .map_err(|err| {
+            ProviderError::EndpointUnreachable(format!(
+                "failed to connect to {host}:{port}: {err}"
+            ))
+        })?;
+
+    Ok(true)
+}
+
+fn classify_provider_error<E>(
+    phase: &'static str,
+    config: &ProviderConfig,
+    err: &E,
+) -> ProviderError
+where
+    E: ProvideErrorMetadata + fmt::Display,
+{
+    let code = err.code().map(|value| value.to_ascii_lowercase());
+    let message = err
+        .message()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| err.to_string());
+    let lower = message.to_ascii_lowercase();
+
+    if lower.contains("skew") || lower.contains("requesttimetooskewed") {
+        return ProviderError::ClockSkew(format!(
+            "{phase} probe failed for {} because system clock appears skewed: {}",
+            config.provider_name, message
+        ));
+    }
+
+    if matches!(code.as_deref(), Some("nosuchbucket") | Some("notfound"))
+        || lower.contains("bucket") && lower.contains("not found")
+    {
+        return ProviderError::BucketNotFound(format!(
+            "{phase} probe failed for {} because bucket {} was not found: {}",
+            config.provider_name, config.bucket, message
+        ));
+    }
+
+    if matches!(
+        code.as_deref(),
+        Some("invalidaccesskeyid")
+            | Some("signaturedoesnotmatch")
+            | Some("invalidtoken")
+            | Some("expiredtoken")
+    ) {
+        return ProviderError::InvalidCredentials(format!(
+            "{phase} probe failed for {} due to invalid credentials: {}",
+            config.provider_name, message
+        ));
+    }
+
+    if matches!(code.as_deref(), Some("accessdenied")) {
+        return match phase {
+            "authentication" => ProviderError::InvalidCredentials(format!(
+                "authentication probe failed for {}: {}",
+                config.provider_name, message
+            )),
+            _ => ProviderError::AccessDenied(format!(
+                "{phase} probe failed for {} due to missing bucket permissions: {}",
+                config.provider_name, message
+            )),
+        };
+    }
+
+    if lower.contains("dns")
+        || lower.contains("connection refused")
+        || lower.contains("timed out")
+        || lower.contains("unreachable")
+    {
+        return ProviderError::EndpointUnreachable(format!(
+            "{phase} probe failed for {} because endpoint {} is unreachable: {}",
+            config.provider_name, config.endpoint, message
+        ));
+    }
+
+    ProviderError::Aws(format!(
+        "{phase} probe failed for {}: {}",
+        config.provider_name, message
+    ))
+}
+
+fn unix_timestamp_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(windows)]

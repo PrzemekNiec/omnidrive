@@ -332,6 +332,11 @@ Scope:
 Outcome:
 - configured providers are actually usable, not just saved
 
+Status:
+- implemented in backend
+- `POST /api/onboarding/setup-provider` now persists config, validates endpoint/auth/list/put/delete, stores `last_test_status`, `last_test_error`, `last_test_at`, and returns a structured validation report
+- onboarding status API still exposes only `SET/MISSING` for secrets and never returns ciphertext/plaintext
+
 #### Task B5: First-Run Wizard UI
 Goal:
 - add a full-screen glassmorphism wizard for first run and provider onboarding
@@ -390,6 +395,26 @@ Scope:
 
 Outcome:
 - OmniDrive becomes production-testable across real devices and real providers
+
+Current bridge implementation status:
+- `B1` completed:
+  - `system_config`
+  - `provider_configs`
+  - `provider_secrets`
+  - Windows DPAPI-based sealing for provider secrets
+- `B2` completed in backend foundation form:
+  - `.env` drafts are detected at startup
+  - drafts are imported into SQLite as non-authoritative onboarding data
+  - draft presence is tracked in `system_config`
+- `B3` backend API is now partially implemented:
+  - `GET /api/onboarding/status`
+  - `POST /api/onboarding/bootstrap-local`
+  - `POST /api/onboarding/setup-identity`
+  - `POST /api/onboarding/setup-provider`
+  - `POST /api/onboarding/complete`
+- security rule locked in for future work:
+  - onboarding status API never returns provider secrets or ciphertexts
+  - it returns only secret presence state such as `SET` / `MISSING`
 
 ### Epic 33: Zero-Knowledge Link Sharing
 Goal:
@@ -461,8 +486,8 @@ Current saved progress for `Epic 31 + Epic 32`:
 
 Next execution plan:
 1. implement the bridge epic:
-   - onboarding persistence
-   - provider setup
+   - provider connection validation
+   - wizard UI
    - join existing vault
 2. connect the three real providers:
    - Cloudflare R2
