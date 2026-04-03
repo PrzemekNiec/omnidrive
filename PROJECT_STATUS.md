@@ -115,12 +115,18 @@ Current implementation status:
   - `conflict_reason`
 - conflict-copy materialization exists in the database/API layer
 - watcher write path can now materialize an automatic conflict copy when the DB head changed during a local edit
+- revision application now distinguishes:
+  - fast-forward lineage promotion
+  - restore rewind
+  - true parallel heads
+- restore and local write flows only materialize conflict copies when lineage actually diverged or rewound
 - multi-device status is exposed through:
   - `/api/multidevice/status`
   - dashboard `Multi-Device Core` panel
 
 What is still open inside the epic:
 - automatic conflict detection during true concurrent multi-device writes
+- broader acceptance of the new winner/conflict rules across real multi-device scenarios
 - full acceptance pass across two active devices in one network
 
 Implementation plan:
@@ -252,6 +258,139 @@ Scope:
 Outcome:
 - OmniDrive becomes operationally credible as a multi-device system
 
+### Epic 31/32 Bridge: Onboarding, Provider Setup & Join Existing Vault
+Goal:
+- replace manual `.env` setup with a real onboarding flow that can attach a second machine to the same vault without breaking the existing local-only experience
+
+Why this bridge epic exists:
+- the current product is strong in single-device local-only mode
+- the current multi-device core is real code, but it cannot be validated honestly until two machines can join the same vault through a supported product flow
+- this bridge epic exists to make `Epic 31 + Epic 32` testable in production-like conditions before moving to sharing and hosted identity
+
+Constraints:
+- do not remove or block the current local-only first run
+- do not gate `O:\`, diagnostics, or maintenance behind wizard completion
+- do not duplicate device identity storage already implemented for the multi-device core
+- provider secrets must be stored securely, not as plain-text config rows
+
+#### Task B1: Onboarding State Persistence
+Goal:
+- give OmniDrive a durable application-level onboarding state
+
+Scope:
+- add `system_config` for:
+  - `onboarding_state`
+  - `onboarding_mode`
+  - `last_onboarding_step`
+  - `draft_env_detected`
+  - `cloud_enabled`
+- add `provider_configs` for non-secret provider metadata
+- add a secure secrets layer for provider credentials
+
+Outcome:
+- onboarding and provider setup stop depending on ad-hoc environment files
+
+#### Task B2: Safe Draft Import From `.env`
+Goal:
+- support existing developer/tester setups without making `.env` the product configuration model
+
+Scope:
+- detect `.env` only when onboarding is incomplete
+- import found values as a draft
+- expose draft presence to the onboarding API/UI
+- never require `.env` for normal product usage
+
+Outcome:
+- older setups migrate cleanly into the productized config model
+
+#### Task B3: Onboarding API
+Goal:
+- expose a real API for onboarding and provider setup
+
+Scope:
+- `GET /api/onboarding/status`
+- `POST /api/onboarding/bootstrap-local`
+- `POST /api/onboarding/setup-identity`
+- `POST /api/onboarding/setup-provider`
+- `POST /api/onboarding/join-existing`
+- `POST /api/onboarding/complete`
+
+Outcome:
+- onboarding becomes an explicit product flow instead of manual configuration
+
+#### Task B4: Provider Connection Validation
+Goal:
+- make provider setup real and trustworthy
+
+Scope:
+- test auth
+- test bucket access
+- test read/list
+- optional small write/delete probe
+- return provider-specific validation results and errors
+
+Outcome:
+- configured providers are actually usable, not just saved
+
+#### Task B5: First-Run Wizard UI
+Goal:
+- add a full-screen glassmorphism wizard for first run and provider onboarding
+
+Scope:
+- steps:
+  - Welcome
+  - Choose Mode
+  - Identity
+  - Providers
+  - Security
+  - Finalize
+- supported modes:
+  - `Create New Local Vault`
+  - `Connect Cloud Providers`
+  - `Join Existing Vault`
+
+Outcome:
+- the user can configure OmniDrive without touching `.env`
+
+#### Task B6: Join Existing Vault Flow
+Goal:
+- allow a second computer to join the same vault through the product UI/API
+
+Scope:
+- configure shared providers
+- accept passphrase
+- restore metadata
+- verify matching `vault_id`
+- rehydrate local state for the joined device
+
+Outcome:
+- two computers can legitimately operate against the same vault
+
+#### Task B7: Runtime Integration Without Regressing Local-Only Mode
+Goal:
+- integrate onboarding with the daemon without breaking current bootstrap behavior
+
+Scope:
+- keep `O:\` and local-only mode available before onboarding completion
+- gate only cloud-specific or join-specific actions when not configured
+- reload or restart provider-backed workers after onboarding changes
+
+Outcome:
+- onboarding extends the product instead of regressing the stable local-first flow
+
+#### Task B8: Production Bring-Up and Multi-Device Acceptance
+Goal:
+- connect the real providers and validate the first honest multi-device scenario
+
+Scope:
+- configure Cloudflare R2, Backblaze B2, and Scaleway
+- create or restore one shared vault
+- attach second machine to that vault
+- rerun the `Epic 31 + Epic 32` acceptance pass with real data paths
+
+Outcome:
+- OmniDrive becomes production-testable across real devices and real providers
+
 ### Epic 33: Zero-Knowledge Link Sharing
 Goal:
 - allow private file sharing without exposing keys to the server
@@ -282,11 +421,13 @@ Outcome:
 ## Recommended Order
 
 1. `Epic 31 + Epic 32: Multi-Device Core`
+2. `Epic 31/32 Bridge: Onboarding, Provider Setup & Join Existing Vault`
 3. `Epic 33: Zero-Knowledge Link Sharing`
 4. `Epic 34: Secure Authentication and Google Login`
 
 Why this order:
 - `Epic 31` and `Epic 32` are strongest when delivered together as one multi-device foundation
+- the bridge epic is required to validate that foundation honestly on real providers and shared vaults
 - `Epic 33` expands product value after the multi-device model is safer
 - `Epic 34` is the most optional and should only happen when account-backed product direction is confirmed
 
@@ -299,8 +440,10 @@ Current saved progress for `Epic 31 + Epic 32`:
   - trusted peer registry in SQLite
   - LAN peer discovery and handshake
   - peer-first downloader read path with cloud fallback
+  - peer eligibility heuristics with stale rejection, backoff, and health scoring
   - revision lineage fields on `file_revisions`
   - conflict-copy materialization in DB and API
+  - lineage-aware winner/conflict rules for restore and local-write flows
   - `/api/multidevice/status`
   - dashboard `Multi-Device Core` panel
 - files touched in the current pass:
@@ -317,10 +460,16 @@ Current saved progress for `Epic 31 + Epic 32`:
   - `angeld/Cargo.toml`
 
 Next execution plan:
-1. finish automatic conflict detection on real concurrent writes
-2. define and implement multi-device winner/conflict rules
-3. add peer cache policy, timeouts, and health scoring
-4. run acceptance pass on two active devices in one LAN
+1. implement the bridge epic:
+   - onboarding persistence
+   - provider setup
+   - join existing vault
+2. connect the three real providers:
+   - Cloudflare R2
+   - Backblaze B2
+   - Scaleway
+3. use the bridge flow to attach the second machine to the same vault
+4. rerun the real acceptance pass for `Epic 31 + Epic 32`
 
 Working rule for future sessions on this project:
 - always use `jcodemunch` at the beginning of the session for repo context, symbol lookup, and code navigation before making implementation decisions
