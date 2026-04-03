@@ -1287,23 +1287,43 @@ async fn restore_file_revision(
         .unwrap_or("Unknown Device");
 
     let conflict_copy = match current_revision {
-        Some(current) if current.revision_id != revision_id => {
-            match db::materialize_conflict_copy_from_revision(
-                &state.pool,
-                current.revision_id,
-                conflict_device_id,
-                conflict_device_name,
-                "restore_overwrite",
-            )
-            .await
-            {
-                Ok((conflict_inode_id, conflict_revision_id, conflict_name, _conflict_id)) => {
-                    Some((conflict_inode_id, conflict_revision_id, conflict_name))
+        Some(current) => {
+            let lineage =
+                match db::classify_revision_lineage(&state.pool, revision_id, current.revision_id)
+                    .await
+                {
+                    Ok(lineage) => lineage,
+                    Err(err) => return internal_server_error(err),
+                };
+
+            let conflict_reason = match lineage {
+                db::RevisionLineageRelation::Same
+                | db::RevisionLineageRelation::CandidateDescendsFromCurrent => None,
+                db::RevisionLineageRelation::CurrentDescendsFromCandidate => {
+                    Some("restore_rewind")
                 }
-                Err(err) => return internal_server_error(err),
+                db::RevisionLineageRelation::Parallel => Some("parallel_restore"),
+            };
+
+            match conflict_reason {
+                Some(reason) => match db::materialize_conflict_copy_from_revision(
+                    &state.pool,
+                    current.revision_id,
+                    conflict_device_id,
+                    conflict_device_name,
+                    reason,
+                )
+                .await
+                {
+                    Ok((conflict_inode_id, conflict_revision_id, conflict_name, _conflict_id)) => {
+                        Some((conflict_inode_id, conflict_revision_id, conflict_name))
+                    }
+                    Err(err) => return internal_server_error(err),
+                },
+                None => None,
             }
         }
-        _ => None,
+        None => None,
     };
 
     match db::promote_revision_to_current(&state.pool, revision_id).await {

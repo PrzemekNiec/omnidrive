@@ -320,20 +320,41 @@ impl Packer {
         let mut conflict_copy_name = None;
         let parent_revision_id = if let Some(expected_parent_revision_id) = expected_parent_revision_id {
             match current_revision.as_ref() {
-                Some(current) if current.revision_id != expected_parent_revision_id => {
-                    let (_conflict_inode_id, _conflict_revision_id, materialized_name, _conflict_id) =
-                        db::materialize_conflict_copy_from_revision(
-                            &self.pool,
-                            current.revision_id,
-                            local_device_id,
-                            local_device_name,
-                            "parallel_local_edit",
-                        )
-                        .await?;
-                    conflict_copy_name = Some(materialized_name);
-                    Some(expected_parent_revision_id)
+                Some(current) => {
+                    let lineage = db::classify_revision_lineage(
+                        &self.pool,
+                        expected_parent_revision_id,
+                        current.revision_id,
+                    )
+                    .await?;
+                    match lineage {
+                        db::RevisionLineageRelation::Same => Some(expected_parent_revision_id),
+                        db::RevisionLineageRelation::CandidateDescendsFromCurrent => {
+                            Some(expected_parent_revision_id)
+                        }
+                        db::RevisionLineageRelation::CurrentDescendsFromCandidate
+                        | db::RevisionLineageRelation::Parallel => {
+                            let reason = match lineage {
+                                db::RevisionLineageRelation::CurrentDescendsFromCandidate => {
+                                    "stale_local_base"
+                                }
+                                db::RevisionLineageRelation::Parallel => "parallel_local_edit",
+                                _ => unreachable!(),
+                            };
+                            let (_conflict_inode_id, _conflict_revision_id, materialized_name, _conflict_id) =
+                                db::materialize_conflict_copy_from_revision(
+                                    &self.pool,
+                                    current.revision_id,
+                                    local_device_id,
+                                    local_device_name,
+                                    reason,
+                                )
+                                .await?;
+                            conflict_copy_name = Some(materialized_name);
+                            Some(expected_parent_revision_id)
+                        }
+                    }
                 }
-                Some(_) => Some(expected_parent_revision_id),
                 None => Some(expected_parent_revision_id),
             }
         } else {

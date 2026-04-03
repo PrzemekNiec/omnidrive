@@ -228,6 +228,14 @@ pub struct ConflictEventRecord {
     pub created_at: i64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevisionLineageRelation {
+    Same,
+    CandidateDescendsFromCurrent,
+    CurrentDescendsFromCandidate,
+    Parallel,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
 pub struct ChunkLookupRecord {
@@ -1774,6 +1782,27 @@ pub async fn promote_revision_to_current(
 
     tx.commit().await?;
     Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn classify_revision_lineage(
+    pool: &SqlitePool,
+    candidate_revision_id: i64,
+    current_revision_id: i64,
+) -> Result<RevisionLineageRelation, sqlx::Error> {
+    if candidate_revision_id == current_revision_id {
+        return Ok(RevisionLineageRelation::Same);
+    }
+
+    if is_revision_ancestor(pool, current_revision_id, candidate_revision_id).await? {
+        return Ok(RevisionLineageRelation::CandidateDescendsFromCurrent);
+    }
+
+    if is_revision_ancestor(pool, candidate_revision_id, current_revision_id).await? {
+        return Ok(RevisionLineageRelation::CurrentDescendsFromCandidate);
+    }
+
+    Ok(RevisionLineageRelation::Parallel)
 }
 
 #[allow(dead_code)]
@@ -4198,4 +4227,37 @@ fn sanitize_conflict_component(value: &str) -> String {
             _ => ch,
         })
         .collect()
+}
+
+async fn is_revision_ancestor(
+    pool: &SqlitePool,
+    ancestor_revision_id: i64,
+    descendant_revision_id: i64,
+) -> Result<bool, sqlx::Error> {
+    let found = sqlx::query_scalar::<_, i64>(
+        r#"
+        WITH RECURSIVE lineage(revision_id, parent_revision_id) AS (
+            SELECT revision_id, parent_revision_id
+            FROM file_revisions
+            WHERE revision_id = ?
+
+            UNION ALL
+
+            SELECT fr.revision_id, fr.parent_revision_id
+            FROM file_revisions fr
+            INNER JOIN lineage l
+                ON fr.revision_id = l.parent_revision_id
+        )
+        SELECT 1
+        FROM lineage
+        WHERE revision_id = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(descendant_revision_id)
+    .bind(ancestor_revision_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(found.is_some())
 }
