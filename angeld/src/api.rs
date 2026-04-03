@@ -3,6 +3,7 @@ use crate::config::AppConfig;
 use crate::db;
 use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
 use crate::disaster_recovery;
+use crate::peer;
 use crate::runtime_paths::RuntimePaths;
 use crate::repair::{self, RepairError};
 use crate::scrubber;
@@ -123,6 +124,10 @@ struct FileRevisionResponse {
     size: i64,
     is_current: bool,
     immutable_until: Option<i64>,
+    device_id: Option<String>,
+    parent_revision_id: Option<i64>,
+    origin: String,
+    conflict_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -130,6 +135,19 @@ struct RestoreRevisionResponse {
     inode_id: i64,
     revision_id: i64,
     restored: bool,
+    conflict_copy_inode_id: Option<i64>,
+    conflict_copy_revision_id: Option<i64>,
+    conflict_copy_name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ConflictCopyResponse {
+    inode_id: i64,
+    source_revision_id: i64,
+    conflict_copy_inode_id: i64,
+    conflict_copy_revision_id: i64,
+    conflict_copy_name: String,
+    conflict_id: i64,
 }
 
 #[derive(Serialize)]
@@ -256,6 +274,7 @@ struct DiagnosticsWorkerStatusesResponse {
     gc: String,
     watcher: String,
     metadata_backup: String,
+    peer: String,
     api: String,
 }
 
@@ -380,6 +399,7 @@ impl ApiServer {
             .route("/api/maintenance/status", get(get_maintenance_status))
             .route("/api/maintenance/diagnostics", get(get_maintenance_diagnostics))
             .route("/api/storage/cost", get(get_storage_cost))
+            .route("/api/multidevice/status", get(get_multidevice_status))
             .route("/api/health/vault", get(get_vault_health))
             .route("/api/files", get(get_files))
             .route("/api/files/{inode_id}", delete(delete_file))
@@ -393,6 +413,10 @@ impl ApiServer {
             .route(
                 "/api/files/{inode_id}/revisions/{revision_id}/restore",
                 post(restore_file_revision),
+            )
+            .route(
+                "/api/files/{inode_id}/revisions/{revision_id}/materialize-conflict-copy",
+                post(materialize_conflict_copy),
             )
             .route("/api/quota", get(get_quota))
             .route("/api/cache/status", get(get_cache_status))
@@ -695,6 +719,50 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
 async fn get_storage_cost(State(state): State<ApiState>) -> impl IntoResponse {
     match build_storage_cost_response(&state).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn get_multidevice_status(State(state): State<ApiState>) -> impl IntoResponse {
+    let Some(local_device) = (match db::get_local_device_identity(&state.pool).await {
+        Ok(record) => record,
+        Err(err) => return internal_server_error(err),
+    }) else {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "WARN",
+                "message": "Local device identity has not been initialized yet.",
+                "last_run": unix_timestamp_millis(),
+                "trusted_peers": [],
+                "recent_conflicts": [],
+            })),
+        )
+            .into_response();
+    };
+
+    let vault_id = match db::get_vault_params(&state.pool).await {
+        Ok(Some(record)) => record.vault_id,
+        Ok(None) => "local-vault".to_string(),
+        Err(err) => return internal_server_error(err),
+    };
+    let peer_port = AppConfig::from_env().peer_port;
+
+    match peer::snapshot_multi_device(
+        &state.pool,
+        &crate::device_identity::LocalDeviceIdentity {
+            device_id: local_device.device_id,
+            device_name: local_device.device_name,
+            peer_token: local_device.peer_token,
+            created_at: local_device.created_at,
+            updated_at: local_device.updated_at,
+        },
+        &vault_id,
+        peer_port,
+    )
+    .await
+    {
+        Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
         Err(err) => internal_server_error(err),
     }
 }
@@ -1141,6 +1209,10 @@ async fn get_file_revisions(
                         size: revision.size,
                         is_current: revision.is_current != 0,
                         immutable_until: revision.immutable_until,
+                        device_id: revision.device_id,
+                        parent_revision_id: revision.parent_revision_id,
+                        origin: revision.origin,
+                        conflict_reason: revision.conflict_reason,
                     })
                     .collect::<Vec<_>>(),
             ),
@@ -1199,6 +1271,41 @@ async fn restore_file_revision(
             .into_response();
     };
 
+    let current_revision = match db::get_current_file_revision(&state.pool, inode_id).await {
+        Ok(revision) => revision,
+        Err(err) => return internal_server_error(err),
+    };
+
+    let local_device = match db::get_local_device_identity(&state.pool).await {
+        Ok(device) => device,
+        Err(err) => return internal_server_error(err),
+    };
+    let conflict_device_id = local_device.as_ref().map(|device| device.device_id.as_str());
+    let conflict_device_name = local_device
+        .as_ref()
+        .map(|device| device.device_name.as_str())
+        .unwrap_or("Unknown Device");
+
+    let conflict_copy = match current_revision {
+        Some(current) if current.revision_id != revision_id => {
+            match db::materialize_conflict_copy_from_revision(
+                &state.pool,
+                current.revision_id,
+                conflict_device_id,
+                conflict_device_name,
+                "restore_overwrite",
+            )
+            .await
+            {
+                Ok((conflict_inode_id, conflict_revision_id, conflict_name, _conflict_id)) => {
+                    Some((conflict_inode_id, conflict_revision_id, conflict_name))
+                }
+                Err(err) => return internal_server_error(err),
+            }
+        }
+        _ => None,
+    };
+
     match db::promote_revision_to_current(&state.pool, revision_id).await {
         Ok(()) => (
             StatusCode::OK,
@@ -1206,6 +1313,93 @@ async fn restore_file_revision(
                 inode_id,
                 revision_id,
                 restored: true,
+                conflict_copy_inode_id: conflict_copy.as_ref().map(|value| value.0),
+                conflict_copy_revision_id: conflict_copy.as_ref().map(|value| value.1),
+                conflict_copy_name: conflict_copy.map(|value| value.2),
+            }),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn materialize_conflict_copy(
+    State(state): State<ApiState>,
+    Path((inode_id, revision_id)): Path<(i64, i64)>,
+) -> impl IntoResponse {
+    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
+        Ok(inode) => inode,
+        Err(err) => return internal_server_error(err),
+    };
+
+    let Some(inode) = inode else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "inode_not_found",
+                "inode_id": inode_id,
+            })),
+        )
+            .into_response();
+    };
+
+    if inode.kind != "FILE" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "inode_not_file",
+                "inode_id": inode_id,
+                "kind": inode.kind,
+            })),
+        )
+            .into_response();
+    }
+
+    let revision = match db::get_file_revision(&state.pool, inode_id, revision_id).await {
+        Ok(revision) => revision,
+        Err(err) => return internal_server_error(err),
+    };
+
+    let Some(_) = revision else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "revision_not_found",
+                "inode_id": inode_id,
+                "revision_id": revision_id,
+            })),
+        )
+            .into_response();
+    };
+
+    let local_device = match db::get_local_device_identity(&state.pool).await {
+        Ok(device) => device,
+        Err(err) => return internal_server_error(err),
+    };
+    let conflict_device_id = local_device.as_ref().map(|device| device.device_id.as_str());
+    let conflict_device_name = local_device
+        .as_ref()
+        .map(|device| device.device_name.as_str())
+        .unwrap_or("Unknown Device");
+
+    match db::materialize_conflict_copy_from_revision(
+        &state.pool,
+        revision_id,
+        conflict_device_id,
+        conflict_device_name,
+        "manual_conflict_copy",
+    )
+    .await
+    {
+        Ok((conflict_inode_id, conflict_revision_id, conflict_name, conflict_id)) => (
+            StatusCode::OK,
+            Json(ConflictCopyResponse {
+                inode_id,
+                source_revision_id: revision_id,
+                conflict_copy_inode_id: conflict_inode_id,
+                conflict_copy_revision_id: conflict_revision_id,
+                conflict_copy_name: conflict_name,
+                conflict_id,
             }),
         )
             .into_response(),
@@ -1611,6 +1805,7 @@ async fn build_diagnostics_health_response(
             gc: snapshot.gc.as_str().to_string(),
             watcher: snapshot.watcher.as_str().to_string(),
             metadata_backup: snapshot.metadata_backup.as_str().to_string(),
+            peer: snapshot.peer.as_str().to_string(),
             api: snapshot.api.as_str().to_string(),
         },
     };

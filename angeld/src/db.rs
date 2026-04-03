@@ -120,6 +120,10 @@ pub struct FileRevisionRecord {
     pub size: i64,
     pub is_current: i64,
     pub immutable_until: Option<i64>,
+    pub device_id: Option<String>,
+    pub parent_revision_id: Option<i64>,
+    pub origin: String,
+    pub conflict_reason: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -186,6 +190,56 @@ pub struct CacheEntryRecord {
     pub last_accessed_at: i64,
     pub access_count: i64,
     pub is_prefetched: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct LocalDeviceIdentityRecord {
+    pub device_id: String,
+    pub device_name: String,
+    pub peer_token: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct TrustedPeerRecord {
+    pub peer_id: String,
+    pub device_name: String,
+    pub vault_id: String,
+    pub peer_api_base: String,
+    pub trusted: i64,
+    pub last_seen_at: i64,
+    pub last_handshake_at: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct ConflictEventRecord {
+    pub conflict_id: i64,
+    pub inode_id: i64,
+    pub winning_revision_id: i64,
+    pub losing_revision_id: i64,
+    pub reason: String,
+    pub materialized_inode_id: Option<i64>,
+    pub materialized_revision_id: Option<i64>,
+    pub created_at: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq, FromRow)]
+pub struct ChunkLookupRecord {
+    pub inode_id: i64,
+    pub revision_id: i64,
+    pub chunk_id: Vec<u8>,
+    pub chunk_index: i64,
+    pub file_offset: i64,
+    pub size: i64,
+    pub pack_id: String,
+    pub pack_offset: i64,
+    pub encrypted_size: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
@@ -437,7 +491,60 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
             created_at INTEGER NOT NULL,
             size INTEGER NOT NULL,
             is_current INTEGER NOT NULL DEFAULT 0,
-            immutable_until INTEGER
+            immutable_until INTEGER,
+            device_id TEXT,
+            parent_revision_id INTEGER REFERENCES file_revisions(revision_id) ON DELETE SET NULL,
+            origin TEXT NOT NULL DEFAULT 'local',
+            conflict_reason TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS local_device_identity (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            device_id TEXT NOT NULL UNIQUE,
+            device_name TEXT NOT NULL,
+            peer_token TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS trusted_peers (
+            peer_id TEXT PRIMARY KEY,
+            device_name TEXT NOT NULL,
+            vault_id TEXT NOT NULL,
+            peer_api_base TEXT NOT NULL,
+            trusted INTEGER NOT NULL DEFAULT 1,
+            last_seen_at INTEGER NOT NULL,
+            last_handshake_at INTEGER,
+            last_error TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS conflict_events (
+            conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            inode_id INTEGER NOT NULL REFERENCES inodes(id) ON DELETE CASCADE,
+            winning_revision_id INTEGER NOT NULL REFERENCES file_revisions(revision_id) ON DELETE CASCADE,
+            losing_revision_id INTEGER NOT NULL REFERENCES file_revisions(revision_id) ON DELETE CASCADE,
+            reason TEXT NOT NULL,
+            materialized_inode_id INTEGER REFERENCES inodes(id) ON DELETE SET NULL,
+            materialized_revision_id INTEGER REFERENCES file_revisions(revision_id) ON DELETE SET NULL,
+            created_at INTEGER NOT NULL
         )
         "#,
     )
@@ -622,6 +729,22 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
 
     ensure_column_exists(&pool, "upload_job_targets", "last_attempt_at", "INTEGER").await?;
     ensure_column_exists(&pool, "upload_job_targets", "updated_at", "INTEGER").await?;
+    ensure_column_exists(&pool, "file_revisions", "device_id", "TEXT").await?;
+    ensure_column_exists(
+        &pool,
+        "file_revisions",
+        "parent_revision_id",
+        "INTEGER REFERENCES file_revisions(revision_id) ON DELETE SET NULL",
+    )
+    .await?;
+    ensure_column_exists(
+        &pool,
+        "file_revisions",
+        "origin",
+        "TEXT NOT NULL DEFAULT 'local'",
+    )
+    .await?;
+    ensure_column_exists(&pool, "file_revisions", "conflict_reason", "TEXT").await?;
     ensure_column_exists(&pool, "pack_shards", "last_error", "TEXT").await?;
     ensure_column_exists(&pool, "pack_shards", "last_verified_at", "INTEGER").await?;
     ensure_column_exists(&pool, "pack_shards", "last_verification_method", "TEXT").await?;
@@ -749,6 +872,252 @@ pub async fn set_vault_config(
     .await?;
 
     Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn get_local_device_identity(
+    pool: &SqlitePool,
+) -> Result<Option<LocalDeviceIdentityRecord>, sqlx::Error> {
+    sqlx::query_as::<_, LocalDeviceIdentityRecord>(
+        r#"
+        SELECT device_id, device_name, peer_token, created_at, updated_at
+        FROM local_device_identity
+        WHERE id = 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn upsert_local_device_identity(
+    pool: &SqlitePool,
+    device_id: &str,
+    device_name: &str,
+    peer_token: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO local_device_identity (
+            id,
+            device_id,
+            device_name,
+            peer_token,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            1,
+            ?,
+            ?,
+            ?,
+            CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            device_id = excluded.device_id,
+            device_name = excluded.device_name,
+            peer_token = excluded.peer_token,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(device_id)
+    .bind(device_name)
+    .bind(peer_token)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn update_local_device_name(
+    pool: &SqlitePool,
+    device_name: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE local_device_identity
+        SET device_name = ?,
+            updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+        WHERE id = 1
+        "#,
+    )
+    .bind(device_name)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn upsert_trusted_peer(
+    pool: &SqlitePool,
+    peer_id: &str,
+    device_name: &str,
+    vault_id: &str,
+    peer_api_base: &str,
+    last_error: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO trusted_peers (
+            peer_id,
+            device_name,
+            vault_id,
+            peer_api_base,
+            trusted,
+            last_seen_at,
+            last_handshake_at,
+            last_error
+        )
+        VALUES (
+            ?,
+            ?,
+            ?,
+            ?,
+            1,
+            CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            ?
+        )
+        ON CONFLICT(peer_id) DO UPDATE SET
+            device_name = excluded.device_name,
+            vault_id = excluded.vault_id,
+            peer_api_base = excluded.peer_api_base,
+            trusted = 1,
+            last_seen_at = excluded.last_seen_at,
+            last_handshake_at = excluded.last_handshake_at,
+            last_error = excluded.last_error
+        "#,
+    )
+    .bind(peer_id)
+    .bind(device_name)
+    .bind(vault_id)
+    .bind(peer_api_base)
+    .bind(last_error)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn note_peer_seen(
+    pool: &SqlitePool,
+    peer_id: &str,
+    device_name: &str,
+    vault_id: &str,
+    peer_api_base: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO trusted_peers (
+            peer_id,
+            device_name,
+            vault_id,
+            peer_api_base,
+            trusted,
+            last_seen_at,
+            last_error
+        )
+        VALUES (
+            ?,
+            ?,
+            ?,
+            ?,
+            1,
+            CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            NULL
+        )
+        ON CONFLICT(peer_id) DO UPDATE SET
+            device_name = excluded.device_name,
+            vault_id = excluded.vault_id,
+            peer_api_base = excluded.peer_api_base,
+            trusted = 1,
+            last_seen_at = excluded.last_seen_at
+        "#,
+    )
+    .bind(peer_id)
+    .bind(device_name)
+    .bind(vault_id)
+    .bind(peer_api_base)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn update_peer_error(
+    pool: &SqlitePool,
+    peer_id: &str,
+    last_error: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE trusted_peers
+        SET last_error = ?,
+            last_seen_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+        WHERE peer_id = ?
+        "#,
+    )
+    .bind(last_error)
+    .bind(peer_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn list_trusted_peers(
+    pool: &SqlitePool,
+) -> Result<Vec<TrustedPeerRecord>, sqlx::Error> {
+    sqlx::query_as::<_, TrustedPeerRecord>(
+        r#"
+        SELECT
+            peer_id,
+            device_name,
+            vault_id,
+            peer_api_base,
+            trusted,
+            last_seen_at,
+            last_handshake_at,
+            last_error
+        FROM trusted_peers
+        WHERE trusted = 1
+        ORDER BY last_seen_at DESC, device_name ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_trusted_peer_by_id(
+    pool: &SqlitePool,
+    peer_id: &str,
+) -> Result<Option<TrustedPeerRecord>, sqlx::Error> {
+    sqlx::query_as::<_, TrustedPeerRecord>(
+        r#"
+        SELECT
+            peer_id,
+            device_name,
+            vault_id,
+            peer_api_base,
+            trusted,
+            last_seen_at,
+            last_handshake_at,
+            last_error
+        FROM trusted_peers
+        WHERE peer_id = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(peer_id)
+    .fetch_optional(pool)
+    .await
 }
 
 #[allow(dead_code)]
@@ -894,6 +1263,10 @@ pub async fn create_file_revision(
     inode_id: i64,
     size: i64,
     immutable_until: Option<i64>,
+    device_id: Option<&str>,
+    parent_revision_id: Option<i64>,
+    origin: &str,
+    conflict_reason: Option<&str>,
 ) -> Result<i64, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
@@ -910,12 +1283,26 @@ pub async fn create_file_revision(
 
     let result = sqlx::query(
         r#"
-        INSERT INTO file_revisions (inode_id, created_at, size, is_current, immutable_until)
+        INSERT INTO file_revisions (
+            inode_id,
+            created_at,
+            size,
+            is_current,
+            immutable_until,
+            device_id,
+            parent_revision_id,
+            origin,
+            conflict_reason
+        )
         VALUES (
             ?,
             CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
             ?,
             1,
+            ?,
+            ?,
+            ?,
+            ?,
             ?
         )
         "#,
@@ -923,6 +1310,10 @@ pub async fn create_file_revision(
     .bind(inode_id)
     .bind(size)
     .bind(immutable_until)
+    .bind(device_id)
+    .bind(parent_revision_id)
+    .bind(origin)
+    .bind(conflict_reason)
     .execute(&mut *tx)
     .await?;
 
@@ -1252,7 +1643,7 @@ pub async fn get_current_file_revision(
 ) -> Result<Option<FileRevisionRecord>, sqlx::Error> {
     sqlx::query_as::<_, FileRevisionRecord>(
         r#"
-        SELECT revision_id, inode_id, created_at, size, is_current, immutable_until
+        SELECT revision_id, inode_id, created_at, size, is_current, immutable_until, device_id, parent_revision_id, origin, conflict_reason
         FROM file_revisions
         WHERE inode_id = ?
           AND is_current = 1
@@ -1288,7 +1679,7 @@ pub async fn get_file_revision(
 ) -> Result<Option<FileRevisionRecord>, sqlx::Error> {
     sqlx::query_as::<_, FileRevisionRecord>(
         r#"
-        SELECT revision_id, inode_id, created_at, size, is_current, immutable_until
+        SELECT revision_id, inode_id, created_at, size, is_current, immutable_until, device_id, parent_revision_id, origin, conflict_reason
         FROM file_revisions
         WHERE inode_id = ?
           AND revision_id = ?
@@ -1308,7 +1699,7 @@ pub async fn list_file_revisions(
 ) -> Result<Vec<FileRevisionRecord>, sqlx::Error> {
     sqlx::query_as::<_, FileRevisionRecord>(
         r#"
-        SELECT revision_id, inode_id, created_at, size, is_current, immutable_until
+        SELECT revision_id, inode_id, created_at, size, is_current, immutable_until, device_id, parent_revision_id, origin, conflict_reason
         FROM file_revisions
         WHERE inode_id = ?
         ORDER BY created_at DESC, revision_id DESC
@@ -1407,6 +1798,241 @@ pub async fn register_chunk(
     .await?;
 
     Ok(result.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub async fn copy_chunk_refs(
+    pool: &SqlitePool,
+    from_revision_id: i64,
+    to_revision_id: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO chunk_refs (revision_id, chunk_id, file_offset, size)
+        SELECT ?, chunk_id, file_offset, size
+        FROM chunk_refs
+        WHERE revision_id = ?
+        ORDER BY file_offset ASC
+        "#,
+    )
+    .bind(to_revision_id)
+    .bind(from_revision_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn create_conflict_event(
+    pool: &SqlitePool,
+    inode_id: i64,
+    winning_revision_id: i64,
+    losing_revision_id: i64,
+    reason: &str,
+) -> Result<i64, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        INSERT INTO conflict_events (
+            inode_id,
+            winning_revision_id,
+            losing_revision_id,
+            reason,
+            created_at
+        )
+        VALUES (
+            ?,
+            ?,
+            ?,
+            ?,
+            CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+        )
+        "#,
+    )
+    .bind(inode_id)
+    .bind(winning_revision_id)
+    .bind(losing_revision_id)
+    .bind(reason)
+    .execute(pool)
+    .await?;
+
+    Ok(result.last_insert_rowid())
+}
+
+#[allow(dead_code)]
+pub async fn materialize_conflict_copy_from_revision(
+    pool: &SqlitePool,
+    source_revision_id: i64,
+    device_id: Option<&str>,
+    device_name: &str,
+    reason: &str,
+) -> Result<(i64, i64, String, i64), sqlx::Error> {
+    let source_revision = sqlx::query_as::<_, FileRevisionRecord>(
+        r#"
+        SELECT revision_id, inode_id, created_at, size, is_current, immutable_until, device_id, parent_revision_id, origin, conflict_reason
+        FROM file_revisions
+        WHERE revision_id = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(source_revision_id)
+    .fetch_one(pool)
+    .await?;
+
+    let source_inode = get_inode_by_id(pool, source_revision.inode_id)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)?;
+
+    let timestamp = source_revision.created_at;
+    let base_name = build_conflict_copy_name(&source_inode.name, device_name, timestamp);
+
+    let mut created_inode_id = None;
+    let mut final_name = base_name.clone();
+    for attempt in 0..16 {
+        let candidate = if attempt == 0 {
+            base_name.clone()
+        } else {
+            disambiguate_conflict_copy_name(&base_name, attempt)
+        };
+
+        match create_inode(
+            pool,
+            source_inode.parent_id,
+            &candidate,
+            &source_inode.kind,
+            source_revision.size,
+        )
+        .await
+        {
+            Ok(inode_id) => {
+                created_inode_id = Some(inode_id);
+                final_name = candidate;
+                break;
+            }
+            Err(sqlx::Error::Database(err)) if err.is_unique_violation() => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    let inode_id = created_inode_id.ok_or(sqlx::Error::RowNotFound)?;
+    let revision_id = create_file_revision(
+        pool,
+        inode_id,
+        source_revision.size,
+        source_revision.immutable_until,
+        device_id,
+        Some(source_revision.revision_id),
+        "conflict_copy",
+        Some(reason),
+    )
+    .await?;
+    copy_chunk_refs(pool, source_revision.revision_id, revision_id).await?;
+    let conflict_id = create_conflict_event(
+        pool,
+        source_revision.inode_id,
+        source_revision.revision_id,
+        revision_id,
+        reason,
+    )
+    .await?;
+    attach_conflict_materialization(pool, conflict_id, inode_id, revision_id).await?;
+
+    Ok((inode_id, revision_id, final_name, conflict_id))
+}
+
+#[allow(dead_code)]
+pub async fn attach_conflict_materialization(
+    pool: &SqlitePool,
+    conflict_id: i64,
+    materialized_inode_id: i64,
+    materialized_revision_id: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE conflict_events
+        SET materialized_inode_id = ?,
+            materialized_revision_id = ?
+        WHERE conflict_id = ?
+        "#,
+    )
+    .bind(materialized_inode_id)
+    .bind(materialized_revision_id)
+    .bind(conflict_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn list_recent_conflicts(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<ConflictEventRecord>, sqlx::Error> {
+    sqlx::query_as::<_, ConflictEventRecord>(
+        r#"
+        SELECT
+            conflict_id,
+            inode_id,
+            winning_revision_id,
+            losing_revision_id,
+            reason,
+            materialized_inode_id,
+            materialized_revision_id,
+            created_at
+        FROM conflict_events
+        ORDER BY created_at DESC, conflict_id DESC
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn get_chunk_lookup_by_chunk_id(
+    pool: &SqlitePool,
+    chunk_id: &[u8],
+) -> Result<Option<ChunkLookupRecord>, sqlx::Error> {
+    sqlx::query_as::<_, ChunkLookupRecord>(
+        r#"
+        WITH ordered_chunks AS (
+            SELECT
+                fr.inode_id,
+                fr.revision_id,
+                cr.chunk_id,
+                cr.file_offset,
+                cr.size,
+                ROW_NUMBER() OVER (
+                    PARTITION BY fr.revision_id
+                    ORDER BY cr.file_offset ASC
+                ) - 1 AS chunk_index
+            FROM chunk_refs cr
+            INNER JOIN file_revisions fr
+                ON fr.revision_id = cr.revision_id
+            WHERE cr.chunk_id = ?
+            ORDER BY fr.is_current DESC, fr.created_at DESC, fr.revision_id DESC
+        )
+        SELECT
+            oc.inode_id,
+            oc.revision_id,
+            oc.chunk_id,
+            oc.chunk_index,
+            oc.file_offset,
+            oc.size,
+            pl.pack_id,
+            pl.pack_offset,
+            pl.encrypted_size
+        FROM ordered_chunks oc
+        INNER JOIN pack_locations pl
+            ON pl.chunk_id = oc.chunk_id
+        LIMIT 1
+        "#,
+    )
+    .bind(chunk_id)
+    .fetch_optional(pool)
+    .await
 }
 
 #[allow(dead_code)]
@@ -3541,4 +4167,35 @@ fn path_matches_policy(path: &str, prefix: &str) -> bool {
 
     path.strip_prefix(&prefix)
         .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn build_conflict_copy_name(original_name: &str, device_name: &str, timestamp_ms: i64) -> String {
+    let (stem, extension) = split_file_name(original_name);
+    format!(
+        "{stem} (conflict - {} - {timestamp_ms}){extension}",
+        sanitize_conflict_component(device_name)
+    )
+}
+
+fn disambiguate_conflict_copy_name(base_name: &str, attempt: usize) -> String {
+    let (stem, extension) = split_file_name(base_name);
+    format!("{stem} [{attempt}]{extension}")
+}
+
+fn split_file_name(name: &str) -> (&str, &str) {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => (stem, &name[stem.len()..]),
+        _ => (name, ""),
+    }
+}
+
+fn sanitize_conflict_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            _ if ch.is_control() => '_',
+            _ => ch,
+        })
+        .collect()
 }

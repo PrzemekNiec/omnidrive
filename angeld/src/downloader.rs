@@ -4,6 +4,7 @@ use crate::cache::{CacheError, CacheManager};
 use crate::db;
 use crate::db::StorageMode;
 use crate::packer::{DATA_SHARDS, LOCAL_PACK_EXTENSION, PARITY_SHARDS, TOTAL_SHARDS, local_pack_path};
+use crate::peer::PeerClient;
 use crate::secure_fs::write_ephemeral_bytes;
 use crate::uploader::ProviderConfig;
 use crate::vault::{VaultError, VaultKeyStore};
@@ -35,6 +36,7 @@ pub struct Downloader {
     providers: HashMap<String, DownloadProvider>,
     provider_timeout: Duration,
     prefetch_state: Arc<Mutex<HashMap<i64, i64>>>,
+    peer_client: Arc<Mutex<Option<PeerClient>>>,
 }
 
 #[derive(Clone)]
@@ -210,7 +212,13 @@ impl Downloader {
             providers,
             provider_timeout,
             prefetch_state: Arc::new(Mutex::new(HashMap::new())),
+            peer_client: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub async fn set_peer_client(&self, peer_client: PeerClient) {
+        let mut slot = self.peer_client.lock().await;
+        *slot = Some(peer_client);
     }
 
     pub async fn restore_file(
@@ -387,6 +395,20 @@ impl Downloader {
             return Ok(bytes);
         }
 
+        if let Some(bytes) = self
+            .try_fetch_chunk_from_peer(
+                inode_id,
+                revision_id,
+                inode_path,
+                &cache_key,
+                chunk,
+                is_prefetched,
+            )
+            .await?
+        {
+            return Ok(bytes);
+        }
+
         let source = if let Some(existing) = downloaded_packs.get(&chunk.pack_id) {
             existing.clone()
         } else {
@@ -409,6 +431,92 @@ impl Downloader {
             )
             .await?;
         Ok(plaintext)
+    }
+
+    async fn try_fetch_chunk_from_peer(
+        &self,
+        inode_id: i64,
+        revision_id: i64,
+        inode_path: &str,
+        cache_key: &str,
+        chunk: &db::FileChunkLocation,
+        is_prefetched: bool,
+    ) -> Result<Option<Vec<u8>>, DownloaderError> {
+        let peer_client = { self.peer_client.lock().await.clone() };
+        let Some(peer_client) = peer_client else {
+            return Ok(None);
+        };
+
+        let Some(bytes) = peer_client.fetch_chunk(&chunk.chunk_id).await.map_err(|err| {
+            DownloaderError::Io(std::io::Error::other(format!("peer fetch failed: {err}")))
+        })? else {
+            return Ok(None);
+        };
+
+        self.cache
+            .put_chunk(
+                inode_id,
+                revision_id,
+                chunk.chunk_index,
+                &chunk.pack_id,
+                inode_path,
+                &bytes,
+                is_prefetched,
+            )
+            .await?;
+        if let Some(cached) = self.cache.get_chunk(cache_key).await? {
+            return Ok(Some(cached));
+        }
+        Ok(Some(bytes))
+    }
+
+    pub async fn read_plaintext_chunk_by_id(
+        &self,
+        chunk_id: &[u8],
+    ) -> Result<Option<Vec<u8>>, DownloaderError> {
+        let Some(chunk) = db::get_chunk_lookup_by_chunk_id(&self.pool, chunk_id).await? else {
+            return Ok(None);
+        };
+        let inode_path = db::get_inode_path(&self.pool, chunk.inode_id)
+            .await?
+            .unwrap_or_else(|| format!("inode/{}", chunk.inode_id));
+        let cache_key = CacheManager::cache_key(chunk.revision_id, chunk.chunk_index);
+        if let Some(bytes) = self.cache.get_chunk(&cache_key).await? {
+            return Ok(Some(bytes));
+        }
+
+        let vault_key = self.vault_keys.require_key().await?;
+        let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
+        let file_chunk = db::FileChunkLocation {
+            chunk_id: chunk.chunk_id,
+            chunk_index: chunk.chunk_index,
+            file_offset: chunk.file_offset,
+            size: chunk.size,
+            pack_id: chunk.pack_id,
+            pack_offset: chunk.pack_offset,
+            encrypted_size: chunk.encrypted_size,
+        };
+        let source = if let Some(existing) = downloaded_packs.get(&file_chunk.pack_id) {
+            existing.clone()
+        } else {
+            let downloaded = self.download_pack(&file_chunk.pack_id).await?;
+            downloaded_packs.insert(file_chunk.pack_id.clone(), downloaded.clone());
+            downloaded
+        };
+        let pack_bytes = fs::read(&source.local_path).await?;
+        let bytes = decrypt_chunk_record(&pack_bytes, &file_chunk, &vault_key)?;
+        self.cache
+            .put_chunk(
+                chunk.inode_id,
+                chunk.revision_id,
+                file_chunk.chunk_index,
+                &file_chunk.pack_id,
+                &inode_path,
+                &bytes,
+                false,
+            )
+            .await?;
+        Ok(Some(bytes))
     }
 
     async fn maybe_schedule_prefetch(

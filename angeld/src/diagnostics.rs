@@ -12,6 +12,7 @@ pub enum WorkerKind {
     Gc,
     Watcher,
     MetadataBackup,
+    Peer,
     Api,
 }
 
@@ -42,6 +43,7 @@ pub struct DiagnosticsSnapshot {
     pub gc: WorkerStatus,
     pub watcher: WorkerStatus,
     pub metadata_backup: WorkerStatus,
+    pub peer: WorkerStatus,
     pub api: WorkerStatus,
 }
 
@@ -54,6 +56,7 @@ pub struct DaemonDiagnostics {
     gc: AtomicU8,
     watcher: AtomicU8,
     metadata_backup: AtomicU8,
+    peer: AtomicU8,
     api: AtomicU8,
 }
 
@@ -68,6 +71,7 @@ impl DaemonDiagnostics {
             gc: AtomicU8::new(WorkerStatus::Starting as u8),
             watcher: AtomicU8::new(WorkerStatus::Starting as u8),
             metadata_backup: AtomicU8::new(WorkerStatus::Starting as u8),
+            peer: AtomicU8::new(WorkerStatus::Starting as u8),
             api: AtomicU8::new(WorkerStatus::Starting as u8),
         }
     }
@@ -80,6 +84,7 @@ impl DaemonDiagnostics {
             WorkerKind::Gc => &self.gc,
             WorkerKind::Watcher => &self.watcher,
             WorkerKind::MetadataBackup => &self.metadata_backup,
+            WorkerKind::Peer => &self.peer,
             WorkerKind::Api => &self.api,
         };
         target.store(status as u8, Ordering::Relaxed);
@@ -107,6 +112,7 @@ impl DaemonDiagnostics {
             gc: load_status(&self.gc),
             watcher: load_status(&self.watcher),
             metadata_backup: load_status(&self.metadata_backup),
+            peer: load_status(&self.peer),
             api: load_status(&self.api),
         }
     }

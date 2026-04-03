@@ -27,9 +27,10 @@ pub struct FileWatcher {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct FileFingerprint {
+struct TrackedFileState {
     size: u64,
     mtime: Option<i64>,
+    base_revision_id: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -257,7 +258,7 @@ impl FileWatcher {
     async fn flush_ready_paths(
         &self,
         pending_paths: &mut HashMap<PathBuf, Instant>,
-        processed_files: &mut HashMap<PathBuf, FileFingerprint>,
+        processed_files: &mut HashMap<PathBuf, TrackedFileState>,
     ) {
         let now = Instant::now();
         let ready_paths: Vec<PathBuf> = pending_paths
@@ -282,7 +283,7 @@ impl FileWatcher {
     async fn process_event_path(
         &self,
         path: PathBuf,
-        processed_files: &mut HashMap<PathBuf, FileFingerprint>,
+        processed_files: &mut HashMap<PathBuf, TrackedFileState>,
     ) -> Result<(), WatcherError> {
         let path = normalize_path(&path)?;
         if self.should_ignore_path(&path) {
@@ -328,7 +329,7 @@ impl FileWatcher {
     async fn process_file(
         &self,
         file_path: PathBuf,
-        processed_files: &mut HashMap<PathBuf, FileFingerprint>,
+        processed_files: &mut HashMap<PathBuf, TrackedFileState>,
     ) -> Result<(), WatcherError> {
         if self.should_ignore_path(&file_path) {
             return Ok(());
@@ -347,35 +348,58 @@ impl FileWatcher {
             .modified()
             .ok()
             .and_then(|time| unix_timestamp_ms(time).ok());
-        let fingerprint = FileFingerprint {
-            size: metadata.len(),
-            mtime,
-        };
-
-        if processed_files
-            .get(&file_path)
-            .is_some_and(|previous| previous == &fingerprint)
-        {
-            return Ok(());
-        }
-
         let size = i64::try_from(metadata.len())
             .map_err(|_| WatcherError::InvalidEnv("file_size_overflow"))?;
         let inode_id =
             ensure_inode_path_from_db_path(&self.pool, &policy_path, size, mtime).await?;
+        let current_revision = db::get_current_file_revision(&self.pool, inode_id).await?;
+        let tracked_state = TrackedFileState {
+            size: metadata.len(),
+            mtime,
+            base_revision_id: current_revision.as_ref().map(|revision| revision.revision_id),
+        };
+
+        if processed_files
+            .get(&file_path)
+            .is_some_and(|previous| previous == &tracked_state)
+        {
+            return Ok(());
+        }
 
         if policy.enable_versioning == 0
-            && db::get_current_file_revision(&self.pool, inode_id)
-                .await?
-                .is_some()
+            && current_revision.is_some()
         {
             db::delete_file_chunks(&self.pool, inode_id).await?;
         }
 
-        let pack_result = self.packer.pack_file(inode_id, &file_path).await?;
-        processed_files.insert(file_path.clone(), fingerprint);
+        let pack_result = self
+            .packer
+            .pack_file_with_expected_parent(
+                inode_id,
+                &file_path,
+                processed_files
+                    .get(&file_path)
+                    .and_then(|state| state.base_revision_id)
+                    .or_else(|| current_revision.as_ref().map(|revision| revision.revision_id)),
+            )
+            .await?;
+        processed_files.insert(
+            file_path.clone(),
+            TrackedFileState {
+                size: metadata.len(),
+                mtime,
+                base_revision_id: pack_result.revision_id,
+            },
+        );
         if let Some(pack_id) = pack_result.pack_id {
             info!("watcher packed {} into {}", file_path.display(), pack_id);
+        }
+        if let Some(conflict_copy_name) = pack_result.conflict_copy_name {
+            warn!(
+                "watcher detected a concurrent head for {} and materialized conflict copy {}",
+                file_path.display(),
+                conflict_copy_name
+            );
         }
 
         Ok(())
@@ -384,7 +408,7 @@ impl FileWatcher {
     async fn handle_deleted_path(
         &self,
         path: &Path,
-        processed_files: &mut HashMap<PathBuf, FileFingerprint>,
+        processed_files: &mut HashMap<PathBuf, TrackedFileState>,
     ) -> Result<(), WatcherError> {
         processed_files.remove(path);
 

@@ -3,12 +3,14 @@ mod aws_http;
 mod cache;
 mod config;
 mod db;
+mod device_identity;
 mod diagnostics;
 mod disaster_recovery;
 mod downloader;
 mod gc;
 mod logging;
 mod packer;
+mod peer;
 mod repair;
 mod runtime_paths;
 mod scrubber;
@@ -23,6 +25,8 @@ mod watcher;
 mod win_acl;
 
 use crate::api::ApiServer;
+use crate::config::AppConfig;
+use crate::device_identity::ensure_local_device_identity;
 use crate::diagnostics::init_global_diagnostics;
 use crate::disaster_recovery::{
     MetadataBackupProviderManager, restore_metadata_from_cloud, start_metadata_backup_worker,
@@ -31,6 +35,7 @@ use crate::downloader::Downloader;
 use crate::gc::GcWorker;
 use crate::logging::init_logging;
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
+use crate::peer::{PeerClient, PeerService};
 use crate::repair::RepairWorker;
 use crate::runtime_paths::{RuntimePaths, sqlite_db_file_path};
 use crate::scrubber::ScrubberWorker;
@@ -213,6 +218,12 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let local_vault_bootstrapped =
         bootstrap_default_local_vault(&pool, &runtime_paths, database_missing_on_start, just_restored)
             .await?;
+    let app_config = AppConfig::from_env();
+    let local_device = ensure_local_device_identity(&pool, &app_config).await?;
+    let local_vault_id = db::get_vault_params(&pool)
+        .await?
+        .map(|record| record.vault_id)
+        .unwrap_or_else(|| "local-vault".to_string());
     let vault_keys = VaultKeyStore::new();
     if no_sync && e2e_test_mode {
         let worker = UploadWorker::from_env(pool.clone()).await?;
@@ -221,6 +232,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Gc, crate::diagnostics::WorkerStatus::Idle);
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Watcher, crate::diagnostics::WorkerStatus::Idle);
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::MetadataBackup, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Peer, crate::diagnostics::WorkerStatus::Idle);
         let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone())?;
 
         warn!("starting angeld in OMNIDRIVE_E2E_TEST_MODE with --no-sync; only uploader and API workers are enabled");
@@ -260,6 +272,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Gc, crate::diagnostics::WorkerStatus::Idle);
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Watcher, crate::diagnostics::WorkerStatus::Idle);
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::MetadataBackup, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Peer, crate::diagnostics::WorkerStatus::Idle);
 
         let mut smart_sync_ready = false;
         match smart_sync::register_sync_root(&sync_root).await {
@@ -358,6 +371,13 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?
     });
+    downloader
+        .set_peer_client(PeerClient::new(
+            pool.clone(),
+            local_device.device_id.clone(),
+            local_vault_id.clone(),
+        ))
+        .await;
     if !no_sync {
         let _ = virtual_drive::unmount_virtual_drive(&preferred_drive_letter);
     }
@@ -370,7 +390,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     if no_sync {
         warn!("starting angeld with --no-sync; skipping Smart Sync and virtual drive bootstrap");
     } else if smart_sync_enabled {
-        smart_sync::install_hydration_runtime(pool.clone(), downloader)
+        smart_sync::install_hydration_runtime(pool.clone(), downloader.clone())
             .map_err(|err| io::Error::other(format!("smart sync hydration setup failed: {err}")))?;
         smart_sync::register_sync_root(&sync_root).await
             .map_err(|err| io::Error::other(format!("smart sync register failed: {err}")))?;
@@ -477,6 +497,15 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     let watcher = FileWatcher::from_env(pool.clone(), vault_keys.clone()).await?;
     let api = ApiServer::from_env(pool.clone(), vault_keys.clone(), diagnostics.clone())?;
+    let peer_service = PeerService::new(
+        pool.clone(),
+        downloader.clone(),
+        local_device.clone(),
+        local_vault_id.clone(),
+        app_config.peer_port,
+        app_config.peer_discovery_port,
+        Duration::from_millis(app_config.peer_discovery_interval_ms),
+    );
 
     if no_sync {
         info!("smart sync bootstrap skipped by --no-sync");
@@ -493,32 +522,46 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     if local_vault_bootstrapped {
         info!("default local vault bootstrap is ready");
     }
+    info!(
+        "local device identity ready: {} ({})",
+        local_device.device_name, local_device.device_id
+    );
     if !remote_providers_configured {
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Uploader, crate::diagnostics::WorkerStatus::Idle);
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Repair, crate::diagnostics::WorkerStatus::Idle);
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Scrubber, crate::diagnostics::WorkerStatus::Idle);
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Gc, crate::diagnostics::WorkerStatus::Idle);
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::MetadataBackup, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Peer, crate::diagnostics::WorkerStatus::Idle);
         info!("setup/local-only mode enabled: remote provider workers are idle until a provider is configured");
         info!("file watcher and api server started");
 
         let mut api_task = tokio::spawn(async move { api.run().await });
+        let mut peer_task = tokio::spawn(async move { peer_service.run().await });
         let watcher_future = watcher.run();
         tokio::pin!(watcher_future);
 
         let result = tokio::select! {
             result = &mut watcher_future => {
                 api_task.abort();
+                peer_task.abort();
                 let outcome = result?;
                 Ok(outcome)
             }
             result = &mut api_task => {
+                peer_task.abort();
+                let outcome = result??;
+                Ok(outcome)
+            }
+            result = &mut peer_task => {
+                api_task.abort();
                 let outcome = result??;
                 Ok(outcome)
             }
             signal = signal::ctrl_c() => {
                 signal?;
                 api_task.abort();
+                peer_task.abort();
                 info!("shutdown signal received");
                 Ok(())
             }
@@ -568,6 +611,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let mut gc_task = tokio::spawn(async move { gc_worker.run().await });
     let mut metadata_backup_task = metadata_backup_worker;
     let mut api_task = tokio::spawn(async move { api.run().await });
+    let mut peer_task = tokio::spawn(async move { peer_service.run().await });
     let watcher_future = watcher.run();
     tokio::pin!(watcher_future);
 
@@ -578,6 +622,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
+            peer_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
@@ -587,6 +632,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
+            peer_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
@@ -596,6 +642,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
+            peer_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
@@ -605,6 +652,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             scrubber_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
+            peer_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
@@ -614,6 +662,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             scrubber_task.abort();
             gc_task.abort();
             api_task.abort();
+            peer_task.abort();
             result?;
             Ok(())
         }
@@ -624,6 +673,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
+            peer_task.abort();
             let outcome = result?;
             Ok(outcome)
         }
@@ -633,6 +683,17 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             scrubber_task.abort();
             gc_task.abort();
             metadata_backup_task.abort();
+            peer_task.abort();
+            let outcome = result??;
+            Ok(outcome)
+        }
+        result = &mut peer_task => {
+            upload_task.abort();
+            repair_task.abort();
+            scrubber_task.abort();
+            gc_task.abort();
+            metadata_backup_task.abort();
+            api_task.abort();
             let outcome = result??;
             Ok(outcome)
         }
@@ -644,6 +705,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
+            peer_task.abort();
             info!("shutdown signal received");
             Ok(())
         }

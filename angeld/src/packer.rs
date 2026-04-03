@@ -60,6 +60,7 @@ pub struct Packer {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackResult {
     pub source_path: PathBuf,
+    pub revision_id: Option<i64>,
     pub pack_id: Option<String>,
     pub pack_ids: Vec<String>,
     pub pack_path: Option<PathBuf>,
@@ -68,6 +69,7 @@ pub struct PackResult {
     pub logical_size: u64,
     pub encrypted_size: u64,
     pub created_at_ms: u64,
+    pub conflict_copy_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -190,6 +192,16 @@ impl Packer {
         inode_id: i64,
         source_path: impl AsRef<Path>,
     ) -> Result<PackResult, PackerError> {
+        self.pack_file_with_expected_parent(inode_id, source_path, None)
+            .await
+    }
+
+    pub async fn pack_file_with_expected_parent(
+        &self,
+        inode_id: i64,
+        source_path: impl AsRef<Path>,
+        expected_parent_revision_id: Option<i64>,
+    ) -> Result<PackResult, PackerError> {
         let source_path = source_path.as_ref().to_path_buf();
         fs::create_dir_all(&self.config.spool_dir).await?;
 
@@ -298,11 +310,44 @@ impl Packer {
             file_offset = checked_add_i64(file_offset, plain_size, "file offset")?;
         }
 
+        let local_device = db::get_local_device_identity(&self.pool).await?;
+        let local_device_id = local_device.as_ref().map(|device| device.device_id.as_str());
+        let local_device_name = local_device
+            .as_ref()
+            .map(|device| device.device_name.as_str())
+            .unwrap_or("Unknown Device");
+        let current_revision = db::get_current_file_revision(&self.pool, inode_id).await?;
+        let mut conflict_copy_name = None;
+        let parent_revision_id = if let Some(expected_parent_revision_id) = expected_parent_revision_id {
+            match current_revision.as_ref() {
+                Some(current) if current.revision_id != expected_parent_revision_id => {
+                    let (_conflict_inode_id, _conflict_revision_id, materialized_name, _conflict_id) =
+                        db::materialize_conflict_copy_from_revision(
+                            &self.pool,
+                            current.revision_id,
+                            local_device_id,
+                            local_device_name,
+                            "parallel_local_edit",
+                        )
+                        .await?;
+                    conflict_copy_name = Some(materialized_name);
+                    Some(expected_parent_revision_id)
+                }
+                Some(_) => Some(expected_parent_revision_id),
+                None => Some(expected_parent_revision_id),
+            }
+        } else {
+            current_revision.as_ref().map(|revision| revision.revision_id)
+        };
         let revision_id = db::create_file_revision(
             &self.pool,
             inode_id,
             i64::try_from(logical_size)
                 .map_err(|_| PackerError::NumericOverflow("logical size"))?,
+            None,
+            local_device_id,
+            parent_revision_id,
+            "local_write",
             None,
         )
         .await?;
@@ -310,6 +355,7 @@ impl Packer {
         if prepared_packs.is_empty() {
             return Ok(PackResult {
                 source_path,
+                revision_id: Some(revision_id),
                 pack_id: None,
                 pack_ids: Vec::new(),
                 pack_path: None,
@@ -318,6 +364,7 @@ impl Packer {
                 logical_size: 0,
                 encrypted_size: 0,
                 created_at_ms,
+                conflict_copy_name,
             });
         }
 
@@ -393,6 +440,7 @@ impl Packer {
 
         Ok(PackResult {
             source_path,
+            revision_id: Some(revision_id),
             pack_id: pack_ids.first().cloned(),
             pack_ids,
             pack_path: pack_paths.first().cloned(),
@@ -401,6 +449,7 @@ impl Packer {
             logical_size,
             encrypted_size,
             created_at_ms,
+            conflict_copy_name,
         })
     }
 }

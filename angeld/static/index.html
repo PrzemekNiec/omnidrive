@@ -278,6 +278,58 @@
       </section>
     </section>
 
+    <section class="glass-panel mt-8 rounded-[28px] p-6">
+      <div class="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.28em] text-slate-400">Multi-Device Core</p>
+          <h2 class="mt-2 text-2xl font-semibold text-white">Peer Mesh & Conflict Lineage</h2>
+          <p id="multiDeviceMessage" class="mt-2 max-w-3xl text-sm text-slate-300">
+            Collecting local device identity, trusted peers, and recent conflict telemetry...
+          </p>
+        </div>
+        <p id="multiDeviceTimestamp" class="text-xs text-slate-500">Collecting snapshot...</p>
+      </div>
+
+      <div id="multiDeviceSummaryGrid" class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div class="glass-muted rounded-2xl p-4">
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
+          <p class="mt-3 text-sm text-slate-300">Collecting multi-device summary...</p>
+        </div>
+      </div>
+
+      <div class="mt-6 grid gap-4 xl:grid-cols-[1.2fr,1fr]">
+        <section class="glass-muted rounded-2xl p-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Trusted Peers</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Known devices in this vault</h3>
+            </div>
+          </div>
+          <div id="multiDevicePeersGrid" class="mt-4 grid gap-3">
+            <div class="glass-panel rounded-2xl p-4">
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
+              <p class="mt-3 text-sm text-slate-300">Waiting for peer telemetry...</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="glass-muted rounded-2xl p-4">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Conflict Lineage</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Recent conflict materializations</h3>
+            </div>
+          </div>
+          <div id="multiDeviceConflictsGrid" class="mt-4 grid gap-3">
+            <div class="glass-panel rounded-2xl p-4">
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
+              <p class="mt-3 text-sm text-slate-300">Waiting for conflict telemetry...</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
     <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <div class="glass-panel rounded-2xl p-5">
         <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Total Packs</p>
@@ -515,13 +567,14 @@
                 <th class="px-4 py-3">Created</th>
                 <th class="px-4 py-3">Size</th>
                 <th class="px-4 py-3">Current</th>
-                <th class="px-4 py-3">Immutable Until</th>
+                <th class="px-4 py-3">Source</th>
+                <th class="px-4 py-3">Lineage</th>
                 <th class="px-4 py-3">Action</th>
               </tr>
             </thead>
             <tbody id="revisionsTableBody" class="divide-y divide-slate-800 bg-slate-900/40">
               <tr>
-                <td colspan="6" class="px-4 py-8 text-center text-sm text-slate-500">Select a file to view history.</td>
+                <td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">Select a file to view history.</td>
               </tr>
             </tbody>
           </table>
@@ -633,6 +686,7 @@
         loadMaintenanceStatus(),
         loadMaintenanceDiagnostics(),
         loadStorageCost(),
+        loadMultiDeviceStatus(),
         loadHealth(),
         loadQuota(),
         loadCacheStatus(),
@@ -790,6 +844,99 @@
       `).join("");
     }
 
+    async function loadMultiDeviceStatus() {
+      const snapshot = await fetchJson("/api/multidevice/status");
+      multiDeviceMessage.textContent = snapshot.message || "Multi-device snapshot collected successfully.";
+      multiDeviceTimestamp.textContent = `Snapshot: ${formatTimestamp(snapshot.last_run)}`;
+
+      const trustedPeers = snapshot.trusted_peers || [];
+      const recentConflicts = snapshot.recent_conflicts || [];
+      const localDeviceLabel = snapshot.local_device_name
+        ? `${snapshot.local_device_name} (${snapshot.local_device_id ?? "-"})`
+        : "Not initialized";
+
+      const summaryCards = [
+        {
+          title: "Local Device",
+          value: localDeviceLabel,
+          hint: snapshot.vault_id ? `Vault: ${snapshot.vault_id}` : (snapshot.message || "No local device identity has been initialized yet."),
+          status: snapshot.status || (snapshot.local_device_id ? "OK" : "WARN"),
+        },
+        {
+          title: "Peer Listener",
+          value: snapshot.peer_port ? `:${snapshot.peer_port}` : "Disabled",
+          hint: trustedPeers.length > 0 ? "LAN discovery has seen at least one trusted peer." : "No trusted peers have been discovered yet.",
+          status: trustedPeers.length > 0 ? "OK" : "WARN",
+        },
+        {
+          title: "Trusted Peers",
+          value: trustedPeers.length,
+          hint: trustedPeers.length > 0 ? "Known peers may serve chunks before cloud fallback." : "Peer mesh is currently empty.",
+          status: trustedPeers.length > 0 ? "OK" : "WARN",
+        },
+        {
+          title: "Recent Conflicts",
+          value: recentConflicts.length,
+          hint: recentConflicts.length > 0 ? "Conflict copies were materialized instead of silent overwrite." : "No conflicts have been recorded yet.",
+          status: recentConflicts.length > 0 ? "WARN" : "OK",
+        },
+      ];
+
+      multiDeviceSummaryGrid.innerHTML = summaryCards.map((card) => `
+        <article class="glass-muted rounded-2xl p-4">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">${escapeHtml(card.title)}</p>
+            <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${statusClass(card.status)}">${escapeHtml(card.status)}</span>
+          </div>
+          <p class="mt-3 text-lg font-semibold text-white break-words">${escapeHtml(card.value)}</p>
+          <p class="mt-2 text-sm text-slate-300">${escapeHtml(card.hint)}</p>
+        </article>
+      `).join("");
+
+      multiDevicePeersGrid.innerHTML = trustedPeers.length > 0
+        ? trustedPeers.map((peer) => `
+            <article class="glass-panel rounded-2xl p-4">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-xs uppercase tracking-[0.22em] text-slate-500">${escapeHtml(peer.device_name || peer.peer_id)}</p>
+                  <p class="mt-2 text-sm text-slate-300">${escapeHtml(peer.peer_id)}</p>
+                </div>
+                <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${statusClass(peer.stale ? "WARN" : (peer.last_error ? "WARN" : "OK"))}">${peer.trusted ? "TRUSTED" : "SEEN"}</span>
+              </div>
+              <p class="mt-3 text-sm text-slate-300">API: ${escapeHtml(peer.peer_api_base)}</p>
+              <p class="mt-2 text-sm text-slate-400">Health score: ${escapeHtml(peer.health_score ?? 0)}${peer.stale ? " | stale" : ""}</p>
+              <p class="mt-2 text-sm text-slate-400">Last seen: ${formatTimestamp(peer.last_seen_at)}</p>
+              <p class="mt-2 text-sm text-slate-400">Handshake: ${formatTimestamp(peer.last_handshake_at)}</p>
+              <p class="mt-2 text-sm ${peer.last_error ? "text-amber-300" : "text-slate-400"}">${escapeHtml(peer.last_error || "No recent peer errors.")}</p>
+            </article>
+          `).join("")
+        : `
+          <article class="glass-panel rounded-2xl p-4">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">No peers</p>
+            <p class="mt-3 text-sm text-slate-300">This vault has not discovered any trusted LAN peers yet.</p>
+          </article>
+        `;
+
+      multiDeviceConflictsGrid.innerHTML = recentConflicts.length > 0
+        ? recentConflicts.map((conflict) => `
+            <article class="glass-panel rounded-2xl p-4">
+              <div class="flex items-center justify-between gap-3">
+                <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Conflict #${escapeHtml(conflict.conflict_id)}</p>
+                <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium status-warn">${escapeHtml(conflict.reason)}</span>
+              </div>
+              <p class="mt-3 text-sm text-slate-300">inode ${escapeHtml(conflict.inode_id)} | winner ${escapeHtml(conflict.winning_revision_id)} | loser ${escapeHtml(conflict.losing_revision_id)}</p>
+              <p class="mt-2 text-sm text-slate-400">Materialized copy inode: ${escapeHtml(conflict.materialized_inode_id ?? "-")} | revision: ${escapeHtml(conflict.materialized_revision_id ?? "-")}</p>
+              <p class="mt-2 text-sm text-slate-400">${formatTimestamp(conflict.created_at)}</p>
+            </article>
+          `).join("")
+        : `
+          <article class="glass-panel rounded-2xl p-4">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">No conflicts</p>
+            <p class="mt-3 text-sm text-slate-300">No conflict copies have been materialized for this vault yet.</p>
+          </article>
+        `;
+    }
+
     async function loadQuota() {
       const quota = await fetchJson("/api/quota");
       quotaLimit.textContent = `Per-provider limit: ${humanBytes(quota.max_physical_bytes_per_provider)} (${quota.max_physical_bytes_per_provider.toLocaleString()} bytes)`;
@@ -940,7 +1087,7 @@
       renderFiles();
       modalTitle.textContent = "Revision History";
       modalSubtitle.textContent = `${file.path} | inode ${file.inode_id}`;
-      revisionsTableBody.innerHTML = `<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-slate-500">Loading revision history...</td></tr>`;
+      revisionsTableBody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">Loading revision history...</td></tr>`;
       modalMessage.classList.add("hidden");
       syncStatusLabel.textContent = "Loading sync state...";
       pinButton.onclick = () => updatePinState(inodeId, "pin");
@@ -955,7 +1102,7 @@
         ]);
         syncStatusLabel.textContent = formatSyncStatus(syncStatus);
         if (revisions.length === 0) {
-          revisionsTableBody.innerHTML = `<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-slate-500">No revisions available for this file.</td></tr>`;
+          revisionsTableBody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">No revisions available for this file.</td></tr>`;
           return;
         }
 
@@ -965,7 +1112,8 @@
             <td class="px-4 py-3 text-sm text-slate-300">${formatTimestamp(revision.created_at)}</td>
             <td class="px-4 py-3 text-sm text-slate-300">${humanBytes(revision.size)}</td>
             <td class="px-4 py-3 text-sm ${revision.is_current ? "text-emerald-300" : "text-slate-400"}">${revision.is_current ? "Current" : "Historical"}</td>
-            <td class="px-4 py-3 text-sm text-slate-400">${formatTimestamp(revision.immutable_until)}</td>
+            <td class="px-4 py-3 text-sm text-slate-300">${formatRevisionSource(revision)}</td>
+            <td class="px-4 py-3 text-xs text-slate-400">${formatRevisionLineage(revision)}</td>
             <td class="px-4 py-3 text-sm">
               <button
                 class="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-medium text-cyan-200 transition hover:border-cyan-400/50 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:border-slate-700 disabled:bg-slate-800 disabled:text-slate-500"
@@ -982,16 +1130,19 @@
           button.addEventListener("click", () => restoreRevision(inodeId, Number(button.dataset.restoreRevisionId)));
         });
       } catch (error) {
-        revisionsTableBody.innerHTML = `<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-rose-300">${escapeHtml(error.message)}</td></tr>`;
+        revisionsTableBody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-rose-300">${escapeHtml(error.message)}</td></tr>`;
       }
     }
 
     async function restoreRevision(inodeId, revisionId) {
       try {
-        await fetchJson(`/api/files/${inodeId}/revisions/${revisionId}/restore`, {
+        const payload = await fetchJson(`/api/files/${inodeId}/revisions/${revisionId}/restore`, {
           method: "POST",
         });
-        showModalMessage(`Revision ${revisionId} restored successfully.`, "success");
+        const conflictMessage = payload.conflict_copy_name
+          ? ` Conflict copy materialized as ${payload.conflict_copy_name}.`
+          : "";
+        showModalMessage(`Revision ${revisionId} restored successfully.${conflictMessage}`, "success");
         await Promise.all([loadFiles(), openFileDetails(inodeId)]);
       } catch (error) {
         showModalMessage(error.message, "error");
@@ -1168,6 +1319,28 @@
       const pin = syncStatus.pin_state === 1 ? "Pinned" : "Online-only";
       const hydration = syncStatus.hydration_state === 1 ? "Hydrated" : "Placeholder";
       return `${pin} | ${hydration} | revision ${syncStatus.revision_id}`;
+    }
+
+    function formatRevisionSource(revision) {
+      const origin = revision.origin ? String(revision.origin).replaceAll("_", " ") : "unknown";
+      if (revision.device_id) {
+        return `${origin} @ ${revision.device_id}`;
+      }
+      return origin;
+    }
+
+    function formatRevisionLineage(revision) {
+      const details = [];
+      if (revision.parent_revision_id) {
+        details.push(`parent ${revision.parent_revision_id}`);
+      }
+      if (revision.conflict_reason) {
+        details.push(`conflict: ${revision.conflict_reason}`);
+      }
+      if (revision.immutable_until) {
+        details.push(`immutable until ${formatTimestamp(revision.immutable_until)}`);
+      }
+      return details.length > 0 ? details.join(" | ") : "Linear head";
     }
 
     function backupStatusClass(status) {

@@ -19,6 +19,7 @@ http-body-util = "0.1"
 notify = "8.1.0"
 omnidrive-core = { path = "../omnidrive-core" }
 rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 reed-solomon-erasure = "6"
 secrecy = { workspace = true }
 serde = { version = "1", features = ["derive"] }

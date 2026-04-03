@@ -98,6 +98,31 @@ Known product posture:
 Goal:
 - make OmniDrive safely multi-device by combining LAN-aware reads with conflict-safe revision handling
 
+Current implementation status:
+- durable local `device_id` is now persisted in SQLite
+- trusted peer records are now persisted in SQLite
+- LAN peer discovery and handshake service are implemented in the daemon
+- downloader can now attempt peer-first chunk reads before cloud fallback
+- peer selection now applies basic policy heuristics:
+  - trusted peers only
+  - stale-peer rejection
+  - short error backoff
+  - health scoring visible in diagnostics
+- file revisions now carry lineage metadata:
+  - `device_id`
+  - `parent_revision_id`
+  - `origin`
+  - `conflict_reason`
+- conflict-copy materialization exists in the database/API layer
+- watcher write path can now materialize an automatic conflict copy when the DB head changed during a local edit
+- multi-device status is exposed through:
+  - `/api/multidevice/status`
+  - dashboard `Multi-Device Core` panel
+
+What is still open inside the epic:
+- automatic conflict detection during true concurrent multi-device writes
+- full acceptance pass across two active devices in one network
+
 Implementation plan:
 
 #### Task 31.1: Device Identity and Trust
@@ -264,6 +289,41 @@ Why this order:
 - `Epic 31` and `Epic 32` are strongest when delivered together as one multi-device foundation
 - `Epic 33` expands product value after the multi-device model is safer
 - `Epic 34` is the most optional and should only happen when account-backed product direction is confirmed
+
+## Session Continuation Notes
+
+Current saved progress for `Epic 31 + Epic 32`:
+- `cargo check --workspace` is green after the first multi-device integration pass
+- implemented and wired:
+  - persistent local device identity
+  - trusted peer registry in SQLite
+  - LAN peer discovery and handshake
+  - peer-first downloader read path with cloud fallback
+  - revision lineage fields on `file_revisions`
+  - conflict-copy materialization in DB and API
+  - `/api/multidevice/status`
+  - dashboard `Multi-Device Core` panel
+- files touched in the current pass:
+  - `angeld/src/device_identity.rs`
+  - `angeld/src/peer.rs`
+  - `angeld/src/db.rs`
+  - `angeld/src/api.rs`
+  - `angeld/src/main.rs`
+  - `angeld/src/downloader.rs`
+  - `angeld/src/diagnostics.rs`
+  - `angeld/src/config.rs`
+  - `angeld/src/lib.rs`
+  - `angeld/static/index.html`
+  - `angeld/Cargo.toml`
+
+Next execution plan:
+1. finish automatic conflict detection on real concurrent writes
+2. define and implement multi-device winner/conflict rules
+3. add peer cache policy, timeouts, and health scoring
+4. run acceptance pass on two active devices in one LAN
+
+Working rule for future sessions on this project:
+- always use `jcodemunch` at the beginning of the session for repo context, symbol lookup, and code navigation before making implementation decisions
 
 ## Historical / Superseded Planning
 
