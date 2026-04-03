@@ -49,6 +49,24 @@
       background: rgba(239, 68, 68, 0.14);
       border-color: rgba(239, 68, 68, 0.22);
     }
+
+    .wizard-visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .wizard-hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .wizard-progress-track {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .wizard-progress-fill {
+      background: linear-gradient(90deg, rgba(255, 255, 255, 0.9), rgba(203, 213, 225, 0.55));
+    }
   </style>
 </head>
 <body class="min-h-screen text-slate-100">
@@ -580,6 +598,66 @@
           </table>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div
+    id="onboardingWizardOverlay"
+    class="wizard-hidden fixed inset-0 z-[9999] overflow-y-auto transition-opacity duration-300"
+    aria-hidden="true"
+  >
+    <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(58,58,58,0.85)_0%,_rgba(18,18,18,0.96)_48%,_rgba(10,10,10,0.98)_100%)]"></div>
+    <div class="absolute inset-0 bg-black/40 backdrop-blur-xl"></div>
+    <div class="relative mx-auto flex min-h-screen max-w-7xl items-center px-6 py-10">
+      <section id="onboardingWizardPanel" class="glass-panel w-full rounded-[32px] p-6 md:p-8">
+        <div class="flex flex-col gap-5">
+          <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p id="onboardingWizardStepKicker" class="text-xs uppercase tracking-[0.3em] text-slate-400">Onboarding</p>
+              <h2 id="onboardingWizardStepTitle" class="mt-2 text-3xl font-semibold text-white">Preparing OmniDrive</h2>
+              <p id="onboardingWizardStepDescription" class="mt-3 max-w-3xl text-sm text-slate-300">
+                Loading first-run state...
+              </p>
+            </div>
+            <div class="glass-muted rounded-2xl px-4 py-3 text-right">
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Progress</p>
+              <p id="onboardingWizardStepCounter" class="mt-2 text-lg font-semibold text-white">Step 1 / 6</p>
+            </div>
+          </div>
+
+          <div class="wizard-progress-track h-2 overflow-hidden rounded-full">
+            <div id="onboardingWizardProgressBar" class="wizard-progress-fill h-full rounded-full transition-all duration-300" style="width: 16.66%;"></div>
+          </div>
+
+          <div id="onboardingWizardDraftBanner" class="hidden rounded-2xl border border-cyan-400/20 bg-cyan-500/10 px-4 py-4 text-sm text-cyan-100"></div>
+          <div id="onboardingWizardError" class="hidden rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-4 text-sm text-rose-100"></div>
+
+          <div id="onboardingWizardBody" class="min-h-[420px]"></div>
+
+          <div class="flex flex-col gap-3 border-t border-white/10 pt-5 sm:flex-row sm:items-center sm:justify-between">
+            <button
+              id="onboardingWizardBackButton"
+              class="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-white/20 hover:bg-white/10"
+            >
+              Back
+            </button>
+            <div class="flex flex-col gap-3 sm:flex-row">
+              <button
+                id="onboardingWizardSecondaryButton"
+                class="hidden inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-white/20 hover:bg-white/10"
+              >
+                Secondary
+              </button>
+              <button
+                id="onboardingWizardNextButton"
+                class="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/10 px-5 py-2.5 text-sm font-medium text-white transition hover:border-white/20 hover:bg-white/15"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 
@@ -1383,5 +1461,6 @@
     });
     configureAutoRefresh();
   </script>
+  <script src="/wizard.js"></script>
 </body>
 </html>

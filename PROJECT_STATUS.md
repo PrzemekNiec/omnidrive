@@ -357,6 +357,20 @@ Scope:
 Outcome:
 - the user can configure OmniDrive without touching `.env`
 
+Status:
+- implemented as a full-screen glass overlay that appears whenever onboarding is not `COMPLETED`
+- includes:
+  - Welcome
+  - Choose Mode
+  - Identity
+  - Providers
+  - Security
+  - Finalize
+- `.env` draft detection is surfaced as an in-product banner and can prefill non-secret provider fields
+- provider validation errors from `B4` are rendered directly on the provider card with readable detail
+- back navigation preserves session state without persisting secrets
+- `Join Existing Vault` is staged honestly in the UI, but final metadata restore activation still belongs to `B6`
+
 #### Task B6: Join Existing Vault Flow
 Goal:
 - allow a second computer to join the same vault through the product UI/API
