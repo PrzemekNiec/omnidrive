@@ -11,6 +11,7 @@ mod gc;
 mod logging;
 mod packer;
 mod peer;
+mod onboarding;
 mod repair;
 mod runtime_paths;
 mod scrubber;

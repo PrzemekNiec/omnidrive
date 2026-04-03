@@ -6,6 +6,7 @@ pub mod diagnostics;
 pub mod device_identity;
 pub mod logging;
 pub mod peer;
+pub mod onboarding;
 pub mod config;
 pub mod db;
 pub mod disaster_recovery;
