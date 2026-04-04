@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::cloud_guard::{self, GuardOperation};
 use crate::config::AppConfig;
 use crate::db;
 use crate::db::{PackStatus, StorageMode};
@@ -106,6 +107,7 @@ pub enum UploaderError {
         operation: &'static str,
         details: String,
     },
+    CloudGuard(String),
 }
 
 impl fmt::Display for UploaderError {
@@ -126,6 +128,7 @@ impl fmt::Display for UploaderError {
                 operation,
                 details,
             } => write!(f, "{provider} {operation} failed: {details}"),
+            Self::CloudGuard(details) => write!(f, "cloud guard blocked operation: {details}"),
         }
     }
 }
@@ -304,7 +307,10 @@ impl UploadWorker {
         let uploaders = match Uploader::all_from_env().await {
             Ok(uploaders) => uploaders,
             Err(err) if bool_from_env("OMNIDRIVE_ALLOW_EMPTY_UPLOADERS", false) => {
-                warn!("starting uploader without configured remote providers: {}", err);
+                warn!(
+                    "starting uploader without configured remote providers: {}",
+                    err
+                );
                 Vec::new()
             }
             Err(err) => return Err(err),
@@ -377,6 +383,37 @@ impl UploadWorker {
             sleep(self.test_process_delay).await;
         }
 
+        if self.app_config.dry_run_active {
+            let message = format!(
+                "[DRY-RUN] Would process cloud upload job for pack {} without performing S3 PUT/POST/DELETE operations.",
+                job.pack_id
+            );
+            warn!("{message}");
+            diagnostics::record_upload_error(message.clone());
+            return Ok(JobProcessOutcome::PendingRetry {
+                delay: self.retry_max_delay,
+                failed_shards: vec![message],
+            });
+        }
+
+        if cloud_guard::is_cloud_suspended(&self.pool)
+            .await
+            .map_err(|err| UploaderError::CloudGuard(err.to_string()))?
+        {
+            let reason = db::get_system_config_value(
+                &self.pool,
+                cloud_guard::SYSTEM_CONFIG_CLOUD_SUSPEND_REASON,
+            )
+            .await?
+            .unwrap_or_else(|| "cloud operations suspended by circuit breaker".to_string());
+            warn!("{reason}");
+            diagnostics::record_upload_error(reason.clone());
+            return Ok(JobProcessOutcome::PendingRetry {
+                delay: self.retry_max_delay,
+                failed_shards: vec![reason],
+            });
+        }
+
         let pack = db::get_pack(&self.pool, &job.pack_id)
             .await?
             .ok_or(UploaderError::InvalidEnv("upload_jobs.pack_id"))?;
@@ -417,6 +454,19 @@ impl UploadWorker {
                 db::get_physical_usage_for_provider(&self.pool, &shard.provider).await?;
             let shard_size = u64::try_from(shard.size)
                 .map_err(|_| UploaderError::InvalidEnv("pack_shards.size"))?;
+            if let Err(message) = cloud_guard::enforce_single_upload_size_limit(shard_size) {
+                diagnostics::record_upload_error(message.clone());
+                warn!("{message}");
+                db::mark_pack_shard_failed(&self.pool, &job.pack_id, shard.shard_index, &message)
+                    .await?;
+                db::mark_upload_target_failed(&self.pool, job.id, &shard.provider, &message)
+                    .await?;
+                failed_shards.push(format!(
+                    "{} shard {}: {}",
+                    shard.provider, shard.shard_index, message
+                ));
+                continue;
+            }
             let projected_usage = current_usage.saturating_add(shard_size);
             if projected_usage > self.app_config.max_physical_bytes_per_provider {
                 let message = format!(
@@ -436,6 +486,30 @@ impl UploadWorker {
                     shard.provider, shard.shard_index, message
                 ));
                 continue;
+            }
+
+            match cloud_guard::current_decision(&self.pool, GuardOperation::Write { count: 1 })
+                .await
+                .map_err(|err| UploaderError::CloudGuard(err.to_string()))?
+            {
+                cloud_guard::GuardDecision::Allowed => {}
+                cloud_guard::GuardDecision::DryRun { message } => {
+                    warn!("{message}");
+                    diagnostics::record_upload_error(message.clone());
+                    return Ok(JobProcessOutcome::PendingRetry {
+                        delay: self.retry_max_delay,
+                        failed_shards: vec![message],
+                    });
+                }
+                cloud_guard::GuardDecision::Suspended { reason }
+                | cloud_guard::GuardDecision::QuotaExceeded { reason } => {
+                    warn!("{reason}");
+                    diagnostics::record_upload_error(reason.clone());
+                    return Ok(JobProcessOutcome::PendingRetry {
+                        delay: self.retry_max_delay,
+                        failed_shards: vec![reason],
+                    });
+                }
             }
 
             let shard_path = local_shard_path(

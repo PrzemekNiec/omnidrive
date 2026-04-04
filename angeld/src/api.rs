@@ -1,4 +1,5 @@
 use crate::cache;
+use crate::cloud_guard;
 use crate::config::AppConfig;
 use crate::db;
 use crate::device_identity::ensure_local_device_identity;
@@ -6,21 +7,20 @@ use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
 use crate::disaster_recovery;
 use crate::downloader::Downloader;
 use crate::onboarding::{
-    OnboardingMode, OnboardingState, SYSTEM_CONFIG_CLOUD_ENABLED,
-    SYSTEM_CONFIG_DRAFT_ENV_DETECTED, SYSTEM_CONFIG_LAST_ONBOARDING_STEP,
-    SYSTEM_CONFIG_ONBOARDING_MODE, SYSTEM_CONFIG_ONBOARDING_STATE, seal_provider_secrets,
-    ValidationReport, VaultRestoreReport, perform_vault_restore,
-    validate_persisted_provider_connection,
+    OnboardingMode, OnboardingState, SYSTEM_CONFIG_CLOUD_ENABLED, SYSTEM_CONFIG_DRAFT_ENV_DETECTED,
+    SYSTEM_CONFIG_LAST_ONBOARDING_STEP, SYSTEM_CONFIG_ONBOARDING_MODE,
+    SYSTEM_CONFIG_ONBOARDING_STATE, ValidationReport, VaultRestoreReport, cleanup_stale_uploads,
+    perform_vault_restore, seal_provider_secrets, validate_persisted_provider_connection,
 };
 use crate::peer;
-use crate::runtime_paths::RuntimePaths;
 use crate::repair::{self, RepairError};
+use crate::runtime_paths::RuntimePaths;
 use crate::scrubber;
 use crate::shell_state;
 use crate::smart_sync;
-use crate::virtual_drive;
 use crate::uploader::KNOWN_PROVIDERS;
 use crate::vault::{VaultError, VaultKeyStore};
+use crate::virtual_drive;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse};
@@ -430,6 +430,23 @@ struct StorageCostResponse {
     orphaned_packs: i64,
     orphaned_physical_bytes: u64,
     gc_candidate_packs: i64,
+    cloud_guard_status: String,
+    cloud_guard_message: String,
+    dry_run_active: bool,
+    cloud_suspended: bool,
+    cloud_suspend_reason: Option<String>,
+    session_read_ops: i64,
+    session_write_ops: i64,
+    session_egress_bytes: i64,
+    daily_read_ops: i64,
+    daily_write_ops: i64,
+    daily_egress_bytes: i64,
+    daily_read_ops_limit: i64,
+    daily_write_ops_limit: i64,
+    daily_egress_bytes_limit: i64,
+    read_quota_percent: f64,
+    write_quota_percent: f64,
+    egress_quota_percent: f64,
     providers: Vec<StorageCostProviderResponse>,
     storage_modes: Vec<StorageCostModeResponse>,
 }
@@ -489,7 +506,10 @@ impl ApiServer {
             .route("/", get(get_index))
             .route("/wizard.js", get(get_wizard_js))
             .route("/api/onboarding/status", get(get_onboarding_status))
-            .route("/api/onboarding/bootstrap-local", post(post_bootstrap_local))
+            .route(
+                "/api/onboarding/bootstrap-local",
+                post(post_bootstrap_local),
+            )
             .route("/api/onboarding/setup-identity", post(post_setup_identity))
             .route("/api/onboarding/setup-provider", post(post_setup_provider))
             .route("/api/onboarding/join-existing", post(post_join_existing))
@@ -500,13 +520,19 @@ impl ApiServer {
             .route("/api/diagnostics/shell", get(get_shell_state))
             .route("/api/diagnostics/sync-root", get(get_sync_root_state))
             .route("/api/maintenance/status", get(get_maintenance_status))
-            .route("/api/maintenance/diagnostics", get(get_maintenance_diagnostics))
+            .route(
+                "/api/maintenance/diagnostics",
+                get(get_maintenance_diagnostics),
+            )
             .route("/api/storage/cost", get(get_storage_cost))
             .route("/api/multidevice/status", get(get_multidevice_status))
             .route("/api/health/vault", get(get_vault_health))
             .route("/api/files", get(get_files))
             .route("/api/files/{inode_id}", delete(delete_file))
-            .route("/api/files/{inode_id}/sync_status", get(get_file_sync_status))
+            .route(
+                "/api/files/{inode_id}/sync_status",
+                get(get_file_sync_status),
+            )
             .route("/api/files/{inode_id}/pin", post(pin_file))
             .route("/api/files/{inode_id}/unpin", post(unpin_file))
             .route("/api/filesystem/set-policy", post(set_filesystem_policy))
@@ -529,7 +555,10 @@ impl ApiServer {
             .route("/api/maintenance/repair-now", post(post_repair_now))
             .route("/api/maintenance/reconcile-now", post(post_reconcile_now))
             .route("/api/maintenance/repair-shell", post(post_repair_shell))
-            .route("/api/maintenance/repair-sync-root", post(post_repair_sync_root))
+            .route(
+                "/api/maintenance/repair-sync-root",
+                post(post_repair_sync_root),
+            )
             .route("/api/recovery/status", get(get_recovery_status))
             .route("/api/recovery/backup-now", post(post_backup_now))
             .route("/api/recovery/snapshot-local", post(post_snapshot_local))
@@ -565,7 +594,10 @@ async fn get_index() -> Html<&'static str> {
 
 async fn get_wizard_js() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         include_str!("../static/wizard.js"),
     )
 }
@@ -599,7 +631,19 @@ async fn post_bootstrap_local(State(state): State<ApiState>) -> impl IntoRespons
     .await;
 
     match result {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Ok(response) => {
+            match cleanup_stale_uploads(&state.pool).await {
+                Ok(actions) => {
+                    for action in &actions {
+                        info!("[ONBOARDING] complete multipart cleanup: {}", action);
+                    }
+                }
+                Err(err) => {
+                    error!("[ONBOARDING] complete multipart cleanup failed: {}", err);
+                }
+            }
+            (StatusCode::OK, Json(response)).into_response()
+        }
         Err(err) => internal_server_error(err),
     }
 }
@@ -698,8 +742,7 @@ async fn post_setup_provider(
             request.secret_access_key.as_deref(),
         ) {
             let (sealed_access_key_id, sealed_secret_access_key) =
-                seal_provider_secrets(access_key_id, secret_access_key)
-                    .map_err(io_error)?;
+                seal_provider_secrets(access_key_id, secret_access_key).map_err(io_error)?;
             db::upsert_provider_secret(
                 &state.pool,
                 provider_name,
@@ -802,7 +845,9 @@ async fn post_setup_provider(
 async fn post_complete_onboarding(State(state): State<ApiState>) -> impl IntoResponse {
     let result = async {
         let provider_configs = db::list_provider_configs(&state.pool).await?;
-        let cloud_enabled = provider_configs.iter().any(|provider| provider.enabled != 0);
+        let cloud_enabled = provider_configs
+            .iter()
+            .any(|provider| provider.enabled != 0);
         let onboarding_mode = if cloud_enabled {
             OnboardingMode::CloudEnabled
         } else {
@@ -821,12 +866,8 @@ async fn post_complete_onboarding(State(state): State<ApiState>) -> impl IntoRes
             onboarding_mode.as_str(),
         )
         .await?;
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_LAST_ONBOARDING_STEP,
-            "completed",
-        )
-        .await?;
+        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "completed")
+            .await?;
         db::set_system_config_value(
             &state.pool,
             SYSTEM_CONFIG_CLOUD_ENABLED,
@@ -881,7 +922,9 @@ async fn post_join_existing(
                 crate::onboarding::RestoreError::IncorrectPassphrase(_) => StatusCode::BAD_REQUEST,
                 crate::onboarding::RestoreError::MetadataNotFound(_) => StatusCode::NOT_FOUND,
                 crate::onboarding::RestoreError::NetworkError(_) => StatusCode::BAD_GATEWAY,
-                crate::onboarding::RestoreError::MissingProviderConfig(_) => StatusCode::BAD_REQUEST,
+                crate::onboarding::RestoreError::MissingProviderConfig(_) => {
+                    StatusCode::BAD_REQUEST
+                }
                 crate::onboarding::RestoreError::SnapshotApply(_)
                 | crate::onboarding::RestoreError::Runtime(_)
                 | crate::onboarding::RestoreError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -923,12 +966,8 @@ async fn post_join_existing(
             OnboardingMode::JoinExisting.as_str(),
         )
         .await?;
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_LAST_ONBOARDING_STEP,
-            "completed",
-        )
-        .await?;
+        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "completed")
+            .await?;
         db::set_system_config_value(&state.pool, SYSTEM_CONFIG_CLOUD_ENABLED, "1").await?;
 
         Ok::<_, sqlx::Error>(JoinExistingResponse {
@@ -954,10 +993,12 @@ async fn finalize_join_existing_runtime(
     let downloader = match state.downloader.clone() {
         Some(existing) if existing.has_remote_providers() => existing,
         _ => {
-            let provider_config =
-                crate::onboarding::load_provider_config_from_onboarding_db(&state.pool, provider_id)
-                    .await
-                    .map_err(io_error)?;
+            let provider_config = crate::onboarding::load_provider_config_from_onboarding_db(
+                &state.pool,
+                provider_id,
+            )
+            .await
+            .map_err(io_error)?;
             Arc::new(
                 Downloader::from_provider_configs(
                     state.pool.clone(),
@@ -995,7 +1036,8 @@ async fn finalize_join_existing_runtime(
     let _ = virtual_drive::unmount_virtual_drive(&preferred_drive_letter);
     let drive_letter = virtual_drive::select_mount_drive_letter(&preferred_drive_letter)
         .unwrap_or(preferred_drive_letter.clone());
-    virtual_drive::mount_virtual_drive(&drive_letter, &runtime_paths.sync_root).map_err(io_error)?;
+    virtual_drive::mount_virtual_drive(&drive_letter, &runtime_paths.sync_root)
+        .map_err(io_error)?;
 
     match shell_state::repair_explorer_integration() {
         Ok(report) => {
@@ -1117,7 +1159,7 @@ async fn get_sync_root_state() -> impl IntoResponse {
                 "last_run": unix_timestamp_millis(),
             })),
         )
-        .into_response(),
+            .into_response(),
     }
 }
 
@@ -1462,10 +1504,7 @@ async fn get_file_sync_status(
     }
 }
 
-async fn pin_file(
-    State(state): State<ApiState>,
-    Path(inode_id): Path<i64>,
-) -> impl IntoResponse {
+async fn pin_file(State(state): State<ApiState>, Path(inode_id): Path<i64>) -> impl IntoResponse {
     let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
         Ok(inode) => inode,
         Err(err) => return internal_server_error(err),
@@ -1507,17 +1546,16 @@ async fn pin_file(
             .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id })),
+            Json(
+                serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id }),
+            ),
         )
             .into_response(),
         Err(err) => internal_server_error(err),
     }
 }
 
-async fn unpin_file(
-    State(state): State<ApiState>,
-    Path(inode_id): Path<i64>,
-) -> impl IntoResponse {
+async fn unpin_file(State(state): State<ApiState>, Path(inode_id): Path<i64>) -> impl IntoResponse {
     let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
         Ok(inode) => inode,
         Err(err) => return internal_server_error(err),
@@ -1559,7 +1597,9 @@ async fn unpin_file(
             .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id })),
+            Json(
+                serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id }),
+            ),
         )
             .into_response(),
         Err(err) => internal_server_error(err),
@@ -1580,7 +1620,7 @@ async fn set_filesystem_policy(
                     "policy_type": request.policy_type,
                 })),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -1590,7 +1630,8 @@ async fn set_filesystem_policy(
             Err(response) => return response,
         };
 
-    if let Err(err) = db::set_sync_policy_type_for_path(&state.pool, &logical_path, policy_type).await
+    if let Err(err) =
+        db::set_sync_policy_type_for_path(&state.pool, &logical_path, policy_type).await
     {
         return internal_server_error(err);
     }
@@ -1600,7 +1641,8 @@ async fn set_filesystem_policy(
         if let Err(err) = db::set_pin_state(&state.pool, inode_id, 1).await {
             return internal_server_error(err);
         }
-        if let Err(err) = smart_sync::hydrate_placeholder_now(&state.pool, &sync_root, inode_id).await
+        if let Err(err) =
+            smart_sync::hydrate_placeholder_now(&state.pool, &sync_root, inode_id).await
         {
             return internal_server_error(err);
         }
@@ -1622,11 +1664,11 @@ async fn pin_filesystem_path(
     State(state): State<ApiState>,
     Json(request): Json<FilesystemPathRequest>,
 ) -> impl IntoResponse {
-    let (inode_id, _, inode) = match resolve_filesystem_request_target(&state.pool, &request.path).await
-    {
-        Ok(target) => target,
-        Err(response) => return response,
-    };
+    let (inode_id, _, inode) =
+        match resolve_filesystem_request_target(&state.pool, &request.path).await {
+            Ok(target) => target,
+            Err(response) => return response,
+        };
     if inode.kind != "FILE" {
         return (
             StatusCode::BAD_REQUEST,
@@ -1659,7 +1701,9 @@ async fn pin_filesystem_path(
             .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id })),
+            Json(
+                serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id }),
+            ),
         )
             .into_response(),
         Err(err) => internal_server_error(err),
@@ -1670,11 +1714,11 @@ async fn unpin_filesystem_path(
     State(state): State<ApiState>,
     Json(request): Json<FilesystemPathRequest>,
 ) -> impl IntoResponse {
-    let (inode_id, _, inode) = match resolve_filesystem_request_target(&state.pool, &request.path).await
-    {
-        Ok(target) => target,
-        Err(response) => return response,
-    };
+    let (inode_id, _, inode) =
+        match resolve_filesystem_request_target(&state.pool, &request.path).await {
+            Ok(target) => target,
+            Err(response) => return response,
+        };
     if inode.kind != "FILE" {
         return (
             StatusCode::BAD_REQUEST,
@@ -1691,7 +1735,8 @@ async fn unpin_filesystem_path(
     if let Err(err) = db::set_pin_state(&state.pool, inode_id, 0).await {
         return internal_server_error(err);
     }
-    if let Err(err) = smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, true).await
+    if let Err(err) =
+        smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, true).await
     {
         return internal_server_error(err);
     }
@@ -1708,7 +1753,9 @@ async fn unpin_filesystem_path(
             .into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id })),
+            Json(
+                serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id }),
+            ),
         )
             .into_response(),
         Err(err) => internal_server_error(err),
@@ -1831,7 +1878,9 @@ async fn restore_file_revision(
         Ok(device) => device,
         Err(err) => return internal_server_error(err),
     };
-    let conflict_device_id = local_device.as_ref().map(|device| device.device_id.as_str());
+    let conflict_device_id = local_device
+        .as_ref()
+        .map(|device| device.device_id.as_str());
     let conflict_device_name = local_device
         .as_ref()
         .map(|device| device.device_name.as_str())
@@ -1850,9 +1899,7 @@ async fn restore_file_revision(
             let conflict_reason = match lineage {
                 db::RevisionLineageRelation::Same
                 | db::RevisionLineageRelation::CandidateDescendsFromCurrent => None,
-                db::RevisionLineageRelation::CurrentDescendsFromCandidate => {
-                    Some("restore_rewind")
-                }
+                db::RevisionLineageRelation::CurrentDescendsFromCandidate => Some("restore_rewind"),
                 db::RevisionLineageRelation::Parallel => Some("parallel_restore"),
             };
 
@@ -1947,7 +1994,9 @@ async fn materialize_conflict_copy(
         Ok(device) => device,
         Err(err) => return internal_server_error(err),
     };
-    let conflict_device_id = local_device.as_ref().map(|device| device.device_id.as_str());
+    let conflict_device_id = local_device
+        .as_ref()
+        .map(|device| device.device_id.as_str());
     let conflict_device_name = local_device
         .as_ref()
         .map(|device| device.device_name.as_str())
@@ -2093,7 +2142,7 @@ async fn post_repair_now(State(state): State<ApiState>) -> impl IntoResponse {
                 "reconciled_packs": report.reconciled_packs,
             })),
         )
-        .into_response(),
+            .into_response(),
         Err(RepairError::MissingProviderConfig) => (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -2105,7 +2154,7 @@ async fn post_repair_now(State(state): State<ApiState>) -> impl IntoResponse {
                 "reconciled_packs": 0,
             })),
         )
-        .into_response(),
+            .into_response(),
         Err(err) => internal_server_error(err),
     }
 }
@@ -2127,7 +2176,7 @@ async fn post_reconcile_now(State(state): State<ApiState>) -> impl IntoResponse 
                 "reconciled_packs": report.reconciled_packs,
             })),
         )
-        .into_response(),
+            .into_response(),
         Err(RepairError::MissingProviderConfig) => (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -2139,7 +2188,7 @@ async fn post_reconcile_now(State(state): State<ApiState>) -> impl IntoResponse 
                 "reconciled_packs": 0,
             })),
         )
-        .into_response(),
+            .into_response(),
         Err(err) => internal_server_error(err),
     }
 }
@@ -2329,12 +2378,8 @@ async fn post_backup_now(State(state): State<ApiState>) -> impl IntoResponse {
         Err(err) => return internal_server_error(err),
     };
 
-    match disaster_recovery::run_metadata_backup_now(
-        &state.pool,
-        &provider_manager,
-        &master_key,
-    )
-    .await
+    match disaster_recovery::run_metadata_backup_now(&state.pool, &provider_manager, &master_key)
+        .await
     {
         Ok(()) => (
             StatusCode::OK,
@@ -2345,7 +2390,7 @@ async fn post_backup_now(State(state): State<ApiState>) -> impl IntoResponse {
                 "uploaded": true
             })),
         )
-        .into_response(),
+            .into_response(),
         Err(err) => internal_server_error(err),
     }
 }
@@ -2452,8 +2497,8 @@ fn build_shell_state_response() -> MaintenanceStatus<shell_state::ShellStateSnap
     }
 }
 
-fn build_sync_root_state_response(
-) -> Result<MaintenanceStatus<smart_sync::SyncRootStateSnapshot>, smart_sync::SmartSyncError> {
+fn build_sync_root_state_response()
+-> Result<MaintenanceStatus<smart_sync::SyncRootStateSnapshot>, smart_sync::SmartSyncError> {
     let runtime_paths = RuntimePaths::detect();
     let snapshot = smart_sync::audit_sync_root_state(&runtime_paths.sync_root)?;
     let shell_mode = shell_state::audit_shell_state().mode;
@@ -2479,7 +2524,10 @@ fn build_sync_root_state_response(
     } else {
         (
             MaintenanceLevel::Error,
-            format!("Sync root {} is missing and requires repair.", snapshot.path),
+            format!(
+                "Sync root {} is missing and requires repair.",
+                snapshot.path
+            ),
         )
     };
 
@@ -2560,10 +2608,9 @@ async fn build_recovery_status_response(
     })
 }
 
-async fn build_storage_cost_response(
-    state: &ApiState,
-) -> Result<StorageCostResponse, sqlx::Error> {
+async fn build_storage_cost_response(state: &ApiState) -> Result<StorageCostResponse, sqlx::Error> {
     let app_config = AppConfig::from_env();
+    let guard_snapshot = cloud_guard::snapshot(&state.pool).await.ok();
     let mode_summaries = db::get_active_storage_mode_summaries(&state.pool).await?;
     let orphaned_summary = db::get_orphaned_pack_summary(&state.pool).await?;
     let active_packs = db::list_active_packs(&state.pool, 100_000).await?;
@@ -2602,7 +2649,8 @@ async fn build_storage_cost_response(
             estimated_paranoia_physical_bytes: estimated_paranoia_bytes,
             estimated_provider_bytes_avoided: avoided_bytes,
             estimated_monthly_cost_usd: round_cost_estimate(
-                bytes_to_gib(summary_physical_bytes) * app_config.estimated_cost_per_gib_month_default,
+                bytes_to_gib(summary_physical_bytes)
+                    * app_config.estimated_cost_per_gib_month_default,
             ),
         });
     }
@@ -2610,7 +2658,8 @@ async fn build_storage_cost_response(
     let mut providers = Vec::with_capacity(KNOWN_PROVIDERS.len());
     let mut estimated_monthly_cost_usd = 0.0f64;
     for provider in KNOWN_PROVIDERS {
-        let used_physical_bytes = db::get_physical_usage_for_provider(&state.pool, provider).await?;
+        let used_physical_bytes =
+            db::get_physical_usage_for_provider(&state.pool, provider).await?;
         let rate = provider_cost_rate(&app_config, provider);
         let provider_cost = round_cost_estimate(bytes_to_gib(used_physical_bytes) * rate);
         estimated_monthly_cost_usd += provider_cost;
@@ -2624,7 +2673,8 @@ async fn build_storage_cost_response(
     }
 
     let message = if logical_bytes == 0 {
-        "No active packs exist yet, so the storage dashboard is showing an empty vault footprint.".to_string()
+        "No active packs exist yet, so the storage dashboard is showing an empty vault footprint."
+            .to_string()
     } else {
         format!(
             "Vault footprint is {:.2} GiB logical vs {:.2} GiB physical with an estimated ${:.2}/month remote cost.",
@@ -2648,6 +2698,75 @@ async fn build_storage_cost_response(
         orphaned_packs: orphaned_summary.pack_count,
         orphaned_physical_bytes: u64::try_from(orphaned_summary.physical_bytes).unwrap_or(0),
         gc_candidate_packs: orphaned_summary.pack_count,
+        cloud_guard_status: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.status.clone())
+            .unwrap_or_else(|| "WARN".to_string()),
+        cloud_guard_message: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.message.clone())
+            .unwrap_or_else(|| "Cloud guard snapshot unavailable.".to_string()),
+        dry_run_active: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.dry_run_active)
+            .unwrap_or(app_config.dry_run_active),
+        cloud_suspended: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.cloud_suspended)
+            .unwrap_or(false),
+        cloud_suspend_reason: guard_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.cloud_suspend_reason.clone()),
+        session_read_ops: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.session_read_ops)
+            .unwrap_or(0),
+        session_write_ops: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.session_write_ops)
+            .unwrap_or(0),
+        session_egress_bytes: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.session_egress_bytes)
+            .unwrap_or(0),
+        daily_read_ops: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.daily_read_ops)
+            .unwrap_or(0),
+        daily_write_ops: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.daily_write_ops)
+            .unwrap_or(0),
+        daily_egress_bytes: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.daily_egress_bytes)
+            .unwrap_or(0),
+        daily_read_ops_limit: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.daily_read_ops_limit)
+            .unwrap_or(i64::try_from(app_config.cloud_daily_read_ops_limit).unwrap_or(i64::MAX)),
+        daily_write_ops_limit: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.daily_write_ops_limit)
+            .unwrap_or(i64::try_from(app_config.cloud_daily_write_ops_limit).unwrap_or(i64::MAX)),
+        daily_egress_bytes_limit: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.daily_egress_bytes_limit)
+            .unwrap_or(
+                i64::try_from(app_config.cloud_daily_egress_bytes_limit).unwrap_or(i64::MAX),
+            ),
+        read_quota_percent: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.read_quota_percent)
+            .unwrap_or(0.0),
+        write_quota_percent: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.write_quota_percent)
+            .unwrap_or(0.0),
+        egress_quota_percent: guard_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.egress_quota_percent)
+            .unwrap_or(0.0),
         providers,
         storage_modes,
     })
@@ -2749,12 +2868,10 @@ async fn build_onboarding_status_response(
     let current_step = db::get_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP)
         .await?
         .unwrap_or_else(|| "welcome".to_string());
-    let draft_env_detected = db::get_system_config_value(
-        &state.pool,
-        SYSTEM_CONFIG_DRAFT_ENV_DETECTED,
-    )
-    .await?
-    .is_some_and(|value| value == "1");
+    let draft_env_detected =
+        db::get_system_config_value(&state.pool, SYSTEM_CONFIG_DRAFT_ENV_DETECTED)
+            .await?
+            .is_some_and(|value| value == "1");
     let cloud_enabled = db::get_system_config_value(&state.pool, SYSTEM_CONFIG_CLOUD_ENABLED)
         .await?
         .is_some_and(|value| value == "1");
@@ -2799,8 +2916,7 @@ async fn build_onboarding_status_response(
     let message = if onboarding_state == OnboardingState::Completed.as_str() {
         "Onboarding is complete.".to_string()
     } else if draft_env_detected {
-        "Onboarding is incomplete; provider drafts were imported from .env for review."
-            .to_string()
+        "Onboarding is incomplete; provider drafts were imported from .env for review.".to_string()
     } else {
         "Onboarding is not complete yet.".to_string()
     };
@@ -2815,7 +2931,9 @@ async fn build_onboarding_status_response(
             current_step,
             draft_env_detected,
             cloud_enabled,
-            device_name: local_device.as_ref().map(|device| device.device_name.clone()),
+            device_name: local_device
+                .as_ref()
+                .map(|device| device.device_name.clone()),
             device_id: local_device.as_ref().map(|device| device.device_id.clone()),
             providers: provider_statuses,
         },
@@ -2885,7 +3003,7 @@ async fn resolve_filesystem_request_target(
                     "path": raw_path,
                 })),
             )
-                .into_response())
+                .into_response());
         }
     };
 
@@ -2899,7 +3017,7 @@ async fn resolve_filesystem_request_target(
                     "path": logical_path,
                 })),
             )
-                .into_response())
+                .into_response());
         }
         Err(err) => return Err(internal_server_error(err)),
     };
@@ -2914,7 +3032,7 @@ async fn resolve_filesystem_request_target(
                     "inode_id": inode_id,
                 })),
             )
-                .into_response())
+                .into_response());
         }
         Err(err) => return Err(internal_server_error(err)),
     };

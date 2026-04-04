@@ -1,6 +1,7 @@
 mod api;
 mod aws_http;
 mod cache;
+mod cloud_guard;
 mod config;
 mod db;
 mod device_identity;
@@ -9,15 +10,15 @@ mod disaster_recovery;
 mod downloader;
 mod gc;
 mod logging;
+mod onboarding;
 mod packer;
 mod peer;
-mod onboarding;
 mod repair;
 mod runtime_paths;
 mod scrubber;
 mod secure_fs;
-mod shell_state;
 mod shell_integration;
+mod shell_state;
 mod smart_sync;
 mod uploader;
 mod vault;
@@ -35,14 +36,14 @@ use crate::disaster_recovery::{
 use crate::downloader::Downloader;
 use crate::gc::GcWorker;
 use crate::logging::init_logging;
-use crate::onboarding::initialize_onboarding_persistence;
+use crate::onboarding::{cleanup_stale_uploads, initialize_onboarding_persistence};
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::peer::{PeerClient, PeerService};
 use crate::repair::RepairWorker;
 use crate::runtime_paths::{RuntimePaths, sqlite_db_file_path};
 use crate::scrubber::ScrubberWorker;
-use crate::uploader::{UploadWorker, Uploader};
 use crate::uploader::ProviderConfig;
+use crate::uploader::{UploadWorker, Uploader};
 use crate::vault::{VaultKeyStore, bootstrap_local_vault};
 use crate::watcher::FileWatcher;
 use std::env;
@@ -119,6 +120,10 @@ fn should_disable_sync() -> bool {
     env::args().any(|arg| arg == "--no-sync")
 }
 
+fn should_dry_run() -> bool {
+    env::args().any(|arg| arg == "--dry-run")
+}
+
 fn is_e2e_test_mode() -> bool {
     env_flag("OMNIDRIVE_E2E_TEST_MODE")
 }
@@ -192,6 +197,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv();
     let diagnostics = init_global_diagnostics();
     let no_sync = should_disable_sync();
+    let dry_run_flag = should_dry_run();
     let e2e_test_mode = is_e2e_test_mode();
     let runtime_paths = RuntimePaths::detect();
     runtime_paths.export_env_defaults();
@@ -217,10 +223,29 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let just_restored = maybe_auto_restore_database(&runtime_paths.db_url).await?;
 
     let pool = db::init_db(&runtime_paths.db_url).await?;
+    let dry_run_active = dry_run_flag || env_flag("OMNIDRIVE_DRY_RUN");
+    cloud_guard::sync_runtime_flags(&pool, dry_run_active).await?;
+    if dry_run_active {
+        info!("DRY-RUN mode active: cloud operations will not perform external S3 side effects");
+    }
     initialize_onboarding_persistence(&pool).await?;
-    let local_vault_bootstrapped =
-        bootstrap_default_local_vault(&pool, &runtime_paths, database_missing_on_start, just_restored)
-            .await?;
+    match cleanup_stale_uploads(&pool).await {
+        Ok(actions) => {
+            for action in &actions {
+                info!("[ONBOARDING] startup multipart cleanup: {}", action);
+            }
+        }
+        Err(err) => {
+            warn!("[ONBOARDING] startup multipart cleanup failed: {}", err);
+        }
+    }
+    let local_vault_bootstrapped = bootstrap_default_local_vault(
+        &pool,
+        &runtime_paths,
+        database_missing_on_start,
+        just_restored,
+    )
+    .await?;
     let app_config = AppConfig::from_env();
     let local_device = ensure_local_device_identity(&pool, &app_config).await?;
     let local_vault_id = db::get_vault_params(&pool)
@@ -230,17 +255,39 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let vault_keys = VaultKeyStore::new();
     if no_sync && e2e_test_mode {
         let worker = UploadWorker::from_env(pool.clone()).await?;
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Repair, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Scrubber, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Gc, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Watcher, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::MetadataBackup, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Peer, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Repair,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Scrubber,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Gc,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Watcher,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::MetadataBackup,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Peer,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
         let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone(), None)?;
 
-        warn!("starting angeld in OMNIDRIVE_E2E_TEST_MODE with --no-sync; only uploader and API workers are enabled");
+        warn!(
+            "starting angeld in OMNIDRIVE_E2E_TEST_MODE with --no-sync; only uploader and API workers are enabled"
+        );
         info!("smart sync bootstrap skipped by --no-sync");
-        info!("e2e test mode enabled: repair, scrubber, gc, watcher, and metadata backup workers are disabled");
+        info!(
+            "e2e test mode enabled: repair, scrubber, gc, watcher, and metadata backup workers are disabled"
+        );
 
         let mut upload_task = tokio::spawn(async move { worker.run().await });
         let mut api_task = tokio::spawn(async move { api.run().await });
@@ -269,13 +316,34 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if e2e_test_mode {
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Uploader, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Repair, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Scrubber, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Gc, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Watcher, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::MetadataBackup, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Peer, crate::diagnostics::WorkerStatus::Idle);
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Uploader,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Repair,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Scrubber,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Gc,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Watcher,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::MetadataBackup,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Peer,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
 
         let mut smart_sync_ready = false;
         match smart_sync::register_sync_root(&sync_root).await {
@@ -290,7 +358,11 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 if let Err(err) =
                     project_sync_root_with_retry(&pool, &sync_root, just_restored).await
                 {
-                    warn!("smart sync bootstrap warning: projection failed for {}: {}", sync_root.display(), err);
+                    warn!(
+                        "smart sync bootstrap warning: projection failed for {}: {}",
+                        sync_root.display(),
+                        err
+                    );
                     smart_sync_ready = false;
                 }
             }
@@ -331,7 +403,9 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             warn!("smart sync bootstrap warning at {}", sync_root.display());
         }
-        info!("e2e test mode enabled: background provider workers and virtual drive bootstrap are disabled");
+        info!(
+            "e2e test mode enabled: background provider workers and virtual drive bootstrap are disabled"
+        );
 
         let mut api_task = tokio::spawn(async move { api.run().await });
         let result = tokio::select! {
@@ -395,7 +469,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     } else if smart_sync_enabled {
         smart_sync::install_hydration_runtime(pool.clone(), downloader.clone())
             .map_err(|err| io::Error::other(format!("smart sync hydration setup failed: {err}")))?;
-        smart_sync::register_sync_root(&sync_root).await
+        smart_sync::register_sync_root(&sync_root)
+            .await
             .map_err(|err| io::Error::other(format!("smart sync register failed: {err}")))?;
         if just_restored {
             info!(
@@ -403,10 +478,12 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 sync_root.display()
             );
         }
-        project_sync_root_with_retry(&pool, &sync_root, just_restored).await
+        project_sync_root_with_retry(&pool, &sync_root, just_restored)
+            .await
             .map_err(|err| io::Error::other(format!("smart sync projection failed: {err}")))?;
-        virtual_drive::hide_sync_root(&sync_root)
-            .map_err(|err| io::Error::other(format!("virtual drive hide sync root failed: {err}")))?;
+        virtual_drive::hide_sync_root(&sync_root).map_err(|err| {
+            io::Error::other(format!("virtual drive hide sync root failed: {err}"))
+        })?;
         virtual_drive::mount_virtual_drive(&drive_letter, &sync_root)
             .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
     } else {
@@ -454,7 +531,10 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Err(err) => {
-                warn!("startup shell recovery warning for {}: {}", drive_letter, err);
+                warn!(
+                    "startup shell recovery warning for {}: {}",
+                    drive_letter, err
+                );
             }
         }
 
@@ -463,9 +543,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(snapshot) if snapshot.registered_for_provider && snapshot.connected => {
                     info!(
                         "startup sync-root audit healthy for {} (registered={}, connected={})",
-                        snapshot.path,
-                        snapshot.registered_for_provider,
-                        snapshot.connected
+                        snapshot.path, snapshot.registered_for_provider, snapshot.connected
                     );
                 }
                 Ok(snapshot) => {
@@ -487,12 +565,20 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                             );
                         }
                         Err(err) => {
-                            warn!("startup sync-root recovery warning for {}: {}", sync_root.display(), err);
+                            warn!(
+                                "startup sync-root recovery warning for {}: {}",
+                                sync_root.display(),
+                                err
+                            );
                         }
                     }
                 }
                 Err(err) => {
-                    warn!("startup sync-root audit warning for {}: {}", sync_root.display(), err);
+                    warn!(
+                        "startup sync-root audit warning for {}: {}",
+                        sync_root.display(),
+                        err
+                    );
                 }
             }
         }
@@ -535,13 +621,33 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         local_device.device_name, local_device.device_id
     );
     if !remote_providers_configured {
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Uploader, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Repair, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Scrubber, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Gc, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::MetadataBackup, crate::diagnostics::WorkerStatus::Idle);
-        diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Peer, crate::diagnostics::WorkerStatus::Idle);
-        info!("setup/local-only mode enabled: remote provider workers are idle until a provider is configured");
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Uploader,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Repair,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Scrubber,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Gc,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::MetadataBackup,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        diagnostics::set_worker_status(
+            crate::diagnostics::WorkerKind::Peer,
+            crate::diagnostics::WorkerStatus::Idle,
+        );
+        info!(
+            "setup/local-only mode enabled: remote provider workers are idle until a provider is configured"
+        );
         info!("file watcher and api server started");
 
         let mut api_task = tokio::spawn(async move { api.run().await });
@@ -593,7 +699,10 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
-                warn!("virtual drive unmount warning for {}: {}", drive_letter, err);
+                warn!(
+                    "virtual drive unmount warning for {}: {}",
+                    drive_letter, err
+                );
             }
         }
 
@@ -611,7 +720,9 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         metadata_backup_provider_manager,
         Arc::new(vault_keys.clone()),
     );
-    info!("upload worker, repair worker, scrubber worker, gc worker, file watcher, and api server started");
+    info!(
+        "upload worker, repair worker, scrubber worker, gc worker, file watcher, and api server started"
+    );
 
     let mut upload_task = tokio::spawn(async move { worker.run().await });
     let mut repair_task = tokio::spawn(async move { repair_worker.run().await });
@@ -737,7 +848,10 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
-            warn!("virtual drive unmount warning for {}: {}", drive_letter, err);
+            warn!(
+                "virtual drive unmount warning for {}: {}",
+                drive_letter, err
+            );
         }
     }
 
@@ -842,7 +956,8 @@ fn is_fatal_cloud_projection_error(message: &str) -> bool {
         || message.contains("0x80070057")
         || message.contains("invalid arguments")
         || message.contains("only supported for files in the cloud sync root")
-        || message.contains("obsługiwana tylko w przypadku plików w katalogu głównym synchronizacji")
+        || message
+            .contains("obsługiwana tylko w przypadku plików w katalogu głównym synchronizacji")
 }
 
 async fn run_upload_diagnostics() -> Result<(), Box<dyn std::error::Error>> {
@@ -899,7 +1014,6 @@ fn virtual_drive_letter() -> String {
     env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string())
 }
 
-
 async fn maybe_auto_restore_database(db_url: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let Some(passphrase) = env::var("OMNIDRIVE_AUTO_RESTORE_PASSPHRASE").ok() else {
         return Ok(false);
@@ -918,7 +1032,10 @@ async fn maybe_auto_restore_database(db_url: &str) -> Result<bool, Box<dyn std::
         db_path.display()
     );
     restore_metadata_from_cloud(&provider_manager, &passphrase, &db_path).await?;
-    info!("automatic metadata restore completed for {}", db_path.display());
+    info!(
+        "automatic metadata restore completed for {}",
+        db_path.display()
+    );
     Ok(true)
 }
 
@@ -929,7 +1046,10 @@ fn absolute_path_to_policy_key(path: &std::path::Path) -> io::Result<String> {
         env::current_dir()?.join(path)
     };
     let normalized = absolute.to_string_lossy().replace('\\', "/");
-    let segments: Vec<&str> = normalized.split('/').filter(|segment| !segment.is_empty()).collect();
+    let segments: Vec<&str> = normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
     if segments.is_empty() {
         return Err(io::Error::other("invalid empty policy path"));
     }

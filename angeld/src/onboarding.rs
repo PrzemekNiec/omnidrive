@@ -1,15 +1,17 @@
 #![allow(dead_code)]
 
+use crate::cloud_guard::{self, GuardOperation};
+use crate::config::AppConfig;
+use crate::disaster_recovery::{self, MetadataBackupProviderManager};
+use crate::runtime_paths::RuntimePaths;
+use crate::uploader::ProviderConfig;
+use crate::{db, db::ProviderConfigRecord};
 use aws_config::Region;
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Credentials;
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::primitives::ByteStream;
-use crate::disaster_recovery::{self, MetadataBackupProviderManager};
-use crate::runtime_paths::RuntimePaths;
-use crate::uploader::ProviderConfig;
-use crate::{db, db::ProviderConfigRecord};
 use reqwest::Url;
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -263,7 +265,9 @@ impl From<OnboardingSecretError> for OnboardingInitError {
 
 impl ProviderDraft {
     pub fn is_complete(&self) -> bool {
-        self.endpoint.as_ref().is_some_and(|value| !value.is_empty())
+        self.endpoint
+            .as_ref()
+            .is_some_and(|value| !value.is_empty())
             && self.region.as_ref().is_some_and(|value| !value.is_empty())
             && self.bucket.as_ref().is_some_and(|value| !value.is_empty())
             && self
@@ -380,7 +384,9 @@ pub async fn initialize_onboarding_persistence(
     Ok(())
 }
 
-pub async fn sync_env_provider_drafts_to_db(pool: &SqlitePool) -> Result<usize, OnboardingInitError> {
+pub async fn sync_env_provider_drafts_to_db(
+    pool: &SqlitePool,
+) -> Result<usize, OnboardingInitError> {
     let drafts = detect_env_provider_drafts();
     db::set_system_config_value(
         pool,
@@ -391,7 +397,11 @@ pub async fn sync_env_provider_drafts_to_db(pool: &SqlitePool) -> Result<usize, 
 
     let mut imported = 0usize;
     for draft in drafts {
-        if should_import_draft(db::get_provider_config(pool, &draft.provider_name).await?.as_ref()) {
+        if should_import_draft(
+            db::get_provider_config(pool, &draft.provider_name)
+                .await?
+                .as_ref(),
+        ) {
             db::upsert_provider_config(
                 pool,
                 &draft.provider_name,
@@ -438,7 +448,7 @@ pub async fn validate_persisted_provider_connection(
         access_key_id: config.access_key_id.clone(),
         secret_access_key: config.secret_access_key.clone(),
     };
-    validate_provider_connection(config, secrets).await
+    validate_provider_connection(pool, config, secrets).await
 }
 
 pub(crate) async fn load_provider_config_from_onboarding_db(
@@ -457,9 +467,7 @@ pub(crate) async fn load_provider_config_from_onboarding_db(
         .await
         .map_err(|err| ProviderError::Aws(format!("failed to load provider secret: {err}")))?
         .ok_or_else(|| {
-            ProviderError::MissingSecrets(format!(
-                "provider secret for {provider_name} is missing"
-            ))
+            ProviderError::MissingSecrets(format!("provider secret for {provider_name} is missing"))
         })?;
     let secrets = unseal_provider_secrets(
         &secret_record.access_key_id_ciphertext,
@@ -470,6 +478,7 @@ pub(crate) async fn load_provider_config_from_onboarding_db(
 }
 
 pub(crate) async fn validate_provider_connection(
+    pool: &SqlitePool,
     config: ProviderConfig,
     secrets: ProviderSecretMaterial,
 ) -> Result<ValidationReport, ProviderError> {
@@ -485,6 +494,24 @@ pub(crate) async fn validate_provider_connection(
     );
     let client = build_validation_client(&config).await;
 
+    match cloud_guard::current_decision(
+        pool,
+        GuardOperation::Read {
+            count: 1,
+            estimated_egress_bytes: 0,
+        },
+    )
+    .await
+    .map_err(|err| ProviderError::Aws(err.to_string()))?
+    {
+        cloud_guard::GuardDecision::Allowed => {}
+        cloud_guard::GuardDecision::DryRun { message }
+        | cloud_guard::GuardDecision::Suspended { reason: message }
+        | cloud_guard::GuardDecision::QuotaExceeded { reason: message } => {
+            return Err(ProviderError::AccessDenied(message));
+        }
+    }
+
     client
         .head_bucket()
         .bucket(&config.bucket)
@@ -495,6 +522,24 @@ pub(crate) async fn validate_provider_connection(
         "[ONBOARDING] Authentication probe for {} succeeded",
         config.provider_name
     );
+
+    match cloud_guard::current_decision(
+        pool,
+        GuardOperation::Read {
+            count: 1,
+            estimated_egress_bytes: 0,
+        },
+    )
+    .await
+    .map_err(|err| ProviderError::Aws(err.to_string()))?
+    {
+        cloud_guard::GuardDecision::Allowed => {}
+        cloud_guard::GuardDecision::DryRun { message }
+        | cloud_guard::GuardDecision::Suspended { reason: message }
+        | cloud_guard::GuardDecision::QuotaExceeded { reason: message } => {
+            return Err(ProviderError::AccessDenied(message));
+        }
+    }
 
     client
         .list_objects_v2()
@@ -513,6 +558,18 @@ pub(crate) async fn validate_provider_connection(
         config.provider_name,
         unix_timestamp_millis()
     );
+    match cloud_guard::current_decision(pool, GuardOperation::Write { count: 1 })
+        .await
+        .map_err(|err| ProviderError::Aws(err.to_string()))?
+    {
+        cloud_guard::GuardDecision::Allowed => {}
+        cloud_guard::GuardDecision::DryRun { message }
+        | cloud_guard::GuardDecision::Suspended { reason: message }
+        | cloud_guard::GuardDecision::QuotaExceeded { reason: message } => {
+            return Err(ProviderError::AccessDenied(message));
+        }
+    }
+
     client
         .put_object()
         .bucket(&config.bucket)
@@ -525,6 +582,18 @@ pub(crate) async fn validate_provider_connection(
         "[ONBOARDING] PutObject probe for {} succeeded",
         config.provider_name
     );
+
+    match cloud_guard::current_decision(pool, GuardOperation::Write { count: 1 })
+        .await
+        .map_err(|err| ProviderError::Aws(err.to_string()))?
+    {
+        cloud_guard::GuardDecision::Allowed => {}
+        cloud_guard::GuardDecision::DryRun { message }
+        | cloud_guard::GuardDecision::Suspended { reason: message }
+        | cloud_guard::GuardDecision::QuotaExceeded { reason: message } => {
+            return Err(ProviderError::AccessDenied(message));
+        }
+    }
 
     client
         .delete_object()
@@ -634,6 +703,60 @@ pub async fn perform_vault_restore(
     })
 }
 
+pub async fn cleanup_stale_uploads(pool: &SqlitePool) -> Result<Vec<String>, ProviderError> {
+    if AppConfig::from_env().dry_run_active {
+        return Ok(vec![
+            "[DRY-RUN] Skipping stale multipart upload cleanup.".to_string(),
+        ]);
+    }
+
+    let mut actions = Vec::new();
+    for provider_name in crate::uploader::KNOWN_PROVIDERS {
+        let config = match load_provider_config_from_onboarding_db(pool, provider_name).await {
+            Ok(config) => config,
+            Err(ProviderError::MissingProviderConfig(_))
+            | Err(ProviderError::MissingSecrets(_)) => continue,
+            Err(err) => return Err(err),
+        };
+        let client = build_validation_client(&config).await;
+        let listed = client
+            .list_multipart_uploads()
+            .bucket(&config.bucket)
+            .max_uploads(100)
+            .send()
+            .await
+            .map_err(|err| classify_provider_error("list_multipart_uploads", &config, &err))?;
+
+        let uploads = listed.uploads();
+        if uploads.is_empty() {
+            continue;
+        }
+
+        for upload in uploads {
+            let Some(key) = upload.key() else {
+                continue;
+            };
+            let Some(upload_id) = upload.upload_id() else {
+                continue;
+            };
+            client
+                .abort_multipart_upload()
+                .bucket(&config.bucket)
+                .key(key)
+                .upload_id(upload_id)
+                .send()
+                .await
+                .map_err(|err| classify_provider_error("abort_multipart_upload", &config, &err))?;
+            actions.push(format!(
+                "aborted stale multipart upload {} on {}",
+                key, provider_name
+            ));
+        }
+    }
+
+    Ok(actions)
+}
+
 pub fn seal_provider_secrets(
     access_key_id: &str,
     secret_access_key: &str,
@@ -656,15 +779,15 @@ pub fn unseal_provider_secrets(
     secret_access_key_ciphertext: &[u8],
 ) -> Result<ProviderSecretMaterial, OnboardingSecretError> {
     let access_key_id = String::from_utf8(unprotect_for_current_user(access_key_id_ciphertext)?)
-        .map_err(|err| OnboardingSecretError::Platform(format!("invalid UTF-8 in access key material: {err}")))?;
-    let secret_access_key =
-        String::from_utf8(unprotect_for_current_user(secret_access_key_ciphertext)?).map_err(
-            |err| {
-                OnboardingSecretError::Platform(format!(
-                    "invalid UTF-8 in secret key material: {err}"
-                ))
-            },
-        )?;
+        .map_err(|err| {
+            OnboardingSecretError::Platform(format!("invalid UTF-8 in access key material: {err}"))
+        })?;
+    let secret_access_key = String::from_utf8(unprotect_for_current_user(
+        secret_access_key_ciphertext,
+    )?)
+    .map_err(|err| {
+        OnboardingSecretError::Platform(format!("invalid UTF-8 in secret key material: {err}"))
+    })?;
 
     Ok(ProviderSecretMaterial {
         access_key_id,
@@ -695,14 +818,24 @@ async fn ensure_onboarding_defaults(pool: &SqlitePool) -> Result<(), sqlx::Error
         .await?
         .is_none()
     {
-        db::set_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_STATE, OnboardingState::Initial.as_str()).await?;
+        db::set_system_config_value(
+            pool,
+            SYSTEM_CONFIG_ONBOARDING_STATE,
+            OnboardingState::Initial.as_str(),
+        )
+        .await?;
     }
 
     if db::get_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_MODE)
         .await?
         .is_none()
     {
-        db::set_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_MODE, OnboardingMode::LocalOnly.as_str()).await?;
+        db::set_system_config_value(
+            pool,
+            SYSTEM_CONFIG_ONBOARDING_MODE,
+            OnboardingMode::LocalOnly.as_str(),
+        )
+        .await?;
     }
 
     if db::get_system_config_value(pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP)
@@ -792,8 +925,8 @@ async fn build_validation_client(config: &ProviderConfig) -> Client {
 }
 
 async fn probe_endpoint_reachability(endpoint: &str) -> Result<bool, ProviderError> {
-    let url =
-        Url::parse(endpoint).map_err(|err| ProviderError::Url(format!("invalid endpoint URL: {err}")))?;
+    let url = Url::parse(endpoint)
+        .map_err(|err| ProviderError::Url(format!("invalid endpoint URL: {err}")))?;
     let host = url
         .host_str()
         .ok_or_else(|| ProviderError::Url("endpoint URL is missing a hostname".to_string()))?;
@@ -804,9 +937,7 @@ async fn probe_endpoint_reachability(endpoint: &str) -> Result<bool, ProviderErr
     let addrs: Vec<_> = lookup_host((host, port))
         .await
         .map_err(|err| {
-            ProviderError::EndpointUnreachable(format!(
-                "failed to resolve {host}:{port}: {err}"
-            ))
+            ProviderError::EndpointUnreachable(format!("failed to resolve {host}:{port}: {err}"))
         })?
         .collect();
     if addrs.is_empty() {
@@ -818,14 +949,10 @@ async fn probe_endpoint_reachability(endpoint: &str) -> Result<bool, ProviderErr
     timeout(Duration::from_secs(5), TcpStream::connect(addrs[0]))
         .await
         .map_err(|_| {
-            ProviderError::EndpointUnreachable(format!(
-                "timed out connecting to {host}:{port}"
-            ))
+            ProviderError::EndpointUnreachable(format!("timed out connecting to {host}:{port}"))
         })?
         .map_err(|err| {
-            ProviderError::EndpointUnreachable(format!(
-                "failed to connect to {host}:{port}: {err}"
-            ))
+            ProviderError::EndpointUnreachable(format!("failed to connect to {host}:{port}: {err}"))
         })?;
 
     Ok(true)
@@ -962,9 +1089,7 @@ fn map_restore_download_error(
                 ))
             }
         }
-        other => RestoreError::Runtime(format!(
-            "restore from {provider_id} failed: {other}"
-        )),
+        other => RestoreError::Runtime(format!("restore from {provider_id} failed: {other}")),
     }
 }
 
@@ -977,10 +1102,10 @@ fn unix_timestamp_millis() -> i64 {
 
 #[cfg(windows)]
 fn protect_for_current_user(plaintext: &[u8]) -> Result<Vec<u8>, OnboardingSecretError> {
-    use windows::Win32::Security::Cryptography::{
-        CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB, CryptProtectData,
-    };
     use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Cryptography::{
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
+    };
     use windows::core::PCWSTR;
 
     let input = CRYPT_INTEGER_BLOB {
@@ -1011,10 +1136,10 @@ fn protect_for_current_user(plaintext: &[u8]) -> Result<Vec<u8>, OnboardingSecre
 
 #[cfg(windows)]
 fn unprotect_for_current_user(ciphertext: &[u8]) -> Result<Vec<u8>, OnboardingSecretError> {
-    use windows::Win32::Security::Cryptography::{
-        CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB, CryptUnprotectData,
-    };
     use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Cryptography::{
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
+    };
     use windows::core::PWSTR;
 
     let input = CRYPT_INTEGER_BLOB {

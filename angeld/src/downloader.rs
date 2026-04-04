@@ -1,9 +1,13 @@
 #![allow(dead_code)]
 
 use crate::cache::{CacheError, CacheManager};
+use crate::cloud_guard::{self, GuardOperation};
+use crate::config::AppConfig;
 use crate::db;
 use crate::db::StorageMode;
-use crate::packer::{DATA_SHARDS, LOCAL_PACK_EXTENSION, PARITY_SHARDS, TOTAL_SHARDS, local_pack_path};
+use crate::packer::{
+    DATA_SHARDS, LOCAL_PACK_EXTENSION, PARITY_SHARDS, TOTAL_SHARDS, local_pack_path,
+};
 use crate::peer::PeerClient;
 use crate::secure_fs::write_ephemeral_bytes;
 use crate::uploader::ProviderConfig;
@@ -35,6 +39,7 @@ pub struct Downloader {
     cache: CacheManager,
     providers: HashMap<String, DownloadProvider>,
     provider_timeout: Duration,
+    app_config: AppConfig,
     prefetch_state: Arc<Mutex<HashMap<i64, i64>>>,
     peer_client: Arc<Mutex<Option<PeerClient>>>,
 }
@@ -81,6 +86,7 @@ pub enum DownloaderError {
         errors: Vec<String>,
     },
     InvalidPackRecord(&'static str),
+    CloudGuard(String),
 }
 
 impl fmt::Display for DownloaderError {
@@ -109,6 +115,7 @@ impl fmt::Display for DownloaderError {
                 )
             }
             Self::InvalidPackRecord(reason) => write!(f, "invalid pack record: {reason}"),
+            Self::CloudGuard(reason) => write!(f, "cloud guard blocked operation: {reason}"),
         }
     }
 }
@@ -197,6 +204,7 @@ impl Downloader {
         let download_spool_dir = download_spool_dir.into();
         fs::create_dir_all(&download_spool_dir).await?;
         let cache = CacheManager::from_env(pool.clone(), vault_keys.clone()).await?;
+        let app_config = AppConfig::from_env();
 
         let mut providers = HashMap::new();
         for config in configs {
@@ -211,6 +219,7 @@ impl Downloader {
             cache,
             providers,
             provider_timeout,
+            app_config,
             prefetch_state: Arc::new(Mutex::new(HashMap::new())),
             peer_client: Arc::new(Mutex::new(None)),
         })
@@ -295,10 +304,10 @@ impl Downloader {
         let end_offset = offset
             .checked_add(length)
             .ok_or(DownloaderError::NumericOverflow("range end"))?;
-        let start_i64 = i64::try_from(offset)
-            .map_err(|_| DownloaderError::NumericOverflow("range start"))?;
-        let end_i64 = i64::try_from(end_offset)
-            .map_err(|_| DownloaderError::NumericOverflow("range end"))?;
+        let start_i64 =
+            i64::try_from(offset).map_err(|_| DownloaderError::NumericOverflow("range start"))?;
+        let end_i64 =
+            i64::try_from(end_offset).map_err(|_| DownloaderError::NumericOverflow("range end"))?;
 
         let chunk_locations = db::get_revision_chunk_locations_in_range(
             &self.pool,
@@ -318,7 +327,8 @@ impl Downloader {
         let vault_key = self.vault_keys.require_key().await?;
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         let mut result = Vec::with_capacity(
-            usize::try_from(length).map_err(|_| DownloaderError::NumericOverflow("range length"))?,
+            usize::try_from(length)
+                .map_err(|_| DownloaderError::NumericOverflow("range length"))?,
         );
         let first_chunk_index = chunk_locations.first().map(|chunk| chunk.chunk_index);
         let last_chunk_index = chunk_locations.last().map(|chunk| chunk.chunk_index);
@@ -361,8 +371,8 @@ impl Downloader {
             }
         }
 
-        let target_len =
-            usize::try_from(length).map_err(|_| DownloaderError::NumericOverflow("range length"))?;
+        let target_len = usize::try_from(length)
+            .map_err(|_| DownloaderError::NumericOverflow("range length"))?;
         if result.len() > target_len {
             result.truncate(target_len);
         }
@@ -447,9 +457,13 @@ impl Downloader {
             return Ok(None);
         };
 
-        let Some(bytes) = peer_client.fetch_chunk(&chunk.chunk_id).await.map_err(|err| {
-            DownloaderError::Io(std::io::Error::other(format!("peer fetch failed: {err}")))
-        })? else {
+        let Some(bytes) = peer_client
+            .fetch_chunk(&chunk.chunk_id)
+            .await
+            .map_err(|err| {
+                DownloaderError::Io(std::io::Error::other(format!("peer fetch failed: {err}")))
+            })?
+        else {
             return Ok(None);
         };
 
@@ -694,7 +708,13 @@ impl Downloader {
             }
 
             match self
-                .download_shard(pack_id, provider, &shard.object_key, shard_index)
+                .download_shard(
+                    pack_id,
+                    provider,
+                    &shard.object_key,
+                    shard_index,
+                    shard.size,
+                )
                 .await
             {
                 Ok(local_path) => {
@@ -723,11 +743,9 @@ impl Downloader {
 
         let ciphertext = match storage_mode {
             StorageMode::Ec2_1 => reconstruct_ciphertext(&pack, &mut shard_bytes)?,
-            StorageMode::SingleReplica => shard_bytes
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or(DownloaderError::InvalidPackRecord("single replica missing shard"))?,
+            StorageMode::SingleReplica => shard_bytes.into_iter().next().flatten().ok_or(
+                DownloaderError::InvalidPackRecord("single replica missing shard"),
+            )?,
             StorageMode::LocalOnly => unreachable!("local-only handled above"),
         };
         let manifest_bytes = build_manifest_bytes(&pack, &ciphertext)?;
@@ -750,6 +768,25 @@ impl Downloader {
         provider: &DownloadProvider,
         object_key: &str,
     ) -> Result<Duration, DownloaderError> {
+        match cloud_guard::current_decision(
+            &self.pool,
+            GuardOperation::Read {
+                count: 1,
+                estimated_egress_bytes: 0,
+            },
+        )
+        .await
+        {
+            Ok(cloud_guard::GuardDecision::Allowed) => {}
+            Ok(cloud_guard::GuardDecision::DryRun { message }) => {
+                return Err(DownloaderError::CloudGuard(message));
+            }
+            Ok(cloud_guard::GuardDecision::Suspended { reason })
+            | Ok(cloud_guard::GuardDecision::QuotaExceeded { reason }) => {
+                return Err(DownloaderError::CloudGuard(reason));
+            }
+            Err(err) => return Err(DownloaderError::CloudGuard(err.to_string())),
+        }
         let start = Instant::now();
         tokio::time::timeout(
             self.provider_timeout,
@@ -772,7 +809,37 @@ impl Downloader {
         provider: &DownloadProvider,
         object_key: &str,
         shard_index: usize,
+        estimated_size: i64,
     ) -> Result<PathBuf, String> {
+        match cloud_guard::current_decision(
+            &self.pool,
+            GuardOperation::Read {
+                count: 1,
+                estimated_egress_bytes: estimated_size.max(0),
+            },
+        )
+        .await
+        {
+            Ok(cloud_guard::GuardDecision::Allowed) => {}
+            Ok(cloud_guard::GuardDecision::DryRun { .. }) => {
+                let estimated_mib = (estimated_size.max(0) as f64) / (1024.0 * 1024.0);
+                let monthly_rate = self
+                    .app_config
+                    .provider_cost_per_gib_month(provider.provider_name);
+                let estimated_cost =
+                    ((estimated_size.max(0) as f64) / 1_073_741_824.0) * monthly_rate;
+                return Err(format!(
+                    "[DRY-RUN] Would download shard {} for pack {} from {} (~{:.2} MiB, est. monthly storage delta ${:.5})",
+                    shard_index, pack_id, provider.provider_name, estimated_mib, estimated_cost
+                ));
+            }
+            Ok(cloud_guard::GuardDecision::Suspended { reason })
+            | Ok(cloud_guard::GuardDecision::QuotaExceeded { reason }) => {
+                return Err(reason);
+            }
+            Err(err) => return Err(format!("cloud guard failed: {err}")),
+        }
+
         let response = tokio::time::timeout(
             self.provider_timeout,
             provider

@@ -1,11 +1,15 @@
+use crate::runtime_paths::RuntimePaths;
 use std::env;
 use std::path::PathBuf;
-use crate::runtime_paths::RuntimePaths;
 
 pub const DEFAULT_MAX_PHYSICAL_BYTES_PER_PROVIDER: u64 = 80_530_636_800;
 pub const DEFAULT_MAX_UPLOAD_BYTES_PER_SEC: u64 = 0;
 pub const DEFAULT_CACHE_MAX_BYTES: u64 = 53_687_091_200;
 pub const DEFAULT_ESTIMATED_COST_PER_GIB_MONTH: f64 = 0.01;
+pub const DEFAULT_CLOUD_DAILY_WRITE_OPS_LIMIT: u64 = 1_000;
+pub const DEFAULT_CLOUD_DAILY_READ_OPS_LIMIT: u64 = 5_000;
+pub const DEFAULT_CLOUD_DAILY_EGRESS_BYTES_LIMIT: u64 = 500 * 1024 * 1024;
+pub const DEFAULT_CLOUD_MAX_SINGLE_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 pub const DEFAULT_PEER_PORT: u16 = 8788;
 pub const DEFAULT_PEER_DISCOVERY_PORT: u16 = 8789;
 pub const DEFAULT_PEER_DISCOVERY_INTERVAL_MS: u64 = 5_000;
@@ -17,6 +21,11 @@ pub struct AppConfig {
     pub max_physical_bytes_per_provider: u64,
     pub max_upload_bytes_per_sec: u64,
     pub max_cache_bytes: u64,
+    pub cloud_daily_write_ops_limit: u64,
+    pub cloud_daily_read_ops_limit: u64,
+    pub cloud_daily_egress_bytes_limit: u64,
+    pub cloud_max_single_upload_bytes: u64,
+    pub dry_run_active: bool,
     pub default_watch_dir: Option<PathBuf>,
     pub estimated_cost_per_gib_month_default: f64,
     pub estimated_cost_per_gib_month_r2: f64,
@@ -42,6 +51,23 @@ impl AppConfig {
                 DEFAULT_MAX_UPLOAD_BYTES_PER_SEC,
             ),
             max_cache_bytes: env_u64("OMNIDRIVE_CACHE_MAX_BYTES", DEFAULT_CACHE_MAX_BYTES),
+            cloud_daily_write_ops_limit: env_u64(
+                "OMNIDRIVE_CLOUD_DAILY_WRITE_OPS_LIMIT",
+                DEFAULT_CLOUD_DAILY_WRITE_OPS_LIMIT,
+            ),
+            cloud_daily_read_ops_limit: env_u64(
+                "OMNIDRIVE_CLOUD_DAILY_READ_OPS_LIMIT",
+                DEFAULT_CLOUD_DAILY_READ_OPS_LIMIT,
+            ),
+            cloud_daily_egress_bytes_limit: env_u64(
+                "OMNIDRIVE_CLOUD_DAILY_EGRESS_BYTES_LIMIT",
+                DEFAULT_CLOUD_DAILY_EGRESS_BYTES_LIMIT,
+            ),
+            cloud_max_single_upload_bytes: env_u64(
+                "OMNIDRIVE_CLOUD_MAX_SINGLE_UPLOAD_BYTES",
+                DEFAULT_CLOUD_MAX_SINGLE_UPLOAD_BYTES,
+            ),
+            dry_run_active: env_flag("OMNIDRIVE_DRY_RUN"),
             estimated_cost_per_gib_month_default: env_f64(
                 "OMNIDRIVE_ESTIMATED_COST_PER_GIB_MONTH",
                 DEFAULT_ESTIMATED_COST_PER_GIB_MONTH,
@@ -95,6 +121,15 @@ impl AppConfig {
                 .filter(|value| !value.is_empty()),
         }
     }
+
+    pub fn provider_cost_per_gib_month(&self, provider: &str) -> f64 {
+        match provider {
+            "cloudflare-r2" => self.estimated_cost_per_gib_month_r2,
+            "backblaze-b2" => self.estimated_cost_per_gib_month_b2,
+            "scaleway" => self.estimated_cost_per_gib_month_scaleway,
+            _ => self.estimated_cost_per_gib_month_default,
+        }
+    }
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -116,4 +151,16 @@ fn env_u16(key: &str, default: u16) -> u16 {
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(default)
+}
+
+fn env_flag(key: &str) -> bool {
+    env::var(key)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }

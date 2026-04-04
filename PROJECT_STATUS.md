@@ -273,6 +273,21 @@ Constraints:
 - do not duplicate device identity storage already implemented for the multi-device core
 - provider secrets must be stored securely, not as plain-text config rows
 
+#### Task B0: Cloud Safety, Cost Control & Dry-Run Guardrails
+Goal:
+- introduce hard operational guardrails so onboarding and provider flows cannot silently generate runaway cloud costs
+
+Scope:
+- daily quota circuit breaker for read/write/egress operations
+- single-file upload size guard
+- stronger watcher debounce for bursty local edits
+- startup and post-onboarding cleanup of stale multipart uploads
+- `--dry-run` runtime mode with explicit API/UI visibility
+- storage dashboard integration for session cloud counters and quota utilization
+
+Outcome:
+- cloud operations fail closed when limits are exceeded, with visible diagnostics instead of silent cost drift
+
 #### Task B1: Onboarding State Persistence
 Goal:
 - give OmniDrive a durable application-level onboarding state
@@ -458,6 +473,19 @@ Current bridge implementation status:
   - join-existing metadata restore is real
   - restored vault identity is grafted locally
   - placeholders are projected immediately after restore
+- `B0` implemented (guardrail layer):
+  - new runtime cloud guard module and DB `cloud_usage_daily` ledger
+  - configurable daily read/write/egress limits with automatic suspension on quota breach
+  - 100 MB single-file upload cap enforced in uploader path
+  - watcher debounce hardened to minimum 2s to reduce write churn bursts
+  - stale multipart upload cleanup executed at daemon startup and onboarding completion
+  - `--dry-run` now propagates to runtime cloud guard state (no cloud side effects)
+  - `/api/storage/cost` expanded with guard/session/quota telemetry
+  - Storage Economics UI now shows:
+    - dry-run warning banner
+    - cloud guard status/message
+    - session cloud operation counters
+    - daily quota utilization bars
 - security rule locked in for future work:
   - onboarding status API never returns provider secrets or ciphertexts
   - it returns only secret presence state such as `SET` / `MISSING`
@@ -531,16 +559,14 @@ Current saved progress for `Epic 31 + Epic 32`:
   - `angeld/Cargo.toml`
 
 Next execution plan:
-1. implement the bridge epic:
-   - provider connection validation
-   - wizard UI
-   - join existing vault
-2. connect the three real providers:
-   - Cloudflare R2
-   - Backblaze B2
-   - Scaleway
-3. use the bridge flow to attach the second machine to the same vault
-4. rerun the real acceptance pass for `Epic 31 + Epic 32`
+1. finish `B7` runtime integration:
+   - activate provider-backed workers only when onboarding/provider state is ready
+   - keep local-only path stable and explicit in logs/API
+2. execute `B8` production bring-up:
+   - connect Cloudflare R2, Backblaze B2, Scaleway with real credentials
+   - validate onboarding + join-existing on two machines
+3. run full acceptance on real providers for `Epic 31 + Epic 32`
+4. after bridge acceptance, move to `Epic 33` and `Epic 34`
 
 Working rule for future sessions on this project:
 - always use `jcodemunch` at the beginning of the session for repo context, symbol lookup, and code navigation before making implementation decisions

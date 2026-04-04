@@ -239,6 +239,74 @@
         </div>
       </div>
 
+      <div id="storageDryRunBanner" class="hidden mt-4 rounded-2xl border border-amber-400/30 bg-amber-500/15 px-4 py-3 text-sm text-amber-100">
+        DRY-RUN MODE ACTIVE - NO CLOUD COSTS
+      </div>
+
+      <div class="mt-6 grid gap-4 xl:grid-cols-2">
+        <section class="glass-muted rounded-2xl p-4">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Cloud Guard</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Circuit breaker & runtime safety</h3>
+            </div>
+            <span id="storageCloudGuardStatus" class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium status-ok">OK</span>
+          </div>
+          <p id="storageCloudGuardMessage" class="mt-3 text-sm text-slate-300">Collecting cloud guard status...</p>
+        </section>
+
+        <section class="glass-muted rounded-2xl p-4">
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Current Session Costs</p>
+          <h3 class="mt-2 text-lg font-semibold text-white">Live cloud operation counters</h3>
+          <div class="mt-4 grid gap-3 sm:grid-cols-3">
+            <div class="glass-panel rounded-xl p-3">
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Read Ops</p>
+              <p id="storageSessionReadOps" class="mt-2 text-xl font-semibold text-white">0</p>
+            </div>
+            <div class="glass-panel rounded-xl p-3">
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Write Ops</p>
+              <p id="storageSessionWriteOps" class="mt-2 text-xl font-semibold text-white">0</p>
+            </div>
+            <div class="glass-panel rounded-xl p-3">
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Egress</p>
+              <p id="storageSessionEgress" class="mt-2 text-xl font-semibold text-white">0 B</p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="glass-muted mt-6 rounded-2xl p-4">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Daily Quotas</p>
+            <h3 class="mt-2 text-lg font-semibold text-white">Percent of configured cloud limits</h3>
+          </div>
+        </div>
+        <div class="mt-4 grid gap-3 md:grid-cols-3">
+          <article class="glass-panel rounded-2xl p-4">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Read Ops</p>
+            <p id="storageQuotaReadLabel" class="mt-2 text-sm text-slate-300">0 / 0</p>
+            <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-800">
+              <div id="storageQuotaReadBar" class="h-full rounded-full bg-cyan-400" style="width: 0%;"></div>
+            </div>
+          </article>
+          <article class="glass-panel rounded-2xl p-4">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Write Ops</p>
+            <p id="storageQuotaWriteLabel" class="mt-2 text-sm text-slate-300">0 / 0</p>
+            <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-800">
+              <div id="storageQuotaWriteBar" class="h-full rounded-full bg-amber-400" style="width: 0%;"></div>
+            </div>
+          </article>
+          <article class="glass-panel rounded-2xl p-4">
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Egress</p>
+            <p id="storageQuotaEgressLabel" class="mt-2 text-sm text-slate-300">0 B / 0 B</p>
+            <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-800">
+              <div id="storageQuotaEgressBar" class="h-full rounded-full bg-rose-400" style="width: 0%;"></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
       <div class="mt-6 grid gap-4 xl:grid-cols-[1.2fr,1fr]">
         <section class="glass-muted rounded-2xl p-4">
           <div class="flex items-center justify-between gap-3">
@@ -698,6 +766,18 @@
     const storageOrphanedPacks = document.getElementById("storageOrphanedPacks");
     const storageOrphanedBytes = document.getElementById("storageOrphanedBytes");
     const storageGcCandidates = document.getElementById("storageGcCandidates");
+    const storageDryRunBanner = document.getElementById("storageDryRunBanner");
+    const storageCloudGuardStatus = document.getElementById("storageCloudGuardStatus");
+    const storageCloudGuardMessage = document.getElementById("storageCloudGuardMessage");
+    const storageSessionReadOps = document.getElementById("storageSessionReadOps");
+    const storageSessionWriteOps = document.getElementById("storageSessionWriteOps");
+    const storageSessionEgress = document.getElementById("storageSessionEgress");
+    const storageQuotaReadLabel = document.getElementById("storageQuotaReadLabel");
+    const storageQuotaReadBar = document.getElementById("storageQuotaReadBar");
+    const storageQuotaWriteLabel = document.getElementById("storageQuotaWriteLabel");
+    const storageQuotaWriteBar = document.getElementById("storageQuotaWriteBar");
+    const storageQuotaEgressLabel = document.getElementById("storageQuotaEgressLabel");
+    const storageQuotaEgressBar = document.getElementById("storageQuotaEgressBar");
     const modal = document.getElementById("detailsModal");
     const modalTitle = document.getElementById("modalTitle");
     const modalSubtitle = document.getElementById("modalSubtitle");
@@ -890,6 +970,22 @@
       storageOrphanedPacks.textContent = storage.orphaned_packs ?? 0;
       storageOrphanedBytes.textContent = `${humanBytes(storage.orphaned_physical_bytes ?? 0)} orphaned remote footprint`;
       storageGcCandidates.textContent = storage.gc_candidate_packs ?? 0;
+      storageCloudGuardStatus.textContent = String(storage.cloud_guard_status ?? "WARN").toUpperCase();
+      storageCloudGuardStatus.className = `inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${statusClass(storage.cloud_guard_status)}`;
+      storageCloudGuardMessage.textContent = storage.cloud_guard_message || "Cloud guard snapshot unavailable.";
+      storageSessionReadOps.textContent = Number(storage.session_read_ops ?? 0).toLocaleString();
+      storageSessionWriteOps.textContent = Number(storage.session_write_ops ?? 0).toLocaleString();
+      storageSessionEgress.textContent = humanBytes(storage.session_egress_bytes ?? 0);
+      storageQuotaReadLabel.textContent = `${Number(storage.daily_read_ops ?? 0).toLocaleString()} / ${Number(storage.daily_read_ops_limit ?? 0).toLocaleString()}`;
+      storageQuotaWriteLabel.textContent = `${Number(storage.daily_write_ops ?? 0).toLocaleString()} / ${Number(storage.daily_write_ops_limit ?? 0).toLocaleString()}`;
+      storageQuotaEgressLabel.textContent = `${humanBytes(storage.daily_egress_bytes ?? 0)} / ${humanBytes(storage.daily_egress_bytes_limit ?? 0)}`;
+      storageQuotaReadBar.style.width = `${Math.min(100, Math.max(0, Number(storage.read_quota_percent ?? 0)))}%`;
+      storageQuotaWriteBar.style.width = `${Math.min(100, Math.max(0, Number(storage.write_quota_percent ?? 0)))}%`;
+      storageQuotaEgressBar.style.width = `${Math.min(100, Math.max(0, Number(storage.egress_quota_percent ?? 0)))}%`;
+      storageDryRunBanner.classList.toggle("hidden", !storage.dry_run_active);
+      if (storage.cloud_suspended && storage.cloud_suspend_reason) {
+        storageCloudGuardMessage.textContent = storage.cloud_suspend_reason;
+      }
 
       storageModeGrid.innerHTML = (storage.storage_modes || []).map((mode) => `
         <article class="glass-panel rounded-2xl p-4">

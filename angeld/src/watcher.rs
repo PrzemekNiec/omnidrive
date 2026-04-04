@@ -103,7 +103,8 @@ impl FileWatcher {
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(DEFAULT_CHUNK_SIZE);
-        let debounce_window = duration_from_env("OMNIDRIVE_WATCH_DEBOUNCE_MS", 750);
+        let debounce_window = duration_from_env("OMNIDRIVE_WATCH_DEBOUNCE_MS", 2_000)
+            .max(StdDuration::from_millis(2_000));
         let rescan_interval = duration_from_env("OMNIDRIVE_WATCH_RESCAN_MS", 30_000);
 
         let spool_dir = normalize_path(&spool_dir)?;
@@ -356,7 +357,9 @@ impl FileWatcher {
         let tracked_state = TrackedFileState {
             size: metadata.len(),
             mtime,
-            base_revision_id: current_revision.as_ref().map(|revision| revision.revision_id),
+            base_revision_id: current_revision
+                .as_ref()
+                .map(|revision| revision.revision_id),
         };
 
         if processed_files
@@ -366,9 +369,7 @@ impl FileWatcher {
             return Ok(());
         }
 
-        if policy.enable_versioning == 0
-            && current_revision.is_some()
-        {
+        if policy.enable_versioning == 0 && current_revision.is_some() {
             db::delete_file_chunks(&self.pool, inode_id).await?;
         }
 
@@ -380,7 +381,11 @@ impl FileWatcher {
                 processed_files
                     .get(&file_path)
                     .and_then(|state| state.base_revision_id)
-                    .or_else(|| current_revision.as_ref().map(|revision| revision.revision_id)),
+                    .or_else(|| {
+                        current_revision
+                            .as_ref()
+                            .map(|revision| revision.revision_id)
+                    }),
             )
             .await?;
         processed_files.insert(
