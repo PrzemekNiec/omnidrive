@@ -127,8 +127,11 @@ impl From<reed_solomon_erasure::Error> for RepairError {
 impl RepairWorker {
     pub async fn from_env(pool: SqlitePool) -> Result<Self, RepairError> {
         let _ = dotenvy::dotenv();
+        Self::from_onboarding_db(pool).await
+    }
 
-        let providers = provider_clients_from_env().await?;
+    pub async fn from_onboarding_db(pool: SqlitePool) -> Result<Self, RepairError> {
+        let providers = provider_clients_from_onboarding_db(&pool).await?;
         Ok(Self {
             pool,
             providers,
@@ -194,14 +197,14 @@ impl RepairWorker {
     }
 
     pub async fn run_repair_batch_now(pool: SqlitePool) -> Result<RepairBatchReport, RepairError> {
-        let worker = Self::from_env(pool).await?;
+        let worker = Self::from_onboarding_db(pool).await?;
         worker.run_batch_now(RepairBatchMode::RepairOnly).await
     }
 
     pub async fn run_reconcile_batch_now(
         pool: SqlitePool,
     ) -> Result<RepairBatchReport, RepairError> {
-        let worker = Self::from_env(pool).await?;
+        let worker = Self::from_onboarding_db(pool).await?;
         worker.run_batch_now(RepairBatchMode::ReconcileOnly).await
     }
 
@@ -777,21 +780,39 @@ impl RepairWorker {
 }
 
 async fn provider_clients_from_env() -> Result<HashMap<String, ProviderClient>, RepairError> {
+    provider_clients_from_configs(
+        [
+            ProviderConfig::from_r2_env(),
+            ProviderConfig::from_scaleway_env(),
+            ProviderConfig::from_b2_env(),
+        ]
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| RepairError::MissingProviderConfig)?,
+    )
+    .await
+}
+
+async fn provider_clients_from_onboarding_db(
+    pool: &SqlitePool,
+) -> Result<HashMap<String, ProviderClient>, RepairError> {
+    let configs = crate::onboarding::get_active_provider_configs(pool)
+        .await
+        .map_err(|_| RepairError::MissingProviderConfig)?;
+    provider_clients_from_configs(configs).await
+}
+
+async fn provider_clients_from_configs(
+    configs: Vec<ProviderConfig>,
+) -> Result<HashMap<String, ProviderClient>, RepairError> {
     let mut clients = HashMap::new();
-    for config in [
-        ProviderConfig::from_r2_env(),
-        ProviderConfig::from_scaleway_env(),
-        ProviderConfig::from_b2_env(),
-    ] {
-        let config = config.map_err(|_| RepairError::MissingProviderConfig)?;
+    for config in configs {
         let client = ProviderClient::from_provider_config(config).await?;
         clients.insert(client.provider_name.to_string(), client);
     }
-
     if clients.is_empty() {
         return Err(RepairError::MissingProviderConfig);
     }
-
     Ok(clients)
 }
 

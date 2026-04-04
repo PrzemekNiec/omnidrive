@@ -420,7 +420,7 @@ Status:
   - `human_readable_reason`
 - important boundary kept explicit:
   - `B6` restores the shared vault identity and placeholder view honestly
-  - full provider-backed background worker activation still belongs to `B7`
+  - runtime provider hot-reload and worker activation behavior is handled in `B7`
 
 #### Task B7: Runtime Integration Without Regressing Local-Only Mode
 Goal:
@@ -486,6 +486,13 @@ Current bridge implementation status:
     - cloud guard status/message
     - session cloud operation counters
     - daily quota utilization bars
+- `B7` completed:
+  - daemon runtime now loads active providers from SQLite/DPAPI (SSoT), not from `.env`, for uploader/downloader/repair/scrubber/gc/metadata backup paths
+  - `UploadWorker` now runs in local-only mode with empty providers and supports runtime hot-reload via in-process signal
+  - `Downloader` now supports live provider reload from DB without daemon restart
+  - `POST /api/onboarding/complete` and `POST /api/onboarding/join-existing` trigger runtime reload and post-onboarding reconciliation
+  - startup now logs provider source as DB-backed (`Active providers loaded from DB: [...]`)
+  - local-only stability is preserved while enabling cloud activation in-place after onboarding finalization
 - security rule locked in for future work:
   - onboarding status API never returns provider secrets or ciphertexts
   - it returns only secret presence state such as `SET` / `MISSING`
@@ -559,14 +566,11 @@ Current saved progress for `Epic 31 + Epic 32`:
   - `angeld/Cargo.toml`
 
 Next execution plan:
-1. finish `B7` runtime integration:
-   - activate provider-backed workers only when onboarding/provider state is ready
-   - keep local-only path stable and explicit in logs/API
-2. execute `B8` production bring-up:
+1. execute `B8` production bring-up:
    - connect Cloudflare R2, Backblaze B2, Scaleway with real credentials
    - validate onboarding + join-existing on two machines
-3. run full acceptance on real providers for `Epic 31 + Epic 32`
-4. after bridge acceptance, move to `Epic 33` and `Epic 34`
+2. run full acceptance on real providers for `Epic 31 + Epic 32`
+3. after bridge acceptance, move to `Epic 33` and `Epic 34`
 
 Working rule for future sessions on this project:
 - always use `jcodemunch` at the beginning of the session for repo context, symbol lookup, and code navigation before making implementation decisions

@@ -86,10 +86,14 @@ impl From<sqlx::Error> for GcError {
 impl GcWorker {
     pub async fn from_env(pool: SqlitePool) -> Result<Self, GcError> {
         let _ = dotenvy::dotenv();
+        Self::from_onboarding_db(pool).await
+    }
 
+    pub async fn from_onboarding_db(pool: SqlitePool) -> Result<Self, GcError> {
+        let providers = provider_clients_from_onboarding_db(&pool).await?;
         Ok(Self {
             pool,
-            providers: provider_clients_from_env().await?,
+            providers,
             spool_dir: env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool"),
             poll_interval: duration_from_env("OMNIDRIVE_GC_POLL_INTERVAL_MS", 10_000),
             provider_timeout: duration_from_env("OMNIDRIVE_GC_TIMEOUT_MS", 120_000),
@@ -225,21 +229,39 @@ impl ProviderClient {
 }
 
 async fn provider_clients_from_env() -> Result<HashMap<String, ProviderClient>, GcError> {
+    provider_clients_from_configs(
+        [
+            ProviderConfig::from_r2_env(),
+            ProviderConfig::from_scaleway_env(),
+            ProviderConfig::from_b2_env(),
+        ]
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| GcError::MissingProviderConfig)?,
+    )
+    .await
+}
+
+async fn provider_clients_from_onboarding_db(
+    pool: &SqlitePool,
+) -> Result<HashMap<String, ProviderClient>, GcError> {
+    let configs = crate::onboarding::get_active_provider_configs(pool)
+        .await
+        .map_err(|_| GcError::MissingProviderConfig)?;
+    provider_clients_from_configs(configs).await
+}
+
+async fn provider_clients_from_configs(
+    configs: Vec<ProviderConfig>,
+) -> Result<HashMap<String, ProviderClient>, GcError> {
     let mut clients = HashMap::new();
-    for config in [
-        ProviderConfig::from_r2_env(),
-        ProviderConfig::from_scaleway_env(),
-        ProviderConfig::from_b2_env(),
-    ] {
-        let config = config.map_err(|_| GcError::MissingProviderConfig)?;
+    for config in configs {
         let client = ProviderClient::from_provider_config(config).await?;
         clients.insert(client.provider_name.to_string(), client);
     }
-
     if clients.is_empty() {
         return Err(GcError::MissingProviderConfig);
     }
-
     Ok(clients)
 }
 

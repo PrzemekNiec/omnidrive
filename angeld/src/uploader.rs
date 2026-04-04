@@ -5,6 +5,7 @@ use crate::config::AppConfig;
 use crate::db;
 use crate::db::{PackStatus, StorageMode};
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
+use crate::onboarding;
 use crate::packer::local_shard_path;
 use crate::packer::{LOCAL_PACK_EXTENSION, TOTAL_SHARDS};
 use crate::secure_fs::secure_delete;
@@ -24,7 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs::{self, File};
 use tokio::io::AsyncReadExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tokio::time::{Instant, sleep, timeout};
 use tracing::{error, info, warn};
 
@@ -49,6 +50,7 @@ pub struct UploadedPack {
 pub struct UploadWorker {
     pool: SqlitePool,
     uploaders: Vec<Uploader>,
+    provider_reload_rx: Option<watch::Receiver<u64>>,
     app_config: AppConfig,
     rate_limiter: Arc<UploadRateLimiter>,
     spool_dir: PathBuf,
@@ -300,6 +302,30 @@ impl Uploader {
 }
 
 impl UploadWorker {
+    pub async fn from_onboarding_db(
+        pool: SqlitePool,
+        provider_reload_rx: Option<watch::Receiver<u64>>,
+    ) -> Result<Self, UploaderError> {
+        let app_config = AppConfig::from_env();
+        let mut worker = Self {
+            pool,
+            uploaders: Vec::new(),
+            provider_reload_rx,
+            rate_limiter: Arc::new(UploadRateLimiter::new(app_config.clone())),
+            app_config,
+            spool_dir: env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool"),
+            poll_interval: duration_from_env("OMNIDRIVE_UPLOAD_POLL_INTERVAL_MS", 1_000),
+            provider_timeout: duration_from_env("OMNIDRIVE_UPLOAD_TIMEOUT_MS", 120_000),
+            connect_timeout: duration_from_env("OMNIDRIVE_UPLOAD_CONNECT_TIMEOUT_MS", 10_000),
+            read_timeout: duration_from_env("OMNIDRIVE_UPLOAD_READ_TIMEOUT_MS", 90_000),
+            retry_base_delay: duration_from_env("OMNIDRIVE_UPLOAD_RETRY_BASE_MS", 2_000),
+            retry_max_delay: duration_from_env("OMNIDRIVE_UPLOAD_RETRY_MAX_MS", 60_000),
+            test_process_delay: duration_from_env("OMNIDRIVE_UPLOAD_TEST_PROCESS_DELAY_MS", 0),
+        };
+        worker.reload_uploaders_from_db().await?;
+        Ok(worker)
+    }
+
     pub async fn from_env(pool: SqlitePool) -> Result<Self, UploaderError> {
         let _ = dotenvy::dotenv();
 
@@ -319,6 +345,7 @@ impl UploadWorker {
         Ok(Self {
             pool,
             uploaders,
+            provider_reload_rx: None,
             rate_limiter: Arc::new(UploadRateLimiter::new(app_config.clone())),
             app_config,
             spool_dir: env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool"),
@@ -332,13 +359,15 @@ impl UploadWorker {
         })
     }
 
-    pub async fn run(self) -> Result<(), UploaderError> {
+    pub async fn run(mut self) -> Result<(), UploaderError> {
         db::reset_in_progress_upload_jobs(&self.pool).await?;
         db::reset_in_progress_upload_targets(&self.pool).await?;
         db::reset_in_progress_pack_shards(&self.pool).await?;
         diagnostics::set_worker_status(WorkerKind::Uploader, WorkerStatus::Idle);
 
         loop {
+            self.maybe_process_runtime_reload_signal().await;
+
             let Some(job) = db::get_next_upload_job(&self.pool).await? else {
                 diagnostics::set_worker_status(WorkerKind::Uploader, WorkerStatus::Idle);
                 sleep(self.poll_interval).await;
@@ -376,6 +405,71 @@ impl UploadWorker {
                 }
             }
         }
+    }
+
+    async fn maybe_process_runtime_reload_signal(&mut self) {
+        let mut reload_requested = false;
+        {
+            let Some(reload_rx) = self.provider_reload_rx.as_mut() else {
+                return;
+            };
+
+            loop {
+                let changed = match reload_rx.has_changed() {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                if !changed {
+                    break;
+                }
+
+                let _ = reload_rx.borrow_and_update();
+                reload_requested = true;
+            }
+        }
+
+        if reload_requested {
+            match self.reload_uploaders_from_db().await {
+                Ok(provider_names) => {
+                    info!(
+                        "[RUNTIME] Signal received: Reloading providers... OK ({})",
+                        if provider_names.is_empty() {
+                            "none".to_string()
+                        } else {
+                            provider_names.join(", ")
+                        }
+                    );
+                }
+                Err(err) => {
+                    warn!("[RUNTIME] Signal received: Reloading providers... FAILED: {err}");
+                }
+            }
+        }
+    }
+
+    async fn reload_uploaders_from_db(&mut self) -> Result<Vec<String>, UploaderError> {
+        let configs = onboarding::get_active_provider_configs(&self.pool)
+            .await
+            .map_err(|err| UploaderError::CloudGuard(err.to_string()))?;
+
+        let provider_names: Vec<String> = configs
+            .iter()
+            .map(|config| config.provider_name.to_string())
+            .collect();
+
+        let mut uploaders = Vec::with_capacity(configs.len());
+        for config in configs {
+            uploaders.push(Uploader::from_provider_config(config).await?);
+        }
+        self.uploaders = uploaders;
+
+        if provider_names.is_empty() {
+            warn!("uploader is running with no active remote providers loaded from DB");
+        } else {
+            info!("active providers loaded from DB for uploader: [{}]", provider_names.join(", "));
+        }
+
+        Ok(provider_names)
     }
 
     async fn process_job(&self, job: &db::UploadJob) -> Result<JobProcessOutcome, UploaderError> {
@@ -444,11 +538,30 @@ impl UploadWorker {
         let mut max_attempts = 0i64;
 
         for shard in pending_shards {
-            let uploader = self
+            let Some(uploader) = self
                 .uploaders
                 .iter()
                 .find(|uploader| uploader.provider_name() == shard.provider.as_str())
-                .ok_or(UploaderError::InvalidEnv("pack_shards.provider"))?;
+            else {
+                let message = format!(
+                    "provider {} is not active in runtime configuration; waiting for hot-reload",
+                    shard.provider
+                );
+                let attempts = db::requeue_pack_shard(
+                    &self.pool,
+                    &job.pack_id,
+                    shard.shard_index,
+                    &message,
+                )
+                .await?;
+                db::requeue_upload_target(&self.pool, job.id, &shard.provider, &message).await?;
+                max_attempts = max_attempts.max(attempts);
+                failed_shards.push(format!(
+                    "{} shard {}: {}",
+                    shard.provider, shard.shard_index, message
+                ));
+                continue;
+            };
 
             let current_usage =
                 db::get_physical_usage_for_provider(&self.pool, &shard.provider).await?;

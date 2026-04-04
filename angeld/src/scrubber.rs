@@ -65,10 +65,14 @@ impl From<sqlx::Error> for ScrubberError {
 impl ScrubberWorker {
     pub async fn from_env(pool: SqlitePool) -> Result<Self, ScrubberError> {
         let _ = dotenvy::dotenv();
+        Self::from_onboarding_db(pool).await
+    }
 
+    pub async fn from_onboarding_db(pool: SqlitePool) -> Result<Self, ScrubberError> {
+        let providers = provider_clients_from_onboarding_db(&pool).await?;
         Ok(Self {
             pool,
-            providers: provider_clients_from_env().await?,
+            providers,
             poll_interval: duration_from_env("OMNIDRIVE_SCRUB_POLL_INTERVAL_MS", 300_000),
             provider_timeout: duration_from_env("OMNIDRIVE_SCRUB_TIMEOUT_MS", 30_000),
             batch_size: env::var("OMNIDRIVE_SCRUB_BATCH_SIZE")
@@ -334,29 +338,44 @@ impl ScrubberWorker {
 }
 
 pub async fn run_scrub_batch_now(pool: SqlitePool) -> Result<usize, ScrubberError> {
-    let worker = ScrubberWorker::from_env(pool).await?;
+    let worker = ScrubberWorker::from_onboarding_db(pool).await?;
     worker.run_one_batch().await
 }
 
 async fn provider_clients_from_env() -> Result<HashMap<String, ScrubProvider>, ScrubberError> {
+    provider_clients_from_configs(
+        [
+            ProviderConfig::from_r2_env(),
+            ProviderConfig::from_scaleway_env(),
+            ProviderConfig::from_b2_env(),
+        ]
+        .into_iter()
+        .filter_map(Result::ok)
+        .collect(),
+    )
+    .await
+}
+
+async fn provider_clients_from_onboarding_db(
+    pool: &SqlitePool,
+) -> Result<HashMap<String, ScrubProvider>, ScrubberError> {
+    let configs = crate::onboarding::get_active_provider_configs(pool)
+        .await
+        .map_err(|_| ScrubberError::MissingProviderConfig)?;
+    provider_clients_from_configs(configs).await
+}
+
+async fn provider_clients_from_configs(
+    configs: Vec<ProviderConfig>,
+) -> Result<HashMap<String, ScrubProvider>, ScrubberError> {
     let mut clients = HashMap::new();
-    for config in [
-        ProviderConfig::from_r2_env(),
-        ProviderConfig::from_scaleway_env(),
-        ProviderConfig::from_b2_env(),
-    ] {
-        let config = match config {
-            Ok(config) => config,
-            Err(_) => continue,
-        };
+    for config in configs {
         let provider = ScrubProvider::from_provider_config(config).await?;
         clients.insert(provider.provider_name.to_string(), provider);
     }
-
     if clients.is_empty() {
         return Err(ScrubberError::MissingProviderConfig);
     }
-
     Ok(clients)
 }
 

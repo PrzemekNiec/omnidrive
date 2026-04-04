@@ -34,7 +34,8 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{error, info};
+use tokio::sync::watch;
+use tracing::{error, info, warn};
 
 #[derive(Clone)]
 struct ApiState {
@@ -42,6 +43,7 @@ struct ApiState {
     vault_keys: VaultKeyStore,
     diagnostics: Arc<DaemonDiagnostics>,
     downloader: Option<Arc<Downloader>>,
+    runtime_reload_tx: Option<watch::Sender<u64>>,
 }
 
 pub struct ApiServer {
@@ -49,6 +51,7 @@ pub struct ApiServer {
     vault_keys: VaultKeyStore,
     diagnostics: Arc<DaemonDiagnostics>,
     downloader: Option<Arc<Downloader>>,
+    runtime_reload_tx: Option<watch::Sender<u64>>,
     bind_addr: SocketAddr,
 }
 
@@ -477,6 +480,7 @@ impl ApiServer {
         vault_keys: VaultKeyStore,
         diagnostics: Arc<DaemonDiagnostics>,
         downloader: Option<Arc<Downloader>>,
+        runtime_reload_tx: Option<watch::Sender<u64>>,
     ) -> Result<Self, ApiError> {
         let _ = dotenvy::dotenv();
 
@@ -490,6 +494,7 @@ impl ApiServer {
             vault_keys,
             diagnostics,
             downloader,
+            runtime_reload_tx,
             bind_addr,
         })
     }
@@ -501,6 +506,7 @@ impl ApiServer {
             vault_keys: self.vault_keys,
             diagnostics: diagnostics.clone(),
             downloader: self.downloader,
+            runtime_reload_tx: self.runtime_reload_tx,
         };
         let app = Router::new()
             .route("/", get(get_index))
@@ -844,10 +850,10 @@ async fn post_setup_provider(
 
 async fn post_complete_onboarding(State(state): State<ApiState>) -> impl IntoResponse {
     let result = async {
-        let provider_configs = db::list_provider_configs(&state.pool).await?;
-        let cloud_enabled = provider_configs
-            .iter()
-            .any(|provider| provider.enabled != 0);
+        let active_provider_configs = crate::onboarding::get_active_provider_configs(&state.pool)
+            .await
+            .map_err(io_error)?;
+        let cloud_enabled = !active_provider_configs.is_empty();
         let onboarding_mode = if cloud_enabled {
             OnboardingMode::CloudEnabled
         } else {
@@ -875,7 +881,9 @@ async fn post_complete_onboarding(State(state): State<ApiState>) -> impl IntoRes
         )
         .await?;
 
-        Ok::<_, sqlx::Error>(CompleteOnboardingResponse {
+        trigger_runtime_provider_reload(&state, cloud_enabled).await;
+
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(CompleteOnboardingResponse {
             onboarding_state: OnboardingState::Completed.as_str().to_string(),
             onboarding_mode: onboarding_mode.as_str().to_string(),
             cloud_enabled,
@@ -885,7 +893,7 @@ async fn post_complete_onboarding(State(state): State<ApiState>) -> impl IntoRes
 
     match result {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => internal_server_error(err),
+        Err(err) => internal_server_error(io_error(err)),
     }
 }
 
@@ -970,6 +978,8 @@ async fn post_join_existing(
             .await?;
         db::set_system_config_value(&state.pool, SYSTEM_CONFIG_CLOUD_ENABLED, "1").await?;
 
+        trigger_runtime_provider_reload(&state, true).await;
+
         Ok::<_, sqlx::Error>(JoinExistingResponse {
             onboarding_state: OnboardingState::Completed.as_str().to_string(),
             onboarding_mode: OnboardingMode::JoinExisting.as_str().to_string(),
@@ -985,14 +995,62 @@ async fn post_join_existing(
     }
 }
 
+async fn trigger_runtime_provider_reload(state: &ApiState, trigger_reconcile: bool) {
+    if let Some(tx) = &state.runtime_reload_tx {
+        let next_generation = tx.borrow().wrapping_add(1);
+        if tx.send(next_generation).is_ok() {
+            info!("[RUNTIME] provider reload signal dispatched (generation={next_generation})");
+        } else {
+            warn!("[RUNTIME] provider reload signal dispatch failed: no active receivers");
+        }
+    }
+
+    if let Some(downloader) = state.downloader.as_ref() {
+        match downloader.reload_active_providers_from_db().await {
+            Ok(provider_names) => {
+                info!(
+                    "[RUNTIME] downloader providers reloaded from DB: [{}]",
+                    if provider_names.is_empty() {
+                        "none".to_string()
+                    } else {
+                        provider_names.join(", ")
+                    }
+                );
+            }
+            Err(err) => {
+                warn!("[RUNTIME] downloader provider reload failed: {err}");
+            }
+        }
+    }
+
+    if trigger_reconcile {
+        match repair::RepairWorker::run_reconcile_batch_now(state.pool.clone()).await {
+            Ok(report) => {
+                info!(
+                    "[RUNTIME] post-onboarding reconciliation completed (reconciled_packs={})",
+                    report.reconciled_packs
+                );
+            }
+            Err(err) => {
+                warn!("[RUNTIME] post-onboarding reconciliation warning: {err}");
+            }
+        }
+    }
+}
+
 async fn finalize_join_existing_runtime(
     state: &ApiState,
     runtime_paths: &RuntimePaths,
     provider_id: &str,
 ) -> Result<(), std::io::Error> {
     let downloader = match state.downloader.clone() {
-        Some(existing) if existing.has_remote_providers() => existing,
-        _ => {
+        Some(existing) => {
+            if let Err(err) = existing.reload_active_providers_from_db().await {
+                warn!("[RESTORE] downloader runtime reload warning: {err}");
+            }
+            existing
+        }
+        None => {
             let provider_config = crate::onboarding::load_provider_config_from_onboarding_db(
                 &state.pool,
                 provider_id,
@@ -2372,8 +2430,7 @@ async fn post_backup_now(State(state): State<ApiState>) -> impl IntoResponse {
         Err(err) => return internal_server_error(err),
     };
 
-    let provider_manager = match disaster_recovery::MetadataBackupProviderManager::from_env().await
-    {
+    let provider_manager = match disaster_recovery::MetadataBackupProviderManager::from_onboarding_db_all(&state.pool).await {
         Ok(manager) => manager,
         Err(err) => return internal_server_error(err),
     };

@@ -1,6 +1,6 @@
 use crate::db;
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
-use crate::onboarding::unseal_provider_secrets;
+use crate::onboarding::{get_active_provider_configs, unseal_provider_secrets};
 use crate::secure_fs::secure_delete;
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -195,6 +195,32 @@ impl MetadataBackupProviderManager {
         Ok(Self {
             uploaders: Vec::new(),
             download_providers: vec![MetadataBackupDownloadProvider::from_provider_config(config).await?],
+            local_store: None,
+        })
+    }
+
+    pub async fn from_onboarding_db_all(
+        pool: &SqlitePool,
+    ) -> Result<Self, DisasterRecoveryError> {
+        let configs = get_active_provider_configs(pool)
+            .await
+            .map_err(|err| DisasterRecoveryError::DownloadFailed(vec![err.to_string()]))?;
+        if configs.is_empty() {
+            return Err(DisasterRecoveryError::NoConfiguredProviders);
+        }
+
+        let mut uploaders = Vec::with_capacity(configs.len());
+        let mut download_providers = Vec::with_capacity(configs.len());
+        for config in configs {
+            uploaders.push(Uploader::from_provider_config(config.clone()).await?);
+            download_providers.push(
+                MetadataBackupDownloadProvider::from_provider_config(config).await?,
+            );
+        }
+
+        Ok(Self {
+            uploaders,
+            download_providers,
             local_store: None,
         })
     }

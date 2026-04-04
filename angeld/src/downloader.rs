@@ -5,6 +5,7 @@ use crate::cloud_guard::{self, GuardOperation};
 use crate::config::AppConfig;
 use crate::db;
 use crate::db::StorageMode;
+use crate::onboarding;
 use crate::packer::{
     DATA_SHARDS, LOCAL_PACK_EXTENSION, PARITY_SHARDS, TOTAL_SHARDS, local_pack_path,
 };
@@ -23,7 +24,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::fs::{self, File};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -37,7 +38,7 @@ pub struct Downloader {
     vault_keys: VaultKeyStore,
     download_spool_dir: PathBuf,
     cache: CacheManager,
-    providers: HashMap<String, DownloadProvider>,
+    providers: Arc<RwLock<HashMap<String, DownloadProvider>>>,
     provider_timeout: Duration,
     app_config: AppConfig,
     prefetch_state: Arc<Mutex<HashMap<i64, i64>>>,
@@ -87,6 +88,7 @@ pub enum DownloaderError {
     },
     InvalidPackRecord(&'static str),
     CloudGuard(String),
+    RuntimeConfig(String),
 }
 
 impl fmt::Display for DownloaderError {
@@ -116,6 +118,7 @@ impl fmt::Display for DownloaderError {
             }
             Self::InvalidPackRecord(reason) => write!(f, "invalid pack record: {reason}"),
             Self::CloudGuard(reason) => write!(f, "cloud guard blocked operation: {reason}"),
+            Self::RuntimeConfig(reason) => write!(f, "runtime provider configuration error: {reason}"),
         }
     }
 }
@@ -160,7 +163,7 @@ impl From<reed_solomon_erasure::Error> for DownloaderError {
 
 impl Downloader {
     pub fn has_remote_providers(&self) -> bool {
-        !self.providers.is_empty()
+        self.providers.read().map(|providers| !providers.is_empty()).unwrap_or(false)
     }
 
     pub async fn from_env(
@@ -217,12 +220,37 @@ impl Downloader {
             vault_keys,
             download_spool_dir,
             cache,
-            providers,
+            providers: Arc::new(RwLock::new(providers)),
             provider_timeout,
             app_config,
             prefetch_state: Arc::new(Mutex::new(HashMap::new())),
             peer_client: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub async fn reload_active_providers_from_db(&self) -> Result<Vec<String>, DownloaderError> {
+        let configs = onboarding::get_active_provider_configs(&self.pool)
+            .await
+            .map_err(|err| DownloaderError::RuntimeConfig(err.to_string()))?;
+
+        let provider_names: Vec<String> = configs
+            .iter()
+            .map(|config| config.provider_name.to_string())
+            .collect();
+
+        let mut providers = HashMap::new();
+        for config in configs {
+            let provider = DownloadProvider::from_provider_config(config).await?;
+            providers.insert(provider.provider_name.to_string(), provider);
+        }
+
+        let mut lock = self
+            .providers
+            .write()
+            .map_err(|_| DownloaderError::RuntimeConfig("provider lock is poisoned".to_string()))?;
+        *lock = providers;
+
+        Ok(provider_names)
     }
 
     pub async fn set_peer_client(&self, peer_client: PeerClient) {
@@ -661,8 +689,14 @@ impl Downloader {
         }
 
         let mut candidates = Vec::new();
+        let providers_snapshot = self
+            .providers
+            .read()
+            .map_err(|_| DownloaderError::RuntimeConfig("provider lock is poisoned".to_string()))?
+            .clone();
+
         for shard in shards {
-            let Some(provider) = self.providers.get(&shard.provider) else {
+            let Some(provider) = providers_snapshot.get(&shard.provider) else {
                 continue;
             };
 

@@ -36,13 +36,14 @@ use crate::disaster_recovery::{
 use crate::downloader::Downloader;
 use crate::gc::GcWorker;
 use crate::logging::init_logging;
-use crate::onboarding::{cleanup_stale_uploads, initialize_onboarding_persistence};
+use crate::onboarding::{
+    cleanup_stale_uploads, get_active_provider_configs, initialize_onboarding_persistence,
+};
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::peer::{PeerClient, PeerService};
 use crate::repair::RepairWorker;
 use crate::runtime_paths::{RuntimePaths, sqlite_db_file_path};
 use crate::scrubber::ScrubberWorker;
-use crate::uploader::ProviderConfig;
 use crate::uploader::{UploadWorker, Uploader};
 use crate::vault::{VaultKeyStore, bootstrap_local_vault};
 use crate::watcher::FileWatcher;
@@ -52,6 +53,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::signal;
+use tokio::sync::watch;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info, warn};
 
@@ -139,12 +141,6 @@ fn env_flag(key: &str) -> bool {
     )
 }
 
-fn has_any_remote_provider_config() -> bool {
-    ProviderConfig::from_r2_env().is_ok()
-        || ProviderConfig::from_scaleway_env().is_ok()
-        || ProviderConfig::from_b2_env().is_ok()
-}
-
 async fn smoke_test_r2_upload() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::dotenv();
 
@@ -208,10 +204,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         .clone()
         .unwrap_or_else(|| sync_root.clone());
     let preferred_drive_letter = virtual_drive_letter();
-    let remote_providers_configured = has_any_remote_provider_config();
-    let smart_sync_enabled = !no_sync && remote_providers_configured;
     runtime_paths
-        .bootstrap_directories(smart_sync_enabled)
+        .bootstrap_directories(false)
         .await?;
     runtime_paths.secure_runtime_directories()?;
     let database_missing_on_start = runtime_paths
@@ -239,6 +233,42 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             warn!("[ONBOARDING] startup multipart cleanup failed: {}", err);
         }
     }
+    let active_provider_configs = match get_active_provider_configs(&pool).await {
+        Ok(configs) => configs,
+        Err(err) => {
+            warn!("failed to load active providers from DB: {}", err);
+            Vec::new()
+        }
+    };
+    let remote_providers_configured = !active_provider_configs.is_empty();
+    let smart_sync_enabled = !no_sync && remote_providers_configured;
+    runtime_paths
+        .bootstrap_directories(smart_sync_enabled)
+        .await?;
+
+    if remote_providers_configured {
+        let has_provider = |name: &str| {
+            active_provider_configs
+                .iter()
+                .any(|config| config.provider_name == name)
+        };
+        let mut provider_labels = Vec::new();
+        if has_provider("cloudflare-r2") {
+            provider_labels.push("R2");
+        }
+        if has_provider("backblaze-b2") {
+            provider_labels.push("B2");
+        }
+        if has_provider("scaleway") {
+            provider_labels.push("Scaleway");
+        }
+        info!(
+            "Active providers loaded from DB: [{}]",
+            provider_labels.join(", ")
+        );
+    } else {
+        warn!("starting OmniDrive in setup/local-only mode: no remote providers configured");
+    }
     let local_vault_bootstrapped = bootstrap_default_local_vault(
         &pool,
         &runtime_paths,
@@ -253,8 +283,11 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         .map(|record| record.vault_id)
         .unwrap_or_else(|| "local-vault".to_string());
     let vault_keys = VaultKeyStore::new();
+    let (provider_reload_tx, provider_reload_rx) = watch::channel(0u64);
     if no_sync && e2e_test_mode {
-        let worker = UploadWorker::from_env(pool.clone()).await?;
+        let worker =
+            UploadWorker::from_onboarding_db(pool.clone(), Some(provider_reload_rx.clone()))
+                .await?;
         diagnostics::set_worker_status(
             crate::diagnostics::WorkerKind::Repair,
             crate::diagnostics::WorkerStatus::Idle,
@@ -279,7 +312,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             crate::diagnostics::WorkerKind::Peer,
             crate::diagnostics::WorkerStatus::Idle,
         );
-        let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone(), None)?;
+        let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone(), None, None)?;
 
         warn!(
             "starting angeld in OMNIDRIVE_E2E_TEST_MODE with --no-sync; only uploader and API workers are enabled"
@@ -397,7 +430,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone(), None)?;
+        let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone(), None, None)?;
         if smart_sync_ready {
             info!("smart sync bootstrap ready at {}", sync_root.display());
         } else {
@@ -435,19 +468,16 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         return result;
     }
 
-    let downloader = Arc::new(if remote_providers_configured {
-        Downloader::from_env(pool.clone(), vault_keys.clone()).await?
-    } else {
-        warn!("starting OmniDrive in setup/local-only mode: no remote providers configured");
+    let downloader = Arc::new(
         Downloader::from_provider_configs(
             pool.clone(),
             vault_keys.clone(),
             env_path("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", ".omnidrive/download-spool"),
             Duration::from_millis(120_000),
-            Vec::new(),
+            active_provider_configs.clone(),
         )
-        .await?
-    });
+        .await?,
+    );
     downloader
         .set_peer_client(PeerClient::new(
             pool.clone(),
@@ -590,6 +620,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         vault_keys.clone(),
         diagnostics.clone(),
         Some(downloader.clone()),
+        Some(provider_reload_tx.clone()),
     )?;
     let peer_service = PeerService::new(
         pool.clone(),
@@ -621,10 +652,9 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         local_device.device_name, local_device.device_id
     );
     if !remote_providers_configured {
-        diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Uploader,
-            crate::diagnostics::WorkerStatus::Idle,
-        );
+        let worker =
+            UploadWorker::from_onboarding_db(pool.clone(), Some(provider_reload_rx.clone()))
+                .await?;
         diagnostics::set_worker_status(
             crate::diagnostics::WorkerKind::Repair,
             crate::diagnostics::WorkerStatus::Idle,
@@ -646,34 +676,45 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             crate::diagnostics::WorkerStatus::Idle,
         );
         info!(
-            "setup/local-only mode enabled: remote provider workers are idle until a provider is configured"
+            "setup/local-only mode enabled: repair/scrub/gc/metadata workers are idle until remote providers are configured"
         );
         info!("file watcher and api server started");
 
+        let mut upload_task = tokio::spawn(async move { worker.run().await });
         let mut api_task = tokio::spawn(async move { api.run().await });
         let mut peer_task = tokio::spawn(async move { peer_service.run().await });
         let watcher_future = watcher.run();
         tokio::pin!(watcher_future);
 
         let result = tokio::select! {
+            result = &mut upload_task => {
+                api_task.abort();
+                peer_task.abort();
+                let outcome = result??;
+                Ok(outcome)
+            }
             result = &mut watcher_future => {
+                upload_task.abort();
                 api_task.abort();
                 peer_task.abort();
                 let outcome = result?;
                 Ok(outcome)
             }
             result = &mut api_task => {
+                upload_task.abort();
                 peer_task.abort();
                 let outcome = result??;
                 Ok(outcome)
             }
             result = &mut peer_task => {
+                upload_task.abort();
                 api_task.abort();
                 let outcome = result??;
                 Ok(outcome)
             }
             signal = signal::ctrl_c() => {
                 signal?;
+                upload_task.abort();
                 api_task.abort();
                 peer_task.abort();
                 info!("shutdown signal received");
@@ -709,12 +750,13 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         return result;
     }
 
-    let worker = UploadWorker::from_env(pool.clone()).await?;
-    let repair_worker = RepairWorker::from_env(pool.clone()).await?;
-    let scrubber_worker = ScrubberWorker::from_env(pool.clone()).await?;
-    let gc_worker = GcWorker::from_env(pool.clone()).await?;
+    let worker =
+        UploadWorker::from_onboarding_db(pool.clone(), Some(provider_reload_rx.clone())).await?;
+    let repair_worker = RepairWorker::from_onboarding_db(pool.clone()).await?;
+    let scrubber_worker = ScrubberWorker::from_onboarding_db(pool.clone()).await?;
+    let gc_worker = GcWorker::from_onboarding_db(pool.clone()).await?;
     let metadata_backup_provider_manager =
-        Arc::new(MetadataBackupProviderManager::from_env().await?);
+        Arc::new(MetadataBackupProviderManager::from_onboarding_db_all(&pool).await?);
     let metadata_backup_worker = start_metadata_backup_worker(
         pool.clone(),
         metadata_backup_provider_manager,

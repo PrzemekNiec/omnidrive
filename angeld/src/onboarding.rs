@@ -4,7 +4,7 @@ use crate::cloud_guard::{self, GuardOperation};
 use crate::config::AppConfig;
 use crate::disaster_recovery::{self, MetadataBackupProviderManager};
 use crate::runtime_paths::RuntimePaths;
-use crate::uploader::ProviderConfig;
+use crate::uploader::{KNOWN_PROVIDERS, ProviderConfig};
 use crate::{db, db::ProviderConfigRecord};
 use aws_config::Region;
 use aws_config::timeout::TimeoutConfig;
@@ -97,6 +97,8 @@ pub struct ProviderSecretMaterial {
     pub access_key_id: String,
     pub secret_access_key: String,
 }
+
+pub(crate) type FullProviderSetup = ProviderConfig;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ValidationReport {
@@ -477,6 +479,29 @@ pub(crate) async fn load_provider_config_from_onboarding_db(
     Ok(provider_config_from_record(&config_record, &secrets))
 }
 
+pub(crate) async fn get_active_provider_configs(
+    pool: &SqlitePool,
+) -> Result<Vec<FullProviderSetup>, ProviderError> {
+    let records = db::list_provider_configs(pool)
+        .await
+        .map_err(|err| ProviderError::Aws(format!("failed to list provider configs: {err}")))?;
+    let mut configs = Vec::new();
+
+    for record in records {
+        if record.enabled == 0 {
+            continue;
+        }
+        if !KNOWN_PROVIDERS.contains(&record.provider_name.as_str()) {
+            continue;
+        }
+
+        let config = load_provider_config_from_onboarding_db(pool, &record.provider_name).await?;
+        configs.push(config);
+    }
+
+    Ok(configs)
+}
+
 pub(crate) async fn validate_provider_connection(
     pool: &SqlitePool,
     config: ProviderConfig,
@@ -704,9 +729,19 @@ pub async fn perform_vault_restore(
 }
 
 pub async fn cleanup_stale_uploads(pool: &SqlitePool) -> Result<Vec<String>, ProviderError> {
-    if AppConfig::from_env().dry_run_active {
+    let dry_run_active = AppConfig::from_env().dry_run_active
+        || db::get_system_config_value(pool, cloud_guard::SYSTEM_CONFIG_DRY_RUN_ACTIVE)
+            .await
+            .map_err(|err| ProviderError::Aws(format!("failed to load dry-run flag: {err}")))?
+            .is_some_and(|value| value == "1");
+    if dry_run_active {
         return Ok(vec![
             "[DRY-RUN] Skipping stale multipart upload cleanup.".to_string(),
+        ]);
+    }
+    if !env_flag("OMNIDRIVE_ENABLE_MULTIPART_CLEANUP") {
+        return Ok(vec![
+            "Skipping stale multipart upload cleanup (set OMNIDRIVE_ENABLE_MULTIPART_CLEANUP=1 to enable).".to_string(),
         ]);
     }
 
