@@ -99,6 +99,7 @@ impl VaultKeyStore {
         }
 
         let (config, initialized) = ensure_vault_config(pool).await?;
+        let _ = ensure_local_vault_params(pool, &config).await?;
         let root_keys = derive_root_keys(passphrase.as_bytes(), &config)?;
         *self.inner.write().await =
             Some(UnlockedVaultKeys::new(root_keys.master_key, root_keys.vault_key));
@@ -138,21 +139,8 @@ impl VaultKeyStore {
 
 pub async fn bootstrap_local_vault(pool: &SqlitePool) -> Result<bool, VaultError> {
     let (config, initialized) = ensure_vault_config(pool).await?;
-    if db::get_vault_params(pool).await?.is_none() {
-        let mut salt = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut salt);
-        let vault_id = format!("local-vault-{}", hex_prefix(&config.salt));
-        let params_json = format!(
-            r#"{{"mode":"LOCAL_VAULT","parameter_set_version":{},"memory_cost_kib":{},"time_cost":{},"lanes":{}}}"#,
-            config.parameter_set_version,
-            config.memory_cost_kib,
-            config.time_cost,
-            config.lanes
-        );
-        db::set_vault_params(pool, &salt, &params_json, &vault_id).await?;
-        return Ok(true);
-    }
-    Ok(initialized)
+    let created = ensure_local_vault_params(pool, &config).await?;
+    Ok(initialized || created)
 }
 
 async fn ensure_vault_config(pool: &SqlitePool) -> Result<(RootKdfParams, bool), VaultError> {
@@ -210,6 +198,28 @@ fn hex_prefix(bytes: &[u8]) -> String {
         .take(8)
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
+}
+
+async fn ensure_local_vault_params(
+    pool: &SqlitePool,
+    config: &RootKdfParams,
+) -> Result<bool, VaultError> {
+    if db::get_vault_params(pool).await?.is_some() {
+        return Ok(false);
+    }
+
+    let mut salt = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut salt);
+    let vault_id = format!("local-vault-{}", hex_prefix(&config.salt));
+    let params_json = format!(
+        r#"{{"mode":"LOCAL_VAULT","parameter_set_version":{},"memory_cost_kib":{},"time_cost":{},"lanes":{}}}"#,
+        config.parameter_set_version,
+        config.memory_cost_kib,
+        config.time_cost,
+        config.lanes
+    );
+    db::set_vault_params(pool, &salt, &params_json, &vault_id).await?;
+    Ok(true)
 }
 
 #[cfg(test)]

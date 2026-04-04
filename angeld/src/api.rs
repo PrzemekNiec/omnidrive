@@ -10,7 +10,8 @@ use crate::onboarding::{
     OnboardingMode, OnboardingState, SYSTEM_CONFIG_CLOUD_ENABLED, SYSTEM_CONFIG_DRAFT_ENV_DETECTED,
     SYSTEM_CONFIG_LAST_ONBOARDING_STEP, SYSTEM_CONFIG_ONBOARDING_MODE,
     SYSTEM_CONFIG_ONBOARDING_STATE, ValidationReport, VaultRestoreReport, cleanup_stale_uploads,
-    perform_vault_restore, seal_provider_secrets, validate_persisted_provider_connection,
+    perform_vault_restore, reset_onboarding, seal_provider_secrets,
+    validate_persisted_provider_connection,
 };
 use crate::peer;
 use crate::repair::{self, RepairError};
@@ -520,6 +521,7 @@ impl ApiServer {
             .route("/api/onboarding/setup-provider", post(post_setup_provider))
             .route("/api/onboarding/join-existing", post(post_join_existing))
             .route("/api/onboarding/complete", post(post_complete_onboarding))
+            .route("/api/onboarding/reset", post(post_reset_onboarding))
             .route("/api/transfers", get(get_transfers))
             .route("/api/health", get(get_health))
             .route("/api/diagnostics/health", get(get_diagnostics_health))
@@ -616,6 +618,7 @@ async fn get_onboarding_status(State(state): State<ApiState>) -> impl IntoRespon
 }
 
 async fn post_bootstrap_local(State(state): State<ApiState>) -> impl IntoResponse {
+    shell_state::set_cloud_mode_hint(false);
     let result = async {
         db::set_system_config_value(
             &state.pool,
@@ -854,6 +857,7 @@ async fn post_complete_onboarding(State(state): State<ApiState>) -> impl IntoRes
             .await
             .map_err(io_error)?;
         let cloud_enabled = !active_provider_configs.is_empty();
+        shell_state::set_cloud_mode_hint(cloud_enabled);
         let onboarding_mode = if cloud_enabled {
             OnboardingMode::CloudEnabled
         } else {
@@ -962,6 +966,7 @@ async fn post_join_existing(
     }
 
     let result = async {
+        shell_state::set_cloud_mode_hint(true);
         db::set_system_config_value(
             &state.pool,
             SYSTEM_CONFIG_ONBOARDING_STATE,
@@ -991,6 +996,23 @@ async fn post_join_existing(
 
     match result {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn post_reset_onboarding(State(state): State<ApiState>) -> impl IntoResponse {
+    match reset_onboarding(&state.pool).await {
+        Ok(()) => {
+            shell_state::set_cloud_mode_hint(false);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "OK",
+                    "message": "Onboarding state has been reset. Reload the dashboard to see the wizard."
+                })),
+            )
+                .into_response()
+        }
         Err(err) => internal_server_error(err),
     }
 }

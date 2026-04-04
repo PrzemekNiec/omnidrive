@@ -961,13 +961,116 @@ pub async fn get_vault_params(pool: &SqlitePool) -> Result<Option<VaultRecord>, 
     .await
 }
 
+// Row types used exclusively by the restore graft to shuttle data from the
+// restored snapshot pool into the main DB without using ATTACH.
+#[derive(sqlx::FromRow)] struct RestoredInode { id: i64, parent_id: Option<i64>, name: String, kind: String, size: i64, mode: Option<i64>, mtime: Option<i64> }
+#[derive(sqlx::FromRow)] struct RestoredRevision { revision_id: i64, inode_id: i64, created_at: i64, size: i64, is_current: i64, immutable_until: Option<i64>, device_id: Option<String>, parent_revision_id: Option<i64>, origin: String, conflict_reason: Option<String> }
+#[derive(sqlx::FromRow)] struct RestoredSyncPolicy { policy_id: i64, path_prefix: String, require_healthy: i64, enable_versioning: i64, policy_type: String }
+#[derive(sqlx::FromRow)] struct RestoredSmartSyncState { inode_id: i64, revision_id: i64, pin_state: i64, hydration_state: i64 }
+#[derive(sqlx::FromRow)] struct RestoredMetadataBackup { backup_id: String, created_at: i64, snapshot_version: i64, object_key: String, provider: String, encrypted_size: i64, status: String, last_error: Option<String> }
+#[derive(sqlx::FromRow)] struct RestoredPack { pack_id: String, chunk_id: Vec<u8>, plaintext_hash: Option<String>, storage_mode: String, encryption_version: i64, ec_scheme: String, logical_size: i64, cipher_size: i64, shard_size: i64, nonce: Vec<u8>, gcm_tag: Vec<u8>, status: String }
+#[derive(sqlx::FromRow)] struct RestoredPackShard { id: i64, pack_id: String, shard_index: i64, shard_role: String, provider: String, object_key: String, size: i64, checksum: String, status: String, attempts: Option<i64>, last_error: Option<String>, last_verified_at: Option<i64>, last_verification_method: Option<String>, last_verification_status: Option<String>, last_verified_size: Option<i64>, verification_failures: i64 }
+#[derive(sqlx::FromRow)] struct RestoredPackLocation { chunk_id: Vec<u8>, pack_id: String, pack_offset: i64, encrypted_size: i64 }
+#[derive(sqlx::FromRow)] struct RestoredChunkRef { id: i64, revision_id: i64, chunk_id: Vec<u8>, file_offset: i64, size: i64 }
+#[derive(sqlx::FromRow)] struct RestoredConflictEvent { conflict_id: i64, inode_id: i64, winning_revision_id: i64, losing_revision_id: i64, reason: String, materialized_inode_id: Option<i64>, materialized_revision_id: Option<i64>, created_at: i64 }
+
 pub async fn graft_restored_metadata_snapshot(
     pool: &SqlitePool,
     restored_db_path: &Path,
 ) -> Result<VaultRestoreApplyReport, sqlx::Error> {
-    let restored_path = restored_db_path.to_string_lossy().to_string();
-    let mut conn = pool.acquire().await?;
+    // ── Phase 1: read everything from the restored snapshot into memory ──
+    // We open the restored DB as a completely separate pool so there is no
+    // ATTACH and therefore no cross-database locking on Windows.
+    let restored_url = format!(
+        "sqlite:{}?mode=ro",
+        restored_db_path.to_string_lossy().replace('\\', "/")
+    );
+    let restored_pool = SqlitePool::connect(&restored_url).await?;
 
+    let remote_vault = sqlx::query_as::<_, VaultRecord>(
+        "SELECT id, master_key_salt, argon2_params, vault_id FROM vault_state WHERE id = 1",
+    )
+    .fetch_optional(&restored_pool)
+    .await?
+    .ok_or(sqlx::Error::Protocol(
+        "restored snapshot is missing vault_state row".into(),
+    ))?;
+
+    let r_inodes = sqlx::query_as::<_, RestoredInode>(
+        "SELECT id, parent_id, name, kind, size, mode, mtime FROM inodes",
+    )
+    .fetch_all(&restored_pool)
+    .await?;
+
+    let r_revisions = sqlx::query_as::<_, RestoredRevision>(
+        "SELECT revision_id, inode_id, created_at, size, is_current, immutable_until, \
+         device_id, parent_revision_id, origin, conflict_reason FROM file_revisions",
+    )
+    .fetch_all(&restored_pool)
+    .await?;
+
+    let r_policies = sqlx::query_as::<_, RestoredSyncPolicy>(
+        "SELECT policy_id, path_prefix, require_healthy, enable_versioning, policy_type \
+         FROM sync_policies",
+    )
+    .fetch_all(&restored_pool)
+    .await?;
+
+    let r_sync_state = sqlx::query_as::<_, RestoredSmartSyncState>(
+        "SELECT inode_id, revision_id, pin_state, hydration_state FROM smart_sync_state",
+    )
+    .fetch_all(&restored_pool)
+    .await?;
+
+    let r_backups = sqlx::query_as::<_, RestoredMetadataBackup>(
+        "SELECT backup_id, created_at, snapshot_version, object_key, provider, \
+         encrypted_size, status, last_error FROM metadata_backups",
+    )
+    .fetch_all(&restored_pool)
+    .await?;
+
+    let r_packs = sqlx::query_as::<_, RestoredPack>(
+        "SELECT pack_id, chunk_id, plaintext_hash, storage_mode, encryption_version, \
+         ec_scheme, logical_size, cipher_size, shard_size, nonce, gcm_tag, status FROM packs",
+    )
+    .fetch_all(&restored_pool)
+    .await?;
+
+    let r_shards = sqlx::query_as::<_, RestoredPackShard>(
+        "SELECT id, pack_id, shard_index, shard_role, provider, object_key, size, checksum, \
+         status, attempts, last_error, last_verified_at, last_verification_method, \
+         last_verification_status, last_verified_size, verification_failures FROM pack_shards",
+    )
+    .fetch_all(&restored_pool)
+    .await?;
+
+    let r_locations = sqlx::query_as::<_, RestoredPackLocation>(
+        "SELECT chunk_id, pack_id, pack_offset, encrypted_size FROM pack_locations",
+    )
+    .fetch_all(&restored_pool)
+    .await?;
+
+    let r_chunk_refs = sqlx::query_as::<_, RestoredChunkRef>(
+        "SELECT id, revision_id, chunk_id, file_offset, size FROM chunk_refs",
+    )
+    .fetch_all(&restored_pool)
+    .await?;
+
+    let r_conflicts = sqlx::query_as::<_, RestoredConflictEvent>(
+        "SELECT conflict_id, inode_id, winning_revision_id, losing_revision_id, reason, \
+         materialized_inode_id, materialized_revision_id, created_at FROM conflict_events",
+    )
+    .fetch_all(&restored_pool)
+    .await?;
+
+    // Done reading — close the restored pool before we touch the main DB
+    restored_pool.close().await;
+
+    // ── Phase 2: write into the main DB inside a single transaction ──
+    let mut conn = pool.acquire().await?;
+    sqlx::query("PRAGMA busy_timeout = 10000")
+        .execute(&mut *conn)
+        .await?;
     sqlx::query("BEGIN IMMEDIATE TRANSACTION")
         .execute(&mut *conn)
         .await?;
@@ -976,46 +1079,23 @@ pub async fn graft_restored_metadata_snapshot(
         sqlx::query("PRAGMA foreign_keys = OFF")
             .execute(&mut *conn)
             .await?;
-        sqlx::query("ATTACH DATABASE ? AS restored")
-            .bind(&restored_path)
-            .execute(&mut *conn)
-            .await?;
 
+        // Graft vault_id from remote, keep local KDF params if present
         let local_vault = sqlx::query_as::<_, VaultRecord>(
-            r#"
-            SELECT id, master_key_salt, argon2_params, vault_id
-            FROM vault_state
-            WHERE id = 1
-            "#,
+            "SELECT id, master_key_salt, argon2_params, vault_id FROM vault_state WHERE id = 1",
         )
         .fetch_optional(&mut *conn)
         .await?;
-
-        let remote_vault = sqlx::query_as::<_, VaultRecord>(
-            r#"
-            SELECT id, master_key_salt, argon2_params, vault_id
-            FROM restored.vault_state
-            WHERE id = 1
-            "#,
-        )
-        .fetch_optional(&mut *conn)
-        .await?;
-
-        let remote_vault = remote_vault.ok_or(sqlx::Error::Protocol(
-            "restored snapshot is missing vault_state row".into(),
-        ))?;
 
         match local_vault {
             Some(local) => {
                 sqlx::query(
-                    r#"
-                    INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id)
-                    VALUES (1, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        master_key_salt = excluded.master_key_salt,
-                        argon2_params = excluded.argon2_params,
-                        vault_id = excluded.vault_id
-                    "#,
+                    "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+                     VALUES (1, ?, ?, ?) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                         master_key_salt = excluded.master_key_salt, \
+                         argon2_params = excluded.argon2_params, \
+                         vault_id = excluded.vault_id",
                 )
                 .bind(local.master_key_salt)
                 .bind(local.argon2_params)
@@ -1025,14 +1105,12 @@ pub async fn graft_restored_metadata_snapshot(
             }
             None => {
                 sqlx::query(
-                    r#"
-                    INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id)
-                    VALUES (1, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        master_key_salt = excluded.master_key_salt,
-                        argon2_params = excluded.argon2_params,
-                        vault_id = excluded.vault_id
-                    "#,
+                    "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+                     VALUES (1, ?, ?, ?) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                         master_key_salt = excluded.master_key_salt, \
+                         argon2_params = excluded.argon2_params, \
+                         vault_id = excluded.vault_id",
                 )
                 .bind(remote_vault.master_key_salt)
                 .bind(remote_vault.argon2_params)
@@ -1060,258 +1138,122 @@ pub async fn graft_restored_metadata_snapshot(
             sqlx::query(statement).execute(&mut *conn).await?;
         }
 
-        sqlx::query(
-            r#"
-            INSERT INTO inodes (id, parent_id, name, kind, size, mode, mtime)
-            SELECT id, parent_id, name, kind, size, mode, mtime
-            FROM restored.inodes
-            "#,
-        )
-        .execute(&mut *conn)
-        .await?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO file_revisions (
-                revision_id,
-                inode_id,
-                created_at,
-                size,
-                is_current,
-                immutable_until,
-                device_id,
-                parent_revision_id,
-                origin,
-                conflict_reason
+        for row in &r_inodes {
+            sqlx::query(
+                "INSERT INTO inodes (id, parent_id, name, kind, size, mode, mtime) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
-            SELECT
-                revision_id,
-                inode_id,
-                created_at,
-                size,
-                is_current,
-                immutable_until,
-                device_id,
-                parent_revision_id,
-                origin,
-                conflict_reason
-            FROM restored.file_revisions
-            "#,
-        )
-        .execute(&mut *conn)
-        .await?;
+            .bind(row.id).bind(row.parent_id).bind(&row.name).bind(&row.kind)
+            .bind(row.size).bind(row.mode).bind(row.mtime)
+            .execute(&mut *conn).await?;
+        }
 
-        sqlx::query(
-            r#"
-            INSERT INTO sync_policies (
-                policy_id,
-                path_prefix,
-                require_healthy,
-                enable_versioning,
-                policy_type
+        for row in &r_revisions {
+            sqlx::query(
+                "INSERT INTO file_revisions (revision_id, inode_id, created_at, size, \
+                 is_current, immutable_until, device_id, parent_revision_id, origin, \
+                 conflict_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            SELECT
-                policy_id,
-                path_prefix,
-                require_healthy,
-                enable_versioning,
-                policy_type
-            FROM restored.sync_policies
-            "#,
-        )
-        .execute(&mut *conn)
-        .await?;
+            .bind(row.revision_id).bind(row.inode_id).bind(row.created_at)
+            .bind(row.size).bind(row.is_current).bind(row.immutable_until)
+            .bind(&row.device_id).bind(row.parent_revision_id)
+            .bind(&row.origin).bind(&row.conflict_reason)
+            .execute(&mut *conn).await?;
+        }
 
-        sqlx::query(
-            r#"
-            INSERT INTO smart_sync_state (
-                inode_id,
-                revision_id,
-                pin_state,
-                hydration_state
+        for row in &r_policies {
+            sqlx::query(
+                "INSERT INTO sync_policies (policy_id, path_prefix, require_healthy, \
+                 enable_versioning, policy_type) VALUES (?, ?, ?, ?, ?)",
             )
-            SELECT
-                inode_id,
-                revision_id,
-                pin_state,
-                hydration_state
-            FROM restored.smart_sync_state
-            "#,
-        )
-        .execute(&mut *conn)
-        .await?;
+            .bind(row.policy_id).bind(&row.path_prefix).bind(row.require_healthy)
+            .bind(row.enable_versioning).bind(&row.policy_type)
+            .execute(&mut *conn).await?;
+        }
 
-        sqlx::query(
-            r#"
-            INSERT INTO metadata_backups (
-                backup_id,
-                created_at,
-                snapshot_version,
-                object_key,
-                provider,
-                encrypted_size,
-                status,
-                last_error
+        for row in &r_sync_state {
+            sqlx::query(
+                "INSERT INTO smart_sync_state (inode_id, revision_id, pin_state, \
+                 hydration_state) VALUES (?, ?, ?, ?)",
             )
-            SELECT
-                backup_id,
-                created_at,
-                snapshot_version,
-                object_key,
-                provider,
-                encrypted_size,
-                status,
-                last_error
-            FROM restored.metadata_backups
-            "#,
-        )
-        .execute(&mut *conn)
-        .await?;
+            .bind(row.inode_id).bind(row.revision_id).bind(row.pin_state)
+            .bind(row.hydration_state)
+            .execute(&mut *conn).await?;
+        }
 
-        sqlx::query(
-            r#"
-            INSERT INTO packs (
-                pack_id,
-                chunk_id,
-                plaintext_hash,
-                storage_mode,
-                encryption_version,
-                ec_scheme,
-                logical_size,
-                cipher_size,
-                shard_size,
-                nonce,
-                gcm_tag,
-                status
+        for row in &r_backups {
+            sqlx::query(
+                "INSERT INTO metadata_backups (backup_id, created_at, snapshot_version, \
+                 object_key, provider, encrypted_size, status, last_error) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            SELECT
-                pack_id,
-                chunk_id,
-                plaintext_hash,
-                storage_mode,
-                encryption_version,
-                ec_scheme,
-                logical_size,
-                cipher_size,
-                shard_size,
-                nonce,
-                gcm_tag,
-                status
-            FROM restored.packs
-            "#,
-        )
-        .execute(&mut *conn)
-        .await?;
+            .bind(&row.backup_id).bind(row.created_at).bind(row.snapshot_version)
+            .bind(&row.object_key).bind(&row.provider).bind(row.encrypted_size)
+            .bind(&row.status).bind(&row.last_error)
+            .execute(&mut *conn).await?;
+        }
 
-        sqlx::query(
-            r#"
-            INSERT INTO pack_shards (
-                id,
-                pack_id,
-                shard_index,
-                shard_role,
-                provider,
-                object_key,
-                size,
-                checksum,
-                status,
-                attempts,
-                last_error,
-                last_verified_at,
-                last_verification_method,
-                last_verification_status,
-                last_verified_size,
-                verification_failures
+        for row in &r_packs {
+            sqlx::query(
+                "INSERT INTO packs (pack_id, chunk_id, plaintext_hash, storage_mode, \
+                 encryption_version, ec_scheme, logical_size, cipher_size, shard_size, \
+                 nonce, gcm_tag, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            SELECT
-                id,
-                pack_id,
-                shard_index,
-                shard_role,
-                provider,
-                object_key,
-                size,
-                checksum,
-                status,
-                attempts,
-                last_error,
-                last_verified_at,
-                last_verification_method,
-                last_verification_status,
-                last_verified_size,
-                verification_failures
-            FROM restored.pack_shards
-            "#,
-        )
-        .execute(&mut *conn)
-        .await?;
+            .bind(&row.pack_id).bind(&row.chunk_id).bind(&row.plaintext_hash)
+            .bind(&row.storage_mode).bind(row.encryption_version).bind(&row.ec_scheme)
+            .bind(row.logical_size).bind(row.cipher_size).bind(row.shard_size)
+            .bind(&row.nonce).bind(&row.gcm_tag).bind(&row.status)
+            .execute(&mut *conn).await?;
+        }
 
-        sqlx::query(
-            r#"
-            INSERT INTO pack_locations (
-                chunk_id,
-                pack_id,
-                pack_offset,
-                encrypted_size
+        for row in &r_shards {
+            sqlx::query(
+                "INSERT INTO pack_shards (id, pack_id, shard_index, shard_role, provider, \
+                 object_key, size, checksum, status, attempts, last_error, last_verified_at, \
+                 last_verification_method, last_verification_status, last_verified_size, \
+                 verification_failures) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            SELECT
-                chunk_id,
-                pack_id,
-                pack_offset,
-                encrypted_size
-            FROM restored.pack_locations
-            "#,
-        )
-        .execute(&mut *conn)
-        .await?;
+            .bind(row.id).bind(&row.pack_id).bind(row.shard_index).bind(&row.shard_role)
+            .bind(&row.provider).bind(&row.object_key).bind(row.size).bind(&row.checksum)
+            .bind(&row.status).bind(row.attempts).bind(&row.last_error)
+            .bind(row.last_verified_at).bind(&row.last_verification_method)
+            .bind(&row.last_verification_status).bind(row.last_verified_size)
+            .bind(row.verification_failures)
+            .execute(&mut *conn).await?;
+        }
 
-        sqlx::query(
-            r#"
-            INSERT INTO chunk_refs (
-                id,
-                revision_id,
-                chunk_id,
-                file_offset,
-                size
+        for row in &r_locations {
+            sqlx::query(
+                "INSERT INTO pack_locations (chunk_id, pack_id, pack_offset, encrypted_size) \
+                 VALUES (?, ?, ?, ?)",
             )
-            SELECT
-                id,
-                revision_id,
-                chunk_id,
-                file_offset,
-                size
-            FROM restored.chunk_refs
-            "#,
-        )
-        .execute(&mut *conn)
-        .await?;
+            .bind(&row.chunk_id).bind(&row.pack_id).bind(row.pack_offset)
+            .bind(row.encrypted_size)
+            .execute(&mut *conn).await?;
+        }
 
-        sqlx::query(
-            r#"
-            INSERT INTO conflict_events (
-                conflict_id,
-                inode_id,
-                winning_revision_id,
-                losing_revision_id,
-                reason,
-                materialized_inode_id,
-                materialized_revision_id,
-                created_at
+        for row in &r_chunk_refs {
+            sqlx::query(
+                "INSERT INTO chunk_refs (id, revision_id, chunk_id, file_offset, size) \
+                 VALUES (?, ?, ?, ?, ?)",
             )
-            SELECT
-                conflict_id,
-                inode_id,
-                winning_revision_id,
-                losing_revision_id,
-                reason,
-                materialized_inode_id,
-                materialized_revision_id,
-                created_at
-            FROM restored.conflict_events
-            "#,
-        )
-        .execute(&mut *conn)
-        .await?;
+            .bind(row.id).bind(row.revision_id).bind(&row.chunk_id)
+            .bind(row.file_offset).bind(row.size)
+            .execute(&mut *conn).await?;
+        }
+
+        for row in &r_conflicts {
+            sqlx::query(
+                "INSERT INTO conflict_events (conflict_id, inode_id, winning_revision_id, \
+                 losing_revision_id, reason, materialized_inode_id, \
+                 materialized_revision_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(row.conflict_id).bind(row.inode_id).bind(row.winning_revision_id)
+            .bind(row.losing_revision_id).bind(&row.reason)
+            .bind(row.materialized_inode_id).bind(row.materialized_revision_id)
+            .bind(row.created_at)
+            .execute(&mut *conn).await?;
+        }
 
         let restored_inodes = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inodes")
             .fetch_one(&mut *conn)
@@ -1321,9 +1263,6 @@ pub async fn graft_restored_metadata_snapshot(
                 .fetch_one(&mut *conn)
                 .await?;
 
-        sqlx::query("DETACH DATABASE restored")
-            .execute(&mut *conn)
-            .await?;
         sqlx::query("PRAGMA foreign_keys = ON")
             .execute(&mut *conn)
             .await?;
@@ -1342,9 +1281,6 @@ pub async fn graft_restored_metadata_snapshot(
             Ok(report)
         }
         Err(err) => {
-            let _ = sqlx::query("DETACH DATABASE restored")
-                .execute(&mut *conn)
-                .await;
             let _ = sqlx::query("PRAGMA foreign_keys = ON")
                 .execute(&mut *conn)
                 .await;

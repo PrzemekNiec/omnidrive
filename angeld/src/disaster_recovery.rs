@@ -444,30 +444,93 @@ pub async fn restore_metadata_from_cloud(
     let mut errors = Vec::new();
 
     if let Some(local_store) = &provider_manager.local_store {
-        let encoded = local_store.download_bytes(object_key).await?;
-        let plaintext = decrypt_metadata_backup(&encoded, passphrase)?;
-        if let Some(parent) = output_db_path.parent() {
-            fs::create_dir_all(parent).await?;
+        let mut candidate_keys = vec![object_key.to_string()];
+        match local_store.list_snapshot_keys(32).await {
+            Ok(keys) => candidate_keys.extend(keys),
+            Err(err) => errors.push(format!("local-metadata-store snapshots: {err}")),
         }
-        fs::write(output_db_path, plaintext).await?;
-        return Ok(());
+
+        for key in dedup_object_keys(candidate_keys) {
+            let encoded = match local_store.download_bytes(&key).await {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    errors.push(format!("local-metadata-store {key}: {err}"));
+                    continue;
+                }
+            };
+            let plaintext = decrypt_metadata_backup(&encoded, passphrase)?;
+            if write_plaintext_snapshot_if_valid(&plaintext, output_db_path).await? {
+                return Ok(());
+            }
+            errors.push(format!(
+                "local-metadata-store {key}: decrypted snapshot is missing vault_state row"
+            ));
+        }
+
+        return Err(DisasterRecoveryError::DownloadFailed(errors));
     }
 
     for provider in &provider_manager.download_providers {
-        match provider.download_bytes(object_key).await {
-            Ok(encoded) => {
-                let plaintext = decrypt_metadata_backup(&encoded, passphrase)?;
-                if let Some(parent) = output_db_path.parent() {
-                    fs::create_dir_all(parent).await?;
+        let mut candidate_keys = vec![object_key.to_string()];
+        match provider.list_snapshot_keys(32).await {
+            Ok(keys) => candidate_keys.extend(keys),
+            Err(err) => errors.push(format!("{} snapshots: {}", provider.provider_name, err)),
+        }
+
+        for key in dedup_object_keys(candidate_keys) {
+            let encoded = match provider.download_bytes(&key).await {
+                Ok(encoded) => encoded,
+                Err(err) => {
+                    errors.push(format!("{} {}: {}", provider.provider_name, key, err));
+                    continue;
                 }
-                fs::write(output_db_path, plaintext).await?;
+            };
+            let plaintext = decrypt_metadata_backup(&encoded, passphrase)?;
+            if write_plaintext_snapshot_if_valid(&plaintext, output_db_path).await? {
                 return Ok(());
             }
-            Err(err) => errors.push(format!("{}: {}", provider.provider_name, err)),
+            errors.push(format!(
+                "{} {}: decrypted snapshot is missing vault_state row",
+                provider.provider_name, key
+            ));
         }
     }
 
     Err(DisasterRecoveryError::DownloadFailed(errors))
+}
+
+fn dedup_object_keys(keys: Vec<String>) -> Vec<String> {
+    let mut deduped = Vec::with_capacity(keys.len());
+    for key in keys {
+        if !deduped.iter().any(|existing| existing == &key) {
+            deduped.push(key);
+        }
+    }
+    deduped
+}
+
+async fn write_plaintext_snapshot_if_valid(
+    plaintext: &[u8],
+    output_db_path: &Path,
+) -> Result<bool, DisasterRecoveryError> {
+    if let Some(parent) = output_db_path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    fs::write(output_db_path, plaintext).await?;
+    snapshot_has_vault_state_row(output_db_path).await
+}
+
+async fn snapshot_has_vault_state_row(
+    snapshot_path: &Path,
+) -> Result<bool, DisasterRecoveryError> {
+    let db_url = format!(
+        "sqlite://{}",
+        snapshot_path.to_string_lossy().replace('\\', "/")
+    );
+    let pool = db::init_db(&db_url).await?;
+    let has_row = db::get_vault_params(&pool).await?.is_some();
+    pool.close().await;
+    Ok(has_row)
 }
 
 pub async fn upload_metadata_backup(
@@ -507,14 +570,27 @@ pub async fn upload_metadata_backup(
 
         match local_store.upload_file(enc_file_path, &snapshot_key).await {
             Ok(()) => {
-                successful_uploads += 1;
-                db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None).await?;
-                if let Err(err) = local_store.upload_file(enc_file_path, latest_key).await {
-                    warn!(
-                        "metadata backup latest pointer update failed for {}: {}",
-                        local_store.provider_name(),
-                        err
-                    );
+                match local_store.upload_file(enc_file_path, latest_key).await {
+                    Ok(()) => {
+                        successful_uploads += 1;
+                        db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
+                            .await?;
+                    }
+                    Err(err) => {
+                        let error_text = format!("latest pointer update failed: {err}");
+                        db::update_metadata_backup_status(
+                            db_pool,
+                            &backup_id,
+                            "FAILED",
+                            Some(&error_text),
+                        )
+                        .await?;
+                        warn!(
+                            "metadata backup latest pointer update failed for {}: {}",
+                            local_store.provider_name(),
+                            err
+                        );
+                    }
                 }
             }
             Err(err) => {
@@ -546,15 +622,27 @@ pub async fn upload_metadata_backup(
 
         match uploader.upload_system_file(enc_file_path, &snapshot_key).await {
             Ok(_) => {
-                successful_uploads += 1;
-                db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None).await?;
-
-                if let Err(err) = uploader.upload_system_file(enc_file_path, latest_key).await {
-                    warn!(
-                        "metadata backup latest pointer update failed for {}: {}",
-                        uploader.provider_name(),
-                        err
-                    );
+                match uploader.upload_system_file(enc_file_path, latest_key).await {
+                    Ok(_) => {
+                        successful_uploads += 1;
+                        db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
+                            .await?;
+                    }
+                    Err(err) => {
+                        let error_text = format!("latest pointer update failed: {err}");
+                        db::update_metadata_backup_status(
+                            db_pool,
+                            &backup_id,
+                            "FAILED",
+                            Some(&error_text),
+                        )
+                        .await?;
+                        warn!(
+                            "metadata backup latest pointer update failed for {}: {}",
+                            uploader.provider_name(),
+                            err
+                        );
+                    }
                 }
             }
             Err(err) => {
@@ -834,6 +922,32 @@ impl MetadataBackupDownloadProvider {
 
         Ok(body.into_bytes().to_vec())
     }
+
+    async fn list_snapshot_keys(&self, max_keys: i32) -> Result<Vec<String>, DisasterRecoveryError> {
+        let response = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix("_omnidrive/system/metadata/snapshots/")
+            .max_keys(max_keys)
+            .send()
+            .await
+            .map_err(|err| {
+                DisasterRecoveryError::Uploader(UploaderError::Upload {
+                    provider: self.provider_name,
+                    operation: "list_objects_v2",
+                    details: format!("{err}"),
+                })
+            })?;
+
+        let mut keys: Vec<String> = response
+            .contents()
+            .iter()
+            .filter_map(|entry| entry.key().map(|value| value.to_string()))
+            .collect();
+        keys.sort_by(|a, b| b.cmp(a));
+        Ok(keys)
+    }
 }
 
 impl LocalMetadataBackupStore {
@@ -857,6 +971,34 @@ impl LocalMetadataBackupStore {
     async fn download_bytes(&self, object_key: &str) -> Result<Vec<u8>, DisasterRecoveryError> {
         let source_path = self.root.join(object_key.replace('/', "\\"));
         Ok(fs::read(source_path).await?)
+    }
+
+    async fn list_snapshot_keys(&self, max_keys: usize) -> Result<Vec<String>, DisasterRecoveryError> {
+        let snapshot_root = self.root.join("_omnidrive\\system\\metadata\\snapshots");
+        if !fs::try_exists(&snapshot_root).await? {
+            return Ok(Vec::new());
+        }
+
+        let mut entries = fs::read_dir(snapshot_root).await?;
+        let mut keys = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".db.enc") {
+                continue;
+            }
+            keys.push(format!("_omnidrive/system/metadata/snapshots/{name}"));
+        }
+        keys.sort_by(|a, b| b.cmp(a));
+        if keys.len() > max_keys {
+            keys.truncate(max_keys);
+        }
+        Ok(keys)
     }
 }
 

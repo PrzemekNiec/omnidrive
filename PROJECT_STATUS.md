@@ -447,6 +447,51 @@ Scope:
 Outcome:
 - OmniDrive becomes production-testable across real devices and real providers
 
+B8 execution pack (added for repeatable real-world validation):
+- `scripts/b8-lenovo-cloud-enable.ps1`
+  - enables/tests configured providers via onboarding API on the primary machine (Lenovo)
+  - finalizes onboarding and writes JSON evidence to `.omnidrive/b8-lenovo-report-*.json`
+- `scripts/b8-dell-join-existing.ps1`
+  - configures provider on the secondary machine (Dell), executes join-existing restore, and writes `.omnidrive/b8-dell-report-*.json`
+- `scripts/b8-acceptance-check.ps1`
+  - runs a strict API-based acceptance gate and fails fast when core invariants are broken
+  - writes `.omnidrive/b8-acceptance-*.json`
+
+Latest B8 progress snapshot (2026-04-04):
+- Lenovo (primary) is validated as the source vault for join-existing tests:
+  - onboarding: `COMPLETED` + `CLOUD_ENABLED`
+  - provider validation: `backblaze-b2` succeeds
+  - metadata backup: successful uploads recorded (`metadata_backups` has `COMPLETED` on B2)
+- Dell (secondary) initially failed join-existing with:
+  - `SnapshotApply`: restored snapshot missing `vault_state`
+  - later `SnapshotApply`: `database restored is locked`
+- root-cause fixes implemented after those failures:
+  - `vault::unlock` now guarantees local `vault_state` bootstrap for legacy DB states
+  - metadata backup now requires successful `latest.db.enc` update to mark attempt `COMPLETED`
+  - restore now falls back from `latest.db.enc` to recent snapshot keys and validates `vault_state` before apply
+  - DB graft now uses an isolated apply-copy of staging DB + `PRAGMA busy_timeout` to reduce attach/apply lock failures
+- installer rebuilt with all fixes as:
+  - `dist/installer/output/OmniDrive-Setup-0.1.11.exe`
+- Dell retest discovered additional root cause:
+  - stale `omnidrive.db` survived cleanup because `Remove-Item` silently failed on locked files
+  - wizard never appeared because daemon read old DB with `onboarding_state=COMPLETED`
+  - user never got to choose "Join Existing Vault" — onboarding was already finalized
+- fixes implemented (second round):
+  - `cleanup_stale_restore_staging()` runs at daemon startup to remove leftover `restore-staging-*.db` files
+  - `POST /api/onboarding/reset` endpoint added as a safety valve to force wizard reappearance
+  - `scripts/b8-dell-clean-reset.ps1` created with retry loop, individual file cleanup, and verification
+- installer rebuilt again with all second-round fixes
+- Dell retest (v0.1.12) discovered: `database restored is locked` from ATTACH DATABASE on Windows
+  - fix: eliminated ATTACH DATABASE entirely, rewrote `graft_restored_metadata_snapshot()` to use a separate read-only pool
+  - lock error resolved
+- Dell retest (v0.1.12 post-lock-fix) discovered: type mismatches in `Restored*` structs
+  - error: `mismatched types; Rust type alloc::string::String (as SQL type TEXT) is not compatible with SQL type INTEGER` on `mtime` column
+  - root cause: 11 `Restored*` struct definitions used `String` for fields that are actually `i64` or `Option<i64>` in SQLite
+  - fix (v0.1.13): aligned all `Restored*` struct types to match actual `*Record` definitions and SQLite column types
+  - affected fields: `mtime`, `mode`, `created_at`, `immutable_until`, `origin`, `pin_state`, `hydration_state`, `backup_id`, `plaintext_hash`, `checksum`, `attempts`, `last_verified_at`
+  - Inno Setup `AppVersion` updated to read from Cargo.toml version, installer now produces `OmniDrive-Setup-{version}.exe`
+- installer rebuilt as `OmniDrive-Setup-0.1.13.exe` — Dell retest in progress
+
 Current bridge implementation status:
 - `B1` completed:
   - `system_config`
@@ -497,45 +542,205 @@ Current bridge implementation status:
   - onboarding status API never returns provider secrets or ciphertexts
   - it returns only secret presence state such as `SET` / `MISSING`
 
+### Phase 0: Cryptographic Checkpoint
+Goal:
+- produce a 1-2 page decision document that defines the single source of truth for the entire key hierarchy before any Envelope Encryption code is written
+
+Required decisions:
+- Algorithms: AES-256-GCM (DEK), X25519/ECDH P-256 (asymmetric), Argon2id (KDF)
+- KDF parameters: Argon2id iterations, memory, parallelism — balance security vs. unlock time on weaker machines
+- DEK wrapping format: AES-256-KW vs AES-256-GCM-SIV
+- WebCrypto compatibility: if Epic 33 uses browser WebCrypto API, algorithm choices must be compatible with `window.crypto.subtle`
+- Versioning strategy: `vault_format_version` scheme and forward-compatibility path
+
+Outcome:
+- ad-hoc crypto decisions during implementation are eliminated
+
+### Epic 32.5: Cryptographic Foundation (Envelope Encryption)
+Goal:
+- replace the flat encryption model (Master Passphrase -> chunks) with a three-level envelope model, required before Epic 33 (sharing) and Epic 34 (multi-user vaults)
+
+#### Task 32.5.1: Key Hierarchy (Envelope Encryption)
+Goal:
+- introduce DEK -> Vault Key -> KDF three-level hierarchy
+
+Scope:
+- DEK (Data Encryption Key): random AES-256 per file, encrypts data chunks
+- Vault Key: master vault key, wraps ONLY DEK keys (key wrapping)
+- Master Passphrase -> Argon2id -> unlocks Vault Key locally
+- Wrapped DEK stored in SQLite alongside file metadata
+
+Outcome:
+- Vault Key rotation requires only re-wrapping small DEK keys, NOT re-encrypting terabytes of cloud chunks
+
+Risk: HIGH
+
+#### Task 32.5.2: Database Format Migration (vault_format_version)
+Goal:
+- safe upgrade path from current metadata format to Envelope Encryption schema
+
+Scope:
+- add `vault_format_version` field to SQLite
+- migrator: decrypt chunks with old key -> generate DEK -> re-encrypt -> update metadata
+- resumable migration: if machine loses power mid-migration, daemon resumes from last checkpoint
+- rollback path: ability to revert to old format if migration fails
+
+Outcome:
+- zero data loss on format version change; mixed old/new format is impossible
+
+Risk: HIGH
+
+### Epic 35: The Ghost Shell (Native Explorer Experience)
+Goal:
+- integrate with Windows shell (`cfapi.dll`) so the user can right-click any file, choose a protection level, and the daemon "ingests" the file: encrypts, chunks (EC), uploads to clouds, and leaves a ghost (0-byte placeholder)
+
+#### Task 35.0: cfapi.dll Minimal PoC (risk isolation)
+Goal:
+- verify Rust FFI bindings to Windows Cloud Files API BEFORE adding any cloud logic; highest technical risk in the entire roadmap
+
+Scope:
+- purely local mechanism: file -> placeholder -> hydration from hidden Cache folder
+- validate progressive streaming via `CfExecute` with `CF_OPERATION_TYPE_TRANSFER_DATA`
+- test interaction with Windows Defender (Mark of the Web on hydrated files)
+- architecture: Shell Extension DLL as thin client (named pipe / localhost HTTP to `angeld`); crash in DLL = crash Explorer.exe, so minimum logic in DLL
+
+Outcome:
+- Go/No-Go gate: if PoC is unstable, Epic 35 requires alternate strategy (e.g. ProjFS)
+
+Risk: HIGH
+
+#### Task 35.1: Ingest State Machine + Erasure Coding
+Goal:
+- transactional file "ingestion" resilient to failures with full lifecycle
+
+Scope:
+- states: `PENDING -> CHUNKING -> UPLOADING -> GHOSTED` (+ `HYDRATING` + `FAILED` with diagnostics)
+- atomic replacement of original with ghost ONLY after full confirmation of ALL chunks; error = rollback
+- graceful degradation: if 2 of 3 providers unavailable, fast timeout + "unavailable" icon in Explorer
+- HYDRATING: retry logic, timeout, partial-failure handling when restoring ghost from cloud
+
+Outcome:
+- full transactional file lifecycle: from raw file to ghost and back, with zero data loss possibility
+
+Risk: HIGH
+
+#### Task 35.2: Context Menu + Shell Extension (4 Protection Levels)
+Goal:
+- register Windows shell extension with context menu for 4 protection levels
+
+Scope:
+- menu: LOKALNIE (`LOCAL_ONLY`), COMBO (`SINGLE_REPLICA`), CHMURA (Sharding), FORTECA (`EC_2_1`)
+- overlay icons in Explorer for each state (synced, uploading, ghost, error)
+- thin client architecture: DLL does minimum — only sends commands to `angeld` daemon
+- offline handling: clicking ghost without network -> "unavailable" icon, not Explorer hang
+
+Outcome:
+- user sees and controls protection policy for every file directly from Explorer
+
+Risk: MEDIUM
+
 ### Epic 33: Zero-Knowledge Link Sharing
 Goal:
-- allow private file sharing without exposing keys to the server
+- allow private file sharing without exposing keys to the server; key is part of the URI fragment (`#`) and never reaches the server
 
-Scope:
-- share token generation
-- dedicated download page
-- URL-fragment key delivery
-- browser-side decrypt / decode
-
-Outcome:
-- private zero-knowledge sharing
-
-### Epic 34: Secure Authentication and Google Login
+#### Task 33.1: Fragment-Based Cryptography
 Goal:
-- add account-backed identity only if OmniDrive grows beyond the current local-daemon product model
+- architecture for links based on DEK in URI fragment
 
 Scope:
-- secure auth model
-- Google Login / OAuth
-- session lifecycle
-- device association
-- onboarding integration
+- format: `https://share.omnidrive.app/{file_id}#{DEK_key}`
+- URI fragment (`#`) is ignored by HTTP servers — key stays local
+- design decision: per-file DEK (one key per file regardless of EC chunk count); documented for potential future per-chunk DEK change
+- optional TTL (link lifetime) and one-time links (burn-after-read)
 
 Outcome:
-- hosted or multi-user identity layer when product direction requires it
+- link that can be safely sent by email — even if someone intercepts the URL, the server has no key
 
-## Recommended Order
+Risk: MEDIUM
 
-1. `Epic 31 + Epic 32: Multi-Device Core`
-2. `Epic 31/32 Bridge: Onboarding, Provider Setup & Join Existing Vault`
-3. `Epic 33: Zero-Knowledge Link Sharing`
-4. `Epic 34: Secure Authentication and Google Login`
+#### Task 33.2: Export API + Web Receiver
+Goal:
+- frontend for decrypting files in recipient's browser (WebCrypto API)
+
+Scope:
+- JavaScript in recipient's browser uses WebCrypto API and DEK key from URL to decrypt
+- streaming: `ReadableStream` + `TransformStream` for progressive decryption of large files (RAM limit)
+- size limit: explicit cap or chunked download with progressive decryption for files >500 MB
+- UX: decryption progress bar + "Save as..." button
+
+Outcome:
+- recipient without OmniDrive account can download and decrypt file entirely in browser
+
+Risk: MEDIUM
+
+### Epic 34: The Family Cloud (Shared Vaults & Identity)
+Goal:
+- transition from purely local app to a product with identity while maintaining full separation of authentication identity (OAuth) from cryptographic identity (X25519); OmniDrive server distributes encrypted blobs — never sees keys
+
+#### Task 34.1: OAuth2 Identity Layer
+Goal:
+- authenticate users via Google OAuth, completely independent from cryptographic key derivation
+
+Scope:
+- Google Login = "this is the user", NOT "this is their key"
+- session and JWT management at daemon dashboard level
+- X25519 private key is generated locally and derived from user's own password — NOT from Google token
+- Google account takeover does NOT grant access to vault data
+
+Outcome:
+- user logs in conveniently, but cryptographic keys are fully independent from identity provider
+
+Risk: MEDIUM
+
+#### Task 34.2: Asymmetric Key Wrapping (Zero-Knowledge Handoff)
+Goal:
+- securely pass vault access between users without breaking Zero-Knowledge principle
+
+Scope:
+- each user/device generates X25519 key pair (or ECDH P-256 for WebCrypto compatibility)
+- key wrapping: `HKDF(ECDH(sender_priv, recipient_pub)) -> AES-256-KW(Vault_Key)`
+- OmniDrive server stores and distributes ONLY encrypted key blobs
+- Vault Key is never transmitted in plaintext
+
+Outcome:
+- server is a "blind intermediary" — passes envelopes but has no access to contents
+
+Risk: HIGH
+
+#### Task 34.3: ACL, Revocation & Recovery
+Goal:
+- permissions system plus secure procedure for removing access and recovery on key loss
+
+Scope:
+- invitations: owner generates wrapped Vault Key for new member
+- revocation: user removal -> automatic Vault Key rotation -> re-wrap ONLY DEK keys; data chunks unchanged
+- recovery: Shamir's Secret Sharing or paper recovery keys (e.g. 24-word BIP-39) — optional but clearly communicated in onboarding
+- UX: clear message "save this key, nobody can help you" when creating vault
+
+Outcome:
+- full access lifecycle: invitation -> usage -> removal -> emergency recovery
+
+Risk: HIGH
+
+## Recommended Execution Order
+
+**Epics 32.5 -> 35 -> 33 -> 34**
+
+| Phase | Epic/Task | Scope | Estimate |
+|-------|-----------|-------|----------|
+| Phase 0 | Checkpoint 0 | Cryptographic specification document | 1 week |
+| Phase 1 | Epic 32.5 | Envelope Encryption + DB format migration | 2-3 weeks |
+| Phase 2a | Task 35.0 | cfapi.dll PoC — isolated local test | 1-2 weeks |
+| Phase 2b | Tasks 35.1-35.2 | Full Ghost Shell: Ingest, EC, Context Menu, Overlays | 4-6 weeks |
+| Phase 3 | Epic 33 | Zero-Knowledge Link Sharing | 3-4 weeks |
+| Phase 4 | Epic 34 | Family Cloud: OAuth2, Key Wrapping, ACL, Recovery | 4-6 weeks |
 
 Why this order:
-- `Epic 31` and `Epic 32` are strongest when delivered together as one multi-device foundation
-- the bridge epic is required to validate that foundation honestly on real providers and shared vaults
-- `Epic 33` expands product value after the multi-device model is safer
-- `Epic 34` is the most optional and should only happen when account-backed product direction is confirmed
+- Envelope Encryption (32.5) is the cryptographic foundation required by ALL subsequent epics
+- Ghost Shell (35) depends on Envelope Encryption for per-file DEK handling
+- Zero-Knowledge Sharing (33) depends on DEK architecture from 32.5 for fragment URI links
+- Family Cloud (34) depends on both Envelope Encryption and sharing infrastructure
+- changing this order risks cryptography refactoring under pressure
 
 ## Session Continuation Notes
 
@@ -566,11 +771,22 @@ Current saved progress for `Epic 31 + Epic 32`:
   - `angeld/Cargo.toml`
 
 Next execution plan:
-1. execute `B8` production bring-up:
-   - connect Cloudflare R2, Backblaze B2, Scaleway with real credentials
-   - validate onboarding + join-existing on two machines
-2. run full acceptance on real providers for `Epic 31 + Epic 32`
-3. after bridge acceptance, move to `Epic 33` and `Epic 34`
+1. complete B8 retest on Dell using `OmniDrive-Setup-0.1.13.exe`:
+   - run `scripts/b8-dell-clean-reset.ps1` on Dell — verify all green
+   - restart Dell, install fresh 0.1.13
+   - run wizard path: `Join Existing Vault` on `backblaze-b2`
+   - if wizard does not appear, use `POST http://127.0.0.1:8787/api/onboarding/reset` then reload
+   - verify join result is true join mode, not fallback local-only cloud-enabled mode
+2. acceptance criteria for B8 pass:
+   - Dell `onboarding_mode` = `JOIN_EXISTING`
+   - Dell `multidevice.vault_id` is not local default (`local-vault-*`)
+   - Dell diagnostics shell/sync-root stay healthy in cloud mode after finalize
+3. once B8 is green, move to new roadmap sequence:
+   - Phase 0: Cryptographic Checkpoint (decision document)
+   - Phase 1: Epic 32.5 (Envelope Encryption)
+   - Phase 2: Epic 35 (Ghost Shell)
+   - Phase 3: Epic 33 (Zero-Knowledge Link Sharing)
+   - Phase 4: Epic 34 (Family Cloud)
 
 Working rule for future sessions on this project:
 - always use `jcodemunch` at the beginning of the session for repo context, symbol lookup, and code navigation before making implementation decisions

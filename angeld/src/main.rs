@@ -37,7 +37,8 @@ use crate::downloader::Downloader;
 use crate::gc::GcWorker;
 use crate::logging::init_logging;
 use crate::onboarding::{
-    cleanup_stale_uploads, get_active_provider_configs, initialize_onboarding_persistence,
+    cleanup_stale_restore_staging, cleanup_stale_uploads, get_active_provider_configs,
+    initialize_onboarding_persistence,
 };
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::peer::{PeerClient, PeerService};
@@ -223,6 +224,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         info!("DRY-RUN mode active: cloud operations will not perform external S3 side effects");
     }
     initialize_onboarding_persistence(&pool).await?;
+    cleanup_stale_restore_staging(&runtime_paths).await;
     match cleanup_stale_uploads(&pool).await {
         Ok(actions) => {
             for action in &actions {
@@ -241,6 +243,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let remote_providers_configured = !active_provider_configs.is_empty();
+    shell_state::set_cloud_mode_hint(remote_providers_configured);
     let smart_sync_enabled = !no_sync && remote_providers_configured;
     runtime_paths
         .bootstrap_directories(smart_sync_enabled)

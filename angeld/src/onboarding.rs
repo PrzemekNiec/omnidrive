@@ -370,6 +370,17 @@ pub(crate) fn provider_config_from_env(provider_name: &str) -> Option<ProviderCo
     }
 }
 
+/// Reset onboarding state back to initial (wizard will reappear).
+/// Provider configs and secrets are preserved so the user does not have to re-enter them.
+pub async fn reset_onboarding(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    db::set_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_STATE, OnboardingState::Initial.as_str()).await?;
+    db::set_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_MODE, OnboardingMode::LocalOnly.as_str()).await?;
+    db::set_system_config_value(pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "welcome").await?;
+    db::set_system_config_value(pool, SYSTEM_CONFIG_CLOUD_ENABLED, "0").await?;
+    tracing::info!("[ONBOARDING] onboarding state has been reset — wizard will reappear on next dashboard load");
+    Ok(())
+}
+
 pub async fn initialize_onboarding_persistence(
     pool: &SqlitePool,
 ) -> Result<(), OnboardingInitError> {
@@ -1071,6 +1082,28 @@ fn restore_staging_path(runtime_paths: &RuntimePaths) -> PathBuf {
     runtime_paths
         .runtime_base_dir
         .join(format!("restore-staging-{}.db", unix_timestamp_millis()))
+}
+
+/// Remove leftover `restore-staging-*.db` files from failed/interrupted restore attempts.
+pub async fn cleanup_stale_restore_staging(runtime_paths: &RuntimePaths) {
+    let base = &runtime_paths.runtime_base_dir;
+    let mut read_dir = match tokio::fs::read_dir(base).await {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    let mut removed = 0usize;
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("restore-staging-") && name.ends_with(".db") {
+            if tokio::fs::remove_file(entry.path()).await.is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!("[ONBOARDING] cleaned up {removed} stale restore-staging file(s)");
+    }
 }
 
 fn map_restore_bootstrap_error(

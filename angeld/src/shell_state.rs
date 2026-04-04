@@ -4,6 +4,13 @@ use serde::Serialize;
 use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
+
+const SHELL_MODE_UNKNOWN: u8 = 0;
+const SHELL_MODE_LOCAL_ONLY: u8 = 1;
+const SHELL_MODE_CLOUD: u8 = 2;
+
+static SHELL_MODE_HINT: AtomicU8 = AtomicU8::new(SHELL_MODE_UNKNOWN);
 
 #[derive(Debug)]
 pub enum ShellStateError {
@@ -268,6 +275,17 @@ pub fn startup_recover_shell() -> Result<ShellRepairReport, ShellStateError> {
     })
 }
 
+pub fn set_cloud_mode_hint(cloud_enabled: bool) {
+    SHELL_MODE_HINT.store(
+        if cloud_enabled {
+            SHELL_MODE_CLOUD
+        } else {
+            SHELL_MODE_LOCAL_ONLY
+        },
+        Ordering::Relaxed,
+    );
+}
+
 fn expected_drive_target() -> PathBuf {
     let runtime_paths = RuntimePaths::detect();
     if remote_providers_configured() {
@@ -284,6 +302,12 @@ fn preferred_drive_letter() -> String {
 }
 
 fn remote_providers_configured() -> bool {
+    match SHELL_MODE_HINT.load(Ordering::Relaxed) {
+        SHELL_MODE_CLOUD => return true,
+        SHELL_MODE_LOCAL_ONLY => return false,
+        _ => {}
+    }
+
     env::var("OMNIDRIVE_R2_BUCKET").is_ok()
         || env::var("OMNIDRIVE_SCALEWAY_BUCKET").is_ok()
         || env::var("OMNIDRIVE_B2_BUCKET").is_ok()
