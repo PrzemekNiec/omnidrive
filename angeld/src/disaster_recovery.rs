@@ -1,5 +1,6 @@
 use crate::db;
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
+use crate::onboarding::unseal_provider_secrets;
 use crate::secure_fs::secure_delete;
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -150,6 +151,50 @@ impl MetadataBackupProviderManager {
         Ok(Self {
             uploaders,
             download_providers,
+            local_store: None,
+        })
+    }
+
+    pub async fn from_onboarding_db(
+        pool: &SqlitePool,
+        selected_provider: &str,
+    ) -> Result<Self, DisasterRecoveryError> {
+        let provider_record = db::get_provider_config(pool, selected_provider)
+            .await?
+            .filter(|record| record.enabled != 0)
+            .ok_or(DisasterRecoveryError::NoConfiguredProviders)?;
+        let secret_record = db::get_provider_secret(pool, selected_provider)
+            .await?
+            .ok_or(DisasterRecoveryError::NoConfiguredProviders)?;
+        let secrets = unseal_provider_secrets(
+            &secret_record.access_key_id_ciphertext,
+            &secret_record.secret_access_key_ciphertext,
+        )
+        .map_err(|err| {
+            DisasterRecoveryError::DownloadFailed(vec![format!(
+                "failed to unseal provider secrets: {err}"
+            )])
+        })?;
+
+        let provider_name = match provider_record.provider_name.as_str() {
+            "cloudflare-r2" => "cloudflare-r2",
+            "backblaze-b2" => "backblaze-b2",
+            "scaleway" => "scaleway",
+            _ => return Err(DisasterRecoveryError::NoConfiguredProviders),
+        };
+        let config = ProviderConfig {
+            provider_name,
+            endpoint: provider_record.endpoint,
+            region: provider_record.region,
+            bucket: provider_record.bucket,
+            access_key_id: secrets.access_key_id,
+            secret_access_key: secrets.secret_access_key,
+            force_path_style: provider_record.force_path_style != 0,
+        };
+
+        Ok(Self {
+            uploaders: Vec::new(),
+            download_providers: vec![MetadataBackupDownloadProvider::from_provider_config(config).await?],
             local_store: None,
         })
     }

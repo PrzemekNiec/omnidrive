@@ -236,7 +236,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Watcher, crate::diagnostics::WorkerStatus::Idle);
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::MetadataBackup, crate::diagnostics::WorkerStatus::Idle);
         diagnostics::set_worker_status(crate::diagnostics::WorkerKind::Peer, crate::diagnostics::WorkerStatus::Idle);
-        let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone())?;
+        let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone(), None)?;
 
         warn!("starting angeld in OMNIDRIVE_E2E_TEST_MODE with --no-sync; only uploader and API workers are enabled");
         info!("smart sync bootstrap skipped by --no-sync");
@@ -325,7 +325,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone())?;
+        let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone(), None)?;
         if smart_sync_ready {
             info!("smart sync bootstrap ready at {}", sync_root.display());
         } else {
@@ -499,7 +499,12 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let watcher = FileWatcher::from_env(pool.clone(), vault_keys.clone()).await?;
-    let api = ApiServer::from_env(pool.clone(), vault_keys.clone(), diagnostics.clone())?;
+    let api = ApiServer::from_env(
+        pool.clone(),
+        vault_keys.clone(),
+        diagnostics.clone(),
+        Some(downloader.clone()),
+    )?;
     let peer_service = PeerService::new(
         pool.clone(),
         downloader.clone(),

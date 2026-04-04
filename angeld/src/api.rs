@@ -4,11 +4,13 @@ use crate::db;
 use crate::device_identity::ensure_local_device_identity;
 use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
 use crate::disaster_recovery;
+use crate::downloader::Downloader;
 use crate::onboarding::{
     OnboardingMode, OnboardingState, SYSTEM_CONFIG_CLOUD_ENABLED,
     SYSTEM_CONFIG_DRAFT_ENV_DETECTED, SYSTEM_CONFIG_LAST_ONBOARDING_STEP,
     SYSTEM_CONFIG_ONBOARDING_MODE, SYSTEM_CONFIG_ONBOARDING_STATE, seal_provider_secrets,
-    ValidationReport, validate_persisted_provider_connection,
+    ValidationReport, VaultRestoreReport, perform_vault_restore,
+    validate_persisted_provider_connection,
 };
 use crate::peer;
 use crate::runtime_paths::RuntimePaths;
@@ -16,10 +18,11 @@ use crate::repair::{self, RepairError};
 use crate::scrubber;
 use crate::shell_state;
 use crate::smart_sync;
+use crate::virtual_drive;
 use crate::uploader::KNOWN_PROVIDERS;
 use crate::vault::{VaultError, VaultKeyStore};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -38,12 +41,14 @@ struct ApiState {
     pool: SqlitePool,
     vault_keys: VaultKeyStore,
     diagnostics: Arc<DaemonDiagnostics>,
+    downloader: Option<Arc<Downloader>>,
 }
 
 pub struct ApiServer {
     pool: SqlitePool,
     vault_keys: VaultKeyStore,
     diagnostics: Arc<DaemonDiagnostics>,
+    downloader: Option<Arc<Downloader>>,
     bind_addr: SocketAddr,
 }
 
@@ -322,6 +327,20 @@ struct SetupProviderResponse {
     validation: ValidationReport,
 }
 
+#[derive(Deserialize)]
+struct JoinExistingRequest {
+    passphrase: String,
+    provider_id: String,
+}
+
+#[derive(Serialize)]
+struct JoinExistingResponse {
+    onboarding_state: String,
+    onboarding_mode: String,
+    cloud_enabled: bool,
+    restore: VaultRestoreReport,
+}
+
 #[derive(Serialize)]
 struct CompleteOnboardingResponse {
     onboarding_state: String,
@@ -440,6 +459,7 @@ impl ApiServer {
         pool: SqlitePool,
         vault_keys: VaultKeyStore,
         diagnostics: Arc<DaemonDiagnostics>,
+        downloader: Option<Arc<Downloader>>,
     ) -> Result<Self, ApiError> {
         let _ = dotenvy::dotenv();
 
@@ -452,6 +472,7 @@ impl ApiServer {
             pool,
             vault_keys,
             diagnostics,
+            downloader,
             bind_addr,
         })
     }
@@ -462,13 +483,16 @@ impl ApiServer {
             pool: self.pool,
             vault_keys: self.vault_keys,
             diagnostics: diagnostics.clone(),
+            downloader: self.downloader,
         };
         let app = Router::new()
             .route("/", get(get_index))
+            .route("/wizard.js", get(get_wizard_js))
             .route("/api/onboarding/status", get(get_onboarding_status))
             .route("/api/onboarding/bootstrap-local", post(post_bootstrap_local))
             .route("/api/onboarding/setup-identity", post(post_setup_identity))
             .route("/api/onboarding/setup-provider", post(post_setup_provider))
+            .route("/api/onboarding/join-existing", post(post_join_existing))
             .route("/api/onboarding/complete", post(post_complete_onboarding))
             .route("/api/transfers", get(get_transfers))
             .route("/api/health", get(get_health))
@@ -537,6 +561,13 @@ impl std::error::Error for ApiError {}
 
 async fn get_index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
+}
+
+async fn get_wizard_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        include_str!("../static/wizard.js"),
+    )
 }
 
 async fn get_onboarding_status(State(state): State<ApiState>) -> impl IntoResponse {
@@ -815,6 +846,169 @@ async fn post_complete_onboarding(State(state): State<ApiState>) -> impl IntoRes
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(err) => internal_server_error(err),
     }
+}
+
+async fn post_join_existing(
+    State(state): State<ApiState>,
+    Json(request): Json<JoinExistingRequest>,
+) -> impl IntoResponse {
+    let provider_id = request.provider_id.trim();
+    if !KNOWN_PROVIDERS.contains(&provider_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "unsupported_provider",
+                "provider_id": provider_id,
+                "human_readable_reason": "Select one of the configured OmniDrive providers before joining an existing vault."
+            })),
+        )
+            .into_response();
+    }
+
+    let runtime_paths = RuntimePaths::detect();
+    let result = perform_vault_restore(
+        &state.pool,
+        &runtime_paths,
+        &request.passphrase,
+        provider_id,
+    )
+    .await;
+
+    let restore = match result {
+        Ok(report) => report,
+        Err(err) => {
+            let status = match err {
+                crate::onboarding::RestoreError::IncorrectPassphrase(_) => StatusCode::BAD_REQUEST,
+                crate::onboarding::RestoreError::MetadataNotFound(_) => StatusCode::NOT_FOUND,
+                crate::onboarding::RestoreError::NetworkError(_) => StatusCode::BAD_GATEWAY,
+                crate::onboarding::RestoreError::MissingProviderConfig(_) => StatusCode::BAD_REQUEST,
+                crate::onboarding::RestoreError::SnapshotApply(_)
+                | crate::onboarding::RestoreError::Runtime(_)
+                | crate::onboarding::RestoreError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            return (
+                status,
+                Json(serde_json::json!({
+                    "error": provider_restore_error_kind(&err),
+                    "message": err.to_string(),
+                    "human_readable_reason": err.human_readable_reason(),
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(err) = finalize_join_existing_runtime(&state, &runtime_paths, provider_id).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "runtime_activation_failed",
+                "message": err.to_string(),
+                "human_readable_reason": "The vault metadata was restored, but OmniDrive could not switch this device into sync-root mode cleanly."
+            })),
+        )
+            .into_response();
+    }
+
+    let result = async {
+        db::set_system_config_value(
+            &state.pool,
+            SYSTEM_CONFIG_ONBOARDING_STATE,
+            OnboardingState::Completed.as_str(),
+        )
+        .await?;
+        db::set_system_config_value(
+            &state.pool,
+            SYSTEM_CONFIG_ONBOARDING_MODE,
+            OnboardingMode::JoinExisting.as_str(),
+        )
+        .await?;
+        db::set_system_config_value(
+            &state.pool,
+            SYSTEM_CONFIG_LAST_ONBOARDING_STEP,
+            "completed",
+        )
+        .await?;
+        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_CLOUD_ENABLED, "1").await?;
+
+        Ok::<_, sqlx::Error>(JoinExistingResponse {
+            onboarding_state: OnboardingState::Completed.as_str().to_string(),
+            onboarding_mode: OnboardingMode::JoinExisting.as_str().to_string(),
+            cloud_enabled: true,
+            restore,
+        })
+    }
+    .await;
+
+    match result {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn finalize_join_existing_runtime(
+    state: &ApiState,
+    runtime_paths: &RuntimePaths,
+    provider_id: &str,
+) -> Result<(), std::io::Error> {
+    let downloader = match state.downloader.clone() {
+        Some(existing) if existing.has_remote_providers() => existing,
+        _ => {
+            let provider_config =
+                crate::onboarding::load_provider_config_from_onboarding_db(&state.pool, provider_id)
+                    .await
+                    .map_err(io_error)?;
+            Arc::new(
+                Downloader::from_provider_configs(
+                    state.pool.clone(),
+                    state.vault_keys.clone(),
+                    runtime_paths.download_spool_dir.clone(),
+                    std::time::Duration::from_millis(120_000),
+                    vec![provider_config],
+                )
+                .await
+                .map_err(io_error)?,
+            )
+        }
+    };
+
+    smart_sync::install_hydration_runtime(state.pool.clone(), downloader).map_err(io_error)?;
+
+    let repair_report = smart_sync::repair_sync_root(&state.pool, &runtime_paths.sync_root)
+        .await
+        .map_err(io_error)?;
+    for action in &repair_report.actions {
+        info!("[RESTORE] sync-root recovery: {}", action);
+    }
+
+    smart_sync::project_vault_to_sync_root(&state.pool, &runtime_paths.sync_root)
+        .await
+        .map_err(io_error)?;
+    info!(
+        "[RESTORE] Placeholder hydration projected into {}",
+        runtime_paths.sync_root.display()
+    );
+
+    virtual_drive::hide_sync_root(&runtime_paths.sync_root).map_err(io_error)?;
+    let preferred_drive_letter =
+        env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
+    let _ = virtual_drive::unmount_virtual_drive(&preferred_drive_letter);
+    let drive_letter = virtual_drive::select_mount_drive_letter(&preferred_drive_letter)
+        .unwrap_or(preferred_drive_letter.clone());
+    virtual_drive::mount_virtual_drive(&drive_letter, &runtime_paths.sync_root).map_err(io_error)?;
+
+    match shell_state::repair_explorer_integration() {
+        Ok(report) => {
+            for action in &report.actions {
+                info!("[RESTORE] shell repair: {}", action);
+            }
+        }
+        Err(err) => {
+            error!("[RESTORE] shell repair warning: {}", err);
+        }
+    }
+
+    Ok(())
 }
 
 async fn get_transfers(State(state): State<ApiState>) -> impl IntoResponse {
@@ -2653,6 +2847,18 @@ fn provider_error_kind(err: &crate::onboarding::ProviderError) -> &'static str {
         crate::onboarding::ProviderError::Url(_) => "InvalidEndpoint",
         crate::onboarding::ProviderError::Io(_) => "Io",
         crate::onboarding::ProviderError::Aws(_) => "Aws",
+    }
+}
+
+fn provider_restore_error_kind(err: &crate::onboarding::RestoreError) -> &'static str {
+    match err {
+        crate::onboarding::RestoreError::MissingProviderConfig(_) => "MissingProviderConfig",
+        crate::onboarding::RestoreError::IncorrectPassphrase(_) => "IncorrectPassphrase",
+        crate::onboarding::RestoreError::MetadataNotFound(_) => "MetadataNotFound",
+        crate::onboarding::RestoreError::NetworkError(_) => "NetworkError",
+        crate::onboarding::RestoreError::SnapshotApply(_) => "SnapshotApply",
+        crate::onboarding::RestoreError::Runtime(_) => "Runtime",
+        crate::onboarding::RestoreError::Io(_) => "Io",
     }
 }
 

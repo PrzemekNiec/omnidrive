@@ -369,7 +369,7 @@ Status:
 - `.env` draft detection is surfaced as an in-product banner and can prefill non-secret provider fields
 - provider validation errors from `B4` are rendered directly on the provider card with readable detail
 - back navigation preserves session state without persisting secrets
-- `Join Existing Vault` is staged honestly in the UI, but final metadata restore activation still belongs to `B6`
+- `Join Existing Vault` now posts to the real restore endpoint and keeps the passphrase only in browser memory until the restore call completes
 
 #### Task B6: Join Existing Vault Flow
 Goal:
@@ -384,6 +384,28 @@ Scope:
 
 Outcome:
 - two computers can legitimately operate against the same vault
+
+Status:
+- implemented in backend and wired into the wizard
+- `POST /api/onboarding/join-existing` now:
+  - downloads the encrypted metadata snapshot from the selected provider
+  - decrypts it locally with the supplied passphrase
+  - grafts the remote `vault_id` into local SQLite while preserving local `device_id`
+  - applies restored inode and revision metadata atomically through SQLite transaction boundaries
+- successful restore now logs:
+  - `[RESTORE] Vault ID grafted successfully: {id}`
+- after restore, runtime performs immediate sync-root activation for the joined device:
+  - repairs or reconnects the sync root
+  - projects placeholder structure into the sync root
+  - remounts `O:\` to the restored sync-root view
+- join failures now return UI-readable JSON with:
+  - `IncorrectPassphrase`
+  - `MetadataNotFound`
+  - `NetworkError`
+  - `human_readable_reason`
+- important boundary kept explicit:
+  - `B6` restores the shared vault identity and placeholder view honestly
+  - full provider-backed background worker activation still belongs to `B7`
 
 #### Task B7: Runtime Integration Without Regressing Local-Only Mode
 Goal:
@@ -420,12 +442,22 @@ Current bridge implementation status:
   - `.env` drafts are detected at startup
   - drafts are imported into SQLite as non-authoritative onboarding data
   - draft presence is tracked in `system_config`
-- `B3` backend API is now partially implemented:
+- `B3` backend API is now implemented:
   - `GET /api/onboarding/status`
   - `POST /api/onboarding/bootstrap-local`
   - `POST /api/onboarding/setup-identity`
   - `POST /api/onboarding/setup-provider`
   - `POST /api/onboarding/complete`
+- `B4` completed:
+  - provider validation now performs reachability, auth, list, put, and delete probes
+  - validation state is persisted in SQLite
+- `B5` completed:
+  - first-run wizard is live in the dashboard shell
+  - draft `.env` import, identity setup, provider setup, and finalize flow are present
+- `B6` completed at bridge level:
+  - join-existing metadata restore is real
+  - restored vault identity is grafted locally
+  - placeholders are projected immediately after restore
 - security rule locked in for future work:
   - onboarding status API never returns provider secrets or ciphertexts
   - it returns only secret presence state such as `SET` / `MISSING`

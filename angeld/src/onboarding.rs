@@ -6,6 +6,8 @@ use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Credentials;
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::primitives::ByteStream;
+use crate::disaster_recovery::{self, MetadataBackupProviderManager};
+use crate::runtime_paths::RuntimePaths;
 use crate::uploader::ProviderConfig;
 use crate::{db, db::ProviderConfigRecord};
 use reqwest::Url;
@@ -13,7 +15,9 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 use std::env;
 use std::fmt;
+use std::path::PathBuf;
 use std::time::Duration;
+use tokio::fs;
 use tokio::net::{TcpStream, lookup_host};
 use tokio::time::timeout;
 use tracing::info;
@@ -166,6 +170,72 @@ impl From<std::io::Error> for ProviderError {
 pub enum OnboardingInitError {
     Db(sqlx::Error),
     Secret(OnboardingSecretError),
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct VaultRestoreReport {
+    pub status: String,
+    pub message: String,
+    pub last_run: i64,
+    pub provider_name: String,
+    pub vault_id: String,
+    pub restored_inodes: i64,
+    pub restored_revisions: i64,
+}
+
+#[derive(Debug)]
+pub enum RestoreError {
+    MissingProviderConfig(String),
+    IncorrectPassphrase(String),
+    MetadataNotFound(String),
+    NetworkError(String),
+    SnapshotApply(String),
+    Runtime(String),
+    Io(std::io::Error),
+}
+
+impl RestoreError {
+    pub fn human_readable_reason(&self) -> &'static str {
+        match self {
+            Self::IncorrectPassphrase(_) => {
+                "The passphrase could not decrypt the metadata backup for the selected vault."
+            }
+            Self::MetadataNotFound(_) => {
+                "No metadata backup was found yet for the selected provider. Upload metadata from the primary device first."
+            }
+            Self::NetworkError(_) => {
+                "OmniDrive could not reach the selected provider while downloading metadata."
+            }
+            Self::MissingProviderConfig(_) => {
+                "The selected provider is not configured with usable credentials on this device."
+            }
+            Self::SnapshotApply(_) | Self::Runtime(_) | Self::Io(_) => {
+                "OmniDrive could not safely apply the restored vault snapshot on this device."
+            }
+        }
+    }
+}
+
+impl fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingProviderConfig(message)
+            | Self::IncorrectPassphrase(message)
+            | Self::MetadataNotFound(message)
+            | Self::NetworkError(message)
+            | Self::SnapshotApply(message)
+            | Self::Runtime(message) => write!(f, "{message}"),
+            Self::Io(err) => write!(f, "i/o error: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for RestoreError {}
+
+impl From<std::io::Error> for RestoreError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
 }
 
 impl fmt::Display for OnboardingInitError {
@@ -363,6 +433,18 @@ pub async fn validate_persisted_provider_connection(
     pool: &SqlitePool,
     provider_name: &str,
 ) -> Result<ValidationReport, ProviderError> {
+    let config = load_provider_config_from_onboarding_db(pool, provider_name).await?;
+    let secrets = ProviderSecretMaterial {
+        access_key_id: config.access_key_id.clone(),
+        secret_access_key: config.secret_access_key.clone(),
+    };
+    validate_provider_connection(config, secrets).await
+}
+
+pub(crate) async fn load_provider_config_from_onboarding_db(
+    pool: &SqlitePool,
+    provider_name: &str,
+) -> Result<ProviderConfig, ProviderError> {
     let config_record = db::get_provider_config(pool, provider_name)
         .await
         .map_err(|err| ProviderError::Aws(format!("failed to load provider config: {err}")))?
@@ -384,8 +466,7 @@ pub async fn validate_persisted_provider_connection(
         &secret_record.secret_access_key_ciphertext,
     )
     .map_err(|err| ProviderError::MissingSecrets(err.to_string()))?;
-    let config = provider_config_from_record(&config_record, &secrets);
-    validate_provider_connection(config, secrets).await
+    Ok(provider_config_from_record(&config_record, &secrets))
 }
 
 pub(crate) async fn validate_provider_connection(
@@ -478,6 +559,78 @@ pub(crate) async fn validate_provider_connection(
         put_object_ok: true,
         delete_object_ok: true,
         error_kind: None,
+    })
+}
+
+pub async fn perform_vault_restore(
+    pool: &SqlitePool,
+    runtime_paths: &RuntimePaths,
+    passphrase: &str,
+    provider_id: &str,
+) -> Result<VaultRestoreReport, RestoreError> {
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() {
+        return Err(RestoreError::MissingProviderConfig(
+            "provider_id cannot be empty".to_string(),
+        ));
+    }
+    if passphrase.trim().is_empty() {
+        return Err(RestoreError::IncorrectPassphrase(
+            "passphrase cannot be empty".to_string(),
+        ));
+    }
+
+    let staging_path = restore_staging_path(runtime_paths);
+    if let Some(parent) = staging_path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    if fs::try_exists(&staging_path).await.unwrap_or(false) {
+        let _ = fs::remove_file(&staging_path).await;
+    }
+
+    let provider_manager = MetadataBackupProviderManager::from_onboarding_db(pool, provider_id)
+        .await
+        .map_err(|err| map_restore_bootstrap_error(provider_id, err))?;
+
+    let restore_result = disaster_recovery::restore_metadata_from_cloud(
+        &provider_manager,
+        passphrase,
+        &staging_path,
+    )
+    .await;
+
+    if let Err(err) = restore_result {
+        let _ = fs::remove_file(&staging_path).await;
+        return Err(map_restore_download_error(provider_id, err));
+    }
+
+    let apply_result = db::graft_restored_metadata_snapshot(pool, &staging_path)
+        .await
+        .map_err(|err| {
+            RestoreError::SnapshotApply(format!(
+                "failed to apply restored metadata snapshot from {}: {err}",
+                staging_path.display()
+            ))
+        });
+    let _ = fs::remove_file(&staging_path).await;
+    let applied = apply_result?;
+
+    info!(
+        "[RESTORE] Vault ID grafted successfully: {}",
+        applied.vault_id
+    );
+
+    Ok(VaultRestoreReport {
+        status: "OK".to_string(),
+        message: format!(
+            "Vault metadata restored from {}. {} inode(s) and {} revision(s) were imported.",
+            provider_id, applied.restored_inodes, applied.restored_revisions
+        ),
+        last_run: unix_timestamp_millis(),
+        provider_name: provider_id.to_string(),
+        vault_id: applied.vault_id,
+        restored_inodes: applied.restored_inodes,
+        restored_revisions: applied.restored_revisions,
     })
 }
 
@@ -750,6 +903,69 @@ where
         "{phase} probe failed for {}: {}",
         config.provider_name, message
     ))
+}
+
+fn restore_staging_path(runtime_paths: &RuntimePaths) -> PathBuf {
+    runtime_paths
+        .runtime_base_dir
+        .join(format!("restore-staging-{}.db", unix_timestamp_millis()))
+}
+
+fn map_restore_bootstrap_error(
+    provider_id: &str,
+    err: disaster_recovery::DisasterRecoveryError,
+) -> RestoreError {
+    match err {
+        disaster_recovery::DisasterRecoveryError::NoConfiguredProviders => {
+            RestoreError::MissingProviderConfig(format!(
+                "provider {provider_id} is not configured with usable credentials"
+            ))
+        }
+        other => RestoreError::Runtime(format!(
+            "failed to initialize restore provider {provider_id}: {other}"
+        )),
+    }
+}
+
+fn map_restore_download_error(
+    provider_id: &str,
+    err: disaster_recovery::DisasterRecoveryError,
+) -> RestoreError {
+    match err {
+        disaster_recovery::DisasterRecoveryError::BackupDecryptFailed => {
+            RestoreError::IncorrectPassphrase(format!(
+                "metadata backup from {provider_id} could not be decrypted with the supplied passphrase"
+            ))
+        }
+        disaster_recovery::DisasterRecoveryError::DownloadFailed(errors) => {
+            let joined = errors.join(" | ");
+            let lower = joined.to_ascii_lowercase();
+            if lower.contains("nosuchkey")
+                || lower.contains("not found")
+                || lower.contains("404")
+                || lower.contains("latest.db.enc")
+            {
+                RestoreError::MetadataNotFound(format!(
+                    "no metadata backup was found on {provider_id}: {joined}"
+                ))
+            } else if lower.contains("timed out")
+                || lower.contains("dns")
+                || lower.contains("connection")
+                || lower.contains("unreachable")
+            {
+                RestoreError::NetworkError(format!(
+                    "failed to download metadata backup from {provider_id}: {joined}"
+                ))
+            } else {
+                RestoreError::Runtime(format!(
+                    "restore download from {provider_id} failed: {joined}"
+                ))
+            }
+        }
+        other => RestoreError::Runtime(format!(
+            "restore from {provider_id} failed: {other}"
+        )),
+    }
 }
 
 fn unix_timestamp_millis() -> i64 {

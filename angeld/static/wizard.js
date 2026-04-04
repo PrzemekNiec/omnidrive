@@ -219,19 +219,19 @@
     ui.body.innerHTML = stepBody();
     ui.back.classList.toggle("invisible", st.step === 0 || st.busy);
     ui.back.disabled = st.step === 0 || st.busy;
-    ui.next.disabled = st.busy || (st.step === 5 && st.mode === "join");
+    ui.next.disabled = st.busy;
     ui.next.textContent = st.busy ? "Working..." : meta.primary;
     bindStep();
   }
 
   function stepMeta() {
     const items = [
-      { kicker: "First Run Wizard", title: "Welcome to OmniDrive", desc: "Local-first by default, cloud-backed when you choose it. This wizard prepares a local vault, cloud providers, or a future shared-vault join.", primary: "Continue" },
-      { kicker: "Step 2", title: "Choose Your Starting Mode", desc: "Pick the path for this machine. You can stay local-only, attach providers, or stage a shared-vault join.", primary: "Continue" },
+      { kicker: "First Run Wizard", title: "Welcome to OmniDrive", desc: "Local-first by default, cloud-backed when you choose it. This wizard prepares a local vault, cloud providers, or a shared-vault join.", primary: "Continue" },
+      { kicker: "Step 2", title: "Choose Your Starting Mode", desc: "Pick the path for this machine. You can stay local-only, attach providers, or join an existing shared vault.", primary: "Continue" },
       { kicker: "Step 3", title: "Name This Device", desc: "The device name appears in diagnostics, peer cards, and conflict history.", primary: "Save Identity" },
       { kicker: "Step 4", title: "Connect Cloud Providers", desc: st.mode === "local" ? "Cloud setup is optional in local-only mode. You can skip it now or validate providers for later." : "Validate real S3 credentials before OmniDrive relies on them.", primary: "Continue" },
-      { kicker: "Step 5", title: "Security Passphrase", desc: st.mode === "local" ? "Optional for pure local-first use on this build." : "Required for the cloud-backed onboarding bridge. It stays only in browser memory until the next backend step.", primary: "Continue" },
-      { kicker: "Step 6", title: "Finalize OmniDrive", desc: st.mode === "join" ? "Join Existing Vault is staged in this build. Metadata restore activation lands in Task B6." : "Review the selected mode, identity, and validated providers, then launch OmniDrive.", primary: st.mode === "join" ? "Join Flow Pending" : "Launch OmniDrive" },
+      { kicker: "Step 5", title: "Security Passphrase", desc: st.mode === "local" ? "Optional for pure local-first use on this build." : st.mode === "join" ? "Required to decrypt the remote metadata snapshot and graft this device into the same vault." : "Required for the cloud-backed onboarding bridge. It stays only in browser memory until the next backend step.", primary: "Continue" },
+      { kicker: "Step 6", title: "Finalize OmniDrive", desc: st.mode === "join" ? "Restore metadata from the selected provider, graft the remote vault identity, and switch O: into placeholder-backed sync-root mode." : "Review the selected mode, identity, and validated providers, then launch OmniDrive.", primary: st.mode === "join" ? "Join Existing Vault" : "Launch OmniDrive" },
     ];
     return items[st.step];
   }
@@ -263,7 +263,7 @@
           ? "Keep OmniDrive local-first. O: stays live immediately."
           : mode === "cloud"
             ? "Validate R2, B2, or Scaleway now for real provider-backed sync."
-            : "Prepare this device for shared-vault recovery. Final restore activation lands in the next task.";
+            : "Restore metadata from a cloud-backed vault and attach this device to the same namespace.";
         const selected = st.mode === mode;
         return `<button type="button" data-mode="${mode}" class="glass-muted ${selected ? "border-white/25 bg-white/10 ring-1 ring-white/20" : "border-white/10"} rounded-[28px] border px-6 py-6 text-left transition hover:border-white/20 hover:bg-white/10"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">${mode === "local" ? "Fastest path" : mode === "cloud" ? "Cloud ready" : "Shared vault"}</p><h3 class="mt-3 text-xl font-semibold text-white">${escape(title)}</h3><p class="mt-3 text-sm leading-7 text-slate-300">${escape(desc)}</p><p class="mt-4 text-xs uppercase tracking-[0.22em] ${selected ? "text-white" : "text-slate-500"}">${selected ? "Selected" : "Click to select"}</p></button>`;
       }).join("")}</div>`;
@@ -327,8 +327,8 @@
           <article class="glass-muted rounded-[28px] p-6">
             <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Security Notes</p>
             <div class="mt-4 space-y-3 text-sm text-slate-300">
-              <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-4"><p class="font-medium text-white">${escape(st.mode === "local" ? "Optional in local-only mode on this build." : "Required before cloud-backed onboarding can be finalized.")}</p><p class="mt-2">This build keeps the passphrase only in browser memory until the encrypted metadata and join/restore backend is finished.</p></div>
-              <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-4"><p class="font-medium text-white">Why collect it now?</p><p class="mt-2">It keeps the first-run flow coherent and prepares the exact fields that the shared-vault restore path will consume next.</p></div>
+              <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-4"><p class="font-medium text-white">${escape(st.mode === "local" ? "Optional in local-only mode on this build." : st.mode === "join" ? "Required to decrypt metadata from the existing vault." : "Required before cloud-backed onboarding can be finalized.")}</p><p class="mt-2">The passphrase stays only in browser memory during the wizard session and is sent once for the restore or finalize call.</p></div>
+              <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-4"><p class="font-medium text-white">What happens next?</p><p class="mt-2">${escape(st.mode === "join" ? "OmniDrive downloads the encrypted metadata snapshot, decrypts it locally, grafts the remote vault identity, and projects placeholders immediately into O:." : "The passphrase prepares encrypted metadata backup and future recovery on cloud-backed setups.")}</p></div>
             </div>
           </article>
         </div>`;
@@ -339,17 +339,17 @@
         <article class="glass-muted rounded-[28px] p-6">
           <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Launch Summary</p>
           <div class="mt-4 grid gap-3 md:grid-cols-2">
-            <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Selected Mode</p><p class="mt-3 text-lg font-semibold text-white">${escape(modeLabel(st.mode))}</p><p class="mt-2 text-sm text-slate-400">${st.mode === "join" ? "Restore activation lands next." : "Ready to launch"}</p></div>
+            <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Selected Mode</p><p class="mt-3 text-lg font-semibold text-white">${escape(modeLabel(st.mode))}</p><p class="mt-2 text-sm text-slate-400">${st.mode === "join" ? "Metadata restore will run now." : "Ready to launch"}</p></div>
             <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Device</p><p class="mt-3 text-lg font-semibold text-white break-words">${escape(st.identity.device_name || "Unnamed device")}</p><p class="mt-2 text-sm text-slate-400">${escape(st.identity.device_id || "Identity not saved yet")}</p></div>
             <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Validated Providers</p><p class="mt-3 text-lg font-semibold text-white">${ORDER.filter((name) => st.providers[name].enabled && String(st.providers[name].last_test_status || "").toUpperCase() === "OK").length}</p><p class="mt-2 text-sm text-slate-400">${escape(ORDER.filter((name) => st.providers[name].enabled && String(st.providers[name].last_test_status || "").toUpperCase() === "OK").map((name) => PROVIDERS[name].short).join(", ") || "None yet")}</p></div>
-            <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Passphrase</p><p class="mt-3 text-lg font-semibold text-white">${st.security.passphraseProvided ? "Provided earlier" : "Not entered"}</p><p class="mt-2 text-sm text-slate-400">${st.mode === "local" ? "Optional for local-only" : "Required for cloud-backed flow"}</p></div>
+            <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Passphrase</p><p class="mt-3 text-lg font-semibold text-white">${st.security.passphraseProvided ? "Ready in memory" : "Not entered"}</p><p class="mt-2 text-sm text-slate-400">${st.mode === "local" ? "Optional for local-only" : st.mode === "join" ? "Required for metadata restore" : "Required for cloud-backed flow"}</p></div>
           </div>
         </article>
         <article class="glass-muted rounded-[28px] p-6">
           <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Final Checks</p>
           <div class="mt-4 space-y-3 text-sm text-slate-300">
             <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-4"><p class="font-medium text-white">Local dashboard stays live</p><p class="mt-2">Health, logs, maintenance, and diagnostics remain available under the wizard overlay.</p></div>
-            <div class="rounded-2xl border ${st.mode === "join" ? "border-amber-500/30 bg-amber-500/10 text-amber-100" : "border-emerald-500/20 bg-emerald-500/10 text-emerald-100"} px-4 py-4"><p class="font-medium ${st.mode === "join" ? "text-amber-100" : "text-emerald-100"}">${st.mode === "join" ? "Join Existing Vault is staged, not activated yet." : "Ready to launch OmniDrive."}</p><p class="mt-2">${st.mode === "join" ? "This wizard already captures mode, identity, and provider validation. The metadata restore endpoint lands in Task B6, so final shared-vault attachment is intentionally held back." : "Completing this step fades the wizard away and leaves the dashboard running with the selected onboarding mode."}</p></div>
+            <div class="rounded-2xl border ${st.mode === "join" ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-100" : "border-emerald-500/20 bg-emerald-500/10 text-emerald-100"} px-4 py-4"><p class="font-medium ${st.mode === "join" ? "text-cyan-100" : "text-emerald-100"}">${st.mode === "join" ? "Ready to join the existing vault." : "Ready to launch OmniDrive."}</p><p class="mt-2">${st.mode === "join" ? "OmniDrive will restore encrypted metadata from the selected provider, graft the shared vault identity, and remount O: to the restored sync-root view." : "Completing this step fades the wizard away and leaves the dashboard running with the selected onboarding mode."}</p></div>
           </div>
         </article>
       </div>`;
@@ -439,8 +439,12 @@
         st.busy = false;
         st.step = 3;
       } else if (st.step === 3) {
-        if (st.mode !== "local" && !ORDER.some((name) => st.providers[name].enabled && String(st.providers[name].last_test_status || "").toUpperCase() === "OK")) {
+        const validatedProviders = ORDER.filter((name) => st.providers[name].enabled && String(st.providers[name].last_test_status || "").toUpperCase() === "OK");
+        if (st.mode !== "local" && validatedProviders.length === 0) {
           throw new Error("Validate at least one enabled provider before continuing.");
+        }
+        if (st.mode !== "local" && !validatedProviders.includes(st.selectedProvider)) {
+          st.selectedProvider = validatedProviders[0];
         }
         clearProviderSecrets();
         st.step = 4;
@@ -448,12 +452,27 @@
         if ((st.mode !== "local" || st.security.passphrase || st.security.confirm) && !st.security.passphrase) throw new Error("Enter the master passphrase before continuing.");
         if (st.security.passphrase !== st.security.confirm) throw new Error("The passphrase confirmation does not match.");
         st.security.passphraseProvided = Boolean(st.security.passphrase);
-        clearSecuritySecrets();
         st.step = 5;
       } else {
-        if (st.mode === "join") throw new Error("Join Existing Vault remains staged in this build. Final metadata restore activation lands in Task B6.");
         st.busy = true; render();
-        await api("/api/onboarding/complete", { method: "POST" });
+        if (st.mode === "join") {
+          if (!st.security.passphrase) throw new Error("Enter the master passphrase before joining the existing vault.");
+          const response = await api("/api/onboarding/join-existing", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              passphrase: st.security.passphrase,
+              provider_id: st.selectedProvider,
+            }),
+          });
+          if (!response.restore || response.restore.status !== "OK") {
+            throw new Error("Vault restore did not return a successful result.");
+          }
+        } else {
+          await api("/api/onboarding/complete", { method: "POST" });
+        }
+        clearProviderSecrets();
+        clearSecuritySecrets();
         sessionStorage.removeItem(STORAGE_KEY);
         hideWizard();
         st.busy = false;
@@ -528,7 +547,8 @@
       let message = `${response.status} ${response.statusText}`;
       try {
         const payload = await response.json();
-        if (payload.message) message = payload.message;
+        if (payload.human_readable_reason) message = payload.human_readable_reason;
+        else if (payload.message) message = payload.message;
         else if (payload.error) message = payload.error;
       } catch (_) {}
       throw new Error(message);
