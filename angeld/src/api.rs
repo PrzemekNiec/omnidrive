@@ -721,7 +721,7 @@ async fn post_setup_provider(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "invalid_provider_config",
-                "message": "endpoint, region, and bucket are required"
+                "message": "endpoint, region i bucket są wymagane"
             })),
         )
             .into_response();
@@ -908,7 +908,7 @@ async fn post_join_existing(
             Json(serde_json::json!({
                 "error": "unsupported_provider",
                 "provider_id": provider_id,
-                "human_readable_reason": "Select one of the configured OmniDrive providers before joining an existing vault."
+                "human_readable_reason": "Wybierz jednego ze skonfigurowanych dostawców OmniDrive przed dołączeniem do istniejącego Skarbca."
             })),
         )
             .into_response();
@@ -955,7 +955,7 @@ async fn post_join_existing(
             Json(serde_json::json!({
                 "error": "runtime_activation_failed",
                 "message": err.to_string(),
-                "human_readable_reason": "The vault metadata was restored, but OmniDrive could not switch this device into sync-root mode cleanly."
+                "human_readable_reason": "Metadane Skarbca zostały odtworzone, ale OmniDrive nie mógł poprawnie przełączyć tego urządzenia do trybu sync-root."
             })),
         )
             .into_response();
@@ -1224,16 +1224,16 @@ async fn get_sync_root_state() -> impl IntoResponse {
 async fn get_maintenance_status(State(state): State<ApiState>) -> impl IntoResponse {
     let health = match build_diagnostics_health_response(&state).await {
         Ok(response) => maintenance_overview_item(&response),
-        Err(err) => maintenance_error_item(format!("Health diagnostics failed: {err}")),
+        Err(err) => maintenance_error_item(format!("Diagnostyka health nie powiodła się: {err}")),
     };
     let shell = maintenance_overview_item(&build_shell_state_response());
     let sync_root = match build_sync_root_state_response() {
         Ok(response) => maintenance_overview_item(&response),
-        Err(err) => maintenance_error_item(format!("Sync root diagnostics failed: {err}")),
+        Err(err) => maintenance_error_item(format!("Diagnostyka sync-root nie powiodła się: {err}")),
     };
     let backup = match build_recovery_status_response(&state).await {
         Ok(response) => maintenance_overview_item(&response),
-        Err(err) => maintenance_error_item(format!("Recovery diagnostics failed: {err}")),
+        Err(err) => maintenance_error_item(format!("Diagnostyka odzyskiwania nie powiodła się: {err}")),
     };
 
     (
@@ -1253,7 +1253,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
         Ok(response) => serde_json::to_value(response).unwrap_or_default(),
         Err(err) => serde_json::json!({
             "status": "ERROR",
-            "message": format!("Health diagnostics failed: {err}"),
+            "message": format!("Diagnostyka health nie powiodła się: {err}"),
             "last_run": unix_timestamp_millis(),
         }),
     };
@@ -1263,7 +1263,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
         Ok(response) => serde_json::to_value(response).unwrap_or_default(),
         Err(err) => serde_json::json!({
             "status": "ERROR",
-            "message": format!("Sync root diagnostics failed: {err}"),
+            "message": format!("Diagnostyka sync-root nie powiodła się: {err}"),
             "last_run": unix_timestamp_millis(),
         }),
     };
@@ -1272,7 +1272,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
         Ok(response) => serde_json::to_value(response).unwrap_or_default(),
         Err(err) => serde_json::json!({
             "status": "ERROR",
-            "message": format!("Recovery diagnostics failed: {err}"),
+            "message": format!("Diagnostyka odzyskiwania nie powiodła się: {err}"),
             "last_run": unix_timestamp_millis(),
         }),
     };
@@ -1283,7 +1283,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
             let runtime = cache::cache_runtime_stats();
             serde_json::json!({
                 "status": "OK",
-                "message": "Cache telemetry collected successfully.",
+                "message": "Telemetria cache została zebrana pomyślnie.",
                 "last_run": unix_timestamp_millis(),
                 "total_entries": summary.total_entries,
                 "total_bytes": summary.total_bytes,
@@ -1295,7 +1295,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
         }
         Err(err) => serde_json::json!({
             "status": "ERROR",
-            "message": format!("Cache diagnostics failed: {err}"),
+            "message": format!("Diagnostyka cache nie powiodła się: {err}"),
             "last_run": unix_timestamp_millis(),
         }),
     };
@@ -1303,7 +1303,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
     let scrub = match db::get_scrub_status_summary(&state.pool).await {
         Ok(summary) => serde_json::json!({
             "status": "OK",
-            "message": "Scrub telemetry collected successfully.",
+            "message": "Telemetria scrub została zebrana pomyślnie.",
             "last_run": unix_timestamp_millis(),
             "total_shards": summary.total_shards,
             "verified_shards": summary.verified_shards,
@@ -1315,7 +1315,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
         }),
         Err(err) => serde_json::json!({
             "status": "ERROR",
-            "message": format!("Scrub diagnostics failed: {err}"),
+            "message": format!("Diagnostyka scrub nie powiodła się: {err}"),
             "last_run": unix_timestamp_millis(),
         }),
     };
@@ -1334,7 +1334,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
             } else if summary.degraded_packs > 0 {
                 format!("{} pack(s) are degraded but recoverable.", summary.degraded_packs)
             } else {
-                "All active packs are healthy.".to_string()
+                "Wszystkie aktywne pakiety są zdrowe.".to_string()
             },
             "last_run": unix_timestamp_millis(),
             "total_packs": summary.total_packs,
@@ -1344,7 +1344,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
         }),
         Err(err) => serde_json::json!({
             "status": "ERROR",
-            "message": format!("Vault health diagnostics failed: {err}"),
+            "message": format!("Diagnostyka kondycji Skarbca nie powiodła się: {err}"),
             "last_run": unix_timestamp_millis(),
         }),
     };
@@ -1353,7 +1353,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
         StatusCode::OK,
         Json(serde_json::json!({
             "status": "OK",
-            "message": "Maintenance diagnostics snapshot collected successfully.",
+            "message": "Migawka diagnostyki utrzymaniowej została zebrana pomyślnie.",
             "last_run": unix_timestamp_millis(),
             "health": health,
             "shell": shell,
@@ -1383,7 +1383,7 @@ async fn get_multidevice_status(State(state): State<ApiState>) -> impl IntoRespo
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "WARN",
-                "message": "Local device identity has not been initialized yet.",
+                "message": "Tożsamość lokalnego urządzenia nie została jeszcze zainicjalizowana.",
                 "last_run": unix_timestamp_millis(),
                 "trusted_peers": [],
                 "recent_conflicts": [],
@@ -2173,7 +2173,7 @@ async fn post_scrub_now(State(state): State<ApiState>) -> impl IntoResponse {
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "WARN",
-                "message": "Scrub is idle because no remote providers are configured.",
+                "message": "Scrub jest bezczynny, ponieważ nie skonfigurowano zdalnych dostawców.",
                 "last_run": unix_timestamp_millis(),
                 "processed_shards": 0,
             })),
@@ -2190,9 +2190,9 @@ async fn post_repair_now(State(state): State<ApiState>) -> impl IntoResponse {
             Json(serde_json::json!({
                 "status": "OK",
                 "message": if report.repaired_packs == 0 {
-                    "No degraded packs required immediate repair.".to_string()
+                    "Brak zdegradowanych pakietów wymagających natychmiastowej naprawy.".to_string()
                 } else {
-                    format!("Repair processed {} degraded pack(s).", report.repaired_packs)
+                    format!("Naprawa przetworzyła {} zdegradowanych pakietów.", report.repaired_packs)
                 },
                 "last_run": unix_timestamp_millis(),
                 "processed_packs": report.processed_packs,
@@ -2205,7 +2205,7 @@ async fn post_repair_now(State(state): State<ApiState>) -> impl IntoResponse {
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "WARN",
-                "message": "Repair is idle because no remote providers are configured.",
+                "message": "Naprawa jest bezczynna, ponieważ nie skonfigurowano zdalnych dostawców.",
                 "last_run": unix_timestamp_millis(),
                 "processed_packs": 0,
                 "repaired_packs": 0,
@@ -2239,7 +2239,7 @@ async fn post_reconcile_now(State(state): State<ApiState>) -> impl IntoResponse 
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "WARN",
-                "message": "Reconciliation is idle because no remote providers are configured.",
+                "message": "Proces reconciliation jest bezczynny, ponieważ nie skonfigurowano zdalnych dostawców.",
                 "last_run": unix_timestamp_millis(),
                 "processed_packs": 0,
                 "repaired_packs": 0,
@@ -2303,9 +2303,9 @@ async fn post_repair_shell() -> impl IntoResponse {
         Json(serde_json::json!({
             "status": "OK",
             "message": if actions.is_empty() {
-                "Shell state was already healthy.".to_string()
+                "Stan shell byl juz poprawny.".to_string()
             } else {
-                format!("Shell repair applied {} action(s).", actions.len())
+                format!("Naprawa shell zastosowala {} akcje.", actions.len())
             },
             "last_run": unix_timestamp_millis(),
             "actions": actions,
@@ -2323,9 +2323,9 @@ async fn post_repair_sync_root(State(state): State<ApiState>) -> impl IntoRespon
             Json(serde_json::json!({
                 "status": "OK",
                 "message": if report.actions.is_empty() {
-                    "Sync root was already healthy.".to_string()
+                    "Sync-root byl juz poprawny.".to_string()
                 } else {
-                    format!("Sync root repair applied {} action(s).", report.actions.len())
+                    format!("Naprawa sync-root zastosowala {} akcje.", report.actions.len())
                 },
                 "last_run": unix_timestamp_millis(),
                 "actions": report.actions,
@@ -2379,7 +2379,7 @@ async fn post_snapshot_local(
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "error": "vault_locked",
-                    "message": "unlock the vault before creating an encrypted metadata snapshot"
+                    "message": "odblokuj Skarbiec przed utworzeniem zaszyfrowanej migawki metadanych"
                 })),
             )
                 .into_response();
@@ -2422,7 +2422,7 @@ async fn post_backup_now(State(state): State<ApiState>) -> impl IntoResponse {
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "error": "vault_locked",
-                    "message": "unlock the vault before creating an encrypted metadata backup"
+                    "message": "odblokuj Skarbiec przed utworzeniem zaszyfrowanej kopii metadanych"
                 })),
             )
                 .into_response();
@@ -2442,7 +2442,7 @@ async fn post_backup_now(State(state): State<ApiState>) -> impl IntoResponse {
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "OK",
-                "message": "Encrypted metadata backup uploaded successfully.",
+                "message": "Zaszyfrowana kopia metadanych została wysłana pomyślnie.",
                 "last_run": unix_timestamp_millis(),
                 "uploaded": true
             })),
@@ -2487,7 +2487,7 @@ async fn build_diagnostics_health_response(
         (
             MaintenanceLevel::Warn,
             format!(
-                "Background services are running, but the latest upload reported an error: {}",
+                "Usługi w tle działają, ale ostatnia wysyłka zgłosiła błąd: {}",
                 error
             ),
         )
@@ -2495,14 +2495,14 @@ async fn build_diagnostics_health_response(
         (
             MaintenanceLevel::Warn,
             format!(
-                "{} upload(s) are still queued for processing.",
+                "{} wysyłek nadal oczekuje na przetworzenie.",
                 pending_uploads_queue_size
             ),
         )
     } else {
         (
             MaintenanceLevel::Ok,
-            "Background services are healthy and no upload backlog is pending.".to_string(),
+            "Usługi w tle są zdrowe i brak zaległych wysyłek.".to_string(),
         )
     };
 
@@ -2518,26 +2518,26 @@ fn build_shell_state_response() -> MaintenanceStatus<shell_state::ShellStateSnap
     let snapshot = shell_state::audit_shell_state();
     let message = if snapshot.is_healthy() {
         format!(
-            "Drive {} is mounted and Explorer integration is healthy.",
+            "Dysk {} jest zamontowany, a integracja z Eksploratorem jest poprawna.",
             snapshot.preferred_drive_letter
         )
     } else if !snapshot.drive_present {
         format!(
-            "Drive {} is missing and should be repaired.",
+            "Dysk {} jest niedostępny i wymaga naprawy.",
             snapshot.preferred_drive_letter
         )
     } else if !snapshot.drive_target_matches {
         format!(
-            "Drive {} points to an unexpected target and needs repair.",
+            "Dysk {} wskazuje nieoczekiwany cel i wymaga naprawy.",
             snapshot.preferred_drive_letter
         )
     } else if !snapshot.drive_browsable {
         format!(
-            "Drive {} exists but is not browseable by Explorer.",
+            "Dysk {} istnieje, ale nie jest przeglądalny w Eksploratorze.",
             snapshot.preferred_drive_letter
         )
     } else {
-        "Explorer integration drift was detected and can be repaired.".to_string()
+        "Wykryto drift integracji z Eksploratorem; można go naprawić.".to_string()
     };
 
     MaintenanceStatus {
@@ -2563,18 +2563,18 @@ fn build_sync_root_state_response()
     let (level, message) = if shell_mode == "local_only" {
         (
             MaintenanceLevel::Ok,
-            "Smart Sync is intentionally idle until remote providers are configured.".to_string(),
+            "Smart Sync jest celowo bezczynny do czasu skonfigurowania zdalnych dostawców.".to_string(),
         )
     } else if snapshot.registered && snapshot.connected && snapshot.registered_for_provider {
         (
             MaintenanceLevel::Ok,
-            format!("Sync root {} is registered and connected.", snapshot.path),
+            format!("Sync-root {} jest zarejestrowany i połączony.", snapshot.path),
         )
     } else if snapshot.path_exists {
         (
             MaintenanceLevel::Warn,
             format!(
-                "Sync root {} exists, but registration or connection is incomplete.",
+                "Sync-root {} istnieje, ale rejestracja lub połączenie są niepełne.",
                 snapshot.path
             ),
         )
@@ -2582,7 +2582,7 @@ fn build_sync_root_state_response()
         (
             MaintenanceLevel::Error,
             format!(
-                "Sync root {} is missing and requires repair.",
+                "Sync-root {} jest niedostępny i wymaga naprawy.",
                 snapshot.path
             ),
         )
@@ -2630,7 +2630,7 @@ async fn build_recovery_status_response(
         (
             MaintenanceLevel::Warn,
             format!(
-                "The latest metadata backup to {} failed{}",
+                "Ostatnia kopia metadanych do {} nie powiodła się{}",
                 attempt.provider,
                 attempt
                     .last_error
@@ -2643,14 +2643,14 @@ async fn build_recovery_status_response(
         (
             MaintenanceLevel::Ok,
             format!(
-                "Metadata backup is available. Last successful run: {}.",
+                "Kopia metadanych jest dostępna. Ostatni udany przebieg: {}.",
                 timestamp
             ),
         )
     } else {
         (
             MaintenanceLevel::Warn,
-            "No metadata backup has been recorded yet.".to_string(),
+            "Nie zarejestrowano jeszcze kopii metadanych.".to_string(),
         )
     };
 
@@ -2730,11 +2730,11 @@ async fn build_storage_cost_response(state: &ApiState) -> Result<StorageCostResp
     }
 
     let message = if logical_bytes == 0 {
-        "No active packs exist yet, so the storage dashboard is showing an empty vault footprint."
+        "Brak aktywnych pakietow, dlatego dashboard storage pokazuje pusty slad Skarbca."
             .to_string()
     } else {
         format!(
-            "Vault footprint is {:.2} GiB logical vs {:.2} GiB physical with an estimated ${:.2}/month remote cost.",
+            "Zajętość Skarbca: {:.2} GiB logicznie vs {:.2} GiB fizycznie, szacowany koszt zdalny ${:.2}/mies.",
             bytes_to_gib(logical_bytes),
             bytes_to_gib(physical_bytes),
             round_cost_estimate(estimated_monthly_cost_usd)
@@ -2762,7 +2762,7 @@ async fn build_storage_cost_response(state: &ApiState) -> Result<StorageCostResp
         cloud_guard_message: guard_snapshot
             .as_ref()
             .map(|snapshot| snapshot.message.clone())
-            .unwrap_or_else(|| "Cloud guard snapshot unavailable.".to_string()),
+            .unwrap_or_else(|| "Migawka Cloud Guard jest niedostępna.".to_string()),
         dry_run_active: guard_snapshot
             .as_ref()
             .map(|snapshot| snapshot.dry_run_active)
@@ -2971,11 +2971,11 @@ async fn build_onboarding_status_response(
     };
 
     let message = if onboarding_state == OnboardingState::Completed.as_str() {
-        "Onboarding is complete.".to_string()
+        "Onboarding zakończony.".to_string()
     } else if draft_env_detected {
-        "Onboarding is incomplete; provider drafts were imported from .env for review.".to_string()
+        "Onboarding nie jest zakończony; szkice dostawców zaimportowano z .env do przeglądu.".to_string()
     } else {
-        "Onboarding is not complete yet.".to_string()
+        "Onboarding nie został jeszcze zakończony.".to_string()
     };
 
     Ok(MaintenanceStatus {

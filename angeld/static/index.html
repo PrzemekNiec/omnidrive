@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pl">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -74,23 +74,23 @@
     <header class="glass-panel mb-8 flex flex-col gap-3 rounded-[28px] px-6 py-6 md:flex-row md:items-end md:justify-between">
       <div>
         <p class="text-xs uppercase tracking-[0.3em] text-slate-300">OmniDrive</p>
-        <h1 class="mt-2 text-3xl font-semibold text-white">Vault Dashboard</h1>
-        <p class="mt-2 text-sm text-slate-300">Local zero-knowledge control plane for your encrypted multi-cloud vault.</p>
+        <h1 class="mt-2 text-3xl font-semibold text-white">Panel Skarbca</h1>
+        <p class="mt-2 text-sm text-slate-300">Lokalny panel sterowania zero-knowledge dla Twojego zaszyfrowanego, wielochmurowego Skarbca.</p>
       </div>
       <div class="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
         <div class="glass-muted flex items-center gap-3 rounded-xl px-4 py-2 text-sm text-slate-300">
           <label class="flex items-center gap-2">
             <input id="autoRefreshCheckbox" type="checkbox" class="h-4 w-4 rounded border-slate-700 bg-slate-900 text-cyan-400 focus:ring-cyan-400" checked />
-            Auto refresh
+            Auto-odświeżanie
           </label>
           <span class="text-slate-600">|</span>
-          <span id="lastRefreshedLabel" class="text-slate-400">Never refreshed</span>
+          <span id="lastRefreshedLabel" class="text-slate-400">Jeszcze nie odświeżono</span>
         </div>
         <button
           id="refreshButton"
           class="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-white/20 hover:bg-white/10"
         >
-          Refresh
+          Odśwież
         </button>
       </div>
     </header>
@@ -98,10 +98,10 @@
     <section class="glass-panel mb-8 rounded-[28px] p-6">
       <div class="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <p class="text-xs uppercase tracking-[0.28em] text-slate-400">Maintenance Console</p>
-          <h2 class="mt-2 text-2xl font-semibold text-white">Operational Command Deck</h2>
+          <p class="text-xs uppercase tracking-[0.28em] text-slate-400">Konsola Utrzymania</p>
+          <h2 class="mt-2 text-2xl font-semibold text-white">Panel Operacyjny</h2>
           <p class="mt-2 max-w-3xl text-sm text-slate-300">
-            Unified diagnostics and repair actions for shell state, sync-root health, metadata backup, and background service integrity.
+            Zunifikowana diagnostyka i akcje naprawcze dla stanu powłoki, kondycji SyncRoot, kopii metadanych i integralności usług w tle.
           </p>
         </div>
         <div id="maintenanceActionBanner" class="hidden rounded-2xl border px-4 py-3 text-sm"></div>
@@ -109,41 +109,41 @@
 
       <div id="maintenanceStatusGrid" class="grid gap-4 xl:grid-cols-4">
         <div class="glass-muted rounded-2xl p-4">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
-          <p class="mt-3 text-lg font-semibold text-white">Collecting maintenance status...</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Ładowanie</p>
+          <p class="mt-3 text-lg font-semibold text-white">Pobieranie statusu utrzymania...</p>
         </div>
       </div>
 
       <div class="mt-6 grid gap-4 lg:grid-cols-3 xl:grid-cols-6">
         <button id="maintenanceRepairShellButton" class="glass-muted rounded-2xl px-4 py-4 text-left transition hover:border-white/20 hover:bg-white/10">
           <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Shell</p>
-          <p class="mt-2 text-base font-semibold text-white">Repair Drive</p>
-          <p class="mt-2 text-sm text-slate-300">Rebuild the active drive mapping, appearance, and Explorer integration.</p>
+          <p class="mt-2 text-base font-semibold text-white">Napraw dysk</p>
+          <p class="mt-2 text-sm text-slate-300">Odbuduj mapowanie dysku, wygląd i integrację z Eksploratorem.</p>
         </button>
         <button id="maintenanceRepairSyncRootButton" class="glass-muted rounded-2xl px-4 py-4 text-left transition hover:border-white/20 hover:bg-white/10">
           <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Smart Sync</p>
-          <p class="mt-2 text-base font-semibold text-white">Repair SyncRoot</p>
-          <p class="mt-2 text-sm text-slate-300">Re-audit and repair the Cloud Files registration if drift is detected.</p>
+          <p class="mt-2 text-base font-semibold text-white">Napraw SyncRoot</p>
+          <p class="mt-2 text-sm text-slate-300">Ponów audyt i napraw rejestrację Cloud Files, jeśli wykryto drift.</p>
         </button>
         <button id="maintenanceBackupButton" class="glass-muted rounded-2xl px-4 py-4 text-left transition hover:border-white/20 hover:bg-white/10">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Recovery</p>
-          <p class="mt-2 text-base font-semibold text-white">Backup Metadata Now</p>
-          <p class="mt-2 text-sm text-slate-300">Force an encrypted metadata backup and refresh recovery readiness.</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Odzyskiwanie</p>
+          <p class="mt-2 text-base font-semibold text-white">Kopia metadanych teraz</p>
+          <p class="mt-2 text-sm text-slate-300">Wymuś zaszyfrowaną kopię metadanych i odśwież gotowość odzyskiwania.</p>
         </button>
         <button id="maintenanceScrubButton" class="glass-muted rounded-2xl px-4 py-4 text-left transition hover:border-white/20 hover:bg-white/10">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Integrity</p>
-          <p class="mt-2 text-base font-semibold text-white">Run Light Scrub</p>
-          <p class="mt-2 text-sm text-slate-300">Scan current shard health and refresh integrity telemetry.</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Integralność</p>
+          <p class="mt-2 text-base font-semibold text-white">Uruchom lekki scrub</p>
+          <p class="mt-2 text-sm text-slate-300">Przeskanuj stan shardów i odśwież telemetrię integralności.</p>
         </button>
         <button id="maintenanceRepairNowButton" class="glass-muted rounded-2xl px-4 py-4 text-left transition hover:border-white/20 hover:bg-white/10">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Integrity</p>
-          <p class="mt-2 text-base font-semibold text-white">Run Repair Now</p>
-          <p class="mt-2 text-sm text-slate-300">Process degraded packs immediately instead of waiting for the repair loop.</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Integralność</p>
+          <p class="mt-2 text-base font-semibold text-white">Napraw teraz</p>
+          <p class="mt-2 text-sm text-slate-300">Przetwórz zdegradowane pakiety od razu, bez czekania na pętlę naprawczą.</p>
         </button>
         <button id="maintenanceReconcileNowButton" class="glass-muted rounded-2xl px-4 py-4 text-left transition hover:border-white/20 hover:bg-white/10">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Policy</p>
-          <p class="mt-2 text-base font-semibold text-white">Run Reconcile Now</p>
-          <p class="mt-2 text-sm text-slate-300">Apply storage-mode policy drift immediately and swap packs once ready.</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Polityka</p>
+          <p class="mt-2 text-base font-semibold text-white">Uzgodnij teraz</p>
+          <p class="mt-2 text-sm text-slate-300">Zastosuj drift polityki trybów składowania i podmień pakiety, gdy będą gotowe.</p>
         </button>
       </div>
 
@@ -151,15 +151,15 @@
         <section class="glass-muted rounded-2xl p-4">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Operator Diagnostics</p>
-              <h3 class="mt-2 text-lg font-semibold text-white">Live daemon telemetry</h3>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Diagnostyka operatora</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Telemetria daemona na żywo</h3>
             </div>
-            <p id="maintenanceDiagnosticsTimestamp" class="text-xs text-slate-500">Collecting snapshot...</p>
+            <p id="maintenanceDiagnosticsTimestamp" class="text-xs text-slate-500">Pobieranie migawki...</p>
           </div>
           <div id="maintenanceDiagnosticsGrid" class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             <div class="glass-panel rounded-2xl p-4">
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
-              <p class="mt-3 text-sm text-slate-300">Collecting diagnostics snapshot...</p>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Ładowanie</p>
+              <p class="mt-3 text-sm text-slate-300">Pobieranie migawki diagnostyki...</p>
             </div>
           </div>
         </section>
@@ -167,14 +167,14 @@
         <section class="glass-muted rounded-2xl p-4">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Workers</p>
-              <h3 class="mt-2 text-lg font-semibold text-white">Background activity</h3>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Workery</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Aktywność w tle</h3>
             </div>
           </div>
           <div id="maintenanceWorkersGrid" class="mt-4 grid gap-3 sm:grid-cols-2">
             <div class="glass-panel rounded-2xl p-4">
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
-              <p class="mt-3 text-sm text-slate-300">Waiting for worker telemetry...</p>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Ładowanie</p>
+              <p class="mt-3 text-sm text-slate-300">Oczekiwanie na telemetrię workerów...</p>
             </div>
           </div>
         </section>
@@ -184,19 +184,19 @@
     <section class="glass-panel mb-8 rounded-[28px] p-5">
       <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Vault Status</p>
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Status Skarbca</p>
           <div class="mt-3 flex items-center gap-3">
-            <span id="vaultStatusBadge" class="inline-flex rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-sm font-medium text-slate-200">Loading</span>
-            <span id="vaultStatusHint" class="text-sm text-slate-400">Evaluating vault health...</span>
+            <span id="vaultStatusBadge" class="inline-flex rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-sm font-medium text-slate-200">Ładowanie</span>
+            <span id="vaultStatusHint" class="text-sm text-slate-400">Ocena kondycji Skarbca...</span>
           </div>
         </div>
         <div class="grid gap-3 sm:grid-cols-2">
           <div class="glass-muted rounded-xl px-4 py-3">
-            <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Healthy Ratio</p>
+            <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Wskaźnik zdrowia</p>
             <p id="healthyRatio" class="mt-2 text-xl font-semibold text-white">-</p>
           </div>
           <div class="glass-muted rounded-xl px-4 py-3">
-            <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Degraded Ratio</p>
+            <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Wskaźnik degradacji</p>
             <p id="degradedRatio" class="mt-2 text-xl font-semibold text-white">-</p>
           </div>
         </div>
@@ -206,41 +206,41 @@
     <section class="glass-panel mb-8 rounded-[28px] p-6">
       <div class="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <p class="text-xs uppercase tracking-[0.28em] text-slate-400">Storage Economics</p>
-          <h2 class="mt-2 text-2xl font-semibold text-white">Cost & Policy Dashboard</h2>
-          <p id="storageCostMessage" class="mt-2 max-w-3xl text-sm text-slate-300">Collecting storage footprint and cost signals...</p>
+          <p class="text-xs uppercase tracking-[0.28em] text-slate-400">Ekonomia Składowania</p>
+          <h2 class="mt-2 text-2xl font-semibold text-white">Panel kosztów i polityk</h2>
+          <p id="storageCostMessage" class="mt-2 max-w-3xl text-sm text-slate-300">Pobieranie danych o zajętości i kosztach...</p>
         </div>
         <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-right">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Estimated Monthly Cost</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Szacowany koszt miesięczny</p>
           <p id="storageEstimatedCost" class="mt-2 text-2xl font-semibold text-white">$0.00</p>
         </div>
       </div>
 
       <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div class="glass-muted rounded-2xl p-4">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Logical Footprint</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Rozmiar logiczny</p>
           <p id="storageLogicalBytes" class="mt-3 text-2xl font-semibold text-white">-</p>
-          <p class="mt-2 text-sm text-slate-300">User-visible payload represented by active packs.</p>
+          <p class="mt-2 text-sm text-slate-300">Dane widoczne dla użytkownika reprezentowane przez aktywne pakiety.</p>
         </div>
         <div class="glass-muted rounded-2xl p-4">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Physical Footprint</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Rozmiar fizyczny</p>
           <p id="storagePhysicalBytes" class="mt-3 text-2xl font-semibold text-white">-</p>
-          <p class="mt-2 text-sm text-slate-300">Remote shard bytes currently committed across providers.</p>
+          <p class="mt-2 text-sm text-slate-300">Bajty shardów zdalnych aktualnie zapisane u dostawców.</p>
         </div>
         <div class="glass-muted rounded-2xl p-4">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Policy Efficiency</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Efektywność polityki</p>
           <p id="storageEfficiencyRatio" class="mt-3 text-2xl font-semibold text-white">-</p>
-          <p class="mt-2 text-sm text-slate-300">Physical-to-logical ratio of the current active pack set.</p>
+          <p class="mt-2 text-sm text-slate-300">Stosunek fizyczny/logiczny dla bieżącego zestawu aktywnych pakietów.</p>
         </div>
         <div class="glass-muted rounded-2xl p-4">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Bytes Avoided</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Zaoszczędzone bajty</p>
           <p id="storageAvoidedBytes" class="mt-3 text-2xl font-semibold text-white">-</p>
-          <p class="mt-2 text-sm text-slate-300">Provider bytes avoided by `STANDARD` and `LOCAL` instead of full `PARANOIA`.</p>
+          <p class="mt-2 text-sm text-slate-300">Bajty oszczędzone dzięki trybom `STANDARD` i `LOCAL` zamiast pełnego `PARANOIA`.</p>
         </div>
       </div>
 
       <div id="storageDryRunBanner" class="hidden mt-4 rounded-2xl border border-amber-400/30 bg-amber-500/15 px-4 py-3 text-sm text-amber-100">
-        DRY-RUN MODE ACTIVE - NO CLOUD COSTS
+        TRYB SYMULACJI (DRY-RUN) - BRAK KOSZTÓW
       </div>
 
       <div class="mt-6 grid gap-4 xl:grid-cols-2">
@@ -248,27 +248,27 @@
           <div class="flex items-start justify-between gap-3">
             <div>
               <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Cloud Guard</p>
-              <h3 class="mt-2 text-lg font-semibold text-white">Circuit breaker & runtime safety</h3>
+              <h3 class="mt-2 text-lg font-semibold text-white">Bezpieczniki runtime</h3>
             </div>
             <span id="storageCloudGuardStatus" class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium status-ok">OK</span>
           </div>
-          <p id="storageCloudGuardMessage" class="mt-3 text-sm text-slate-300">Collecting cloud guard status...</p>
+          <p id="storageCloudGuardMessage" class="mt-3 text-sm text-slate-300">Pobieranie statusu Cloud Guard...</p>
         </section>
 
         <section class="glass-muted rounded-2xl p-4">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Current Session Costs</p>
-          <h3 class="mt-2 text-lg font-semibold text-white">Live cloud operation counters</h3>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Koszty bieżącej sesji</p>
+          <h3 class="mt-2 text-lg font-semibold text-white">Liczniki operacji chmurowych na żywo</h3>
           <div class="mt-4 grid gap-3 sm:grid-cols-3">
             <div class="glass-panel rounded-xl p-3">
-              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Read Ops</p>
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Operacje odczytu</p>
               <p id="storageSessionReadOps" class="mt-2 text-xl font-semibold text-white">0</p>
             </div>
             <div class="glass-panel rounded-xl p-3">
-              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Write Ops</p>
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Operacje zapisu</p>
               <p id="storageSessionWriteOps" class="mt-2 text-xl font-semibold text-white">0</p>
             </div>
             <div class="glass-panel rounded-xl p-3">
-              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Egress</p>
+              <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Transfer wychodzący</p>
               <p id="storageSessionEgress" class="mt-2 text-xl font-semibold text-white">0 B</p>
             </div>
           </div>
@@ -278,27 +278,27 @@
       <section class="glass-muted mt-6 rounded-2xl p-4">
         <div class="flex items-center justify-between gap-3">
           <div>
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Daily Quotas</p>
-            <h3 class="mt-2 text-lg font-semibold text-white">Percent of configured cloud limits</h3>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Limity dzienne</p>
+            <h3 class="mt-2 text-lg font-semibold text-white">Procent wykorzystania limitów chmurowych</h3>
           </div>
         </div>
         <div class="mt-4 grid gap-3 md:grid-cols-3">
           <article class="glass-panel rounded-2xl p-4">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Read Ops</p>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Operacje odczytu</p>
             <p id="storageQuotaReadLabel" class="mt-2 text-sm text-slate-300">0 / 0</p>
             <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-800">
               <div id="storageQuotaReadBar" class="h-full rounded-full bg-cyan-400" style="width: 0%;"></div>
             </div>
           </article>
           <article class="glass-panel rounded-2xl p-4">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Write Ops</p>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Operacje zapisu</p>
             <p id="storageQuotaWriteLabel" class="mt-2 text-sm text-slate-300">0 / 0</p>
             <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-800">
               <div id="storageQuotaWriteBar" class="h-full rounded-full bg-amber-400" style="width: 0%;"></div>
             </div>
           </article>
           <article class="glass-panel rounded-2xl p-4">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Egress</p>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Transfer wychodzący</p>
             <p id="storageQuotaEgressLabel" class="mt-2 text-sm text-slate-300">0 B / 0 B</p>
             <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-800">
               <div id="storageQuotaEgressBar" class="h-full rounded-full bg-rose-400" style="width: 0%;"></div>
@@ -311,14 +311,14 @@
         <section class="glass-muted rounded-2xl p-4">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Policy Mix</p>
-              <h3 class="mt-2 text-lg font-semibold text-white">Active packs by storage mode</h3>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Mix polityk</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Aktywne pakiety wg trybu składowania</h3>
             </div>
           </div>
           <div id="storageModeGrid" class="mt-4 grid gap-3 md:grid-cols-3">
             <div class="glass-panel rounded-2xl p-4">
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
-              <p class="mt-3 text-sm text-slate-300">Collecting storage mode summary...</p>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Ładowanie</p>
+              <p class="mt-3 text-sm text-slate-300">Pobieranie podsumowania trybów składowania...</p>
             </div>
           </div>
         </section>
@@ -326,22 +326,22 @@
         <section class="glass-muted rounded-2xl p-4">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Cleanup Pressure</p>
-              <h3 class="mt-2 text-lg font-semibold text-white">Reconcile & GC backlog</h3>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Presja porządkowania</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Backlog uzgodnień i GC</h3>
             </div>
           </div>
           <div class="mt-4 grid gap-3">
             <div class="glass-panel rounded-2xl p-4">
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Reconcile Backlog</p>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Backlog uzgodnień</p>
               <p id="storageReconcileBacklog" class="mt-3 text-2xl font-semibold text-white">-</p>
             </div>
             <div class="glass-panel rounded-2xl p-4">
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Orphaned Packs</p>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Osierocone pakiety</p>
               <p id="storageOrphanedPacks" class="mt-3 text-2xl font-semibold text-white">-</p>
               <p id="storageOrphanedBytes" class="mt-2 text-sm text-slate-300">-</p>
             </div>
             <div class="glass-panel rounded-2xl p-4">
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">GC Candidates</p>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Kandydaci do GC</p>
               <p id="storageGcCandidates" class="mt-3 text-2xl font-semibold text-white">-</p>
             </div>
           </div>
@@ -351,14 +351,14 @@
       <section class="glass-muted mt-6 rounded-2xl p-4">
         <div class="flex items-center justify-between gap-3">
           <div>
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Provider Distribution</p>
-            <h3 class="mt-2 text-lg font-semibold text-white">Remote footprint by provider</h3>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Rozkład dostawców</p>
+            <h3 class="mt-2 text-lg font-semibold text-white">Zdalna zajętość wg dostawcy</h3>
           </div>
         </div>
         <div id="storageProvidersGrid" class="mt-4 grid gap-3 md:grid-cols-3">
           <div class="glass-panel rounded-2xl p-4">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
-            <p class="mt-3 text-sm text-slate-300">Collecting provider storage summary...</p>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Ładowanie</p>
+            <p class="mt-3 text-sm text-slate-300">Pobieranie podsumowania zajętości dostawców...</p>
           </div>
         </div>
       </section>
@@ -367,19 +367,19 @@
     <section class="glass-panel mt-8 rounded-[28px] p-6">
       <div class="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <p class="text-xs uppercase tracking-[0.28em] text-slate-400">Multi-Device Core</p>
-          <h2 class="mt-2 text-2xl font-semibold text-white">Peer Mesh & Conflict Lineage</h2>
+          <p class="text-xs uppercase tracking-[0.28em] text-slate-400">Rdzeń Multi-Device</p>
+          <h2 class="mt-2 text-2xl font-semibold text-white">Siatka peerów i linia konfliktów</h2>
           <p id="multiDeviceMessage" class="mt-2 max-w-3xl text-sm text-slate-300">
-            Collecting local device identity, trusted peers, and recent conflict telemetry...
+            Pobieranie tożsamości lokalnego urządzenia, zaufanych peerów i telemetryki konfliktów...
           </p>
         </div>
-        <p id="multiDeviceTimestamp" class="text-xs text-slate-500">Collecting snapshot...</p>
+        <p id="multiDeviceTimestamp" class="text-xs text-slate-500">Pobieranie migawki...</p>
       </div>
 
       <div id="multiDeviceSummaryGrid" class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div class="glass-muted rounded-2xl p-4">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
-          <p class="mt-3 text-sm text-slate-300">Collecting multi-device summary...</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Ładowanie</p>
+          <p class="mt-3 text-sm text-slate-300">Pobieranie podsumowania multi-device...</p>
         </div>
       </div>
 
@@ -387,14 +387,14 @@
         <section class="glass-muted rounded-2xl p-4">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Trusted Peers</p>
-              <h3 class="mt-2 text-lg font-semibold text-white">Known devices in this vault</h3>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Zaufani peerzy</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Znane urządzenia w tym Skarbcu</h3>
             </div>
           </div>
           <div id="multiDevicePeersGrid" class="mt-4 grid gap-3">
             <div class="glass-panel rounded-2xl p-4">
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
-              <p class="mt-3 text-sm text-slate-300">Waiting for peer telemetry...</p>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Ładowanie</p>
+              <p class="mt-3 text-sm text-slate-300">Oczekiwanie na telemetrię peerów...</p>
             </div>
           </div>
         </section>
@@ -402,14 +402,14 @@
         <section class="glass-muted rounded-2xl p-4">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Conflict Lineage</p>
-              <h3 class="mt-2 text-lg font-semibold text-white">Recent conflict materializations</h3>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Linia konfliktów</p>
+              <h3 class="mt-2 text-lg font-semibold text-white">Najnowsze materializacje konfliktów</h3>
             </div>
           </div>
           <div id="multiDeviceConflictsGrid" class="mt-4 grid gap-3">
             <div class="glass-panel rounded-2xl p-4">
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Loading</p>
-              <p class="mt-3 text-sm text-slate-300">Waiting for conflict telemetry...</p>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Ładowanie</p>
+              <p class="mt-3 text-sm text-slate-300">Oczekiwanie na telemetrię konfliktów...</p>
             </div>
           </div>
         </section>
@@ -418,19 +418,19 @@
 
     <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <div class="glass-panel rounded-2xl p-5">
-        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Total Packs</p>
+        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Wszystkie pakiety</p>
         <p id="healthTotal" class="mt-3 text-3xl font-semibold text-white">-</p>
       </div>
       <div class="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5">
-        <p class="text-xs uppercase tracking-[0.2em] text-emerald-300">Healthy</p>
+        <p class="text-xs uppercase tracking-[0.2em] text-emerald-300">Zdrowe</p>
         <p id="healthHealthy" class="mt-3 text-3xl font-semibold text-emerald-200">-</p>
       </div>
       <div class="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5">
-        <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Degraded</p>
+        <p class="text-xs uppercase tracking-[0.2em] text-amber-300">Zdegradowane</p>
         <p id="healthDegraded" class="mt-3 text-3xl font-semibold text-amber-200">-</p>
       </div>
       <div class="rounded-2xl border border-rose-500/20 bg-rose-500/5 p-5">
-        <p class="text-xs uppercase tracking-[0.2em] text-rose-300">Unreadable</p>
+        <p class="text-xs uppercase tracking-[0.2em] text-rose-300">Nieczytelne</p>
         <p id="healthUnreadable" class="mt-3 text-3xl font-semibold text-rose-200">-</p>
       </div>
     </section>
@@ -438,8 +438,8 @@
     <section class="glass-panel mt-8 rounded-2xl p-5">
       <div class="mb-4 flex items-center justify-between">
         <div>
-          <h2 class="text-lg font-semibold text-white">Provider Quota</h2>
-          <p id="quotaLimit" class="mt-1 text-sm text-slate-400">Loading quota limit...</p>
+          <h2 class="text-lg font-semibold text-white">Limity dostawców</h2>
+          <p id="quotaLimit" class="mt-1 text-sm text-slate-400">Pobieranie limitów...</p>
         </div>
       </div>
       <div id="quotaGrid" class="grid gap-4 md:grid-cols-3"></div>
@@ -448,13 +448,13 @@
     <section class="glass-panel mt-8 rounded-2xl p-5">
       <div class="mb-4 flex items-center justify-between">
         <div>
-          <h2 class="text-lg font-semibold text-white">Cache Performance</h2>
-          <p id="cacheUsageLabel" class="mt-1 text-sm text-slate-400">Loading cache usage...</p>
+          <h2 class="text-lg font-semibold text-white">Wydajność cache</h2>
+          <p id="cacheUsageLabel" class="mt-1 text-sm text-slate-400">Pobieranie użycia cache...</p>
         </div>
       </div>
       <div class="grid gap-4 md:grid-cols-4">
         <div class="glass-muted rounded-xl p-4">
-          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Entries</p>
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Wpisy</p>
           <p id="cacheEntries" class="mt-3 text-2xl font-semibold text-white">-</p>
         </div>
         <div class="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4">
@@ -462,16 +462,16 @@
           <p id="cacheHits" class="mt-3 text-2xl font-semibold text-cyan-200">-</p>
         </div>
         <div class="glass-muted rounded-xl p-4">
-          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Misses</p>
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Chybienia</p>
           <p id="cacheMisses" class="mt-3 text-2xl font-semibold text-slate-100">-</p>
         </div>
         <div class="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-          <p class="text-xs uppercase tracking-[0.2em] text-emerald-300">Prefetched</p>
+          <p class="text-xs uppercase tracking-[0.2em] text-emerald-300">Wstępnie pobrane</p>
           <p id="cachePrefetched" class="mt-3 text-2xl font-semibold text-emerald-200">-</p>
         </div>
       </div>
       <div class="mt-4">
-        <p id="cacheHitRatioLabel" class="mb-2 text-sm text-slate-400">Hit ratio: -</p>
+        <p id="cacheHitRatioLabel" class="mb-2 text-sm text-slate-400">Współczynnik trafień: -</p>
         <div class="h-2 overflow-hidden rounded-full bg-slate-800">
           <div id="cacheHitRatioBar" class="h-full rounded-full bg-emerald-400" style="width: 0%"></div>
         </div>
@@ -481,19 +481,19 @@
     <section class="glass-panel mt-8 rounded-2xl p-5">
       <div class="mb-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 class="text-lg font-semibold text-white">Vault Integrity</h2>
-          <p id="scrubLastScan" class="mt-1 text-sm text-slate-400">Loading scrub status...</p>
+          <h2 class="text-lg font-semibold text-white">Integralność Skarbca</h2>
+          <p id="scrubLastScan" class="mt-1 text-sm text-slate-400">Pobieranie statusu scrub...</p>
         </div>
         <button
           id="scrubNowButton"
           class="inline-flex items-center justify-center rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:border-cyan-400/50 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Start Light Scan
+          Start lekkiego skanu
         </button>
       </div>
       <div class="grid gap-4 md:grid-cols-4">
         <div class="glass-muted rounded-xl p-4">
-          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Total Shards</p>
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Wszystkie shardy</p>
           <p id="scrubTotalShards" class="mt-3 text-2xl font-semibold text-white">-</p>
         </div>
         <div class="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4">
@@ -501,26 +501,26 @@
           <p id="scrubVerifiedShards" class="mt-3 text-2xl font-semibold text-cyan-200">-</p>
         </div>
         <div class="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-          <p class="text-xs uppercase tracking-[0.2em] text-emerald-300">Healthy</p>
+          <p class="text-xs uppercase tracking-[0.2em] text-emerald-300">Zdrowe</p>
           <p id="scrubHealthyShards" class="mt-3 text-2xl font-semibold text-emerald-200">-</p>
         </div>
         <div class="rounded-xl border border-rose-500/20 bg-rose-500/5 p-4">
-          <p class="text-xs uppercase tracking-[0.2em] text-rose-300">Missing / Corrupt</p>
+          <p class="text-xs uppercase tracking-[0.2em] text-rose-300">Brakujące / uszkodzone</p>
           <p id="scrubCorruptedShards" class="mt-3 text-2xl font-semibold text-rose-200">-</p>
         </div>
       </div>
       <div class="mt-4 grid gap-4 md:grid-cols-2">
         <div class="glass-muted rounded-xl p-4">
-          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">LIGHT Checks</p>
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Sprawdzenia LIGHT</p>
           <p id="scrubLightChecks" class="mt-3 text-xl font-semibold text-slate-100">-</p>
         </div>
         <div class="glass-muted rounded-xl p-4">
-          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">DEEP Checks</p>
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Sprawdzenia DEEP</p>
           <p id="scrubDeepChecks" class="mt-3 text-xl font-semibold text-slate-100">-</p>
         </div>
       </div>
       <div class="mt-4">
-        <p id="scrubCoverageLabel" class="mb-2 text-sm text-slate-400">Coverage: -</p>
+        <p id="scrubCoverageLabel" class="mb-2 text-sm text-slate-400">Pokrycie: -</p>
         <div class="h-2 overflow-hidden rounded-full bg-slate-800">
           <div id="scrubCoverageBar" class="h-full rounded-full bg-cyan-400" style="width: 0%"></div>
         </div>
@@ -530,30 +530,30 @@
     <section class="glass-panel mt-8 rounded-2xl p-5">
       <div class="mb-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 class="text-lg font-semibold text-white">Recovery Status</h2>
-          <p id="recoveryLastBackup" class="mt-1 text-sm text-slate-400">Loading recovery status...</p>
+          <h2 class="text-lg font-semibold text-white">Status odzyskiwania</h2>
+          <p id="recoveryLastBackup" class="mt-1 text-sm text-slate-400">Pobieranie statusu odzyskiwania...</p>
         </div>
         <button
           id="backupNowButton"
           class="inline-flex items-center justify-center rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:border-cyan-400/50 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Backup Now
+          Wykonaj kopię
         </button>
       </div>
       <div class="overflow-hidden rounded-xl border border-slate-800">
         <table class="min-w-full divide-y divide-slate-800">
           <thead class="bg-black/20">
             <tr class="text-left text-xs uppercase tracking-[0.2em] text-slate-500">
-              <th class="px-4 py-3">Provider</th>
+              <th class="px-4 py-3">Dostawca</th>
               <th class="px-4 py-3">Status</th>
-              <th class="px-4 py-3">Created</th>
-              <th class="px-4 py-3">Size</th>
-              <th class="px-4 py-3">Object Key</th>
+              <th class="px-4 py-3">Utworzono</th>
+              <th class="px-4 py-3">Rozmiar</th>
+              <th class="px-4 py-3">Klucz obiektu</th>
             </tr>
           </thead>
           <tbody id="recoveryTableBody" class="divide-y divide-slate-800 bg-slate-900/40">
             <tr>
-              <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">Loading recovery history...</td>
+              <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">Pobieranie historii odzyskiwania...</td>
             </tr>
           </tbody>
         </table>
@@ -563,25 +563,25 @@
     <section class="glass-panel mt-8 rounded-2xl p-5">
       <div class="mb-4 flex items-center justify-between">
         <div>
-          <h2 class="text-lg font-semibold text-white">File Explorer</h2>
-          <p class="mt-1 text-sm text-slate-400">Click a file to inspect its revision history and restore an older version.</p>
+          <h2 class="text-lg font-semibold text-white">Eksplorator plików</h2>
+          <p class="mt-1 text-sm text-slate-400">Kliknij plik, aby przejrzeć historię rewizji i przywrócić starszą wersję.</p>
         </div>
         <div class="flex flex-col gap-3 sm:flex-row">
           <input
             id="fileSearchInput"
             type="search"
-            placeholder="Search files..."
+            placeholder="Szukaj plików..."
             class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
           />
           <select
             id="fileSortSelect"
             class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400 focus:outline-none"
           >
-            <option value="path">Sort: Path</option>
-            <option value="size_desc">Sort: Largest</option>
-            <option value="size_asc">Sort: Smallest</option>
-            <option value="created_desc">Sort: Newest</option>
-            <option value="created_asc">Sort: Oldest</option>
+            <option value="path">Sortowanie: ścieżka</option>
+            <option value="size_desc">Sortowanie: największe</option>
+            <option value="size_asc">Sortowanie: najmniejsze</option>
+            <option value="created_desc">Sortowanie: najnowsze</option>
+            <option value="created_asc">Sortowanie: najstarsze</option>
           </select>
         </div>
       </div>
@@ -590,17 +590,17 @@
         <table class="min-w-full divide-y divide-slate-800">
           <thead class="bg-black/20">
             <tr class="text-left text-xs uppercase tracking-[0.2em] text-slate-500">
-              <th class="px-4 py-3">Path</th>
-              <th class="px-4 py-3">Sync</th>
+              <th class="px-4 py-3">Ścieżka</th>
+              <th class="px-4 py-3">Synchronizacja</th>
               <th class="px-4 py-3">Inode</th>
-              <th class="px-4 py-3">Size</th>
-              <th class="px-4 py-3">Current Revision</th>
-              <th class="px-4 py-3">Created</th>
+              <th class="px-4 py-3">Rozmiar</th>
+              <th class="px-4 py-3">Aktualna rewizja</th>
+              <th class="px-4 py-3">Utworzono</th>
             </tr>
           </thead>
           <tbody id="filesTableBody" class="divide-y divide-slate-800 bg-slate-900/40">
             <tr>
-              <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">Loading files...</td>
+              <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">Pobieranie plików...</td>
             </tr>
           </tbody>
         </table>
@@ -612,15 +612,15 @@
     <div class="glass-panel w-full max-w-4xl rounded-2xl shadow-2xl shadow-black/40">
       <div class="flex items-start justify-between border-b border-slate-800 px-6 py-5">
         <div>
-          <p class="text-xs uppercase tracking-[0.2em] text-cyan-400">File Details</p>
-          <h3 id="modalTitle" class="mt-2 text-xl font-semibold text-white">Revision History</h3>
+          <p class="text-xs uppercase tracking-[0.2em] text-cyan-400">Szczegóły pliku</p>
+          <h3 id="modalTitle" class="mt-2 text-xl font-semibold text-white">Historia rewizji</h3>
           <p id="modalSubtitle" class="mt-1 text-sm text-slate-400"></p>
         </div>
         <button
           id="closeModalButton"
           class="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
         >
-          Close
+          Zamknij
         </button>
       </div>
       <div class="px-6 py-5">
@@ -628,20 +628,20 @@
         <div class="glass-muted mb-4 flex flex-col gap-3 rounded-xl px-4 py-4 md:flex-row md:items-center md:justify-between">
           <div>
             <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Smart Sync</p>
-            <p id="syncStatusLabel" class="mt-2 text-sm text-slate-300">Loading sync state...</p>
+            <p id="syncStatusLabel" class="mt-2 text-sm text-slate-300">Pobieranie stanu synchronizacji...</p>
           </div>
           <div class="flex gap-3">
             <button
               id="pinButton"
               class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-200 transition hover:border-emerald-400/50 hover:bg-emerald-500/20"
             >
-              Pin to Device
+              Przypnij do urządzenia
             </button>
             <button
               id="unpinButton"
               class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200 transition hover:border-amber-400/50 hover:bg-amber-500/20"
             >
-              Free up space
+              Zwolnij miejsce
             </button>
           </div>
         </div>
@@ -652,7 +652,7 @@
                 <th class="px-4 py-3">Revision</th>
                 <th class="px-4 py-3">Created</th>
                 <th class="px-4 py-3">Size</th>
-                <th class="px-4 py-3">Current</th>
+                <th class="px-4 py-3">Aktualna</th>
                 <th class="px-4 py-3">Source</th>
                 <th class="px-4 py-3">Lineage</th>
                 <th class="px-4 py-3">Action</th>
@@ -660,7 +660,7 @@
             </thead>
             <tbody id="revisionsTableBody" class="divide-y divide-slate-800 bg-slate-900/40">
               <tr>
-                <td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">Select a file to view history.</td>
+                <td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">Wybierz plik, aby zobaczyc historie.</td>
               </tr>
             </tbody>
           </table>
@@ -681,15 +681,15 @@
         <div class="flex flex-col gap-5">
           <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
             <div>
-              <p id="onboardingWizardStepKicker" class="text-xs uppercase tracking-[0.3em] text-slate-400">Onboarding</p>
-              <h2 id="onboardingWizardStepTitle" class="mt-2 text-3xl font-semibold text-white">Preparing OmniDrive</h2>
+              <p id="onboardingWizardStepKicker" class="text-xs uppercase tracking-[0.3em] text-slate-400">Konfiguracja poczatkowa</p>
+              <h2 id="onboardingWizardStepTitle" class="mt-2 text-3xl font-semibold text-white">Przygotowanie OmniDrive</h2>
               <p id="onboardingWizardStepDescription" class="mt-3 max-w-3xl text-sm text-slate-300">
-                Loading first-run state...
+                Ładowanie stanu pierwszego uruchomienia...
               </p>
             </div>
             <div class="glass-muted rounded-2xl px-4 py-3 text-right">
-              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Progress</p>
-              <p id="onboardingWizardStepCounter" class="mt-2 text-lg font-semibold text-white">Step 1 / 6</p>
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Postęp</p>
+              <p id="onboardingWizardStepCounter" class="mt-2 text-lg font-semibold text-white">Krok 1 / 6</p>
             </div>
           </div>
 
@@ -707,20 +707,20 @@
               id="onboardingWizardBackButton"
               class="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-white/20 hover:bg-white/10"
             >
-              Back
+              Wstecz
             </button>
             <div class="flex flex-col gap-3 sm:flex-row">
               <button
                 id="onboardingWizardSecondaryButton"
                 class="hidden inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-white/20 hover:bg-white/10"
               >
-                Secondary
+                Akcja dodatkowa
               </button>
               <button
                 id="onboardingWizardNextButton"
                 class="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/10 px-5 py-2.5 text-sm font-medium text-white transition hover:border-white/20 hover:bg-white/15"
               >
-                Continue
+                Dalej
               </button>
             </div>
           </div>
@@ -798,38 +798,38 @@
     maintenanceRepairShellButton.addEventListener("click", () => triggerMaintenanceAction(
       "/api/maintenance/repair-shell",
       maintenanceRepairShellButton,
-      "Repairing drive...",
-      "Repair Drive"
+      "Naprawianie dysku...",
+      "Napraw dysk"
     ));
     maintenanceRepairSyncRootButton.addEventListener("click", () => triggerMaintenanceAction(
       "/api/maintenance/repair-sync-root",
       maintenanceRepairSyncRootButton,
-      "Repairing SyncRoot...",
-      "Repair SyncRoot"
+      "Naprawianie SyncRoot...",
+      "Napraw SyncRoot"
     ));
     maintenanceBackupButton.addEventListener("click", () => triggerMaintenanceAction(
       "/api/recovery/backup-now",
       maintenanceBackupButton,
-      "Creating backup...",
-      "Backup Metadata Now"
+      "Tworzenie kopii...",
+      "Kopia metadanych teraz"
     ));
     maintenanceScrubButton.addEventListener("click", () => triggerMaintenanceAction(
       "/api/maintenance/scrub-now",
       maintenanceScrubButton,
-      "Scanning shards...",
-      "Run Light Scrub"
+      "Skanowanie shardów...",
+      "Uruchom lekki scrub"
     ));
     maintenanceRepairNowButton.addEventListener("click", () => triggerMaintenanceAction(
       "/api/maintenance/repair-now",
       maintenanceRepairNowButton,
-      "Running repair...",
-      "Run Repair Now"
+      "Uruchamianie naprawy...",
+      "Napraw teraz"
     ));
     maintenanceReconcileNowButton.addEventListener("click", () => triggerMaintenanceAction(
       "/api/maintenance/reconcile-now",
       maintenanceReconcileNowButton,
-      "Reconciling packs...",
-      "Run Reconcile Now"
+      "Uzgadnianie pakietów...",
+      "Uzgodnij teraz"
     ));
     fileSearchInput.addEventListener("input", renderFiles);
     fileSortSelect.addEventListener("change", renderFiles);
@@ -852,7 +852,7 @@
         loadRecoveryStatus(),
         loadFiles(),
       ]);
-      lastRefreshedLabel.textContent = `Last refreshed: ${new Date().toLocaleTimeString()}`;
+      lastRefreshedLabel.textContent = `Ostatnie odświeżenie: ${new Date().toLocaleTimeString()}`;
     }
 
     async function loadHealth() {
@@ -867,10 +867,10 @@
     async function loadMaintenanceStatus() {
       const maintenance = await fetchJson("/api/maintenance/status");
       const cards = [
-        { key: "health", title: "System Health", subtitle: "Uploader, watcher, cache, queue state" },
-        { key: "shell", title: "Shell Integration", subtitle: "Drive mapping, autostart, icon, context menu" },
-        { key: "sync_root", title: "Smart Sync", subtitle: "Cloud Files registration and connection state" },
-        { key: "backup", title: "Recovery Backup", subtitle: "Metadata backup readiness and last known outcome" },
+        { key: "health", title: "Stan systemu", subtitle: "Uploader, watcher, cache i stan kolejki" },
+        { key: "shell", title: "Integracja powłoki", subtitle: "Mapowanie dysku, autostart, ikona i menu kontekstowe" },
+        { key: "sync_root", title: "Smart Sync", subtitle: "Stan rejestracji i połączenia Cloud Files" },
+        { key: "backup", title: "Kopia odzyskiwania", subtitle: "Gotowość kopii metadanych i ostatni wynik" },
       ];
 
       maintenanceStatusGrid.innerHTML = cards.map((card) => {
@@ -885,7 +885,7 @@
               <span class="status-chip inline-flex rounded-full border px-3 py-1 text-xs font-medium ${statusClass(entry.status)}">${escapeHtml(entry.status)}</span>
             </div>
             <p class="mt-4 text-base font-medium text-white">${escapeHtml(entry.message)}</p>
-            <p class="mt-3 text-xs text-slate-500">Last run: ${formatTimestamp(entry.last_run)}</p>
+            <p class="mt-3 text-xs text-slate-500">Ostatnie wykonanie: ${formatTimestamp(entry.last_run)}</p>
           </article>
         `;
       }).join("");
@@ -893,41 +893,41 @@
 
     async function loadMaintenanceDiagnostics() {
       const diagnostics = await fetchJson("/api/maintenance/diagnostics");
-      maintenanceDiagnosticsTimestamp.textContent = `Snapshot: ${formatTimestamp(diagnostics.last_run)}`;
+      maintenanceDiagnosticsTimestamp.textContent = `Migawka: ${formatTimestamp(diagnostics.last_run)}`;
 
       const cards = [
         {
-          title: "Vault Health",
+          title: "Kondycja Skarbca",
           value: `${diagnostics.vault_health.healthy_packs ?? 0} / ${diagnostics.vault_health.total_packs ?? 0}`,
           hint: diagnostics.vault_health.message,
           status: diagnostics.vault_health.status,
         },
         {
-          title: "Pending Uploads",
+          title: "Oczekujące wysyłki",
           value: diagnostics.health.pending_uploads_queue_size ?? 0,
           hint: diagnostics.health.message,
           status: diagnostics.health.status,
         },
         {
-          title: "Last Upload Error",
-          value: diagnostics.health.last_upload_error || "None",
-          hint: "Latest upload failure captured by diagnostics.",
+          title: "Ostatni błąd wysyłki",
+          value: diagnostics.health.last_upload_error || "Brak",
+          hint: "Najnowszy błąd wysyłki zarejestrowany przez diagnostykę.",
           status: diagnostics.health.last_upload_error ? "WARN" : "OK",
         },
         {
-          title: "Cache Usage",
+          title: "Użycie cache",
           value: `${humanBytes(diagnostics.cache.total_bytes ?? 0)} / ${humanBytes(diagnostics.cache.max_bytes ?? 0)}`,
-          hint: `Hits ${diagnostics.cache.hit_count ?? 0} | Misses ${diagnostics.cache.miss_count ?? 0}`,
+          hint: `Trafienia ${diagnostics.cache.hit_count ?? 0} | Chybienia ${diagnostics.cache.miss_count ?? 0}`,
           status: diagnostics.cache.status,
         },
         {
-          title: "Scrub Coverage",
+          title: "Pokrycie scrubu",
           value: `${diagnostics.scrub.verified_shards ?? 0} / ${diagnostics.scrub.total_shards ?? 0}`,
           hint: diagnostics.scrub.message,
           status: diagnostics.scrub.status,
         },
         {
-          title: "Backup Readiness",
+          title: "Gotowość kopii",
           value: formatTimestamp(diagnostics.backup.last_successful_backup),
           hint: diagnostics.backup.message,
           status: diagnostics.backup.status,
@@ -972,7 +972,7 @@
       storageGcCandidates.textContent = storage.gc_candidate_packs ?? 0;
       storageCloudGuardStatus.textContent = String(storage.cloud_guard_status ?? "WARN").toUpperCase();
       storageCloudGuardStatus.className = `inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${statusClass(storage.cloud_guard_status)}`;
-      storageCloudGuardMessage.textContent = storage.cloud_guard_message || "Cloud guard snapshot unavailable.";
+      storageCloudGuardMessage.textContent = storage.cloud_guard_message || "Migawka Cloud Guard jest niedostępna.";
       storageSessionReadOps.textContent = Number(storage.session_read_ops ?? 0).toLocaleString();
       storageSessionWriteOps.textContent = Number(storage.session_write_ops ?? 0).toLocaleString();
       storageSessionEgress.textContent = humanBytes(storage.session_egress_bytes ?? 0);
@@ -991,17 +991,17 @@
         <article class="glass-panel rounded-2xl p-4">
           <div class="flex items-center justify-between gap-3">
             <p class="text-xs uppercase tracking-[0.22em] text-slate-500">${escapeHtml(formatStorageMode(mode.storage_mode))}</p>
-            <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${storageModeClass(mode.storage_mode)}">${escapeHtml(mode.active_packs)} pack(s)</span>
+            <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${storageModeClass(mode.storage_mode)}">${escapeHtml(mode.active_packs)} pak.</span>
           </div>
-          <p class="mt-3 text-lg font-semibold text-white">${humanBytes(mode.logical_bytes)} logical</p>
-          <p class="mt-2 text-sm text-slate-300">${humanBytes(mode.physical_bytes)} physical</p>
-          <p class="mt-2 text-sm text-slate-400">Avoided: ${humanBytes(mode.estimated_provider_bytes_avoided)}</p>
-          <p class="mt-2 text-sm text-slate-400">Est. cost: $${Number(mode.estimated_monthly_cost_usd ?? 0).toFixed(2)}</p>
+          <p class="mt-3 text-lg font-semibold text-white">${humanBytes(mode.logical_bytes)} logiczne</p>
+          <p class="mt-2 text-sm text-slate-300">${humanBytes(mode.physical_bytes)} fizyczne</p>
+          <p class="mt-2 text-sm text-slate-400">Zaoszczędzone: ${humanBytes(mode.estimated_provider_bytes_avoided)}</p>
+          <p class="mt-2 text-sm text-slate-400">Szac. koszt: $${Number(mode.estimated_monthly_cost_usd ?? 0).toFixed(2)}</p>
         </article>
       `).join("") || `
         <article class="glass-panel rounded-2xl p-4">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">No data</p>
-          <p class="mt-3 text-sm text-slate-300">No active packs are present yet.</p>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Brak danych</p>
+          <p class="mt-3 text-sm text-slate-300">Brak aktywnych pakietów.</p>
         </article>
       `;
 
@@ -1012,46 +1012,46 @@
             <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium status-ok">${Number(provider.usage_share_percent ?? 0).toFixed(1)}%</span>
           </div>
           <p class="mt-3 text-lg font-semibold text-white">${humanBytes(provider.used_physical_bytes)}</p>
-          <p class="mt-2 text-sm text-slate-300">Est. cost: $${Number(provider.estimated_monthly_cost_usd ?? 0).toFixed(2)}/month</p>
-          <p class="mt-2 text-sm text-slate-400">Configured rate: $${Number(provider.configured_cost_per_gib_month ?? 0).toFixed(3)} / GiB</p>
+          <p class="mt-2 text-sm text-slate-300">Szac. koszt: $${Number(provider.estimated_monthly_cost_usd ?? 0).toFixed(2)}/mies.</p>
+          <p class="mt-2 text-sm text-slate-400">Skonfigurowana stawka: $${Number(provider.configured_cost_per_gib_month ?? 0).toFixed(3)} / GiB</p>
         </article>
       `).join("");
     }
 
     async function loadMultiDeviceStatus() {
       const snapshot = await fetchJson("/api/multidevice/status");
-      multiDeviceMessage.textContent = snapshot.message || "Multi-device snapshot collected successfully.";
-      multiDeviceTimestamp.textContent = `Snapshot: ${formatTimestamp(snapshot.last_run)}`;
+      multiDeviceMessage.textContent = snapshot.message || "Migawka multi-device została pobrana poprawnie.";
+      multiDeviceTimestamp.textContent = `Migawka: ${formatTimestamp(snapshot.last_run)}`;
 
       const trustedPeers = snapshot.trusted_peers || [];
       const recentConflicts = snapshot.recent_conflicts || [];
       const localDeviceLabel = snapshot.local_device_name
         ? `${snapshot.local_device_name} (${snapshot.local_device_id ?? "-"})`
-        : "Not initialized";
+        : "Nie zainicjalizowano";
 
       const summaryCards = [
         {
-          title: "Local Device",
+          title: "Urządzenie lokalne",
           value: localDeviceLabel,
-          hint: snapshot.vault_id ? `Vault: ${snapshot.vault_id}` : (snapshot.message || "No local device identity has been initialized yet."),
+          hint: snapshot.vault_id ? `Skarbiec: ${snapshot.vault_id}` : (snapshot.message || "Tożsamość lokalnego urządzenia nie została jeszcze zainicjalizowana."),
           status: snapshot.status || (snapshot.local_device_id ? "OK" : "WARN"),
         },
         {
-          title: "Peer Listener",
-          value: snapshot.peer_port ? `:${snapshot.peer_port}` : "Disabled",
-          hint: trustedPeers.length > 0 ? "LAN discovery has seen at least one trusted peer." : "No trusted peers have been discovered yet.",
+          title: "Nasłuch peer",
+          value: snapshot.peer_port ? `:${snapshot.peer_port}` : "Wyłączony",
+          hint: trustedPeers.length > 0 ? "Odkrywanie LAN znalazło co najmniej jednego zaufanego peera." : "Nie wykryto jeszcze zaufanych peerów.",
           status: trustedPeers.length > 0 ? "OK" : "WARN",
         },
         {
-          title: "Trusted Peers",
+          title: "Zaufani peerzy",
           value: trustedPeers.length,
-          hint: trustedPeers.length > 0 ? "Known peers may serve chunks before cloud fallback." : "Peer mesh is currently empty.",
+          hint: trustedPeers.length > 0 ? "Znani peerzy mogą serwować chunki przed fallbackiem do chmury." : "Siatka peerów jest obecnie pusta.",
           status: trustedPeers.length > 0 ? "OK" : "WARN",
         },
         {
-          title: "Recent Conflicts",
+          title: "Najnowsze konflikty",
           value: recentConflicts.length,
-          hint: recentConflicts.length > 0 ? "Conflict copies were materialized instead of silent overwrite." : "No conflicts have been recorded yet.",
+          hint: recentConflicts.length > 0 ? "Kopie konfliktowe zostały zmaterializowane zamiast cichego nadpisania." : "Nie zarejestrowano jeszcze konfliktów.",
           status: recentConflicts.length > 0 ? "WARN" : "OK",
         },
       ];
@@ -1075,19 +1075,19 @@
                   <p class="text-xs uppercase tracking-[0.22em] text-slate-500">${escapeHtml(peer.device_name || peer.peer_id)}</p>
                   <p class="mt-2 text-sm text-slate-300">${escapeHtml(peer.peer_id)}</p>
                 </div>
-                <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${statusClass(peer.stale ? "WARN" : (peer.last_error ? "WARN" : "OK"))}">${peer.trusted ? "TRUSTED" : "SEEN"}</span>
+                <span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${statusClass(peer.stale ? "WARN" : (peer.last_error ? "WARN" : "OK"))}">${peer.trusted ? "ZAUFANY" : "WIDZIANY"}</span>
               </div>
               <p class="mt-3 text-sm text-slate-300">API: ${escapeHtml(peer.peer_api_base)}</p>
-              <p class="mt-2 text-sm text-slate-400">Health score: ${escapeHtml(peer.health_score ?? 0)}${peer.stale ? " | stale" : ""}</p>
-              <p class="mt-2 text-sm text-slate-400">Last seen: ${formatTimestamp(peer.last_seen_at)}</p>
+              <p class="mt-2 text-sm text-slate-400">Wynik kondycji: ${escapeHtml(peer.health_score ?? 0)}${peer.stale ? " | nieaktualny" : ""}</p>
+              <p class="mt-2 text-sm text-slate-400">Ostatnio widziany: ${formatTimestamp(peer.last_seen_at)}</p>
               <p class="mt-2 text-sm text-slate-400">Handshake: ${formatTimestamp(peer.last_handshake_at)}</p>
-              <p class="mt-2 text-sm ${peer.last_error ? "text-amber-300" : "text-slate-400"}">${escapeHtml(peer.last_error || "No recent peer errors.")}</p>
+              <p class="mt-2 text-sm ${peer.last_error ? "text-amber-300" : "text-slate-400"}">${escapeHtml(peer.last_error || "Brak ostatnich błędów peera.")}</p>
             </article>
           `).join("")
         : `
           <article class="glass-panel rounded-2xl p-4">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">No peers</p>
-            <p class="mt-3 text-sm text-slate-300">This vault has not discovered any trusted LAN peers yet.</p>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Brak peerów</p>
+            <p class="mt-3 text-sm text-slate-300">Ten Skarbiec nie wykrył jeszcze żadnych zaufanych peerów LAN.</p>
           </article>
         `;
 
@@ -1105,15 +1105,15 @@
           `).join("")
         : `
           <article class="glass-panel rounded-2xl p-4">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">No conflicts</p>
-            <p class="mt-3 text-sm text-slate-300">No conflict copies have been materialized for this vault yet.</p>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Brak konfliktów</p>
+            <p class="mt-3 text-sm text-slate-300">Brak zmaterializowanych kopii konfliktowych dla tego Skarbca.</p>
           </article>
         `;
     }
 
     async function loadQuota() {
       const quota = await fetchJson("/api/quota");
-      quotaLimit.textContent = `Per-provider limit: ${humanBytes(quota.max_physical_bytes_per_provider)} (${quota.max_physical_bytes_per_provider.toLocaleString()} bytes)`;
+      quotaLimit.textContent = `Limit na dostawcę: ${humanBytes(quota.max_physical_bytes_per_provider)} (${quota.max_physical_bytes_per_provider.toLocaleString()} B)`;
       quotaGrid.innerHTML = quota.providers.map((provider) => {
         const percentage = quota.max_physical_bytes_per_provider > 0
           ? Math.min(100, (provider.used_physical_bytes / quota.max_physical_bytes_per_provider) * 100)
@@ -1149,9 +1149,9 @@
       document.getElementById("cacheMisses").textContent = cache.miss_count;
       document.getElementById("cachePrefetched").textContent = cache.prefetched_entries;
       document.getElementById("cacheUsageLabel").textContent =
-        `Usage: ${humanBytes(cache.total_bytes)} / ${humanBytes(cache.max_bytes)}`;
+        `Użycie: ${humanBytes(cache.total_bytes)} / ${humanBytes(cache.max_bytes)}`;
       document.getElementById("cacheHitRatioLabel").textContent =
-        `Hit ratio: ${hitRatio.toFixed(1)}%`;
+        `Współczynnik trafień: ${hitRatio.toFixed(1)}%`;
       document.getElementById("cacheHitRatioBar").style.width = `${hitRatio}%`;
     }
 
@@ -1164,27 +1164,27 @@
       document.getElementById("scrubLightChecks").textContent = scrub.verified_light_shards;
       document.getElementById("scrubDeepChecks").textContent = scrub.verified_deep_shards;
       document.getElementById("scrubLastScan").textContent = scrub.last_scrub_timestamp
-        ? `Last scan: ${formatTimestamp(scrub.last_scrub_timestamp)}`
-        : "Last scan: never";
+        ? `Ostatni skan: ${formatTimestamp(scrub.last_scrub_timestamp)}`
+        : "Ostatni skan: nigdy";
 
       const coverage = scrub.total_shards > 0
         ? Math.min(100, (scrub.verified_shards / scrub.total_shards) * 100)
         : 0;
       document.getElementById("scrubCoverageLabel").textContent =
-        `Coverage: ${coverage.toFixed(1)}% verified`;
+        `Pokrycie: ${coverage.toFixed(1)}% zweryfikowano`;
       document.getElementById("scrubCoverageBar").style.width = `${coverage}%`;
     }
 
     async function loadRecoveryStatus() {
       const recovery = await fetchJson("/api/recovery/status");
       recoveryLastBackup.textContent = recovery.last_successful_backup
-        ? `Last Backup: ${formatTimestamp(recovery.last_successful_backup)}`
-        : "Last Backup: never";
+        ? `Ostatnia kopia: ${formatTimestamp(recovery.last_successful_backup)}`
+        : "Ostatnia kopia: nigdy";
 
       if (!recovery.recent_attempts || recovery.recent_attempts.length === 0) {
         recoveryTableBody.innerHTML = `
           <tr>
-            <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">No recovery backup attempts recorded yet.</td>
+              <td colspan="5" class="px-4 py-8 text-center text-sm text-slate-500">Brak zarejestrowanych prób kopii odzyskiwania.</td>
           </tr>
         `;
         return;
@@ -1200,7 +1200,7 @@
         </tr>
         ${attempt.last_error ? `
           <tr>
-            <td colspan="5" class="px-4 pb-3 text-xs text-rose-300">Error: ${escapeHtml(attempt.last_error)}</td>
+            <td colspan="5" class="px-4 pb-3 text-xs text-rose-300">Błąd: ${escapeHtml(attempt.last_error)}</td>
           </tr>
         ` : ""}
       `).join("");
@@ -1208,7 +1208,7 @@
 
     function renderFiles() {
       if (state.files.length === 0) {
-        filesTableBody.innerHTML = `<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-slate-500">No active files in the vault.</td></tr>`;
+        filesTableBody.innerHTML = `<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-slate-500">Brak aktywnych plików w Skarbcu.</td></tr>`;
         return;
       }
 
@@ -1233,7 +1233,7 @@
         });
 
       if (filteredFiles.length === 0) {
-        filesTableBody.innerHTML = `<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-slate-500">No files match the current filter.</td></tr>`;
+        filesTableBody.innerHTML = `<tr><td colspan="6" class="px-4 py-8 text-center text-sm text-slate-500">Brak plików pasujących do filtra.</td></tr>`;
         return;
       }
 
@@ -1259,11 +1259,11 @@
 
       state.selectedFile = file;
       renderFiles();
-      modalTitle.textContent = "Revision History";
+      modalTitle.textContent = "Historia rewizji";
       modalSubtitle.textContent = `${file.path} | inode ${file.inode_id}`;
-      revisionsTableBody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">Loading revision history...</td></tr>`;
+      revisionsTableBody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">Pobieranie historii rewizji...</td></tr>`;
       modalMessage.classList.add("hidden");
-      syncStatusLabel.textContent = "Loading sync state...";
+      syncStatusLabel.textContent = "Pobieranie stanu synchronizacji...";
       pinButton.onclick = () => updatePinState(inodeId, "pin");
       unpinButton.onclick = () => updatePinState(inodeId, "unpin");
       modal.classList.remove("hidden");
@@ -1276,7 +1276,7 @@
         ]);
         syncStatusLabel.textContent = formatSyncStatus(syncStatus);
         if (revisions.length === 0) {
-          revisionsTableBody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">No revisions available for this file.</td></tr>`;
+          revisionsTableBody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-sm text-slate-500">Brak dostępnych rewizji dla tego pliku.</td></tr>`;
           return;
         }
 
@@ -1285,7 +1285,7 @@
             <td class="px-4 py-3 text-sm text-slate-100">${revision.revision_id}</td>
             <td class="px-4 py-3 text-sm text-slate-300">${formatTimestamp(revision.created_at)}</td>
             <td class="px-4 py-3 text-sm text-slate-300">${humanBytes(revision.size)}</td>
-            <td class="px-4 py-3 text-sm ${revision.is_current ? "text-emerald-300" : "text-slate-400"}">${revision.is_current ? "Current" : "Historical"}</td>
+            <td class="px-4 py-3 text-sm ${revision.is_current ? "text-emerald-300" : "text-slate-400"}">${revision.is_current ? "Aktualna" : "Historyczna"}</td>
             <td class="px-4 py-3 text-sm text-slate-300">${formatRevisionSource(revision)}</td>
             <td class="px-4 py-3 text-xs text-slate-400">${formatRevisionLineage(revision)}</td>
             <td class="px-4 py-3 text-sm">
@@ -1294,7 +1294,7 @@
                 data-restore-revision-id="${revision.revision_id}"
                 ${revision.is_current ? "disabled" : ""}
               >
-                Restore
+                Przywróć
               </button>
             </td>
           </tr>
@@ -1314,9 +1314,9 @@
           method: "POST",
         });
         const conflictMessage = payload.conflict_copy_name
-          ? ` Conflict copy materialized as ${payload.conflict_copy_name}.`
+          ? ` Kopia konfliktowa została zmaterializowana jako ${payload.conflict_copy_name}.`
           : "";
-        showModalMessage(`Revision ${revisionId} restored successfully.${conflictMessage}`, "success");
+        showModalMessage(`Rewizja ${revisionId} została przywrócona.${conflictMessage}`, "success");
         await Promise.all([loadFiles(), openFileDetails(inodeId)]);
       } catch (error) {
         showModalMessage(error.message, "error");
@@ -1326,7 +1326,7 @@
     async function updatePinState(inodeId, action) {
       try {
         await fetchJson(`/api/files/${inodeId}/${action}`, { method: "POST" });
-        showModalMessage(action === "pin" ? "File pinned to this device." : "File unpinned and space reclaimed if possible.", "success");
+        showModalMessage(action === "pin" ? "Plik przypięto do tego urządzenia." : "Plik odpięto i zwolniono miejsce (jeśli to możliwe).", "success");
         await Promise.all([loadFiles(), openFileDetails(inodeId)]);
       } catch (error) {
         showModalMessage(error.message, "error");
@@ -1335,7 +1335,7 @@
 
     async function triggerBackupNow() {
       backupNowButton.disabled = true;
-      backupNowButton.textContent = "Backing up...";
+      backupNowButton.textContent = "Tworzenie kopii...";
       try {
         await fetchJson("/api/recovery/backup-now", { method: "POST" });
         await Promise.all([loadRecoveryStatus(), loadMaintenanceStatus()]);
@@ -1343,13 +1343,13 @@
         alert(error.message);
       } finally {
         backupNowButton.disabled = false;
-        backupNowButton.textContent = "Backup Now";
+        backupNowButton.textContent = "Wykonaj kopię";
       }
     }
 
     async function triggerScrubNow() {
       scrubNowButton.disabled = true;
-      scrubNowButton.textContent = "Scanning...";
+      scrubNowButton.textContent = "Skanowanie...";
       try {
         await fetchJson("/api/maintenance/scrub-now", { method: "POST" });
         await Promise.all([loadScrubStatus(), loadMaintenanceStatus()]);
@@ -1357,7 +1357,7 @@
         alert(error.message);
       } finally {
         scrubNowButton.disabled = false;
-        scrubNowButton.textContent = "Start Light Scan";
+        scrubNowButton.textContent = "Start lekkiego skanu";
       }
     }
 
@@ -1370,7 +1370,7 @@
 
       try {
         const payload = await fetchJson(endpoint, { method: "POST" });
-        showMaintenanceBanner(payload.message || "Maintenance action completed.", payload.status || "OK");
+        showMaintenanceBanner(payload.message || "Akcja utrzymaniowa zakończona.", payload.status || "OK");
         await loadDashboard();
       } catch (error) {
         showMaintenanceBanner(error.message, "ERROR");
@@ -1410,16 +1410,16 @@
 
       if (health.unreadable_packs > 0) {
         badge.classList.add("border-rose-500/30", "bg-rose-500/10", "text-rose-200");
-        badge.textContent = "Unreadable";
-        hint.textContent = `${health.unreadable_packs} pack(s) are unreadable and need intervention.`;
+        badge.textContent = "Nieczytelny";
+        hint.textContent = `${health.unreadable_packs} pak. jest nieczytelnych i wymaga interwencji.`;
       } else if (health.degraded_packs > 0) {
         badge.classList.add("border-amber-500/30", "bg-amber-500/10", "text-amber-200");
-        badge.textContent = "Degraded";
-        hint.textContent = `${health.degraded_packs} pack(s) are degraded but still recoverable.`;
+        badge.textContent = "Zdegradowany";
+        hint.textContent = `${health.degraded_packs} pak. jest zdegradowanych, ale nadal możliwych do odzyskania.`;
       } else {
         badge.classList.add("border-emerald-500/30", "bg-emerald-500/10", "text-emerald-200");
-        badge.textContent = "Healthy";
-        hint.textContent = "All active packs are fully healthy.";
+        badge.textContent = "Zdrowy";
+        hint.textContent = "Wszystkie aktywne pakiety są w pełni zdrowe.";
       }
     }
 
@@ -1482,21 +1482,21 @@
     function renderSyncBadge(file) {
       const pin = file.smart_sync_pin_state ?? 0;
       const hydration = file.smart_sync_hydration_state ?? 0;
-      if (pin === 1 && hydration === 1) return "Pinned + Hydrated";
-      if (pin === 1) return "Pinned";
-      if (hydration === 1) return "Hydrated";
-      return "Online-only";
+      if (pin === 1 && hydration === 1) return "Przypiety + pobrany";
+      if (pin === 1) return "Przypiety";
+      if (hydration === 1) return "Pobrany";
+      return "Tylko online";
     }
 
     function formatSyncStatus(syncStatus) {
-      if (!syncStatus) return "No Smart Sync state recorded yet.";
-      const pin = syncStatus.pin_state === 1 ? "Pinned" : "Online-only";
-      const hydration = syncStatus.hydration_state === 1 ? "Hydrated" : "Placeholder";
+      if (!syncStatus) return "Nie zarejestrowano jeszcze stanu Smart Sync.";
+      const pin = syncStatus.pin_state === 1 ? "Przypięty" : "Tylko online";
+      const hydration = syncStatus.hydration_state === 1 ? "Pobrany" : "Placeholder";
       return `${pin} | ${hydration} | revision ${syncStatus.revision_id}`;
     }
 
     function formatRevisionSource(revision) {
-      const origin = revision.origin ? String(revision.origin).replaceAll("_", " ") : "unknown";
+      const origin = revision.origin ? String(revision.origin).replaceAll("_", " ") : "nieznane";
       if (revision.device_id) {
         return `${origin} @ ${revision.device_id}`;
       }
@@ -1506,15 +1506,15 @@
     function formatRevisionLineage(revision) {
       const details = [];
       if (revision.parent_revision_id) {
-        details.push(`parent ${revision.parent_revision_id}`);
+        details.push(`rodzic ${revision.parent_revision_id}`);
       }
       if (revision.conflict_reason) {
-        details.push(`conflict: ${revision.conflict_reason}`);
+        details.push(`konflikt: ${revision.conflict_reason}`);
       }
       if (revision.immutable_until) {
-        details.push(`immutable until ${formatTimestamp(revision.immutable_until)}`);
+        details.push(`niemodyfikowalne do ${formatTimestamp(revision.immutable_until)}`);
       }
-      return details.length > 0 ? details.join(" | ") : "Linear head";
+      return details.length > 0 ? details.join(" | ") : "Liniowa głowica";
     }
 
     function backupStatusClass(status) {
@@ -1540,7 +1540,7 @@
     function formatStorageMode(mode) {
       if (mode === "EC_2_1") return "Paranoia";
       if (mode === "SINGLE_REPLICA") return "Standard";
-      if (mode === "LOCAL_ONLY") return "Local";
+      if (mode === "LOCAL_ONLY") return "Lokalny";
       return mode;
     }
 

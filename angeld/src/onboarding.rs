@@ -202,19 +202,19 @@ impl RestoreError {
     pub fn human_readable_reason(&self) -> &'static str {
         match self {
             Self::IncorrectPassphrase(_) => {
-                "The passphrase could not decrypt the metadata backup for the selected vault."
+                "Niepoprawne hasło Skarbca."
             }
             Self::MetadataNotFound(_) => {
-                "No metadata backup was found yet for the selected provider. Upload metadata from the primary device first."
+                "Nie znaleziono kopii metadanych dla wybranego dostawcy. Najpierw prześlij metadane z urządzenia głównego."
             }
             Self::NetworkError(_) => {
-                "OmniDrive could not reach the selected provider while downloading metadata."
+                "OmniDrive nie mógł połączyć się z wybranym dostawcą podczas pobierania metadanych."
             }
             Self::MissingProviderConfig(_) => {
-                "The selected provider is not configured with usable credentials on this device."
+                "Wybrany dostawca nie jest skonfigurowany z poprawnymi danymi dostępowymi na tym urządzeniu."
             }
             Self::SnapshotApply(_) | Self::Runtime(_) | Self::Io(_) => {
-                "OmniDrive could not safely apply the restored vault snapshot on this device."
+                "OmniDrive nie mógł bezpiecznie zastosować odtworzonej migawki Skarbca na tym urządzeniu."
             }
         }
     }
@@ -459,17 +459,17 @@ pub(crate) async fn load_provider_config_from_onboarding_db(
 ) -> Result<ProviderConfig, ProviderError> {
     let config_record = db::get_provider_config(pool, provider_name)
         .await
-        .map_err(|err| ProviderError::Aws(format!("failed to load provider config: {err}")))?
+        .map_err(|err| ProviderError::Aws(format!("nie udało się wczytać konfiguracji dostawcy: {err}")))?
         .ok_or_else(|| {
             ProviderError::MissingProviderConfig(format!(
-                "provider configuration for {provider_name} is missing"
+                "brak konfiguracji dostawcy {provider_name}"
             ))
         })?;
     let secret_record = db::get_provider_secret(pool, provider_name)
         .await
-        .map_err(|err| ProviderError::Aws(format!("failed to load provider secret: {err}")))?
+        .map_err(|err| ProviderError::Aws(format!("nie udało się wczytać sekretu dostawcy: {err}")))?
         .ok_or_else(|| {
-            ProviderError::MissingSecrets(format!("provider secret for {provider_name} is missing"))
+            ProviderError::MissingSecrets(format!("brak sekretu dostawcy {provider_name}"))
         })?;
     let secrets = unseal_provider_secrets(
         &secret_record.access_key_id_ciphertext,
@@ -484,7 +484,7 @@ pub(crate) async fn get_active_provider_configs(
 ) -> Result<Vec<FullProviderSetup>, ProviderError> {
     let records = db::list_provider_configs(pool)
         .await
-        .map_err(|err| ProviderError::Aws(format!("failed to list provider configs: {err}")))?;
+        .map_err(|err| ProviderError::Aws(format!("nie udało się pobrać listy konfiguracji dostawców: {err}")))?;
     let mut configs = Vec::new();
 
     for record in records {
@@ -642,7 +642,7 @@ pub(crate) async fn validate_provider_connection(
     Ok(ValidationReport {
         status: "OK".to_string(),
         message: format!(
-            "Connection to {} is verified for bucket {}.",
+            "Połączenie zweryfikowane pomyślnie dla {} (bucket: {}).",
             config.provider_name, config.bucket
         ),
         last_run: unix_timestamp_millis(),
@@ -984,10 +984,10 @@ async fn probe_endpoint_reachability(endpoint: &str) -> Result<bool, ProviderErr
     timeout(Duration::from_secs(5), TcpStream::connect(addrs[0]))
         .await
         .map_err(|_| {
-            ProviderError::EndpointUnreachable(format!("timed out connecting to {host}:{port}"))
+            ProviderError::EndpointUnreachable(format!("przekroczono czas łączenia z {host}:{port}"))
         })?
         .map_err(|err| {
-            ProviderError::EndpointUnreachable(format!("failed to connect to {host}:{port}: {err}"))
+            ProviderError::EndpointUnreachable(format!("nie udało się połączyć z {host}:{port}: {err}"))
         })?;
 
     Ok(true)
@@ -1010,7 +1010,7 @@ where
 
     if lower.contains("skew") || lower.contains("requesttimetooskewed") {
         return ProviderError::ClockSkew(format!(
-            "{phase} probe failed for {} because system clock appears skewed: {}",
+            "Błędny czas systemowy (clock skew) podczas testu {phase} dla {}: {}",
             config.provider_name, message
         ));
     }
@@ -1019,8 +1019,8 @@ where
         || lower.contains("bucket") && lower.contains("not found")
     {
         return ProviderError::BucketNotFound(format!(
-            "{phase} probe failed for {} because bucket {} was not found: {}",
-            config.provider_name, config.bucket, message
+            "Nie znaleziono kontenera (bucket) {} podczas testu {phase} dla {}: {}",
+            config.bucket, config.provider_name, message
         ));
     }
 
@@ -1032,7 +1032,7 @@ where
             | Some("expiredtoken")
     ) {
         return ProviderError::InvalidCredentials(format!(
-            "{phase} probe failed for {} due to invalid credentials: {}",
+            "Nieprawidłowe dane dostępowe podczas testu {phase} dla {}: {}",
             config.provider_name, message
         ));
     }
@@ -1040,11 +1040,11 @@ where
     if matches!(code.as_deref(), Some("accessdenied")) {
         return match phase {
             "authentication" => ProviderError::InvalidCredentials(format!(
-                "authentication probe failed for {}: {}",
+                "Nieprawidłowe dane dostępowe (authentication) dla {}: {}",
                 config.provider_name, message
             )),
             _ => ProviderError::AccessDenied(format!(
-                "{phase} probe failed for {} due to missing bucket permissions: {}",
+                "Brak uprawnień do bucketa podczas testu {phase} dla {}: {}",
                 config.provider_name, message
             )),
         };
@@ -1056,13 +1056,13 @@ where
         || lower.contains("unreachable")
     {
         return ProviderError::EndpointUnreachable(format!(
-            "{phase} probe failed for {} because endpoint {} is unreachable: {}",
+            "Endpoint jest nieosiągalny podczas testu {phase} dla {} ({}): {}",
             config.provider_name, config.endpoint, message
         ));
     }
 
     ProviderError::Aws(format!(
-        "{phase} probe failed for {}: {}",
+        "Test {phase} dla {} nie powiódł się: {}",
         config.provider_name, message
     ))
 }
@@ -1080,11 +1080,11 @@ fn map_restore_bootstrap_error(
     match err {
         disaster_recovery::DisasterRecoveryError::NoConfiguredProviders => {
             RestoreError::MissingProviderConfig(format!(
-                "provider {provider_id} is not configured with usable credentials"
+                "dostawca {provider_id} nie jest skonfigurowany z poprawnymi danymi dostępowymi"
             ))
         }
         other => RestoreError::Runtime(format!(
-            "failed to initialize restore provider {provider_id}: {other}"
+            "nie udało się zainicjalizować restore dla dostawcy {provider_id}: {other}"
         )),
     }
 }
@@ -1096,7 +1096,7 @@ fn map_restore_download_error(
     match err {
         disaster_recovery::DisasterRecoveryError::BackupDecryptFailed => {
             RestoreError::IncorrectPassphrase(format!(
-                "metadata backup from {provider_id} could not be decrypted with the supplied passphrase"
+                "kopia metadanych od {provider_id} nie mogła zostać odszyfrowana podanym hasłem"
             ))
         }
         disaster_recovery::DisasterRecoveryError::DownloadFailed(errors) => {
@@ -1108,7 +1108,7 @@ fn map_restore_download_error(
                 || lower.contains("latest.db.enc")
             {
                 RestoreError::MetadataNotFound(format!(
-                    "no metadata backup was found on {provider_id}: {joined}"
+                    "nie znaleziono kopii metadanych u dostawcy {provider_id}: {joined}"
                 ))
             } else if lower.contains("timed out")
                 || lower.contains("dns")
@@ -1116,15 +1116,15 @@ fn map_restore_download_error(
                 || lower.contains("unreachable")
             {
                 RestoreError::NetworkError(format!(
-                    "failed to download metadata backup from {provider_id}: {joined}"
+                    "nie udało się pobrać kopii metadanych od dostawcy {provider_id}: {joined}"
                 ))
             } else {
                 RestoreError::Runtime(format!(
-                    "restore download from {provider_id} failed: {joined}"
+                    "pobieranie restore od dostawcy {provider_id} nie powiodło się: {joined}"
                 ))
             }
         }
-        other => RestoreError::Runtime(format!("restore from {provider_id} failed: {other}")),
+        other => RestoreError::Runtime(format!("restore od dostawcy {provider_id} nie powiódł się: {other}")),
     }
 }
 
