@@ -84,6 +84,8 @@ pub struct VaultRestoreApplyReport {
     pub vault_id: String,
     pub restored_inodes: i64,
     pub restored_revisions: i64,
+    /// Provider names that have configs but no local secrets (need credential setup).
+    pub missing_provider_secrets: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -973,6 +975,8 @@ pub async fn get_vault_params(pool: &SqlitePool) -> Result<Option<VaultRecord>, 
 #[derive(sqlx::FromRow)] struct RestoredPackLocation { chunk_id: Vec<u8>, pack_id: String, pack_offset: i64, encrypted_size: i64 }
 #[derive(sqlx::FromRow)] struct RestoredChunkRef { id: i64, revision_id: i64, chunk_id: Vec<u8>, file_offset: i64, size: i64 }
 #[derive(sqlx::FromRow)] struct RestoredConflictEvent { conflict_id: i64, inode_id: i64, winning_revision_id: i64, losing_revision_id: i64, reason: String, materialized_inode_id: Option<i64>, materialized_revision_id: Option<i64>, created_at: i64 }
+#[allow(dead_code)]
+#[derive(sqlx::FromRow)] struct RestoredProviderConfig { provider_name: String, endpoint: String, region: String, bucket: String, force_path_style: i64, enabled: i64, draft_source: Option<String>, last_test_status: Option<String>, last_test_error: Option<String>, last_test_at: Option<i64>, created_at: i64, updated_at: i64 }
 
 pub async fn graft_restored_metadata_snapshot(
     pool: &SqlitePool,
@@ -1063,6 +1067,26 @@ pub async fn graft_restored_metadata_snapshot(
     .fetch_all(&restored_pool)
     .await?;
 
+    let r_provider_configs = sqlx::query_as::<_, RestoredProviderConfig>(
+        "SELECT provider_name, endpoint, region, bucket, force_path_style, enabled, \
+         draft_source, last_test_status, last_test_error, last_test_at, created_at, \
+         updated_at FROM provider_configs",
+    )
+    .fetch_all(&restored_pool)
+    .await
+    .unwrap_or_default();
+
+    // Read vault_config (KDF salt + params) — critical for multi-device unlock.
+    // Without this, the joining device derives a different vault key from the
+    // same passphrase and all decryption fails with aes-gcm errors.
+    let r_vault_config = sqlx::query_as::<_, VaultConfigRecord>(
+        "SELECT id, salt, parameter_set_version, memory_cost_kib, time_cost, lanes \
+         FROM vault_config WHERE id = 1",
+    )
+    .fetch_optional(&restored_pool)
+    .await
+    .unwrap_or(None);
+
     // Done reading — close the restored pool before we touch the main DB
     restored_pool.close().await;
 
@@ -1118,6 +1142,29 @@ pub async fn graft_restored_metadata_snapshot(
                 .execute(&mut *conn)
                 .await?;
             }
+        }
+
+        // Graft vault_config (KDF salt + parameters) from snapshot so that
+        // the joining device derives the same vault key from the passphrase.
+        if let Some(vc) = &r_vault_config {
+            sqlx::query(
+                "INSERT INTO vault_config (id, salt, parameter_set_version, \
+                 memory_cost_kib, time_cost, lanes) \
+                 VALUES (1, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                     salt = excluded.salt, \
+                     parameter_set_version = excluded.parameter_set_version, \
+                     memory_cost_kib = excluded.memory_cost_kib, \
+                     time_cost = excluded.time_cost, \
+                     lanes = excluded.lanes",
+            )
+            .bind(&vc.salt)
+            .bind(vc.parameter_set_version)
+            .bind(vc.memory_cost_kib)
+            .bind(vc.time_cost)
+            .bind(vc.lanes)
+            .execute(&mut *conn)
+            .await?;
         }
 
         for statement in [
@@ -1255,6 +1302,32 @@ pub async fn graft_restored_metadata_snapshot(
             .execute(&mut *conn).await?;
         }
 
+        // Graft provider_configs from snapshot (NOT secrets — those are DPAPI-sealed
+        // per machine and cannot be transferred).  Use INSERT ... ON CONFLICT IGNORE
+        // so we never overwrite a provider the joining device already configured.
+        for row in &r_provider_configs {
+            sqlx::query(
+                "INSERT OR IGNORE INTO provider_configs (provider_name, endpoint, region, \
+                 bucket, force_path_style, enabled, draft_source, last_test_status, \
+                 last_test_error, last_test_at, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL, NULL, ?, ?)",
+            )
+            .bind(&row.provider_name).bind(&row.endpoint).bind(&row.region)
+            .bind(&row.bucket).bind(row.force_path_style)
+            .bind(&row.draft_source)
+            .bind(row.created_at).bind(row.updated_at)
+            .execute(&mut *conn).await?;
+        }
+
+        // Detect providers that have configs but no local secrets
+        let missing_secrets = sqlx::query_scalar::<_, String>(
+            "SELECT pc.provider_name FROM provider_configs pc \
+             LEFT JOIN provider_secrets ps ON pc.provider_name = ps.provider_name \
+             WHERE ps.provider_name IS NULL",
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+
         let restored_inodes = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM inodes")
             .fetch_one(&mut *conn)
             .await?;
@@ -1271,6 +1344,7 @@ pub async fn graft_restored_metadata_snapshot(
             vault_id: remote_vault.vault_id,
             restored_inodes,
             restored_revisions,
+            missing_provider_secrets: missing_secrets,
         })
     }
     .await;

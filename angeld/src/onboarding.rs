@@ -22,7 +22,7 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::net::{TcpStream, lookup_host};
 use tokio::time::timeout;
-use tracing::info;
+use tracing::{info, warn};
 
 pub const SYSTEM_CONFIG_ONBOARDING_STATE: &str = "onboarding_state";
 pub const SYSTEM_CONFIG_ONBOARDING_MODE: &str = "onboarding_mode";
@@ -724,6 +724,15 @@ pub async fn perform_vault_restore(
         "[RESTORE] Vault ID grafted successfully: {}",
         applied.vault_id
     );
+
+    if !applied.missing_provider_secrets.is_empty() {
+        warn!(
+            "[RESTORE] The following providers were imported from the vault snapshot but have no \
+             local credentials configured. Hydration will fail for shards on these providers \
+             until credentials are added: {:?}",
+            applied.missing_provider_secrets
+        );
+    }
 
     Ok(VaultRestoreReport {
         status: "OK".to_string(),

@@ -19,7 +19,6 @@ pub async fn load_shared_config(
             .with_webpki_roots()
             .https_only()
             .enable_http1()
-            .enable_http2()
             .build()
     };
     let http_client = HyperClientBuilder::new().build(https_connector);

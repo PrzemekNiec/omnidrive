@@ -6,21 +6,14 @@ Każdy blok to 1-3 dni pracy. Bloki w ramach fazy są sekwencyjne (każdy buduje
 
 ---
 
-## Pre-req: Domknięcie B8
+## Pre-req: Domknięcie B8 — DONE (2026-04-06, v0.1.20)
 
-### B8.1: Diagnoza Dell O: hydration timeout
-- Sprawdzić `GET /api/onboarding/status` na Dellu — czy providerzy są załadowani do runtime
-- Sprawdzić logi angeld.log — szukać błędów downloadu/hydracji
-- Zidentyfikować czy problem to R2 connectivity, brak provider reload, czy za krótki timeout
+B8 zamknięty. Trzy root causes naprawione w `smart_sync.rs`:
+1. `convert_directory_to_placeholder` — `CreateFileW` z `FILE_FLAG_BACKUP_SEMANTICS` (std::fs nie otwiera katalogów)
+2. `create_projection_placeholder` — `ensure_placeholder_directory_chain` wywoływane bezwarunkowo (nie tylko gdy plik nie istnieje)
+3. `fetch_placeholders_callback` — `CfExecute(CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS)` z zero entries (minifilter nie blokuje enumeracji)
 
-### B8.2: Naprawa hydration na Dellu
-- Naprawić zidentyfikowaną przyczynę
-- Potwierdzić że Dell może przeglądać pliki na O:
-- Potwierdzić LAN peer discovery między Lenovo i Dell (opcjonalnie)
-
-### B8.3: Oficjalne zamknięcie B8
-- Wszystkie acceptance criteria zielone
-- Zapis wyników do `b8-acceptance-*.json`
+Wynik: `dir O:\`, `dir O:\nested`, `dir O:\nested\alpha` — natychmiastowa odpowiedź na obu maszynach (Lenovo + Dell)
 
 ---
 
@@ -48,7 +41,15 @@ Każdy blok to 1-3 dni pracy. Bloki w ramach fazy są sekwencyjne (każdy buduje
 - Zdefiniować rollback: co robi daemon v1 gdy widzi v2 bazę? (fail-safe refuse)
 - Dodać do `docs/crypto-spec.md`
 
-**Deliverable Phase 0:** `docs/crypto-spec.md` — 2-3 strony, jedno źródło prawdy
+**Deliverable Phase 0:** `docs/crypto-spec.md` — DONE (2026-04-06)
+
+Kluczowe decyzje podjęte w RFC:
+- 3-warstwowa hierarchia: passphrase → KEK (HKDF) → Vault Key (losowy, AES-KW wrapped) → DEK (losowy per-plik, AES-KW wrapped) → AES-256-GCM
+- AES-256-KW (RFC 3394) do wrappowania kluczy (nie AES-GCM) — brak nonce, WebCrypto-kompatybilny
+- ChunkRecordPrefix V2 — ten sam rozmiar 80 bytes, `record_version=2`, random nonce, `dek_id_hint`
+- DEK per-plik (nie per-chunk) — jeden secret w share URL dla Epic 33
+- Lazy migration V1→V2 — nowe pliki V2, stare czytane V1, opcjonalny batch re-encryption
+- Nowy crate: `aes-kw` (pure Rust, RFC 3394)
 
 ---
 
@@ -195,6 +196,22 @@ Każdy blok to 1-3 dni pracy. Bloki w ramach fazy są sekwencyjne (każdy buduje
 - IShellIconOverlayIdentifier implementation
 - Stan z angeld via named pipe lub shared memory (szybki polling)
 - Test: zmień stan pliku → ikona się zmienia w Eksploratorze
+
+### 35.3: System Tray Companion
+- **Cel:** Lekka aplikacja w Rust (biblioteka `tray-item` lub `windows-rs` Shell_NotifyIcon), działająca niezależnie od angeld
+- **Architektura:** Osobny crate (`omnidrive-tray`), osobny proces — thin client do API angeld, zero logiki biznesowej
+- **Monitoring:** Polling `GET /api/health` na 127.0.0.1:8787 co 5s
+- **Ikona tray:**
+  - Zielona — Połączono (daemon healthy, vault unlocked)
+  - Żółta — Ostrzeżenie (daemon healthy, vault locked lub degraded providers)
+  - Czerwona — Offline (daemon nie odpowiada)
+- **Menu kontekstowe:**
+  - Otwórz Skarbiec (O:) — `explorer.exe O:\`
+  - Otwórz Dashboard — domyślna przeglądarka na `http://127.0.0.1:8787`
+  - Restart Daemona — zabicie procesu angeld (`taskkill`) + ponowne uruchomienie (re-spawn)
+  - Wymuś Odświeżenie Eksploratora — `SHChangeNotify(SHCNE_UPDATEDIR)` na O:\ (preferowane) lub `taskkill /IM explorer.exe && explorer.exe` jako fallback przy blokadzie dysku O:
+- **Autostart:** Rejestracja w `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` obok angeld
+- **Instalacja:** Dodać do Inno Setup payload, uruchamiać po instalacji razem z angeld
 
 ---
 

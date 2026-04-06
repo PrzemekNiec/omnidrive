@@ -827,6 +827,17 @@ async fn post_setup_provider(
         )
         .await?;
 
+        // Hot-reload providers into the running downloader so the user does not
+        // need to restart the daemon after adding credentials for a new provider
+        // (e.g. after join-existing grafted provider_configs without secrets).
+        if let Some(ref downloader) = state.downloader {
+            if let Err(err) = downloader.reload_active_providers_from_db().await {
+                tracing::warn!("[PROVIDER] hot-reload after setup-provider failed: {err}");
+            } else {
+                tracing::info!("[PROVIDER] hot-reloaded providers after setup-provider for {provider_name}");
+            }
+        }
+
         Ok::<_, Box<dyn std::error::Error>>(SetupProviderResponse {
             provider_name: provider_name.to_string(),
             enabled: request.enabled.unwrap_or(true),
@@ -1465,14 +1476,30 @@ async fn post_unlock(
         .unlock(&state.pool, &request.passphrase)
         .await
     {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(UnlockResponse {
-                status: "UNLOCKED".to_string(),
-                initialized: result.initialized,
-            }),
-        )
-            .into_response(),
+        Ok(result) => {
+            // Delete stale placeholder files and re-create them so Windows
+            // issues fresh FETCH_DATA callbacks now that the vault is
+            // unlocked.  Without this, Windows caches the earlier
+            // "vault is locked" failure and never retries.
+            let pool = state.pool.clone();
+            tokio::spawn(async move {
+                let paths = RuntimePaths::detect();
+                if let Err(err) =
+                    smart_sync::reset_placeholders_after_unlock(&pool, &paths.sync_root).await
+                {
+                    tracing::warn!("[UNLOCK] placeholder reset failed: {err}");
+                }
+            });
+
+            (
+                StatusCode::OK,
+                Json(UnlockResponse {
+                    status: "UNLOCKED".to_string(),
+                    initialized: result.initialized,
+                }),
+            )
+                .into_response()
+        }
         Err(err) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({

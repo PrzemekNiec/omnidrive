@@ -157,6 +157,23 @@ pub fn install_hydration_runtime(
     }
 }
 
+pub async fn reset_placeholders_after_unlock(
+    pool: &SqlitePool,
+    sync_root_path: &Path,
+) -> Result<(), SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::reset_placeholders_after_unlock(pool, sync_root_path).await
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = pool;
+        let _ = sync_root_path;
+        Err(SmartSyncError::UnsupportedPlatform)
+    }
+}
+
 pub async fn project_vault_to_sync_root(
     pool: &SqlitePool,
     sync_root_path: &Path,
@@ -258,13 +275,15 @@ mod imp {
     use windows::core::{GUID, HRESULT, PCWSTR};
     use windows::Win32::Foundation::{HANDLE, NTSTATUS, RPC_E_CHANGED_MODE, S_FALSE, S_OK};
     use windows::Win32::Storage::CloudFilters::{
-        CfConnectSyncRoot, CfCreatePlaceholders, CfDisconnectSyncRoot, CfExecute,
-        CfGetSyncRootInfoByPath,
+        CfConnectSyncRoot, CfConvertToPlaceholder, CfCreatePlaceholders,
+        CfDisconnectSyncRoot, CfExecute, CfGetSyncRootInfoByPath,
         CfHydratePlaceholder,
         CfRegisterSyncRoot, CfSetPinState, CfUnregisterSyncRoot, CfUpdatePlaceholder,
+        CF_CONVERT_FLAG_NONE,
         CF_CALLBACK_INFO, CF_CALLBACK_PARAMETERS,
         CF_CALLBACK_REGISTRATION, CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
-        CF_CALLBACK_TYPE_FETCH_DATA, CF_CALLBACK_TYPE_NONE, CF_CONNECT_FLAG_NONE,
+        CF_CALLBACK_TYPE_FETCH_DATA, CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS,
+        CF_CALLBACK_TYPE_NONE, CF_CONNECT_FLAG_NONE,
         CF_CONNECTION_KEY, CF_CREATE_FLAGS, CF_CREATE_FLAG_NONE, CF_CREATE_FLAG_STOP_ON_ERROR,
         CF_HYDRATE_FLAGS,
         CF_FILE_RANGE, CF_FS_METADATA, CF_HARDLINK_POLICY, CF_HARDLINK_POLICY_NONE,
@@ -272,7 +291,9 @@ mod imp {
         CF_HYDRATION_POLICY_MODIFIER_NONE, CF_HYDRATION_POLICY_PRIMARY, CF_INSYNC_POLICY,
         CF_INSYNC_POLICY_NONE, CF_OPERATION_INFO, CF_OPERATION_PARAMETERS, CF_PIN_STATE,
         CF_PIN_STATE_PINNED, CF_PIN_STATE_UNPINNED, CF_OPERATION_TRANSFER_DATA_FLAGS,
-        CF_OPERATION_TYPE_TRANSFER_DATA, CF_PLACEHOLDER_CREATE_FLAGS,
+        CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS,
+        CF_OPERATION_TYPE_TRANSFER_DATA, CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS,
+        CF_PLACEHOLDER_CREATE_FLAGS,
         CF_PLACEHOLDER_CREATE_INFO, CF_PLACEHOLDER_MANAGEMENT_POLICY,
         CF_PLACEHOLDER_MANAGEMENT_POLICY_CREATE_UNRESTRICTED, CF_POPULATION_POLICY,
         CF_POPULATION_POLICY_FULL, CF_POPULATION_POLICY_MODIFIER,
@@ -281,7 +302,11 @@ mod imp {
         CF_SYNC_REGISTRATION, CF_SYNC_ROOT_INFO_STANDARD, CF_SYNC_ROOT_STANDARD_INFO,
         CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
     };
-    use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_ARCHIVE, FILE_BASIC_INFO};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_ARCHIVE, FILE_BASIC_INFO,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     use windows::Win32::UI::Shell::{SHCNE_UPDATEITEM, SHCNF_PATHW, SHChangeNotify};
 
@@ -509,6 +534,62 @@ mod imp {
         });
     }
 
+    /// Callback for FETCH_PLACEHOLDERS.  We pre-create all placeholders at
+    /// startup, so there is nothing new to return.  However, we MUST call
+    /// CfExecute with CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS (zero entries)
+    /// to complete the request — otherwise the minifilter blocks directory
+    /// enumeration indefinitely, causing Explorer timeouts.
+    unsafe extern "system" fn fetch_placeholders_callback(
+        callback_info: *const CF_CALLBACK_INFO,
+        _callback_parameters: *const CF_CALLBACK_PARAMETERS,
+    ) {
+        let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+            fetch_placeholders_callback_inner(callback_info)
+        }));
+        if let Err(panic_payload) = result {
+            log_callback_panic("FETCH_PLACEHOLDERS", panic_payload);
+        }
+    }
+
+    unsafe fn fetch_placeholders_callback_inner(
+        callback_info: *const CF_CALLBACK_INFO,
+    ) {
+        if callback_info.is_null() {
+            return;
+        }
+        let info = unsafe { &*callback_info };
+
+        trace!("smart-sync: FETCH_PLACEHOLDERS callback invoked, completing with zero entries");
+
+        let operation_info = CF_OPERATION_INFO {
+            StructSize: size_of::<CF_OPERATION_INFO>() as u32,
+            Type: CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS,
+            ConnectionKey: info.ConnectionKey,
+            TransferKey: info.TransferKey,
+            CorrelationVector: ptr::null(),
+            SyncStatus: ptr::null(),
+            RequestKey: info.RequestKey,
+        };
+
+        let mut operation_parameters = CF_OPERATION_PARAMETERS {
+            ParamSize: size_of::<CF_OPERATION_PARAMETERS>() as u32,
+            ..Default::default()
+        };
+        operation_parameters.Anonymous.TransferPlaceholders =
+            windows::Win32::Storage::CloudFilters::CF_OPERATION_PARAMETERS_0_4 {
+                Flags: CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS(0),
+                CompletionStatus: NTSTATUS(STATUS_SUCCESS),
+                PlaceholderTotalCount: 0,
+                PlaceholderArray: ptr::null_mut(),
+                PlaceholderCount: 0,
+                EntriesProcessed: 0,
+            };
+
+        if let Err(err) = unsafe { CfExecute(&operation_info, &mut operation_parameters) } {
+            warn!("smart-sync: FETCH_PLACEHOLDERS CfExecute failed: {}", err);
+        }
+    }
+
     unsafe extern "system" fn cancel_fetch_data_callback(
         callback_info: *const CF_CALLBACK_INFO,
         callback_parameters: *const CF_CALLBACK_PARAMETERS,
@@ -668,6 +749,46 @@ mod imp {
         }
     }
 
+    pub async fn reset_placeholders_after_unlock(
+        pool: &SqlitePool,
+        sync_root_path: &Path,
+    ) -> Result<(), SmartSyncError> {
+        let sync_root = normalize_sync_root_path(sync_root_path)?;
+        let files = db::get_active_files_for_projection(pool).await?;
+        info!(
+            "[UNLOCK] resetting {} placeholders after vault unlock in {}",
+            files.len(),
+            sync_root.display()
+        );
+        flush_smart_sync_logs();
+
+        for file in &files {
+            let relative_path = normalize_relative_placeholder_path(&file.path)?;
+            let target_path = sync_root.join(&relative_path);
+            if target_path.exists() {
+                // Remove the stale placeholder so it can be recreated fresh.
+                // Windows cached the "vault is locked" failure on this file.
+                if let Err(err) = std::fs::remove_file(&target_path) {
+                    warn!(
+                        "[UNLOCK] failed to remove stale placeholder {}: {}",
+                        target_path.display(),
+                        err
+                    );
+                }
+            }
+        }
+
+        // Re-create all placeholders from scratch
+        for file in &files {
+            let state = db::ensure_smart_sync_state(pool, file.inode_id, file.revision_id).await?;
+            create_projection_placeholder(&sync_root, file, state.pin_state != 0)?;
+        }
+
+        info!("[UNLOCK] placeholder reset complete, {} files ready for hydration", files.len());
+        flush_smart_sync_logs();
+        Ok(())
+    }
+
     pub async fn project_vault_to_sync_root(
         pool: &SqlitePool,
         sync_root_path: &Path,
@@ -813,10 +934,14 @@ mod imp {
     ) -> Result<(), SmartSyncError> {
         let relative_path = normalize_relative_placeholder_path(&file.path)?;
         let target_path = sync_root.join(&relative_path);
-        if !target_path.exists() {
-            let file_time = file_time_from_unix_millis(file.created_at)?;
-            ensure_placeholder_directory_chain(sync_root, &relative_path, file_time)?;
+        // Always ensure parent directories are cloud-file placeholders,
+        // even if the file placeholder itself already exists. Without this,
+        // directories created by std::fs::create_dir_all in a prior session
+        // remain plain folders and cldflt.sys blocks enumeration.
+        let file_time = file_time_from_unix_millis(file.created_at)?;
+        ensure_placeholder_directory_chain(sync_root, &relative_path, file_time)?;
 
+        if !target_path.exists() {
             let base_directory = target_path.parent().unwrap_or(sync_root);
             let base_directory_wide = wide_path(base_directory)?;
             let file_name = target_path.file_name().ok_or(SmartSyncError::InvalidPath(
@@ -921,12 +1046,15 @@ mod imp {
                 current.push(segment);
                 let target_path = sync_root.join(&current);
                 if target_path.exists() {
+                    // Directory exists — convert to placeholder if not already one.
+                    convert_directory_to_placeholder(&target_path);
                     continue;
                 }
 
                 std::fs::create_dir_all(&target_path)?;
+                convert_directory_to_placeholder(&target_path);
                 info!(
-                    "smart-sync: physical directory ready {} under {}",
+                    "smart-sync: directory placeholder ready {} under {}",
                     current.display(),
                     sync_root.display()
                 );
@@ -1229,6 +1357,10 @@ mod imp {
 
         let sync_root_wide = wide_path(sync_root_path)?;
         let callbacks = [
+            CF_CALLBACK_REGISTRATION {
+                Type: CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS,
+                Callback: Some(fetch_placeholders_callback),
+            },
             CF_CALLBACK_REGISTRATION {
                 Type: CF_CALLBACK_TYPE_FETCH_DATA,
                 Callback: Some(fetch_data_callback),
@@ -1593,6 +1725,67 @@ mod imp {
 
     fn create_flags() -> CF_CREATE_FLAGS {
         CF_CREATE_FLAGS(CF_CREATE_FLAG_NONE.0 | CF_CREATE_FLAG_STOP_ON_ERROR.0)
+    }
+
+    /// Convert an existing regular directory into a cfapi placeholder so that
+    /// the cloud-files minifilter does not block directory enumeration.
+    fn convert_directory_to_placeholder(path: &Path) {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(iter::once(0)).collect();
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(wide.as_ptr()),
+                (FILE_GENERIC_READ | FILE_GENERIC_WRITE).0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                None,
+            )
+        };
+        let handle = match handle {
+            Ok(h) => h,
+            Err(err) => {
+                warn!(
+                    "smart-sync: cannot open dir {} for placeholder conversion: {}",
+                    path.display(),
+                    err
+                );
+                return;
+            }
+        };
+        let result = unsafe {
+            CfConvertToPlaceholder(
+                handle,
+                None,
+                0,
+                CF_CONVERT_FLAG_NONE,
+                None,
+                None,
+            )
+        };
+        unsafe { windows::Win32::Foundation::CloseHandle(handle).ok(); }
+        match result {
+            Ok(()) => {
+                info!(
+                    "smart-sync: converted dir to placeholder: {}",
+                    path.display()
+                );
+            }
+            Err(ref err) if err.code() == HRESULT(0x8007017Cu32 as i32) => {
+                // ERROR_CLOUD_FILE_INVALID_REQUEST — directory is already a placeholder.
+                trace!(
+                    "smart-sync: dir {} is already a placeholder, skipping",
+                    path.display()
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "smart-sync: CfConvertToPlaceholder for dir {} failed: {}",
+                    path.display(),
+                    err
+                );
+            }
+        }
     }
 
     fn placeholder_create_flags() -> CF_PLACEHOLDER_CREATE_FLAGS {
