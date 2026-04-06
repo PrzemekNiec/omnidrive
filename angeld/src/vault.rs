@@ -1,6 +1,9 @@
 use crate::db;
 use hkdf::Hkdf;
-use omnidrive_core::crypto::{CryptoError, KeyBytes, RootKdfParams, derive_root_keys};
+use omnidrive_core::crypto::{
+    CryptoError, KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_root_keys,
+    generate_random_key, unwrap_key, wrap_key,
+};
 use secrecy::{ExposeSecret, SecretBox};
 use sha2::Sha256;
 use sqlx::SqlitePool;
@@ -8,6 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 use rand::RngCore;
 use tokio::sync::RwLock;
+use tracing::info;
 
 const DEFAULT_PARAMETER_SET_VERSION: u32 = 1;
 const DEFAULT_MEMORY_COST_KIB: u32 = 65_536;
@@ -21,16 +25,30 @@ pub struct VaultKeyStore {
     inner: Arc<RwLock<Option<UnlockedVaultKeys>>>,
 }
 
+#[allow(dead_code)]
 struct UnlockedVaultKeys {
     master_key: SecretBox<KeyBytes>,
+    /// Deterministic V1 vault key (HKDF from master_key). Used for V1 chunk read/write.
     vault_key: SecretBox<KeyBytes>,
+    /// Random V2 Vault Key (unwrapped via AES-KW from DB). `None` if vault is still V1-only.
+    envelope_vault_key: Option<SecretBox<KeyBytes>>,
 }
 
 impl UnlockedVaultKeys {
+    #[cfg(test)]
     fn new(master_key: KeyBytes, vault_key: KeyBytes) -> Self {
         Self {
             master_key: SecretBox::new(Box::new(master_key)),
             vault_key: SecretBox::new(Box::new(vault_key)),
+            envelope_vault_key: None,
+        }
+    }
+
+    fn with_envelope_key(master_key: KeyBytes, vault_key: KeyBytes, envelope_key: KeyBytes) -> Self {
+        Self {
+            master_key: SecretBox::new(Box::new(master_key)),
+            vault_key: SecretBox::new(Box::new(vault_key)),
+            envelope_vault_key: Some(SecretBox::new(Box::new(envelope_key))),
         }
     }
 
@@ -40,6 +58,10 @@ impl UnlockedVaultKeys {
 
     fn vault_key(&self) -> KeyBytes {
         *self.vault_key.expose_secret()
+    }
+
+    fn envelope_vault_key(&self) -> Option<KeyBytes> {
+        self.envelope_vault_key.as_ref().map(|k| *k.expose_secret())
     }
 }
 
@@ -101,8 +123,52 @@ impl VaultKeyStore {
         let (config, initialized) = ensure_vault_config(pool).await?;
         let _ = ensure_local_vault_params(pool, &config).await?;
         let root_keys = derive_root_keys(passphrase.as_bytes(), &config)?;
-        *self.inner.write().await =
-            Some(UnlockedVaultKeys::new(root_keys.master_key, root_keys.vault_key));
+
+        // Try to unwrap the V2 envelope Vault Key if it exists in the DB.
+        let vault_params = db::get_vault_params(pool).await?;
+        let unlocked = match vault_params.as_ref().and_then(|v| v.encrypted_vault_key.as_ref()) {
+            Some(wrapped_bytes) if wrapped_bytes.len() == WRAPPED_KEY_LEN => {
+                let wrapped: [u8; WRAPPED_KEY_LEN] =
+                    wrapped_bytes.as_slice().try_into().unwrap();
+                let envelope_key = unwrap_key(&root_keys.kek, &wrapped)?;
+                info!("[VAULT] V2 envelope Vault Key unwrapped successfully (generation {})",
+                    vault_params.as_ref().and_then(|v| v.vault_key_generation).unwrap_or(0));
+                UnlockedVaultKeys::with_envelope_key(
+                    root_keys.master_key,
+                    root_keys.vault_key,
+                    envelope_key,
+                )
+            }
+            _ => {
+                // No V2 key yet — first unlock on a fresh/V1 vault.
+                // Generate a random Vault Key, wrap it, and store it.
+                if initialized {
+                    let envelope_key = generate_random_key();
+                    let wrapped = wrap_key(&root_keys.kek, &envelope_key)?;
+                    db::store_encrypted_vault_key(pool, &wrapped, 1).await?;
+                    info!("[VAULT] V2 envelope Vault Key generated and stored (generation 1)");
+                    UnlockedVaultKeys::with_envelope_key(
+                        root_keys.master_key,
+                        root_keys.vault_key,
+                        envelope_key,
+                    )
+                } else {
+                    // Existing vault without V2 key — unlock in V1 mode,
+                    // generate V2 key on this unlock so future writes use V2.
+                    let envelope_key = generate_random_key();
+                    let wrapped = wrap_key(&root_keys.kek, &envelope_key)?;
+                    db::store_encrypted_vault_key(pool, &wrapped, 1).await?;
+                    info!("[VAULT] V2 envelope Vault Key bootstrapped for existing V1 vault (generation 1)");
+                    UnlockedVaultKeys::with_envelope_key(
+                        root_keys.master_key,
+                        root_keys.vault_key,
+                        envelope_key,
+                    )
+                }
+            }
+        };
+
+        *self.inner.write().await = Some(unlocked);
 
         Ok(UnlockResult {
             initialized,
@@ -124,11 +190,65 @@ impl VaultKeyStore {
         }
     }
 
+    /// Return the V2 envelope Vault Key (random, unwrapped from DB).
+    /// Returns `None` if the vault was unlocked before V2 key was generated.
+    #[allow(dead_code)]
+    pub async fn require_envelope_key(&self) -> Result<KeyBytes, VaultError> {
+        match self.inner.read().await.as_ref() {
+            Some(keys) => keys.envelope_vault_key().ok_or(VaultError::Locked),
+            None => Err(VaultError::Locked),
+        }
+    }
+
     #[allow(dead_code)]
     pub async fn derive_cache_key(&self) -> Result<SecretBox<KeyBytes>, VaultError> {
         let master_key = self.require_master_key().await?;
         let cache_key = derive_cache_key(&master_key)?;
         Ok(SecretBox::new(Box::new(cache_key)))
+    }
+
+    /// Get or create a DEK for the given inode.
+    ///
+    /// - If a wrapped DEK already exists in `data_encryption_keys`, unwrap it
+    ///   with the V2 envelope Vault Key and return it.
+    /// - If none exists, generate a random 256-bit DEK, wrap it with the
+    ///   envelope Vault Key, persist the wrapped form, and return the plaintext.
+    ///
+    /// Returns `(dek_id, SecretBox<KeyBytes>)`.
+    #[allow(dead_code)]
+    pub async fn get_or_create_dek(
+        &self,
+        pool: &SqlitePool,
+        inode_id: i64,
+    ) -> Result<(i64, SecretBox<KeyBytes>), VaultError> {
+        let envelope_key = self.require_envelope_key().await?;
+
+        if let Some(record) = db::get_wrapped_dek(pool, inode_id).await? {
+            let wrapped: [u8; WRAPPED_KEY_LEN] = record
+                .wrapped_dek
+                .as_slice()
+                .try_into()
+                .map_err(|_| VaultError::InvalidConfig("wrapped_dek has invalid length"))?;
+            let dek = unwrap_key(&envelope_key, &wrapped)?;
+            return Ok((record.dek_id, SecretBox::new(Box::new(dek))));
+        }
+
+        // Generate new DEK, wrap, persist
+        let dek = generate_random_key();
+        let wrapped = wrap_key(&envelope_key, &dek)?;
+        let vault_key_gen = self.current_vault_key_generation(pool).await?;
+        let dek_id =
+            db::insert_wrapped_dek(pool, inode_id, &wrapped, 1, vault_key_gen).await?;
+        info!("[DEK] created dek_id={dek_id} for inode_id={inode_id} (gen={vault_key_gen})");
+        Ok((dek_id, SecretBox::new(Box::new(dek))))
+    }
+
+    /// Read the current vault_key_generation from DB (defaults to 1).
+    async fn current_vault_key_generation(&self, pool: &SqlitePool) -> Result<i64, VaultError> {
+        let vault = db::get_vault_params(pool).await?;
+        Ok(vault
+            .and_then(|v| v.vault_key_generation)
+            .unwrap_or(1))
     }
 
     #[cfg(test)]
@@ -260,6 +380,134 @@ mod tests {
         assert_eq!(*cache_key_a.expose_secret(), *cache_key_b.expose_secret());
         assert_ne!(*cache_key_a.expose_secret(), master_key);
         assert_ne!(*cache_key_a.expose_secret(), vault_key);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn envelope_key_generated_on_first_unlock_and_stable_on_relock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+
+        // First unlock — should generate and store V2 envelope key
+        let store_a = VaultKeyStore::new();
+        store_a.unlock(&pool, "secret").await?;
+        let envelope_a = store_a.require_envelope_key().await?;
+
+        // Second unlock (same passphrase, same DB) — should unwrap same key
+        let store_b = VaultKeyStore::new();
+        store_b.unlock(&pool, "secret").await?;
+        let envelope_b = store_b.require_envelope_key().await?;
+
+        assert_eq!(envelope_a, envelope_b, "envelope key must be stable across unlocks");
+
+        // V1 key is deterministic and separate from envelope key
+        let v1_key = store_a.require_key().await?;
+        assert_ne!(v1_key, envelope_a, "V1 and V2 keys must differ");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wrong_passphrase_fails_to_unwrap_envelope_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+
+        // Create vault with passphrase A
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "correct-pass").await?;
+        let _ = store.require_envelope_key().await?;
+
+        // Try to unlock with passphrase B — should fail at AES-KW unwrap
+        let store2 = VaultKeyStore::new();
+        let result = store2.unlock(&pool, "wrong-pass").await;
+        assert!(result.is_err(), "wrong passphrase must fail AES-KW unwrap");
+
+        Ok(())
+    }
+
+    // ── DEK tests ────────────────────────────────���──────────────────────
+
+    #[tokio::test]
+    async fn get_or_create_dek_generates_and_persists() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass123").await?;
+
+        let inode_id = 42;
+
+        // First call — should generate a new DEK
+        let (dek_id_a, dek_a) = store.get_or_create_dek(&pool, inode_id).await?;
+        assert!(dek_id_a > 0);
+
+        // Second call — should return the same DEK (from DB, not generate new)
+        let (dek_id_b, dek_b) = store.get_or_create_dek(&pool, inode_id).await?;
+        assert_eq!(dek_id_a, dek_id_b);
+        assert_eq!(*dek_a.expose_secret(), *dek_b.expose_secret());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dek_survives_relock_cycle() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let passphrase = "vault-pass";
+        let inode_id = 99;
+
+        // Unlock #1 — create DEK
+        let store1 = VaultKeyStore::new();
+        store1.unlock(&pool, passphrase).await?;
+        let (_id1, dek1) = store1.get_or_create_dek(&pool, inode_id).await?;
+
+        // Simulate relock by dropping store1 and creating a fresh one
+        drop(store1);
+        let store2 = VaultKeyStore::new();
+        store2.unlock(&pool, passphrase).await?;
+        let (_id2, dek2) = store2.get_or_create_dek(&pool, inode_id).await?;
+
+        assert_eq!(
+            *dek1.expose_secret(),
+            *dek2.expose_secret(),
+            "DEK must survive lock/unlock cycle"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn different_inodes_get_different_deks() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass").await?;
+
+        let (_, dek_a) = store.get_or_create_dek(&pool, 1).await?;
+        let (_, dek_b) = store.get_or_create_dek(&pool, 2).await?;
+        let (_, dek_c) = store.get_or_create_dek(&pool, 3).await?;
+
+        assert_ne!(*dek_a.expose_secret(), *dek_b.expose_secret());
+        assert_ne!(*dek_b.expose_secret(), *dek_c.expose_secret());
+        assert_ne!(*dek_a.expose_secret(), *dek_c.expose_secret());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dek_unwrap_fails_with_wrong_passphrase() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let inode_id = 7;
+
+        // Create vault and DEK with passphrase A
+        let store_a = VaultKeyStore::new();
+        store_a.unlock(&pool, "correct").await?;
+        let _ = store_a.get_or_create_dek(&pool, inode_id).await?;
+
+        // Try to read DEK with passphrase B (different envelope key)
+        // First we need a fresh vault that somehow has a different envelope key.
+        // Since wrong passphrase fails at unlock, this test confirms the chain:
+        // wrong pass → wrong KEK → wrong envelope key → can't even unlock.
+        let store_b = VaultKeyStore::new();
+        let result = store_b.unlock(&pool, "wrong");
+        assert!(result.await.is_err());
 
         Ok(())
     }

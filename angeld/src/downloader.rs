@@ -16,7 +16,8 @@ use crate::vault::{VaultError, VaultKeyStore};
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
-use omnidrive_core::crypto::{ChunkId, CryptoError, GcmTag, KeyBytes, decrypt_chunk};
+use omnidrive_core::crypto::{ChunkId, CryptoError, GcmTag, KeyBytes, decrypt_chunk, decrypt_chunk_v2};
+use secrecy::ExposeSecret;
 use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix};
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use sqlx::SqlitePool;
@@ -265,6 +266,12 @@ impl Downloader {
     ) -> Result<RestoreResult, DownloaderError> {
         let output_path = output_path.as_ref().to_path_buf();
         let vault_key = self.vault_keys.require_key().await?;
+        // Try to get V2 DEK for this inode (may not exist for V1-only files)
+        let dek_option = self.vault_keys
+            .get_or_create_dek(&self.pool, inode_id)
+            .await
+            .ok()
+            .map(|(_, secret)| *secret.expose_secret());
         let chunk_locations = db::get_file_chunk_locations(&self.pool, inode_id).await?;
         if chunk_locations.is_empty() {
             return Err(DownloaderError::NoChunksForInode(inode_id));
@@ -288,7 +295,7 @@ impl Downloader {
             };
 
             let pack_bytes = fs::read(&source.local_path).await?;
-            let plaintext = decrypt_chunk_record(&pack_bytes, &chunk, &vault_key)?;
+            let plaintext = decrypt_chunk_record(&pack_bytes, &chunk, &vault_key, dek_option.as_ref())?;
 
             let desired_offset = to_u64(chunk.file_offset, "file offset")?;
             if current_offset != desired_offset {
@@ -353,6 +360,11 @@ impl Downloader {
             .await?
             .unwrap_or_else(|| format!("inode/{inode_id}"));
         let vault_key = self.vault_keys.require_key().await?;
+        let dek_option = self.vault_keys
+            .get_or_create_dek(&self.pool, inode_id)
+            .await
+            .ok()
+            .map(|(_, secret)| *secret.expose_secret());
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         let mut result = Vec::with_capacity(
             usize::try_from(length)
@@ -368,6 +380,7 @@ impl Downloader {
                     revision_id,
                     &inode_path,
                     &vault_key,
+                    dek_option.as_ref(),
                     &mut downloaded_packs,
                     &chunk,
                     false,
@@ -424,6 +437,7 @@ impl Downloader {
         revision_id: i64,
         inode_path: &str,
         vault_key: &KeyBytes,
+        dek: Option<&KeyBytes>,
         downloaded_packs: &mut HashMap<String, RestoredPackSource>,
         chunk: &db::FileChunkLocation,
         is_prefetched: bool,
@@ -456,7 +470,7 @@ impl Downloader {
         };
 
         let pack_bytes = fs::read(&source.local_path).await?;
-        let plaintext = decrypt_chunk_record(&pack_bytes, chunk, vault_key)?;
+        let plaintext = decrypt_chunk_record(&pack_bytes, chunk, vault_key, dek)?;
         self.cache
             .put_chunk(
                 inode_id,
@@ -528,6 +542,11 @@ impl Downloader {
         }
 
         let vault_key = self.vault_keys.require_key().await?;
+        let dek_option = self.vault_keys
+            .get_or_create_dek(&self.pool, chunk.inode_id)
+            .await
+            .ok()
+            .map(|(_, secret)| *secret.expose_secret());
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         let file_chunk = db::FileChunkLocation {
             chunk_id: chunk.chunk_id,
@@ -546,7 +565,7 @@ impl Downloader {
             downloaded
         };
         let pack_bytes = fs::read(&source.local_path).await?;
-        let bytes = decrypt_chunk_record(&pack_bytes, &file_chunk, &vault_key)?;
+        let bytes = decrypt_chunk_record(&pack_bytes, &file_chunk, &vault_key, dek_option.as_ref())?;
         self.cache
             .put_chunk(
                 chunk.inode_id,
@@ -640,6 +659,11 @@ impl Downloader {
         }
 
         let vault_key = self.vault_keys.require_key().await?;
+        let dek_option = self.vault_keys
+            .get_or_create_dek(&self.pool, inode_id)
+            .await
+            .ok()
+            .map(|(_, secret)| *secret.expose_secret());
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         for chunk in chunk_locations
             .into_iter()
@@ -651,6 +675,7 @@ impl Downloader {
                     revision_id,
                     inode_path,
                     &vault_key,
+                    dek_option.as_ref(),
                     &mut downloaded_packs,
                     &chunk,
                     true,
@@ -1010,12 +1035,13 @@ fn build_manifest_bytes(
             .map_err(|_| DownloaderError::NumericOverflow("encryption version"))?,
         flags: 0,
         compression_algo: COMPRESSION_ALGO_NONE,
-        reserved_0: 0,
+        key_wrapping_algo: 0,
         chunk_id,
         plain_len: U64::new(plain_len),
         cipher_len: U64::new(ciphertext.len() as u64),
         nonce,
-        reserved_1: [0u8; 12],
+        dek_id_hint: [0u8; 4],
+        reserved_1: [0u8; 8],
     };
 
     let mut bytes = Vec::with_capacity(ChunkRecordPrefix::SIZE + ciphertext.len() + gcm_tag.len());
@@ -1025,10 +1051,15 @@ fn build_manifest_bytes(
     Ok(bytes)
 }
 
+/// Decrypt a chunk record, auto-detecting V1 vs V2 from the record_version byte.
+///
+/// - `vault_key`: V1 deterministic key (always available after unlock)
+/// - `dek`: V2 per-file DEK (None if inode has no DEK yet → must be V1 chunk)
 fn decrypt_chunk_record(
     pack_bytes: &[u8],
     chunk: &db::FileChunkLocation,
     vault_key: &KeyBytes,
+    dek: Option<&KeyBytes>,
 ) -> Result<Vec<u8>, DownloaderError> {
     let pack_offset = to_usize(chunk.pack_offset, "pack offset")?;
     let encrypted_size = to_usize(chunk.encrypted_size, "encrypted size")?;
@@ -1044,6 +1075,8 @@ fn decrypt_chunk_record(
     if record[..4] != CHUNK_RECORD_MAGIC {
         return Err(DownloaderError::InvalidPackRecord("chunk magic"));
     }
+
+    let record_version = record[4];
 
     let expected_chunk_id = vec_to_chunk_id(&chunk.chunk_id)?;
     let actual_chunk_id = vec_to_chunk_id(&record[8..40])?;
@@ -1073,6 +1106,10 @@ fn decrypt_chunk_record(
         ));
     }
 
+    let nonce: [u8; 12] = record[56..68]
+        .try_into()
+        .map_err(|_| DownloaderError::InvalidPackRecord("nonce"))?;
+
     let ciphertext_start = ChunkRecordPrefix::SIZE;
     let ciphertext_end = ciphertext_start + cipher_len_usize;
     let tag_end = ciphertext_end + ChunkRecordPrefix::GCM_TAG_SIZE;
@@ -1081,7 +1118,20 @@ fn decrypt_chunk_record(
         .try_into()
         .map_err(|_| DownloaderError::InvalidPackRecord("gcm tag"))?;
 
-    let plaintext = decrypt_chunk(vault_key, &expected_chunk_id, &[], ciphertext, &gcm_tag)?;
+    let plaintext = match record_version {
+        2 => {
+            // V2: decrypt with per-file DEK and the nonce from the prefix
+            let dek = dek.ok_or(DownloaderError::InvalidPackRecord(
+                "V2 chunk but no DEK available for this inode",
+            ))?;
+            decrypt_chunk_v2(dek, &nonce, &[], ciphertext, &gcm_tag)?
+        }
+        _ => {
+            // V1 (or unknown — treat as V1 for backward compat)
+            decrypt_chunk(vault_key, &expected_chunk_id, &[], ciphertext, &gcm_tag)?
+        }
+    };
+
     if plaintext.len() as i64 != chunk.size || plaintext.len() as u64 != plain_len {
         return Err(DownloaderError::InvalidPackRecord("plain size mismatch"));
     }
@@ -1175,7 +1225,6 @@ mod tests {
         let source_path = test_root.join("source.bin");
         let restored_path = test_root.join("restored.bin");
         let payload = vec![0x5Au8; DEFAULT_CHUNK_SIZE + 777];
-        let vault_key = [0x33; 32];
 
         fs::create_dir_all(&upload_spool_dir).await?;
         fs::create_dir_all(&download_spool_dir).await?;
@@ -1191,8 +1240,9 @@ mod tests {
         )
         .await?;
 
+        // Use real unlock to bootstrap V2 envelope key (required for DEK)
         let vault_keys = VaultKeyStore::new();
-        vault_keys.set_key_for_tests(vault_key).await;
+        vault_keys.unlock(&pool, "test-passphrase").await?;
         let packer = Packer::new(
             pool.clone(),
             vault_keys.clone(),

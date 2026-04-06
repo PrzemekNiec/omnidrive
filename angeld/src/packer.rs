@@ -4,8 +4,12 @@ use crate::db;
 use crate::db::{PackStatus, ShardRole, StorageMode};
 use crate::secure_fs::write_ephemeral_bytes;
 use crate::vault::{VaultError, VaultKeyStore};
-use omnidrive_core::crypto::{CryptoError, encrypt_chunk};
-use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix};
+use omnidrive_core::crypto::{CryptoError, KeyBytes, encrypt_chunk_v2};
+use omnidrive_core::layout::{
+    CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix,
+    KEY_WRAPPING_ALGO_AES_KW,
+};
+use secrecy::ExposeSecret;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -206,7 +210,9 @@ impl Packer {
         fs::create_dir_all(&self.config.spool_dir).await?;
 
         let created_at_ms = unix_timestamp_ms()?;
-        let vault_key = self.vault_keys.require_key().await?;
+        // V2: get per-file DEK (generates if first time for this inode)
+        let (dek_id, dek_secret) = self.vault_keys.get_or_create_dek(&self.pool, inode_id).await?;
+        let dek: KeyBytes = *dek_secret.expose_secret();
         let storage_mode = db::get_storage_mode_for_inode(&self.pool, inode_id).await?;
         let mut file = File::open(&source_path).await?;
         let mut read_buffer = vec![0u8; self.config.chunk_size];
@@ -254,13 +260,14 @@ impl Packer {
                 continue;
             }
 
-            let encrypted = encrypt_chunk(&vault_key, plaintext, &[])?;
-            let manifest_bytes = build_manifest_bytes(
+            let encrypted = encrypt_chunk_v2(&dek, plaintext, &[])?;
+            let manifest_bytes = build_manifest_bytes_v2(
                 encrypted.chunk_id,
                 encrypted.nonce,
                 &encrypted.ciphertext,
                 &encrypted.gcm_tag,
                 bytes_read,
+                dek_id,
             )?;
             let pack_id = compute_pack_id(storage_mode, &manifest_bytes);
             let manifest_path = local_pack_path(&self.config.spool_dir, &pack_id);
@@ -424,7 +431,7 @@ impl Packer {
                 &pack.chunk_id,
                 &pack.plaintext_hash,
                 pack.storage_mode,
-                1,
+                2, // V2 envelope encryption
                 storage_mode_scheme(pack.storage_mode),
                 pack.plain_size,
                 pack.cipher_size,
@@ -542,6 +549,7 @@ pub(crate) fn split_ciphertext_into_shards(ciphertext: &[u8]) -> Result<Vec<Vec<
     Ok(shards)
 }
 
+/// Build V1 manifest bytes (kept for backward compatibility in tests/dedup).
 pub(crate) fn build_manifest_bytes(
     chunk_id: [u8; 32],
     nonce: [u8; 12],
@@ -554,12 +562,43 @@ pub(crate) fn build_manifest_bytes(
         record_version: 1,
         flags: 0,
         compression_algo: COMPRESSION_ALGO_NONE,
-        reserved_0: 0,
+        key_wrapping_algo: 0,
         chunk_id,
         plain_len: U64::new(plaintext_len as u64),
         cipher_len: U64::new(ciphertext.len() as u64),
         nonce,
-        reserved_1: [0u8; 12],
+        dek_id_hint: [0u8; 4],
+        reserved_1: [0u8; 8],
+    };
+
+    let mut bytes = Vec::with_capacity(ChunkRecordPrefix::SIZE + ciphertext.len() + gcm_tag.len());
+    bytes.extend_from_slice(prefix.as_bytes());
+    bytes.extend_from_slice(ciphertext);
+    bytes.extend_from_slice(gcm_tag);
+    Ok(bytes)
+}
+
+/// Build V2 manifest bytes with envelope encryption metadata.
+fn build_manifest_bytes_v2(
+    chunk_id: [u8; 32],
+    nonce: [u8; 12],
+    ciphertext: &[u8],
+    gcm_tag: &[u8; 16],
+    plaintext_len: usize,
+    dek_id: i64,
+) -> Result<Vec<u8>, PackerError> {
+    let prefix = ChunkRecordPrefix {
+        record_magic: CHUNK_RECORD_MAGIC,
+        record_version: 2,
+        flags: 0,
+        compression_algo: COMPRESSION_ALGO_NONE,
+        key_wrapping_algo: KEY_WRAPPING_ALGO_AES_KW,
+        chunk_id,
+        plain_len: U64::new(plaintext_len as u64),
+        cipher_len: U64::new(ciphertext.len() as u64),
+        nonce,
+        dek_id_hint: (dek_id as u32).to_be_bytes(),
+        reserved_1: [0u8; 8],
     };
 
     let mut bytes = Vec::with_capacity(ChunkRecordPrefix::SIZE + ciphertext.len() + gcm_tag.len());
@@ -678,7 +717,7 @@ mod tests {
         .await?;
 
         let vault_keys = VaultKeyStore::new();
-        vault_keys.set_key_for_tests([0x11; 32]).await;
+        vault_keys.unlock(&pool, "test-passphrase").await?;
         let packer = Packer::new(pool.clone(), vault_keys, PackerConfig::new(&spool_dir))?;
         let result = packer.pack_file(inode_id, &source_path).await?;
         let chunks = db::get_file_chunks(&pool, inode_id).await?;

@@ -77,6 +77,9 @@ pub struct VaultRecord {
     pub master_key_salt: Vec<u8>,
     pub argon2_params: String,
     pub vault_id: String,
+    pub vault_format_version: Option<i64>,
+    pub encrypted_vault_key: Option<Vec<u8>>,
+    pub vault_key_generation: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -921,6 +924,39 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     )
     .await?;
 
+    // ── Envelope Encryption (V2) schema additions ───────────────────────
+    ensure_column_exists(
+        &pool,
+        "vault_state",
+        "vault_format_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    .await?;
+    ensure_column_exists(&pool, "vault_state", "encrypted_vault_key", "BLOB").await?;
+    ensure_column_exists(
+        &pool,
+        "vault_state",
+        "vault_key_generation",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS data_encryption_keys (
+            dek_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            inode_id        INTEGER NOT NULL,
+            wrapped_dek     BLOB NOT NULL,
+            key_version     INTEGER NOT NULL DEFAULT 1,
+            vault_key_gen   INTEGER NOT NULL DEFAULT 1,
+            created_at      INTEGER NOT NULL,
+            UNIQUE(inode_id, key_version)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
     Ok(pool)
 }
 
@@ -954,13 +990,86 @@ pub async fn set_vault_params(
 pub async fn get_vault_params(pool: &SqlitePool) -> Result<Option<VaultRecord>, sqlx::Error> {
     sqlx::query_as::<_, VaultRecord>(
         r#"
-        SELECT id, master_key_salt, argon2_params, vault_id
+        SELECT id, master_key_salt, argon2_params, vault_id,
+               vault_format_version, encrypted_vault_key, vault_key_generation
         FROM vault_state
         WHERE id = 1
         "#,
     )
     .fetch_optional(pool)
     .await
+}
+
+pub async fn store_encrypted_vault_key(
+    pool: &SqlitePool,
+    encrypted_vault_key: &[u8],
+    vault_key_generation: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE vault_state SET encrypted_vault_key = ?, vault_key_generation = ?, \
+         vault_format_version = 2 WHERE id = 1",
+    )
+    .bind(encrypted_vault_key)
+    .bind(vault_key_generation)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+// ── DEK (Data Encryption Key) persistence ───────────────────────────────
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, FromRow)]
+pub struct WrappedDekRecord {
+    pub dek_id: i64,
+    pub inode_id: i64,
+    pub wrapped_dek: Vec<u8>,
+    pub key_version: i64,
+    pub vault_key_gen: i64,
+    pub created_at: i64,
+}
+
+/// Fetch the latest wrapped DEK for a given inode (highest key_version).
+pub async fn get_wrapped_dek(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<Option<WrappedDekRecord>, sqlx::Error> {
+    sqlx::query_as::<_, WrappedDekRecord>(
+        "SELECT dek_id, inode_id, wrapped_dek, key_version, vault_key_gen, created_at \
+         FROM data_encryption_keys \
+         WHERE inode_id = ? \
+         ORDER BY key_version DESC \
+         LIMIT 1",
+    )
+    .bind(inode_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Insert a new wrapped DEK for an inode. Returns the assigned dek_id.
+pub async fn insert_wrapped_dek(
+    pool: &SqlitePool,
+    inode_id: i64,
+    wrapped_dek: &[u8],
+    key_version: i64,
+    vault_key_gen: i64,
+) -> Result<i64, sqlx::Error> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let result = sqlx::query(
+        "INSERT INTO data_encryption_keys (inode_id, wrapped_dek, key_version, vault_key_gen, created_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(inode_id)
+    .bind(wrapped_dek)
+    .bind(key_version)
+    .bind(vault_key_gen)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(result.last_insert_rowid())
 }
 
 // Row types used exclusively by the restore graft to shuttle data from the
@@ -991,7 +1100,11 @@ pub async fn graft_restored_metadata_snapshot(
     );
     let restored_pool = SqlitePool::connect(&restored_url).await?;
 
-    let remote_vault = sqlx::query_as::<_, VaultRecord>(
+    // Use a minimal struct — the restored snapshot may be V1 (no V2 columns).
+    #[allow(dead_code)]
+    #[derive(sqlx::FromRow)]
+    struct RestoreVaultRecord { id: i64, master_key_salt: Vec<u8>, argon2_params: String, vault_id: String }
+    let remote_vault = sqlx::query_as::<_, RestoreVaultRecord>(
         "SELECT id, master_key_salt, argon2_params, vault_id FROM vault_state WHERE id = 1",
     )
     .fetch_optional(&restored_pool)
@@ -1105,7 +1218,7 @@ pub async fn graft_restored_metadata_snapshot(
             .await?;
 
         // Graft vault_id from remote, keep local KDF params if present
-        let local_vault = sqlx::query_as::<_, VaultRecord>(
+        let local_vault = sqlx::query_as::<_, RestoreVaultRecord>(
             "SELECT id, master_key_salt, argon2_params, vault_id FROM vault_state WHERE id = 1",
         )
         .fetch_optional(&mut *conn)

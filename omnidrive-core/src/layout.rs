@@ -102,19 +102,23 @@ impl PackHeader {
 
 const _: [(); PackHeader::SIZE] = [(); core::mem::size_of::<PackHeader>()];
 
+pub const KEY_WRAPPING_ALGO_LEGACY: u8 = 0;
+pub const KEY_WRAPPING_ALGO_AES_KW: u8 = 1;
+
 #[repr(C, packed)]
 #[derive(AsBytes, FromBytes, FromZeroes, Unaligned, Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ChunkRecordPrefix {
-    pub record_magic: [u8; 4],
-    pub record_version: u8,
-    pub flags: u8,
-    pub compression_algo: u8,
-    pub reserved_0: u8,
-    pub chunk_id: Sha256,
-    pub plain_len: U64,
-    pub cipher_len: U64,
-    pub nonce: Nonce,
-    pub reserved_1: [u8; 12],
+    pub record_magic: [u8; 4],    // [0..4]
+    pub record_version: u8,       // [4]     1=V1, 2=V2
+    pub flags: u8,                // [5]
+    pub compression_algo: u8,     // [6]
+    pub key_wrapping_algo: u8,    // [7]     0=legacy, 1=AES-KW  (was reserved_0)
+    pub chunk_id: Sha256,         // [8..40]
+    pub plain_len: U64,           // [40..48]
+    pub cipher_len: U64,          // [48..56]
+    pub nonce: Nonce,             // [56..68]
+    pub dek_id_hint: [u8; 4],    // [68..72] lower 32 bits of dek_id (was reserved_1[0..4])
+    pub reserved_1: [u8; 8],     // [72..80] (was reserved_1[4..12])
 }
 
 impl ChunkRecordPrefix {
