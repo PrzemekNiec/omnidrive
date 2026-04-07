@@ -373,6 +373,7 @@ struct DiagnosticsWorkerStatusesResponse {
     metadata_backup: String,
     peer: String,
     api: String,
+    ingest: String,
 }
 
 #[derive(Clone, Copy)]
@@ -2529,6 +2530,7 @@ async fn build_diagnostics_health_response(
             metadata_backup: snapshot.metadata_backup.as_str().to_string(),
             peer: snapshot.peer.as_str().to_string(),
             api: snapshot.api.as_str().to_string(),
+            ingest: snapshot.ingest.as_str().to_string(),
         },
     };
 

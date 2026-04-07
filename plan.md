@@ -85,53 +85,35 @@ Kluczowe decyzje podjęte w RFC:
 
 ---
 
-## Phase 2a: Epic 35 — Ghost Shell PoC ← NEXT
+## Phase 2a: Epic 35 — Ghost Shell PoC ✅ SKIPPED (ready from B8)
 
-**Status:** Do realizacji w następnej sesji.
-**Kontekst:** cfapi integracja częściowo istnieje w `angeld/src/cfapi/` (z B8). Envelope Encryption V2 gotowe — Ghost Shell korzysta z DEK per-plik.
+**Status:** SKIPPED — `smart_sync.rs` (~1900 linii) z B8 pokrywa cały PoC.
+**Go/No-Go gate:** **GO** (2026-04-07). cfapi stabilne, brak potrzeby fallback na ProjFS.
 
-### 35.0a: Izolowany cfapi.dll PoC — setup
-- Wykorzystać istniejący `angeld/src/cfapi/` — audit co mamy, co brakuje
-- Minimalny flow: zarejestruj SyncRoot, utwórz placeholder, zakończ
-- Test: placeholder pojawia się w Eksploratorze jako "cloud file"
-- Jeśli cfapi/ już to robi z B8 — przejść od razu do 35.0b
-
-### 35.0b: cfapi.dll PoC — hydracja lokalna
-- Zaimplementować callback `CF_CALLBACK_TYPE_FETCH_DATA`
-- Hydracja z lokalnego ukrytego folderu (nie z chmury)
-- Flow: kliknij placeholder → callback → czytaj z cache → dane pojawiają się w pliku
-- Test: utwórz plik → zamień na placeholder → kliknij → treść wraca
-
-### 35.0c: cfapi.dll PoC — streaming i progress
-- `CfExecute` z `CF_OPERATION_TYPE_TRANSFER_DATA` — progresywny transfer
-- Testuj z dużym plikiem (100 MB+) — czy streaming działa bez OOM
-- Test interakcji z Windows Defender / Mark of the Web
-- **Go/No-Go gate:** jeśli niestabilne → plan B (ProjFS lub inna strategia)
-
-### 35.0d: cfapi.dll PoC — dehydracja
-- Flow odwrotny: plik istnieje → zamień na placeholder (dehydrate)
-- `CfDehydratePlaceholder` lub manual: backup content → convert to placeholder
-- Test: plik 10 MB → dehydrate → 0 bytes on disk → hydrate → 10 MB wraca
+### 35.0a-d: cfapi PoC — SyncRoot, hydracja, streaming, dehydracja ✅
+- Wszystko zaimplementowane w `angeld/src/smart_sync.rs` podczas B8
+- SyncRoot registration + connect z callbackami (FETCH_DATA, FETCH_PLACEHOLDERS, CANCEL)
+- Hydracja: `fetch_data_callback` → `downloader.read_range()` → `CfExecute(TRANSFER_DATA)`
+- Dehydracja: `CfUpdatePlaceholder(CF_UPDATE_FLAG_DEHYDRATE)`
+- Pin state, eviction, audit/repair, shell notifications
 
 ---
 
 ## Phase 2b: Epic 35 — Full Ghost Shell
 
-### 35.1a: Ingest State Machine — model stanów
-- Nowy moduł: `angeld/src/ingest.rs`
-- Stany: `PENDING → CHUNKING → UPLOADING → GHOSTED`
-- Plus: `HYDRATING`, `FAILED`
-- Stan persisted w SQLite: nowa tabela `ingest_state`
-- Testy: state transitions, invalid transitions rejected
+### 35.1a: Ingest State Machine — model stanów ✅
+- `angeld/src/ingest.rs` — stany: `PENDING → CHUNKING → UPLOADING → GHOSTED` (+FAILED)
+- Tabela `ingest_jobs` w SQLite z indeksem na `state`
+- Crash recovery: CHUNKING/UPLOADING → PENDING przy restarcie
+- Background worker w `tokio::select!`, diagnostics `WorkerKind::Ingest`
 
-### 35.1b: Ingest — chunking + DEK + upload
-- User request "Ingests plik X" → PENDING
-- CHUNKING: read file → generate DEK → encrypt chunks → create pack
-- UPLOADING: upload shards to providers (EC_2_1 lub SINGLE_REPLICA wg polityki)
-- Confirmation: ALL shards confirmed → GHOSTED
-- Error: any shard fails → FAILED z diagnostyką, file untouched
+### 35.1b: Ingest — chunking + DEK + upload ✅
+- `do_chunking()`: inode upsert → `Packer::pack_file()` (SHA-256, DEK, V2 AES-GCM, EC RS 2+1, spool, DB records)
+- `do_uploading()`: polluje `summarize_pack_shards()` co 2s, timeout 600s
+- UploadWorker automatycznie przetwarza queued `upload_jobs`
+- Progress tracking w `ingest_jobs.bytes_processed`
 
-### 35.1c: Ingest — atomowa zamiana na widmo
+### 35.1c: Ingest — atomowa zamiana na widmo ← NEXT
 - Dopiero po UPLOADING success: zamień oryginalny plik na placeholder
 - Użyj cfapi z Phase 2a
 - Atomowość: jeśli dehydrate failuje, plik zostaje nienaruszony

@@ -9,6 +9,7 @@ mod diagnostics;
 mod disaster_recovery;
 mod downloader;
 mod gc;
+mod ingest;
 mod logging;
 mod migrator;
 mod onboarding;
@@ -759,6 +760,9 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let repair_worker = RepairWorker::from_onboarding_db(pool.clone()).await?;
     let scrubber_worker = ScrubberWorker::from_onboarding_db(pool.clone()).await?;
     let gc_worker = GcWorker::from_onboarding_db(pool.clone()).await?;
+    let ingest_spool_dir = env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool");
+    let ingest_worker =
+        ingest::IngestWorker::new(pool.clone(), vault_keys.clone(), ingest_spool_dir);
     let metadata_backup_provider_manager =
         Arc::new(MetadataBackupProviderManager::from_onboarding_db_all(&pool).await?);
     let metadata_backup_worker = start_metadata_backup_worker(
@@ -767,13 +771,14 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(vault_keys.clone()),
     );
     info!(
-        "upload worker, repair worker, scrubber worker, gc worker, file watcher, and api server started"
+        "upload worker, repair worker, scrubber worker, gc worker, ingest worker, file watcher, and api server started"
     );
 
     let mut upload_task = tokio::spawn(async move { worker.run().await });
     let mut repair_task = tokio::spawn(async move { repair_worker.run().await });
     let mut scrubber_task = tokio::spawn(async move { scrubber_worker.run().await });
     let mut gc_task = tokio::spawn(async move { gc_worker.run().await });
+    let mut ingest_task = tokio::spawn(async move { ingest_worker.run().await });
     let mut metadata_backup_task = metadata_backup_worker;
     let mut api_task = tokio::spawn(async move { api.run().await });
     let mut peer_task = tokio::spawn(async move { peer_service.run().await });
@@ -785,6 +790,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             repair_task.abort();
             scrubber_task.abort();
             gc_task.abort();
+            ingest_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
@@ -795,6 +801,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             upload_task.abort();
             scrubber_task.abort();
             gc_task.abort();
+            ingest_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
@@ -805,6 +812,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             upload_task.abort();
             repair_task.abort();
             gc_task.abort();
+            ingest_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
@@ -815,6 +823,18 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             upload_task.abort();
             repair_task.abort();
             scrubber_task.abort();
+            ingest_task.abort();
+            metadata_backup_task.abort();
+            api_task.abort();
+            peer_task.abort();
+            let outcome = result??;
+            Ok(outcome)
+        }
+        result = &mut ingest_task => {
+            upload_task.abort();
+            repair_task.abort();
+            scrubber_task.abort();
+            gc_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
@@ -826,6 +846,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             repair_task.abort();
             scrubber_task.abort();
             gc_task.abort();
+            ingest_task.abort();
             api_task.abort();
             peer_task.abort();
             result?;
@@ -836,6 +857,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             repair_task.abort();
             scrubber_task.abort();
             gc_task.abort();
+            ingest_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
@@ -847,6 +869,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             repair_task.abort();
             scrubber_task.abort();
             gc_task.abort();
+            ingest_task.abort();
             metadata_backup_task.abort();
             peer_task.abort();
             let outcome = result??;
@@ -857,6 +880,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             repair_task.abort();
             scrubber_task.abort();
             gc_task.abort();
+            ingest_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
             let outcome = result??;
@@ -868,6 +892,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             repair_task.abort();
             scrubber_task.abort();
             gc_task.abort();
+            ingest_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();

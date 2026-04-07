@@ -11,6 +11,7 @@ pub enum WorkerKind {
     Scrubber,
     Gc,
     Watcher,
+    Ingest,
     MetadataBackup,
     Peer,
     Api,
@@ -45,6 +46,7 @@ pub struct DiagnosticsSnapshot {
     pub metadata_backup: WorkerStatus,
     pub peer: WorkerStatus,
     pub api: WorkerStatus,
+    pub ingest: WorkerStatus,
 }
 
 pub struct DaemonDiagnostics {
@@ -58,6 +60,7 @@ pub struct DaemonDiagnostics {
     metadata_backup: AtomicU8,
     peer: AtomicU8,
     api: AtomicU8,
+    ingest: AtomicU8,
 }
 
 impl DaemonDiagnostics {
@@ -73,6 +76,7 @@ impl DaemonDiagnostics {
             metadata_backup: AtomicU8::new(WorkerStatus::Starting as u8),
             peer: AtomicU8::new(WorkerStatus::Starting as u8),
             api: AtomicU8::new(WorkerStatus::Starting as u8),
+            ingest: AtomicU8::new(WorkerStatus::Starting as u8),
         }
     }
 
@@ -86,6 +90,7 @@ impl DaemonDiagnostics {
             WorkerKind::MetadataBackup => &self.metadata_backup,
             WorkerKind::Peer => &self.peer,
             WorkerKind::Api => &self.api,
+            WorkerKind::Ingest => &self.ingest,
         };
         target.store(status as u8, Ordering::Relaxed);
     }
@@ -114,6 +119,7 @@ impl DaemonDiagnostics {
             metadata_backup: load_status(&self.metadata_backup),
             peer: load_status(&self.peer),
             api: load_status(&self.api),
+            ingest: load_status(&self.ingest),
         }
     }
 }
