@@ -53,67 +53,35 @@ Kluczowe decyzje podjęte w RFC:
 
 ---
 
-## Phase 1: Epic 32.5 — Envelope Encryption
+## Phase 1: Epic 32.5 — Envelope Encryption — DONE (2026-04-07)
 
-### 32.5.1a: Schemat bazy — nowe tabele i kolumny
-- Dodać `vault_format_version` do `vault_state`
-- Dodać tabelę `data_encryption_keys`: `dek_id`, `inode_id`, `wrapped_dek`, `wrapping_key_version`, `created_at`
-- Dodać `encrypted_vault_key` do `vault_state` (Vault Key zaszyfrowany przez KDF-derived key)
-- Migracja SQLite: ALTER TABLE + nowe tabele
-- Testy: schemat się tworzy, stara baza się otwiera z `vault_format_version = 1`
+### 32.5.1a-b: KEK + Vault Key — DONE
+- `omnidrive-core/crypto.rs`: dodany `aes-kw` crate, `derive_kek()`, `wrap_key()`, `unwrap_key()`, `generate_random_key()`
+- `db.rs`: nowe kolumny (`vault_format_version`, `encrypted_vault_key`, `vault_key_generation`), tabela `data_encryption_keys`
+- `vault.rs`: unlock flow generuje/unwrapuje V2 Vault Key, `UnlockedVaultKeys.envelope_vault_key`
+- 9 unit testów crypto (w tym RFC 3394 test vectors)
 
-### 32.5.1b: Vault Key generation i storage
-- Generacja losowego 256-bit Vault Key przy tworzeniu nowego vaultu
-- Szyfrowanie Vault Key przez klucz z Argon2id(passphrase) — zapis do `vault_state.encrypted_vault_key`
-- Unlock flow: passphrase → Argon2id → unwrap Vault Key → trzymaj w pamięci (secrecy crate)
-- Testy: generate → store → unlock → porównaj klucz
+### 32.5.1c-d: DEK per-file + chunk encrypt V2 — DONE
+- `vault.rs`: `get_or_create_dek()` — generuj/unwrapuj DEK per inode
+- `packer.rs`: `encrypt_chunk_v2(dek, ...)`, `build_manifest_bytes_v2()` z `record_version=2`, `key_wrapping_algo=AES-KW`, `dek_id_hint`
+- `downloader.rs`: dual-read V1/V2 (`record[4]` auto-detect), `decrypt_chunk_record(vault_key, dek)`
+- 7 vault testów + roundtrip packer↔downloader test
 
-### 32.5.1c: DEK generation i wrapping
-- Przy tworzeniu nowej rewizji pliku: generuj losowy DEK
-- Wrap DEK kluczem Vault Key (AES-256-KW lub GCM-SIV — wg decyzji P0.2)
-- Zapis wrapped DEK do `data_encryption_keys`
-- Testy: generate DEK → wrap → unwrap → porównaj
+### 32.5.2a-c: Batch Migrator V1→V2 — DONE
+- `migrator.rs`: `MigrationManager` — `run_batch()` / `run_to_completion()`
+- Per-pack: decrypt V1 (vault_key) → get/create DEK → re-encrypt V2 (dek) → nowy pack + shardy → stary → UNREADABLE
+- `db.rs`: `get_v1_packs_for_migration()`, `count_v1_packs()`, `finalize_vault_format_v2()`
+- Finalizacja: `vault_format_version = 2` gdy V1 count = 0
+- Integration test: inject V1 pack → migrate → verify V2 readback
 
-### 32.5.1d: Szyfrowanie chunków przez DEK
-- Zmienić ścieżkę szyfrowania: chunk encryption używa DEK zamiast bezpośrednio KDF-derived key
-- Zmienić ścieżkę deszyfrowania: chunk decryption pobiera wrapped DEK → unwrap → decrypt
-- Zachować backward compatibility: jeśli `vault_format_version = 1`, używaj starego flow
-- Testy: encrypt plik nowym flow → decrypt → porównaj bajt po bajcie
+### 32.5.2d: Vault Key Rotation — DONE
+- `vault.rs`: `rotate_vault_key(pool, new_passphrase)` — fresh salt → new root keys → new Vault Key → re-wrap all DEKs → bump generation
+- `db.rs`: `get_all_wrapped_deks()`, `update_wrapped_dek()`, `rotate_vault_state()`
+- Stare hasło natychmiast nieważne, DEKi identyczne po rotacji
+- Test: create vault → encrypt → rotate → old pass fails → new pass decrypts
 
-### 32.5.1e: Integracja z uploader/downloader
-- Uploader: przy tworzeniu paczki, generuj DEK, wrap, zapisz, szyfruj chunki DEK-iem
-- Downloader: przy odczycie paczki, pobierz wrapped DEK, unwrap Vault Key-em, deszyfruj chunki
-- Peer read path: DEK jest lokalny, nie przesyłaj go przez LAN (peer wysyła zaszyfrowane chunki)
-- Testy E2E: upload plik → download plik → porównaj
-
-### 32.5.2a: Migrator — wykrywanie i planowanie
-- Przy starcie daemon: sprawdź `vault_format_version`
-- Jeśli v1: zaplanuj migrację — policz ile plików do prze-szyfrowania
-- Wyświetl informację w dashboard: "Migracja formatu w toku: X/Y plików"
-- Checkpoint tracking: `migration_progress` w `system_config`
-
-### 32.5.2b: Migrator — re-encryption loop
-- Dla każdego istniejącego pliku (v1):
-  1. Decrypt chunk starym kluczem
-  2. Generate DEK
-  3. Re-encrypt chunk DEK-iem
-  4. Wrap DEK Vault Key-em
-  5. Zapisz wrapped DEK + zaktualizuj pack metadata
-  6. Checkpoint po każdym pliku
-- Resumable: po restarcie, kontynuuj od ostatniego checkpointa
-- Testy: migruj 10 plików → przerwij w połowie → restart → kontynuuj → wszystkie pliki v2
-
-### 32.5.2c: Migrator — finalizacja i rollback
-- Po migracji wszystkich plików: ustaw `vault_format_version = 2`
-- Rollback: jeśli migracja failuje, oznacz plik jako `migration_failed`, kontynuuj z resztą
-- Dashboard: pokaż status migracji, błędy, opcję retry
-- Testy: symuluj failure w środku → rollback → retry → sukces
-
-### 32.5.2d: Vault Key rotation
-- Nowy endpoint: `POST /api/vault/rotate-key`
-- Flow: generate new Vault Key → re-wrap wszystkie DEK nowym kluczem → update `encrypted_vault_key`
-- NIE re-szyfruj chunków (to jest cały sens envelope encryption)
-- Testy: rotate → unlock → decrypt plików → OK
+**Commit chain:** `9ded01a` (32.5.1a-d) → `f6286dc` (32.5.2a-c migrator) → `ad65cc2` (32.5.2d rotation)
+**Test count:** 24 (15 angeld + 9 omnidrive-core)
 
 ---
 
