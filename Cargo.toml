@@ -1,5 +1,5 @@
 [workspace]
-members = ["angeld", "angelctl", "omnidrive-cli", "omnidrive-core"]
+members = ["angeld", "angelctl", "omnidrive-cli", "omnidrive-core", "omnidrive-tray"]
 resolver = "3"
 
 [workspace.dependencies]

@@ -572,6 +572,7 @@ impl ApiServer {
             .route("/api/recovery/backup-now", post(post_backup_now))
             .route("/api/recovery/snapshot-local", post(post_snapshot_local))
             .route("/api/unlock", post(post_unlock))
+            .route("/api/vault/status", get(get_vault_status))
             .route("/api/ingest", get(get_ingest_jobs))
             .route("/api/ingest/{job_id}/retry", post(post_ingest_retry))
             .route("/api/ingest/{job_id}/cleanup", post(post_ingest_cleanup))
@@ -1469,6 +1470,15 @@ async fn get_vault_health(State(state): State<ApiState>) -> impl IntoResponse {
             .into_response(),
         Err(err) => internal_server_error(err),
     }
+}
+
+async fn get_vault_status(State(state): State<ApiState>) -> impl IntoResponse {
+    let unlocked = state.vault_keys.require_key().await.is_ok();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "unlocked": unlocked })),
+    )
+        .into_response()
 }
 
 async fn post_unlock(
