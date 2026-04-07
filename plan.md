@@ -85,13 +85,16 @@ Kluczowe decyzje podjęte w RFC:
 
 ---
 
-## Phase 2a: Epic 35 — Ghost Shell PoC
+## Phase 2a: Epic 35 — Ghost Shell PoC ← NEXT
+
+**Status:** Do realizacji w następnej sesji.
+**Kontekst:** cfapi integracja częściowo istnieje w `angeld/src/cfapi/` (z B8). Envelope Encryption V2 gotowe — Ghost Shell korzysta z DEK per-plik.
 
 ### 35.0a: Izolowany cfapi.dll PoC — setup
-- Nowy crate: `omnidrive-shell` (lub subdirectory `angeld/src/cfapi/`)
-- Dodać `windows` crate z feature `Win32_Storage_CloudFilters`
-- Minimalny program: zarejestruj SyncRoot, utwórz placeholder, zakończ
+- Wykorzystać istniejący `angeld/src/cfapi/` — audit co mamy, co brakuje
+- Minimalny flow: zarejestruj SyncRoot, utwórz placeholder, zakończ
 - Test: placeholder pojawia się w Eksploratorze jako "cloud file"
+- Jeśli cfapi/ już to robi z B8 — przejść od razu do 35.0b
 
 ### 35.0b: cfapi.dll PoC — hydracja lokalna
 - Zaimplementować callback `CF_CALLBACK_TYPE_FETCH_DATA`
