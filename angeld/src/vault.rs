@@ -251,10 +251,131 @@ impl VaultKeyStore {
             .unwrap_or(1))
     }
 
+    /// Rotate the vault key to a new passphrase.
+    ///
+    /// 1. Derive new root keys (Argon2 → new master_key → new KEK) with a fresh salt.
+    /// 2. Generate a new random Vault Key.
+    /// 3. Wrap new Vault Key with new KEK → store in vault_state, bump generation.
+    /// 4. Re-wrap all existing DEKs: unwrap(old_vault_key) → wrap(new_vault_key).
+    /// 5. Update vault_state salt + argon2_params for the new passphrase.
+    /// 6. Update in-memory keys.
+    #[allow(dead_code)]
+    pub async fn rotate_vault_key(
+        &self,
+        pool: &SqlitePool,
+        new_passphrase: &str,
+    ) -> Result<RotationResult, VaultError> {
+        if new_passphrase.is_empty() {
+            return Err(VaultError::EmptyPassphrase);
+        }
+
+        // Read old keys from memory (vault must be unlocked)
+        let old_envelope_key = self.require_envelope_key().await?;
+        let old_generation = self.current_vault_key_generation(pool).await?;
+
+        // ── Step 1: Derive new root keys with fresh salt ──
+        let new_salt = RootKdfParams::random_salt();
+        let existing_config = db::get_vault_config(pool).await?
+            .ok_or(VaultError::InvalidConfig("no vault_config found"))?;
+        let new_params = RootKdfParams::new(
+            u32::try_from(existing_config.parameter_set_version)
+                .map_err(|_| VaultError::InvalidConfig("parameter_set_version"))?,
+            new_salt.to_vec(),
+            u32::try_from(existing_config.memory_cost_kib)
+                .map_err(|_| VaultError::InvalidConfig("memory_cost_kib"))?,
+            u32::try_from(existing_config.time_cost)
+                .map_err(|_| VaultError::InvalidConfig("time_cost"))?,
+            u32::try_from(existing_config.lanes)
+                .map_err(|_| VaultError::InvalidConfig("lanes"))?,
+        );
+        let new_root_keys = derive_root_keys(new_passphrase.as_bytes(), &new_params)?;
+
+        // ── Step 2: Generate new random Vault Key ──
+        let new_vault_key = generate_random_key();
+
+        // ── Step 3: Wrap new Vault Key with new KEK, bump generation ──
+        let new_generation = old_generation + 1;
+        let wrapped_new_vault_key = wrap_key(&new_root_keys.kek, &new_vault_key)?;
+
+        // ── Step 4: Re-wrap all DEKs in a transaction ──
+        let all_deks = db::get_all_wrapped_deks(pool).await?;
+        let deks_count = all_deks.len();
+
+        let mut rewrapped: Vec<(i64, Vec<u8>)> = Vec::with_capacity(deks_count);
+        for dek_record in &all_deks {
+            let old_wrapped: [u8; WRAPPED_KEY_LEN] = dek_record
+                .wrapped_dek
+                .as_slice()
+                .try_into()
+                .map_err(|_| VaultError::InvalidConfig("wrapped_dek has invalid length"))?;
+            let plaintext_dek = unwrap_key(&old_envelope_key, &old_wrapped)?;
+            let new_wrapped = wrap_key(&new_vault_key, &plaintext_dek)?;
+            rewrapped.push((dek_record.dek_id, new_wrapped.to_vec()));
+        }
+
+        // Write everything in one logical batch
+        let argon2_params_json = format!(
+            r#"{{"mode":"LOCAL_VAULT","parameter_set_version":{},"memory_cost_kib":{},"time_cost":{},"lanes":{}}}"#,
+            new_params.parameter_set_version,
+            new_params.memory_cost_kib,
+            new_params.time_cost,
+            new_params.lanes
+        );
+
+        // Update vault_state (salt, params, wrapped vault key, generation)
+        db::rotate_vault_state(
+            pool,
+            &new_salt,
+            &argon2_params_json,
+            &wrapped_new_vault_key,
+            new_generation,
+        )
+        .await?;
+
+        // Update vault_config salt for future derivations
+        db::set_vault_config(
+            pool,
+            &new_salt,
+            i64::from(new_params.parameter_set_version),
+            i64::from(new_params.memory_cost_kib),
+            i64::from(new_params.time_cost),
+            i64::from(new_params.lanes),
+        )
+        .await?;
+
+        // Re-wrap each DEK
+        for (dek_id, new_wrapped) in &rewrapped {
+            db::update_wrapped_dek(pool, *dek_id, new_wrapped, new_generation).await?;
+        }
+
+        // ── Step 6: Update in-memory keys ──
+        *self.inner.write().await = Some(UnlockedVaultKeys::with_envelope_key(
+            new_root_keys.master_key,
+            new_root_keys.vault_key,
+            new_vault_key,
+        ));
+
+        info!(
+            "[VAULT] Key rotation complete: generation {} → {}, re-wrapped {} DEKs",
+            old_generation, new_generation, deks_count
+        );
+
+        Ok(RotationResult {
+            new_generation,
+            deks_rewrapped: deks_count as u64,
+        })
+    }
+
     #[cfg(test)]
     pub async fn set_key_for_tests(&self, key: KeyBytes) {
         *self.inner.write().await = Some(UnlockedVaultKeys::new(key, key));
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RotationResult {
+    pub new_generation: i64,
+    pub deks_rewrapped: u64,
 }
 
 pub async fn bootstrap_local_vault(pool: &SqlitePool) -> Result<bool, VaultError> {
@@ -508,6 +629,46 @@ mod tests {
         let store_b = VaultKeyStore::new();
         let result = store_b.unlock(&pool, "wrong");
         assert!(result.await.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rotate_vault_key_rewraps_deks_and_new_passphrase_unlocks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+
+        // ── 1. Create vault, unlock, create DEKs for two inodes ──
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "old-passphrase").await?;
+
+        let (_, dek_a_before) = store.get_or_create_dek(&pool, 10).await?;
+        let (_, dek_b_before) = store.get_or_create_dek(&pool, 20).await?;
+        let dek_a_bytes = *dek_a_before.expose_secret();
+        let dek_b_bytes = *dek_b_before.expose_secret();
+
+        // ── 2. Rotate to new passphrase ──
+        let result = store.rotate_vault_key(&pool, "new-passphrase").await?;
+        assert_eq!(result.new_generation, 2);
+        assert_eq!(result.deks_rewrapped, 2);
+
+        // ── 3. Old passphrase must fail ──
+        let store_old = VaultKeyStore::new();
+        assert!(store_old.unlock(&pool, "old-passphrase").await.is_err());
+
+        // ── 4. New passphrase must unlock and recover same DEKs ──
+        let store_new = VaultKeyStore::new();
+        store_new.unlock(&pool, "new-passphrase").await?;
+
+        let (_, dek_a_after) = store_new.get_or_create_dek(&pool, 10).await?;
+        let (_, dek_b_after) = store_new.get_or_create_dek(&pool, 20).await?;
+
+        assert_eq!(*dek_a_after.expose_secret(), dek_a_bytes, "DEK A must survive rotation");
+        assert_eq!(*dek_b_after.expose_secret(), dek_b_bytes, "DEK B must survive rotation");
+
+        // ── 5. Verify generation bumped in DB ──
+        let vault = db::get_vault_params(&pool).await?.unwrap();
+        assert_eq!(vault.vault_key_generation, Some(2));
 
         Ok(())
     }

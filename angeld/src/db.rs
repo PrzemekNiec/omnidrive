@@ -5378,3 +5378,64 @@ pub async fn finalize_vault_format_v2(pool: &SqlitePool) -> Result<(), sqlx::Err
     .await?;
     Ok(())
 }
+
+// ── Vault Key rotation queries ────────────────────────────────────────────
+
+/// Fetch all wrapped DEKs (for re-wrapping during key rotation).
+#[allow(dead_code)]
+pub async fn get_all_wrapped_deks(pool: &SqlitePool) -> Result<Vec<WrappedDekRecord>, sqlx::Error> {
+    sqlx::query_as::<_, WrappedDekRecord>(
+        "SELECT dek_id, inode_id, wrapped_dek, key_version, vault_key_gen, created_at \
+         FROM data_encryption_keys \
+         ORDER BY dek_id ASC",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Update a single DEK's wrapped blob and vault_key_gen after rotation.
+#[allow(dead_code)]
+pub async fn update_wrapped_dek(
+    pool: &SqlitePool,
+    dek_id: i64,
+    new_wrapped_dek: &[u8],
+    new_vault_key_gen: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE data_encryption_keys \
+         SET wrapped_dek = ?, vault_key_gen = ? \
+         WHERE dek_id = ?",
+    )
+    .bind(new_wrapped_dek)
+    .bind(new_vault_key_gen)
+    .bind(dek_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Update vault_state with new salt, argon2_params, encrypted_vault_key and bumped generation.
+#[allow(dead_code)]
+pub async fn rotate_vault_state(
+    pool: &SqlitePool,
+    new_salt: &[u8],
+    new_argon2_params: &str,
+    new_encrypted_vault_key: &[u8],
+    new_vault_key_generation: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE vault_state SET \
+         master_key_salt = ?, \
+         argon2_params = ?, \
+         encrypted_vault_key = ?, \
+         vault_key_generation = ? \
+         WHERE id = 1",
+    )
+    .bind(new_salt)
+    .bind(new_argon2_params)
+    .bind(new_encrypted_vault_key)
+    .bind(new_vault_key_generation)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
