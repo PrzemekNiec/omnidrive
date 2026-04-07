@@ -161,11 +161,12 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 pub struct IngestWorker {
     pool: SqlitePool,
     packer: Packer,
+    sync_root: PathBuf,
     poll_interval: Duration,
 }
 
 impl IngestWorker {
-    pub fn new(pool: SqlitePool, vault_keys: VaultKeyStore, spool_dir: PathBuf) -> Self {
+    pub fn new(pool: SqlitePool, vault_keys: VaultKeyStore, spool_dir: PathBuf, sync_root: PathBuf) -> Self {
         let poll_ms: u64 = std::env::var("OMNIDRIVE_INGEST_POLL_INTERVAL_MS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -185,6 +186,7 @@ impl IngestWorker {
         Self {
             pool,
             packer,
+            sync_root,
             poll_interval: Duration::from_millis(poll_ms),
         }
     }
@@ -252,7 +254,7 @@ impl IngestWorker {
         transition(&self.pool, job.id, IngestState::Pending, IngestState::Chunking).await?;
         info!("ingest: job {} → CHUNKING", job.id);
 
-        let pack_result = self.do_chunking(job).await?;
+        let (inode_id, pack_result) = self.do_chunking(job).await?;
 
         // ── Phase 2: CHUNKING → UPLOADING ─────────────────────────────
         transition(
@@ -281,7 +283,13 @@ impl IngestWorker {
             pack_result.pack_ids.len()
         );
 
-        // TODO(35.1c): replace original file with cfapi placeholder
+        // ── Phase 4: Ghost swap — convert real file to dehydrated placeholder ──
+        self.do_ghost_swap(job, inode_id, &pack_result).await?;
+
+        // ── Cleanup: remove completed job so the worker doesn't revisit it ──
+        if let Err(err) = db::delete_ingest_job(&self.pool, job.id).await {
+            warn!("ingest: job {} — cleanup failed (non-fatal): {}", job.id, err);
+        }
 
         Ok(())
     }
@@ -290,7 +298,7 @@ impl IngestWorker {
     /// Packer handles: SHA-256, DEK get/create, V2 AES-GCM encryption, erasure coding,
     /// shard files on disk, DB records (file_revisions, chunk_refs, packs, pack_shards,
     /// upload_jobs queued for UploadWorker).
-    async fn do_chunking(&self, job: &IngestJob) -> Result<PackResult, IngestError> {
+    async fn do_chunking(&self, job: &IngestJob) -> Result<(i64, PackResult), IngestError> {
         let source_path = Path::new(&job.file_path);
         if !source_path.exists() {
             return Err(IngestError::Io(std::io::Error::new(
@@ -334,7 +342,7 @@ impl IngestWorker {
             pack_result.encrypted_size,
         );
 
-        Ok(pack_result)
+        Ok((inode_id, pack_result))
     }
 
     /// UPLOADING phase: wait for UploadWorker to finish uploading all packs.
@@ -404,6 +412,66 @@ impl IngestWorker {
             sleep(UPLOAD_POLL_INTERVAL).await;
         }
     }
+
+    /// Ghost swap: convert the original file into a dehydrated cfapi placeholder.
+    /// If the file has been modified since chunking (size mismatch), the swap is
+    /// skipped with a warning — the file stays intact, job still marked GHOSTED.
+    async fn do_ghost_swap(
+        &self,
+        job: &IngestJob,
+        inode_id: i64,
+        pack_result: &PackResult,
+    ) -> Result<(), IngestError> {
+        let revision_id = match pack_result.revision_id {
+            Some(id) => id,
+            None => {
+                warn!(
+                    "ingest: job {} — no revision_id from packer, skipping ghost swap",
+                    job.id
+                );
+                return Ok(());
+            }
+        };
+
+        info!(
+            "ingest: job {} — starting ghost swap (inode={}, rev={})",
+            job.id, inode_id, revision_id
+        );
+
+        match crate::smart_sync::convert_to_ghost(
+            &self.pool,
+            &self.sync_root,
+            inode_id,
+            revision_id,
+            job.file_size,
+        )
+        .await
+        {
+            Ok(()) => {
+                info!(
+                    "ingest: job {} — ghost swap complete, file is now a placeholder",
+                    job.id
+                );
+            }
+            Err(err) => {
+                // Ghost swap failure is non-fatal: the file stays intact and
+                // data is safely in the cloud. Log warning, don't fail the job.
+                warn!(
+                    "ingest: job {} — ghost swap failed (file intact): {}",
+                    job.id, err
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Test-only: drive a single job through the full pipeline.
+    /// The caller is responsible for mocking shard uploads concurrently.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub async fn process_job_for_test(&self, job: &IngestJob) -> Result<(), IngestError> {
+        self.process_job(job).await
+    }
 }
 
 // ── Inode path helper ─────────────────────────────────────────────────
@@ -445,4 +513,67 @@ async fn ensure_inode_path_for_ingest(
             "no inode created",
         ))
     })
+}
+
+// ── Cleanup for failed / cancelled jobs ──────────────────────────────
+
+/// Clean up local spool files for a FAILED ingest job, then delete the job.
+/// Cloud-side orphaned shards are left for the GC worker to collect
+/// (it already handles packs without pack_locations).
+pub async fn cleanup_failed_ingest(
+    pool: &SqlitePool,
+    spool_dir: &Path,
+    job_id: i64,
+) -> Result<bool, IngestError> {
+    // 1. Load job — must be FAILED.
+    let row = db::get_ingest_job(pool, job_id).await?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    if row.state != "FAILED" {
+        return Err(IngestError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("job {} is {}, not FAILED", job_id, row.state),
+        )));
+    }
+
+    // 2. Find the inode for this file path (if it was created during chunking).
+    let file_name = row
+        .file_path
+        .replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .unwrap_or(&row.file_path)
+        .to_string();
+
+    let inode_id: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM inodes WHERE name = ? AND kind = 'FILE' LIMIT 1",
+    )
+    .bind(&file_name)
+    .fetch_optional(pool)
+    .await?;
+
+    // 3. Delete local spool files for all packs associated with this inode.
+    if let Some(inode_id) = inode_id {
+        let pack_ids = db::get_pack_ids_for_inode(pool, inode_id).await?;
+        for pack_id in &pack_ids {
+            let manifest = crate::packer::local_pack_path(spool_dir, pack_id);
+            let _ = tokio::fs::remove_file(&manifest).await;
+            for shard_idx in 0..crate::packer::TOTAL_SHARDS {
+                let shard = crate::packer::local_shard_path(spool_dir, pack_id, shard_idx);
+                let _ = tokio::fs::remove_file(&shard).await;
+            }
+        }
+        info!(
+            "ingest cleanup: removed local spool files for {} pack(s) (job {})",
+            pack_ids.len(),
+            job_id
+        );
+    }
+
+    // 4. Delete the ingest job record.
+    db::delete_failed_ingest_job(pool, job_id).await?;
+    info!("ingest cleanup: deleted FAILED job {}", job_id);
+
+    Ok(true)
 }

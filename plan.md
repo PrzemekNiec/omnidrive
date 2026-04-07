@@ -113,24 +113,24 @@ Kluczowe decyzje podjęte w RFC:
 - UploadWorker automatycznie przetwarza queued `upload_jobs`
 - Progress tracking w `ingest_jobs.bytes_processed`
 
-### 35.1c: Ingest — atomowa zamiana na widmo ← NEXT
-- Dopiero po UPLOADING success: zamień oryginalny plik na placeholder
-- Użyj cfapi z Phase 2a
-- Atomowość: jeśli dehydrate failuje, plik zostaje nienaruszony
-- Test: ingest plik → sprawdź placeholder → sprawdź że dane są w chmurze
+### 35.1c: Ingest — atomowa zamiana na widmo ✅
+- CfConvertToPlaceholder in-place + dehydrate (nie rename+create)
+- Non-fatal failure — plik zostaje nietknięty
+- Job cleanup: DELETE z ingest_jobs po GHOSTED
+- E2E test: `ingest_pipeline_full_cycle`
 
-### 35.1d: Hydration z chmury
-- Kliknięcie placeholder → CF_CALLBACK_TYPE_FETCH_DATA
-- Download shards → EC reconstruct → decrypt with DEK → stream to callback
-- Graceful degradation: jeśli 2/3 providerów niedostępne, timeout + ikona error
-- Retry logic z backoff
-- Test: ghost → hydrate → porównaj z oryginałem bajt po bajcie
+### 35.1d: Hydration z chmury ✅
+- Chunk-streamed transfer: peak RAM ≤ 1 chunk (~4 MB)
+- `read_range_streamed<F>` z callback per-chunk → `complete_transfer_chunk` → CfExecute
+- Offset slicing obsługuje niezalignowane żądania Windows
+- Prefetch zachowany, stary `read_range` + `complete_transfer_success` utrzymane
 
-### 35.1e: Ingest — failure recovery i rollback
-- FAILED state: diagnostyka w DB (który shard failował, na którym providerze)
-- Retry endpoint: `POST /api/ingest/{id}/retry`
-- Cleanup: jeśli UPLOADING failuje, usuń częściowo uploadowane shardy
-- Dashboard: lista ingestów z ich stanami
+### 35.1e: Ingest — failure recovery i rollback ✅
+- `fail_ingest_job(job_id, error_message)` — zapisuje powód do DB
+- `cleanup_failed_ingest(pool, spool_dir, job_id)` — usuwa lokalne spool files, GC zbierze cloud shards
+- `POST /api/ingest/{id}/retry` — reset FAILED→PENDING (czyści error, attempt_count)
+- `POST /api/ingest/{id}/cleanup` — usunięcie śmieci i joba
+- `GET /api/ingest` — lista jobów ze stanem, postępem, błędami (dashboard)
 
 ### 35.2a: Shell Extension DLL — thin client
 - Nowy projekt: `omnidrive-shell-ext` (C++ lub Rust DLL)

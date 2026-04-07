@@ -230,6 +230,29 @@ pub async fn sync_placeholder_pin_state(
     }
 }
 
+/// Convert an existing real file into a cfapi placeholder and dehydrate it.
+/// Used by the ingest pipeline after upload completes (Epic 35.1c).
+/// The file is converted in-place: CfConvertToPlaceholder + dehydrate.
+/// If anything fails, the original file remains untouched.
+pub async fn convert_to_ghost(
+    pool: &SqlitePool,
+    sync_root_path: &Path,
+    inode_id: i64,
+    revision_id: i64,
+    file_size: i64,
+) -> Result<(), SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::convert_to_ghost(pool, sync_root_path, inode_id, revision_id, file_size).await
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (pool, sync_root_path, inode_id, revision_id, file_size);
+        Err(SmartSyncError::UnsupportedPlatform)
+    }
+}
+
 pub async fn hydrate_placeholder_now(
     pool: &SqlitePool,
     sync_root_path: &Path,
@@ -485,27 +508,33 @@ mod imp {
                 }
             };
 
-            match context
+            // Streamed hydration: download + decrypt one chunk at a time,
+            // feed each slice to Windows immediately via CfExecute, then
+            // drop the chunk before loading the next.  Peak RAM ≤ 1 chunk.
+            let stream_result = context
                 .downloader
-                .read_range(
+                .read_range_streamed(
                     request.inode_id,
                     request.revision_id,
                     offset,
                     length,
+                    |chunk_offset, chunk_bytes| {
+                        let file_offset = i64::try_from(chunk_offset).map_err(|_| {
+                            crate::downloader::DownloaderError::NumericOverflow("chunk offset")
+                        })?;
+                        complete_transfer_chunk(&request, file_offset, chunk_bytes).map_err(
+                            |err| {
+                                crate::downloader::DownloaderError::Io(std::io::Error::other(
+                                    format!("CfExecute transfer failed: {err}"),
+                                ))
+                            },
+                        )
+                    },
                 )
-                .await
-            {
-                Ok(bytes) => {
-                    if let Err(err) = complete_transfer_success(&request, &bytes) {
-                        warn!(
-                            "smart-sync: transfer writeback failed for inode={}, revision={}: {}",
-                            request.inode_id, request.revision_id, err
-                        );
-                        flush_smart_sync_logs();
-                        let _ = complete_transfer_failure_from_request(&request);
-                        return;
-                    }
+                .await;
 
+            match stream_result {
+                Ok(()) => {
                     if let Err(err) = db::set_hydration_state(&context.pool, request.inode_id, 1).await {
                         warn!(
                             "smart-sync: failed to persist hydration state for inode={}: {}",
@@ -524,7 +553,7 @@ mod imp {
                         );
                     }
                     warn!(
-                        "smart-sync: read_range failed for inode={}, revision={}, offset={}, length={}: {}",
+                        "smart-sync: streamed hydration failed for inode={}, revision={}, offset={}, length={}: {}",
                         request.inode_id, request.revision_id, request.offset, request.length, err
                     );
                     flush_smart_sync_logs();
@@ -925,6 +954,91 @@ mod imp {
         }
 
         Ok(evicted)
+    }
+
+    /// Convert an existing real file to a cfapi cloud placeholder and dehydrate it.
+    /// Steps: CfConvertToPlaceholder (with identity blob) → CfUpdatePlaceholder(DEHYDRATE)
+    /// → update smart_sync_state → shell notification.
+    pub async fn convert_to_ghost(
+        pool: &SqlitePool,
+        sync_root_path: &Path,
+        inode_id: i64,
+        revision_id: i64,
+        file_size: i64,
+    ) -> Result<(), SmartSyncError> {
+        let sync_root = normalize_sync_root_path(sync_root_path)?;
+
+        let file = db::get_active_file_for_projection_by_inode(pool, inode_id)
+            .await?
+            .ok_or_else(|| {
+                SmartSyncError::InvalidPathWithContext(
+                    "convert_to_ghost",
+                    format!("inode {inode_id} has no active projection record"),
+                )
+            })?;
+
+        let relative_path = normalize_relative_placeholder_path(&file.path)?;
+        let target_path = sync_root.join(&relative_path);
+
+        if !target_path.exists() {
+            return Err(SmartSyncError::InvalidPathWithContext(
+                "convert_to_ghost",
+                format!("file does not exist at {}", target_path.display()),
+            ));
+        }
+
+        // Safety check: verify file size matches what was ingested.
+        let meta = std::fs::metadata(&target_path)?;
+        let current_size = meta.len() as i64;
+        if current_size != file_size {
+            return Err(SmartSyncError::InvalidPathWithContext(
+                "convert_to_ghost",
+                format!(
+                    "file size changed during ingest (expected {file_size}, got {current_size}), aborting ghost swap"
+                ),
+            ));
+        }
+
+        // Step 1: Convert the real file to a cloud placeholder.
+        let identity = PlaceholderIdentity {
+            inode_id,
+            revision_id,
+        };
+        let identity_bytes = unsafe {
+            std::slice::from_raw_parts(
+                (&identity as *const PlaceholderIdentity).cast::<u8>(),
+                size_of::<PlaceholderIdentity>(),
+            )
+        };
+
+        let ph_handle = open_placeholder_handle(&target_path)?;
+        unsafe {
+            CfConvertToPlaceholder(
+                as_handle(&ph_handle),
+                Some(identity_bytes.as_ptr().cast()),
+                identity_bytes.len() as u32,
+                CF_CONVERT_FLAG_NONE,
+                None,
+                None,
+            )?;
+        }
+        drop(ph_handle);
+
+        // Step 2: Dehydrate — remove local data, keep cloud shell.
+        dehydrate_placeholder(&target_path)?;
+
+        // Step 3: Update DB — mark as dehydrated (hydration_state=0, unpinned).
+        db::ensure_smart_sync_state(pool, inode_id, revision_id).await?;
+        db::set_hydration_state(pool, inode_id, 0).await?;
+
+        notify_shell_path_changed(&target_path);
+
+        info!(
+            "smart-sync: ghost swap complete for inode={} rev={} at {}",
+            inode_id, revision_id, relative_path,
+        );
+
+        Ok(())
     }
 
     fn create_projection_placeholder(
@@ -1656,6 +1770,44 @@ mod imp {
                 Offset: request.offset,
                 Length: i64::try_from(bytes.len())
                     .map_err(|_| SmartSyncError::InvalidPath("range length overflow"))?,
+            };
+
+        unsafe {
+            CfExecute(&operation_info, &mut operation_parameters)?;
+        }
+
+        Ok(())
+    }
+
+    /// Transfer a single chunk slice to Windows at an explicit file offset.
+    /// Called once per chunk during streamed hydration — peak RAM ≤ 1 chunk.
+    fn complete_transfer_chunk(
+        request: &HydrationRequest,
+        file_offset: i64,
+        bytes: &[u8],
+    ) -> Result<(), SmartSyncError> {
+        let operation_info = CF_OPERATION_INFO {
+            StructSize: size_of::<CF_OPERATION_INFO>() as u32,
+            Type: CF_OPERATION_TYPE_TRANSFER_DATA,
+            ConnectionKey: request.connection_key,
+            TransferKey: request.transfer_key,
+            CorrelationVector: ptr::null(),
+            SyncStatus: ptr::null(),
+            RequestKey: request.request_key,
+        };
+
+        let mut operation_parameters = CF_OPERATION_PARAMETERS {
+            ParamSize: size_of::<CF_OPERATION_PARAMETERS>() as u32,
+            ..Default::default()
+        };
+        operation_parameters.Anonymous.TransferData =
+            windows::Win32::Storage::CloudFilters::CF_OPERATION_PARAMETERS_0_0 {
+                Flags: CF_OPERATION_TRANSFER_DATA_FLAGS(0),
+                CompletionStatus: NTSTATUS(STATUS_SUCCESS),
+                Buffer: bytes.as_ptr().cast(),
+                Offset: file_offset,
+                Length: i64::try_from(bytes.len())
+                    .map_err(|_| SmartSyncError::InvalidPath("chunk length overflow"))?,
             };
 
         unsafe {

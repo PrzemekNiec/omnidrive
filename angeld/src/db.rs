@@ -1147,6 +1147,69 @@ pub async fn requeue_failed_ingest_job(
     Ok(result.rows_affected() > 0)
 }
 
+pub async fn delete_ingest_job(
+    pool: &SqlitePool,
+    job_id: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM ingest_jobs WHERE id = ? AND state = 'GHOSTED'",
+    )
+    .bind(job_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn delete_failed_ingest_job(
+    pool: &SqlitePool,
+    job_id: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM ingest_jobs WHERE id = ? AND state = 'FAILED'",
+    )
+    .bind(job_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Find all pack_ids associated with an inode via its file_revisions → chunk_refs → pack_locations.
+pub async fn get_pack_ids_for_inode(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT DISTINCT pl.pack_id
+        FROM file_revisions fr
+        INNER JOIN chunk_refs cr ON cr.revision_id = fr.revision_id
+        INNER JOIN pack_locations pl ON pl.chunk_id = cr.chunk_id
+        WHERE fr.inode_id = ?
+        "#,
+    )
+    .bind(inode_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Reset a FAILED ingest job to PENDING, clearing error and resetting attempt_count.
+pub async fn retry_ingest_job(
+    pool: &SqlitePool,
+    job_id: i64,
+) -> Result<bool, sqlx::Error> {
+    let now = epoch_secs();
+    let result = sqlx::query(
+        "UPDATE ingest_jobs SET state = 'PENDING', error_message = NULL, \
+         attempt_count = 0, bytes_processed = 0, updated_at = ? \
+         WHERE id = ? AND state = 'FAILED'",
+    )
+    .bind(now)
+    .bind(job_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 fn epoch_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

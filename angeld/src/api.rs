@@ -572,6 +572,9 @@ impl ApiServer {
             .route("/api/recovery/backup-now", post(post_backup_now))
             .route("/api/recovery/snapshot-local", post(post_snapshot_local))
             .route("/api/unlock", post(post_unlock))
+            .route("/api/ingest", get(get_ingest_jobs))
+            .route("/api/ingest/{job_id}/retry", post(post_ingest_retry))
+            .route("/api/ingest/{job_id}/cleanup", post(post_ingest_cleanup))
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
@@ -3046,6 +3049,86 @@ async fn build_onboarding_status_response(
             providers: provider_statuses,
         },
     })
+}
+
+// ── Ingest API (Epic 35.1e) ──────────────────────────────────────────
+
+async fn get_ingest_jobs(State(state): State<ApiState>) -> impl IntoResponse {
+    match db::list_ingest_jobs(&state.pool).await {
+        Ok(rows) => {
+            let jobs: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "id": row.id,
+                        "file_path": row.file_path,
+                        "file_size": row.file_size,
+                        "state": row.state,
+                        "bytes_processed": row.bytes_processed,
+                        "attempt_count": row.attempt_count,
+                        "error_message": row.error_message,
+                        "created_at": row.created_at,
+                        "updated_at": row.updated_at,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({ "jobs": jobs })).into_response()
+        }
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn post_ingest_retry(
+    State(state): State<ApiState>,
+    Path(job_id): Path<i64>,
+) -> impl IntoResponse {
+    match db::retry_ingest_job(&state.pool, job_id).await {
+        Ok(true) => {
+            info!("api: ingest job {} requeued for retry", job_id);
+            Json(serde_json::json!({ "ok": true, "job_id": job_id })).into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "job_not_found_or_not_failed",
+                "job_id": job_id,
+            })),
+        )
+            .into_response(),
+        Err(err) => internal_server_error(err),
+    }
+}
+
+async fn post_ingest_cleanup(
+    State(state): State<ApiState>,
+    Path(job_id): Path<i64>,
+) -> impl IntoResponse {
+    let spool_dir = env::var("OMNIDRIVE_SPOOL_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from(".omnidrive/spool"));
+
+    match crate::ingest::cleanup_failed_ingest(&state.pool, &spool_dir, job_id).await {
+        Ok(true) => {
+            info!("api: ingest job {} cleaned up", job_id);
+            Json(serde_json::json!({ "ok": true, "job_id": job_id })).into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "job_not_found",
+                "job_id": job_id,
+            })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": err.to_string(),
+                "job_id": job_id,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 fn internal_server_error(err: impl std::error::Error) -> axum::response::Response {

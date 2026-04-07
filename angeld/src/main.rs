@@ -762,7 +762,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let gc_worker = GcWorker::from_onboarding_db(pool.clone()).await?;
     let ingest_spool_dir = env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool");
     let ingest_worker =
-        ingest::IngestWorker::new(pool.clone(), vault_keys.clone(), ingest_spool_dir);
+        ingest::IngestWorker::new(pool.clone(), vault_keys.clone(), ingest_spool_dir, sync_root.clone());
     let metadata_backup_provider_manager =
         Arc::new(MetadataBackupProviderManager::from_onboarding_db_all(&pool).await?);
     let metadata_backup_worker = start_metadata_backup_worker(

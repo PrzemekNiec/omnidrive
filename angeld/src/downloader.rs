@@ -431,6 +431,117 @@ impl Downloader {
         Ok(result)
     }
 
+    /// Streaming variant of `read_range`.  Instead of collecting all bytes
+    /// into a single `Vec<u8>`, this calls `on_chunk(absolute_offset, slice)`
+    /// for each decrypted chunk piece.  The caller can feed each piece
+    /// straight to Windows via `CfExecute` and the chunk is dropped before
+    /// the next one is loaded — peak RAM stays at ~1 chunk (≤ 4 MB).
+    pub async fn read_range_streamed<F>(
+        &self,
+        inode_id: i64,
+        revision_id: i64,
+        offset: u64,
+        length: u64,
+        mut on_chunk: F,
+    ) -> Result<(), DownloaderError>
+    where
+        F: FnMut(u64, &[u8]) -> Result<(), DownloaderError>,
+    {
+        let revision = db::get_file_revision(&self.pool, inode_id, revision_id)
+            .await?
+            .ok_or(DownloaderError::NoChunksForInode(inode_id))?;
+
+        if length == 0 {
+            return Ok(());
+        }
+
+        let end_offset = offset
+            .checked_add(length)
+            .ok_or(DownloaderError::NumericOverflow("range end"))?;
+        let start_i64 =
+            i64::try_from(offset).map_err(|_| DownloaderError::NumericOverflow("range start"))?;
+        let end_i64 =
+            i64::try_from(end_offset).map_err(|_| DownloaderError::NumericOverflow("range end"))?;
+
+        let chunk_locations = db::get_revision_chunk_locations_in_range(
+            &self.pool,
+            inode_id,
+            revision_id,
+            start_i64,
+            end_i64,
+        )
+        .await?;
+        if chunk_locations.is_empty() {
+            return Err(DownloaderError::NoChunksForInode(inode_id));
+        }
+
+        let inode_path = db::get_inode_path(&self.pool, inode_id)
+            .await?
+            .unwrap_or_else(|| format!("inode/{inode_id}"));
+        let vault_key = self.vault_keys.require_key().await?;
+        let dek_option = self
+            .vault_keys
+            .get_or_create_dek(&self.pool, inode_id)
+            .await
+            .ok()
+            .map(|(_, secret)| *secret.expose_secret());
+        let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
+        let first_chunk_index = chunk_locations.first().map(|chunk| chunk.chunk_index);
+        let last_chunk_index = chunk_locations.last().map(|chunk| chunk.chunk_index);
+        let mut bytes_emitted: u64 = 0;
+
+        for chunk in chunk_locations {
+            let plaintext = self
+                .load_plaintext_chunk(
+                    inode_id,
+                    revision_id,
+                    &inode_path,
+                    &vault_key,
+                    dek_option.as_ref(),
+                    &mut downloaded_packs,
+                    &chunk,
+                    false,
+                )
+                .await?;
+
+            let chunk_start = to_u64(chunk.file_offset, "file offset")?;
+            let chunk_end = chunk_start
+                .checked_add(plaintext.len() as u64)
+                .ok_or(DownloaderError::NumericOverflow("chunk end"))?;
+            let slice_start = offset.max(chunk_start);
+            let slice_end = end_offset.min(chunk_end);
+
+            if slice_start >= slice_end {
+                continue;
+            }
+
+            let local_start = usize::try_from(slice_start - chunk_start)
+                .map_err(|_| DownloaderError::NumericOverflow("slice start"))?;
+            let local_end = usize::try_from(slice_end - chunk_start)
+                .map_err(|_| DownloaderError::NumericOverflow("slice end"))?;
+
+            on_chunk(slice_start, &plaintext[local_start..local_end])?;
+
+            bytes_emitted += (local_end - local_start) as u64;
+            if bytes_emitted >= length {
+                break;
+            }
+            // `plaintext` is dropped here — RAM freed before next chunk.
+        }
+
+        self.maybe_schedule_prefetch(
+            inode_id,
+            revision_id,
+            revision.size,
+            &inode_path,
+            first_chunk_index,
+            last_chunk_index,
+        )
+        .await;
+
+        Ok(())
+    }
+
     async fn load_plaintext_chunk(
         &self,
         inode_id: i64,
