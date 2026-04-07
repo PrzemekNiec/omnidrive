@@ -579,7 +579,7 @@ pub(crate) fn build_manifest_bytes(
 }
 
 /// Build V2 manifest bytes with envelope encryption metadata.
-fn build_manifest_bytes_v2(
+pub(crate) fn build_manifest_bytes_v2(
     chunk_id: [u8; 32],
     nonce: [u8; 12],
     ciphertext: &[u8],

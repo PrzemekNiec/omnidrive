@@ -10,6 +10,7 @@ mod disaster_recovery;
 mod downloader;
 mod gc;
 mod logging;
+mod migrator;
 mod onboarding;
 mod packer;
 mod peer;
