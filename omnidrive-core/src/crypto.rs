@@ -467,4 +467,78 @@ mod tests {
         // But chunk_id is deterministic (HMAC of plaintext with DEK)
         assert_eq!(a.chunk_id, b.chunk_id);
     }
+
+    /// Verify that V2 wire format (nonce || ciphertext || gcm_tag) is compatible
+    /// with the WebCrypto AES-GCM API used in share.html.
+    /// WebCrypto expects: iv=nonce(12), data=ciphertext||tag — which is exactly
+    /// what we serve as bytes[12..] in the sharing endpoint.
+    #[test]
+    fn v2_wire_format_webcrypto_compatible() {
+        let dek = generate_random_key();
+        let plaintext = b"zero-knowledge sharing test payload 1234567890";
+        let aad = b""; // share.html uses empty AAD
+
+        let enc = encrypt_chunk_v2(&dek, plaintext, aad).unwrap();
+
+        // Build wire format: nonce(12) || ciphertext(N) || gcm_tag(16)
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&enc.nonce);
+        wire.extend_from_slice(&enc.ciphertext);
+        wire.extend_from_slice(&enc.gcm_tag);
+
+        // Verify structure sizes
+        assert_eq!(wire.len(), CHUNK_NONCE_LEN + plaintext.len() + GCM_TAG_LEN);
+
+        // Simulate WebCrypto split: nonce = wire[..12], data = wire[12..]
+        let browser_nonce: [u8; CHUNK_NONCE_LEN] = wire[..CHUNK_NONCE_LEN].try_into().unwrap();
+        let browser_data = &wire[CHUNK_NONCE_LEN..]; // ciphertext || tag
+
+        // WebCrypto passes ciphertext||tag as a single buffer to decrypt.
+        // Our decrypt_chunk_v2 takes them separately, so split at len-16.
+        let ct_len = browser_data.len() - GCM_TAG_LEN;
+        let browser_ciphertext = &browser_data[..ct_len];
+        let browser_tag: [u8; GCM_TAG_LEN] = browser_data[ct_len..].try_into().unwrap();
+
+        // These must match the original fields
+        assert_eq!(browser_nonce, enc.nonce);
+        assert_eq!(browser_ciphertext, enc.ciphertext.as_slice());
+        assert_eq!(browser_tag, enc.gcm_tag);
+
+        // Decrypt using the browser's perspective
+        let decrypted =
+            decrypt_chunk_v2(&dek, &browser_nonce, aad, browser_ciphertext, &browser_tag).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// Verify wire format with various payload sizes including empty and large.
+    #[test]
+    fn v2_wire_format_various_sizes() {
+        let dek = generate_random_key();
+        let test_cases: Vec<Vec<u8>> = vec![
+            vec![],                          // empty
+            vec![0x42],                      // 1 byte
+            vec![0xAB; 1024],                // 1 KB
+            vec![0xCD; 64 * 1024],           // 64 KB (typical chunk)
+        ];
+
+        for plaintext in &test_cases {
+            let enc = encrypt_chunk_v2(&dek, plaintext, b"").unwrap();
+            let mut wire = Vec::new();
+            wire.extend_from_slice(&enc.nonce);
+            wire.extend_from_slice(&enc.ciphertext);
+            wire.extend_from_slice(&enc.gcm_tag);
+
+            // Total = 12 + plaintext.len() + 16
+            assert_eq!(wire.len(), 12 + plaintext.len() + 16);
+
+            // Round-trip via WebCrypto-style split
+            let nonce: [u8; 12] = wire[..12].try_into().unwrap();
+            let data = &wire[12..];
+            let ct = &data[..data.len() - 16];
+            let tag: [u8; 16] = data[data.len() - 16..].try_into().unwrap();
+
+            let decrypted = decrypt_chunk_v2(&dek, &nonce, b"", ct, &tag).unwrap();
+            assert_eq!(decrypted, plaintext.as_slice());
+        }
+    }
 }

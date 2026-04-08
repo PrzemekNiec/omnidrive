@@ -1046,6 +1046,81 @@ impl Downloader {
 
         Ok(local_path)
     }
+
+    /// Fetch a chunk's raw encrypted bytes (nonce + ciphertext + tag) without decryption.
+    /// Used by the sharing system to serve encrypted chunks to browser-based decryptors.
+    pub async fn get_encrypted_chunk_bytes(
+        &self,
+        chunk: &db::FileChunkLocation,
+    ) -> Result<EncryptedChunkBytes, DownloaderError> {
+        let source = self.download_pack(&chunk.pack_id).await?;
+        let pack_bytes = tokio::fs::read(&source.local_path).await?;
+
+        let pack_offset = to_usize(chunk.pack_offset, "pack offset")?;
+        let encrypted_size = to_usize(chunk.encrypted_size, "encrypted size")?;
+        let record_end = pack_offset
+            .checked_add(encrypted_size)
+            .ok_or(DownloaderError::NumericOverflow("record end"))?;
+
+        if record_end > pack_bytes.len() || encrypted_size < ChunkRecordPrefix::SIZE {
+            return Err(DownloaderError::InvalidPackRecord("record bounds"));
+        }
+
+        let record = &pack_bytes[pack_offset..record_end];
+        if record[..4] != CHUNK_RECORD_MAGIC {
+            return Err(DownloaderError::InvalidPackRecord("chunk magic"));
+        }
+
+        let cipher_len = u64::from_be_bytes(
+            record[48..56]
+                .try_into()
+                .map_err(|_| DownloaderError::InvalidPackRecord("cipher_len"))?,
+        );
+        let cipher_len_usize = usize::try_from(cipher_len)
+            .map_err(|_| DownloaderError::NumericOverflow("cipher length"))?;
+
+        let nonce: [u8; 12] = record[56..68]
+            .try_into()
+            .map_err(|_| DownloaderError::InvalidPackRecord("nonce"))?;
+
+        let ciphertext_start = ChunkRecordPrefix::SIZE;
+        let ciphertext_end = ciphertext_start + cipher_len_usize;
+        let tag_end = ciphertext_end + ChunkRecordPrefix::GCM_TAG_SIZE;
+
+        if tag_end > record.len() {
+            return Err(DownloaderError::InvalidPackRecord("record too short"));
+        }
+
+        let ciphertext = record[ciphertext_start..ciphertext_end].to_vec();
+        let gcm_tag: [u8; 16] = record[ciphertext_end..tag_end]
+            .try_into()
+            .map_err(|_| DownloaderError::InvalidPackRecord("gcm tag"))?;
+
+        Ok(EncryptedChunkBytes {
+            nonce,
+            ciphertext,
+            gcm_tag,
+        })
+    }
+}
+
+/// Raw encrypted chunk data for zero-knowledge sharing.
+/// The browser receives nonce || ciphertext || gcm_tag and decrypts via WebCrypto.
+pub struct EncryptedChunkBytes {
+    pub nonce: [u8; 12],
+    pub ciphertext: Vec<u8>,
+    pub gcm_tag: [u8; 16],
+}
+
+impl EncryptedChunkBytes {
+    /// Serialize to wire format: nonce (12) || ciphertext (N) || tag (16).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(12 + self.ciphertext.len() + 16);
+        buf.extend_from_slice(&self.nonce);
+        buf.extend_from_slice(&self.ciphertext);
+        buf.extend_from_slice(&self.gcm_tag);
+        buf
+    }
 }
 
 impl DownloadProvider {
@@ -1546,5 +1621,52 @@ mod tests {
             "backblaze-b2" => "bucket-b2",
             _ => "bucket-unknown",
         }
+    }
+
+    #[test]
+    fn encrypted_chunk_bytes_to_bytes_wire_format() {
+        let nonce = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let ciphertext = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
+        let gcm_tag = [
+            0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD,
+            0xFE, 0xFF,
+        ];
+
+        let ecb = EncryptedChunkBytes {
+            nonce,
+            ciphertext: ciphertext.clone(),
+            gcm_tag,
+        };
+
+        let wire = ecb.to_bytes();
+
+        // Total length: 12 + 5 + 16 = 33
+        assert_eq!(wire.len(), 12 + ciphertext.len() + 16);
+
+        // Verify slice boundaries match WebCrypto expectations
+        assert_eq!(&wire[..12], &nonce);
+        assert_eq!(&wire[12..12 + ciphertext.len()], ciphertext.as_slice());
+        assert_eq!(&wire[wire.len() - 16..], &gcm_tag);
+
+        // Simulate WebCrypto split: iv = wire[..12], data = wire[12..]
+        // WebCrypto treats data as ciphertext||tag (last tagLength/8 bytes = tag)
+        let browser_iv = &wire[..12];
+        let browser_data = &wire[12..];
+        assert_eq!(browser_iv, &nonce);
+        assert_eq!(browser_data.len(), ciphertext.len() + 16);
+    }
+
+    #[test]
+    fn encrypted_chunk_bytes_empty_ciphertext() {
+        let ecb = EncryptedChunkBytes {
+            nonce: [0u8; 12],
+            ciphertext: vec![],
+            gcm_tag: [0u8; 16],
+        };
+        let wire = ecb.to_bytes();
+        // 12 + 0 + 16 = 28
+        assert_eq!(wire.len(), 28);
+        assert_eq!(&wire[..12], &[0u8; 12]);
+        assert_eq!(&wire[12..], &[0u8; 16]);
     }
 }

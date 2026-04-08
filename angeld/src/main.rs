@@ -20,6 +20,7 @@ mod repair;
 mod runtime_paths;
 mod scrubber;
 mod secure_fs;
+mod sharing;
 mod shell_integration;
 mod shell_state;
 mod smart_sync;

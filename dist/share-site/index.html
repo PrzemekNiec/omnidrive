@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OmniDrive — Udostepniony plik</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: rgba(255,255,255,0.06);
+    --border: rgba(255,255,255,0.1);
+    --text: #e4e4e7;
+    --muted: #71717a;
+    --accent: #6366f1;
+    --accent-hover: #818cf8;
+    --error: #ef4444;
+    --success: #22c55e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 2.5rem;
+    max-width: 480px;
+    width: 100%;
+    backdrop-filter: blur(16px);
+    text-align: center;
+  }
+  .logo { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; }
+  .subtitle { color: var(--muted); font-size: 0.875rem; margin-bottom: 2rem; }
+  .file-info { margin-bottom: 1.5rem; }
+  .file-name {
+    font-size: 1.125rem;
+    font-weight: 600;
+    word-break: break-all;
+    margin-bottom: 0.5rem;
+  }
+  .file-size { color: var(--muted); font-size: 0.875rem; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 0.75rem 2rem;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    width: 100%;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .progress-bar {
+    width: 100%;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    margin: 1rem 0;
+    overflow: hidden;
+    display: none;
+  }
+  .progress-bar .fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 0.3s;
+    width: 0%;
+  }
+  .status {
+    font-size: 0.875rem;
+    color: var(--muted);
+    margin-top: 0.75rem;
+    min-height: 1.25rem;
+  }
+  .status.error { color: var(--error); }
+  .status.success { color: var(--success); }
+  .warning {
+    background: rgba(234, 179, 8, 0.1);
+    border: 1px solid rgba(234, 179, 8, 0.3);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    font-size: 0.8125rem;
+    color: #eab308;
+    margin-bottom: 1rem;
+    display: none;
+  }
+  .password-form {
+    display: none;
+    margin-bottom: 1.5rem;
+  }
+  .password-form input {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: 1rem;
+    margin-bottom: 0.75rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .password-form input:focus { border-color: var(--accent); }
+  .password-form input::placeholder { color: var(--muted); }
+  .password-hint {
+    color: var(--muted);
+    font-size: 0.8125rem;
+    margin-bottom: 1rem;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">OmniDrive</div>
+  <div class="subtitle">Udostepnianie zero-knowledge</div>
+
+  <div id="loading">Wczytywanie informacji o pliku...</div>
+
+  <div id="passwordView" style="display:none">
+    <div class="password-hint">Ten plik jest chroniony haslem. Wprowadz haslo, aby kontynuowac.</div>
+    <div class="password-form" style="display:block">
+      <input type="password" id="passwordInput" placeholder="Haslo" autocomplete="off">
+      <button class="btn" id="unlockBtn" onclick="submitPassword()">Odblokuj</button>
+    </div>
+    <div class="status" id="passwordStatus"></div>
+  </div>
+
+  <div id="content" style="display:none">
+    <div class="file-info">
+      <div class="file-name" id="fileName"></div>
+      <div class="file-size" id="fileSize"></div>
+    </div>
+    <div class="warning" id="sizeWarning">
+      Ten plik jest duzy. Pobieranie i deszyfrowanie moze wymagac znacznej ilosci pamieci przegladarki.
+    </div>
+    <button class="btn" id="downloadBtn" onclick="startDownload()">
+      Pobierz i odszyfruj
+    </button>
+    <div class="progress-bar" id="progressBar">
+      <div class="fill" id="progressFill"></div>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div id="errorView" style="display:none">
+    <div class="status error" id="errorMessage"></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// External share link format:
+//   https://share.omnidrive.app/{share_id}#{dek_base64url}@{daemon_host:port}
+// The fragment (after #) contains both the DEK and the daemon address,
+// neither of which is sent to the server.
+
+var shareId = window.location.pathname.replace(/^\//, '').split('/')[0];
+var fragment = window.location.hash.substring(1);
+var dekFragment = '';
+var apiBase = '';
+
+if (fragment.indexOf('@') !== -1) {
+  var parts = fragment.split('@');
+  dekFragment = parts[0];
+  apiBase = parts.slice(1).join('@'); // handle IPv6 with colons
+  // Ensure protocol prefix
+  if (apiBase && !apiBase.startsWith('http')) {
+    apiBase = 'http://' + apiBase;
+  }
+} else {
+  dekFragment = fragment;
+}
+
+var fileMeta = null;
+var cryptoKey = null;
+var accessToken = null;
+
+function base64urlToBytes(b64) {
+  var b64std = b64.replace(/-/g, '+').replace(/_/g, '/');
+  var pad = (4 - b64std.length % 4) % 4;
+  var bin = atob(b64std + '='.repeat(pad));
+  var bytes = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' bajtow';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+function showError(msg) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('content').style.display = 'none';
+  document.getElementById('passwordView').style.display = 'none';
+  document.getElementById('errorView').style.display = 'block';
+  document.getElementById('errorMessage').textContent = msg;
+}
+
+function tokenParam() {
+  return accessToken ? '?token=' + encodeURIComponent(accessToken) : '';
+}
+
+function apiUrl(path) {
+  return apiBase + path;
+}
+
+async function fetchMeta() {
+  return await fetch(apiUrl('/api/share/' + shareId + '/meta' + tokenParam()));
+}
+
+async function init() {
+  if (!dekFragment) {
+    showError('Ten link jest niekompletny. Brak klucza deszyfrujacego w adresie URL.');
+    return;
+  }
+  if (!apiBase) {
+    showError('Ten link jest niekompletny. Brak adresu skarbca w adresie URL.');
+    return;
+  }
+  if (!window.crypto || !window.crypto.subtle) {
+    showError('Przegladarka nie wspiera WebCrypto. Uzyj nowoczesnej przegladarki.');
+    return;
+  }
+
+  try {
+    var dekBytes = base64urlToBytes(dekFragment);
+    if (dekBytes.length !== 32) {
+      showError('Klucz deszyfrujacy ma nieprawidlowa dlugosc.');
+      return;
+    }
+    cryptoKey = await crypto.subtle.importKey(
+      'raw', dekBytes, { name: 'AES-GCM' }, false, ['decrypt']
+    );
+  } catch (e) {
+    showError('Nie udalo sie zaimportowac klucza deszyfrujacego.');
+    return;
+  }
+
+  try {
+    var resp = await fetchMeta();
+    if (resp.status === 404) {
+      showError('Nie znaleziono udostepnionego pliku.');
+      return;
+    }
+    if (resp.status === 410) {
+      var data = await resp.json();
+      var reasons = {
+        'revoked': 'Ten link udostepniania zostal uniewaziony przez wlasciciela.',
+        'expired': 'Ten link udostepniania wygasl.',
+        'download_limit_reached': 'Ten link udostepniania osiagnal limit pobran.',
+      };
+      showError(reasons[data.reason] || 'Ten link udostepniania jest juz nieaktywny.');
+      return;
+    }
+    if (resp.status === 401) {
+      var data2 = await resp.json();
+      if (data2.requires_password) {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('passwordView').style.display = 'block';
+        document.getElementById('passwordInput').focus();
+        return;
+      }
+    }
+    if (!resp.ok) {
+      showError('Blad podczas pobierania informacji o pliku.');
+      return;
+    }
+    showFileContent(await resp.json());
+  } catch (e) {
+    showError('Brak polaczenia ze skarbcem. Upewnij sie, ze daemon OmniDrive dziala i jest dostepny z sieci.');
+  }
+}
+
+function showFileContent(meta) {
+  fileMeta = meta;
+  document.getElementById('fileName').textContent = fileMeta.file_name;
+  document.getElementById('fileSize').textContent = formatSize(fileMeta.file_size);
+  if (fileMeta.file_size > 100 * 1024 * 1024) {
+    document.getElementById('sizeWarning').style.display = 'block';
+  }
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('passwordView').style.display = 'none';
+  document.getElementById('content').style.display = 'block';
+}
+
+async function submitPassword() {
+  var input = document.getElementById('passwordInput');
+  var btn = document.getElementById('unlockBtn');
+  var status = document.getElementById('passwordStatus');
+  var password = input.value;
+  if (!password) {
+    status.className = 'status error';
+    status.textContent = 'Wprowadz haslo.';
+    return;
+  }
+  btn.disabled = true;
+  status.className = 'status';
+  status.textContent = 'Weryfikacja hasla...';
+  try {
+    var resp = await fetch(apiUrl('/api/share/' + shareId + '/verify-password'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password })
+    });
+    if (resp.status === 401) {
+      status.className = 'status error';
+      status.textContent = 'Nieprawidlowe haslo. Sprobuj ponownie.';
+      input.value = '';
+      input.focus();
+      btn.disabled = false;
+      return;
+    }
+    if (!resp.ok) {
+      status.className = 'status error';
+      status.textContent = 'Blad weryfikacji hasla.';
+      btn.disabled = false;
+      return;
+    }
+    var data = await resp.json();
+    accessToken = data.token;
+    var metaResp = await fetchMeta();
+    if (!metaResp.ok) {
+      showError('Blad podczas pobierania informacji o pliku po odblokowaniu.');
+      return;
+    }
+    showFileContent(await metaResp.json());
+  } catch (e) {
+    status.className = 'status error';
+    status.textContent = 'Brak polaczenia ze skarbcem.';
+    btn.disabled = false;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  var input = document.getElementById('passwordInput');
+  if (input) {
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') submitPassword();
+    });
+  }
+});
+
+async function startDownload() {
+  var btn = document.getElementById('downloadBtn');
+  var progressBar = document.getElementById('progressBar');
+  var progressFill = document.getElementById('progressFill');
+  var status = document.getElementById('status');
+
+  btn.disabled = true;
+  progressBar.style.display = 'block';
+  status.className = 'status';
+  status.textContent = 'Pobieranie i deszyfrowanie...';
+
+  var decryptedChunks = [];
+  var totalChunks = fileMeta.chunks.length;
+
+  try {
+    for (var i = 0; i < totalChunks; i++) {
+      var resp = await fetch(apiUrl('/api/share/' + shareId + '/chunks/' + fileMeta.chunks[i].index + tokenParam()));
+      if (!resp.ok) {
+        throw new Error('Nie udalo sie pobrac fragmentu ' + (i + 1) + ' z ' + totalChunks);
+      }
+      var encryptedBuf = await resp.arrayBuffer();
+      var encryptedArr = new Uint8Array(encryptedBuf);
+      var nonce = encryptedArr.slice(0, 12);
+      var ciphertextWithTag = encryptedArr.slice(12);
+
+      var plaintext = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: nonce, tagLength: 128 },
+        cryptoKey,
+        ciphertextWithTag
+      );
+      decryptedChunks.push(new Uint8Array(plaintext));
+
+      var pct = Math.round(((i + 1) / totalChunks) * 100);
+      progressFill.style.width = pct + '%';
+      status.textContent = 'Deszyfrowanie: ' + (i + 1) + ' z ' + totalChunks + ' fragmentow (' + pct + '%)';
+    }
+
+    var blob = new Blob(decryptedChunks, { type: 'application/octet-stream' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = fileMeta.file_name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    status.className = 'status success';
+    status.textContent = 'Plik zostal pomyslnie odszyfrowany i pobrany.';
+  } catch (e) {
+    status.className = 'status error';
+    if (e.name === 'OperationError') {
+      status.textContent = 'Deszyfrowanie nie powiodlo sie. Link moze byc uszkodzony lub niekompletny.';
+    } else {
+      status.textContent = e.message || 'Wystapil nieoczekiwany blad podczas pobierania.';
+    }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+init();
+</script>
+</body>
+</html>
