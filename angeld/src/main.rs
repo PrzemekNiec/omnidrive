@@ -6,6 +6,7 @@ mod config;
 mod db;
 mod device_identity;
 mod diagnostics;
+mod identity;
 mod disaster_recovery;
 mod downloader;
 mod gc;
@@ -289,6 +290,14 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .map(|record| record.vault_id)
         .unwrap_or_else(|| "local-vault".to_string());
+
+    // Epic 34.0b: migrate single-user vault to multi-user schema
+    match db::migrate_single_to_multi_user(&pool, &local_vault_id).await {
+        Ok(true) => info!("migrated single-user vault to multi-user schema (owner={})", local_device.device_id),
+        Ok(false) => {} // already migrated or no device yet
+        Err(e) => warn!("multi-user migration failed (non-fatal): {e}"),
+    }
+
     let vault_keys = VaultKeyStore::new();
     let (provider_reload_tx, provider_reload_rx) = watch::channel(0u64);
     if no_sync && e2e_test_mode {
@@ -786,6 +795,24 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let mut api_task = tokio::spawn(async move { api.run().await });
     let mut peer_task = tokio::spawn(async move { peer_service.run().await });
     let _pipe_task = tokio::spawn(pipe_server::run_pipe_server(pool.clone()));
+
+    // Periodic cleanup of expired share password tokens (every 5 minutes)
+    let cleanup_pool = pool.clone();
+    let _token_cleanup_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            match db::cleanup_expired_share_tokens(&cleanup_pool).await {
+                Ok(count) if count > 0 => {
+                    tracing::debug!("cleaned up {count} expired share password tokens");
+                }
+                Err(err) => {
+                    tracing::warn!("failed to clean up share tokens: {err}");
+                }
+                _ => {}
+            }
+        }
+    });
     let watcher_future = watcher.run();
     tokio::pin!(watcher_future);
 

@@ -13,6 +13,7 @@ use crate::onboarding::{
     perform_vault_restore, reset_onboarding, seal_provider_secrets,
     validate_persisted_provider_connection,
 };
+use crate::identity;
 use crate::peer;
 use crate::repair::{self, RepairError};
 use crate::runtime_paths::RuntimePaths;
@@ -597,6 +598,12 @@ impl ApiServer {
             )
             .route("/share-sw.js", get(get_share_sw_js))
             .route("/sw-download/{share_id}", get(get_sw_download_placeholder))
+            // Epic 34.1b: invite flow
+            .route("/api/vault/invite", post(post_vault_invite))
+            .route("/api/vault/join", post(post_vault_join))
+            .route("/api/vault/accept-device/{device_id}", post(post_accept_device))
+            .route("/api/vault/my-wrapped-key", get(get_my_wrapped_key))
+            .route("/api/vault/pending-devices", get(get_pending_devices))
             .with_state(state)
             .layer(share_cors_layer());
 
@@ -3651,13 +3658,506 @@ async fn get_share_chunk(
         .into_response()
 }
 
+// ── Epic 34.1b: Invite flow endpoints ────────────────────────────────
+
+#[derive(Deserialize)]
+struct InviteRequest {
+    role: Option<String>,
+    max_uses: Option<i64>,
+    expires_in_secs: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct InviteResponse {
+    code: String,
+    role: String,
+    max_uses: i64,
+    expires_at: Option<i64>,
+}
+
+async fn post_vault_invite(
+    State(state): State<ApiState>,
+    Json(req): Json<InviteRequest>,
+) -> impl IntoResponse {
+    let vault_id = match db::get_vault_params(&state.pool).await {
+        Ok(Some(v)) => v.vault_id,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "vault_not_initialized" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    // Verify caller is owner/admin
+    let local_device = match db::get_local_device_identity(&state.pool).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "no_device_identity" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    let owner_user_id = format!("owner-{}", &local_device.device_id);
+    match db::get_vault_member(&state.pool, &owner_user_id, &vault_id).await {
+        Ok(Some(m)) if m.role == "owner" || m.role == "admin" => {}
+        Ok(_) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "insufficient_permissions", "message": "only owner or admin can create invites" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    }
+
+    let role = req.role.unwrap_or_else(|| "member".to_string());
+    let max_uses = req.max_uses.unwrap_or(1);
+
+    // Generate 128-bit random invite code (base64url)
+    let mut code_bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut code_bytes);
+    let code = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        code_bytes,
+    );
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let expires_at = req.expires_in_secs.map(|secs| now + secs);
+
+    if let Err(e) =
+        db::create_invite_code(&state.pool, &code, &vault_id, &owner_user_id, &role, max_uses, expires_at).await
+    {
+        return internal_server_error(io_error(e));
+    }
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &vault_id,
+        "create_invite",
+        Some(&owner_user_id),
+        Some(&local_device.device_id),
+        None,
+        None,
+        Some(&format!(r#"{{"role":"{role}","max_uses":{max_uses}}}"#)),
+    )
+    .await;
+
+    (
+        StatusCode::OK,
+        Json(InviteResponse {
+            code,
+            role,
+            max_uses,
+            expires_at,
+        }),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct JoinRequest {
+    invite_code: String,
+    device_id: String,
+    device_name: String,
+    public_key: String, // base64
+}
+
+#[derive(Serialize)]
+struct JoinResponse {
+    user_id: String,
+    device_id: String,
+    role: String,
+    status: String,
+}
+
+async fn post_vault_join(
+    State(state): State<ApiState>,
+    Json(req): Json<JoinRequest>,
+) -> impl IntoResponse {
+    // Validate invite code
+    let invite = match db::get_invite_code(&state.pool, &req.invite_code).await {
+        Ok(Some(inv)) => inv,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid_invite_code" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    if !db::is_invite_code_valid(&invite) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invite_expired_or_exhausted" })),
+        )
+            .into_response();
+    }
+
+    // Decode public key
+    let public_key = match base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        &req.public_key,
+    ) {
+        Ok(pk) if pk.len() == 32 => pk,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid_public_key", "message": "expected 32-byte X25519 public key (base64url)" })),
+            )
+                .into_response()
+        }
+    };
+
+    // Consume invite
+    if let Err(e) = db::consume_invite_code(&state.pool, &req.invite_code).await {
+        return internal_server_error(io_error(e));
+    }
+
+    // Create user
+    let user_id = format!("user-{}", &req.device_id);
+    if let Err(e) = db::create_user(&state.pool, &user_id, &req.device_name, None, "local", None).await {
+        // May already exist if re-joining
+        warn!("create_user during join: {e}");
+    }
+
+    // Create device (with public key, but NO wrapped_vault_key yet — pending owner acceptance)
+    if let Err(e) = db::create_device(&state.pool, &req.device_id, &user_id, &req.device_name, &public_key).await
+    {
+        warn!("create_device during join: {e}");
+    }
+
+    // Add vault membership
+    if let Err(e) = db::add_vault_member(
+        &state.pool,
+        &user_id,
+        &invite.vault_id,
+        &invite.role,
+        Some(&invite.created_by),
+    )
+    .await
+    {
+        warn!("add_vault_member during join: {e}");
+    }
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &invite.vault_id,
+        "join",
+        Some(&user_id),
+        Some(&req.device_id),
+        None,
+        None,
+        Some(&format!(r#"{{"invite_code":"[REDACTED]","role":"{}"}}"#, invite.role)),
+    )
+    .await;
+
+    (
+        StatusCode::OK,
+        Json(JoinResponse {
+            user_id,
+            device_id: req.device_id,
+            role: invite.role,
+            status: "pending_acceptance".to_string(),
+        }),
+    )
+        .into_response()
+}
+
+async fn post_accept_device(
+    State(state): State<ApiState>,
+    Path(target_device_id): Path<String>,
+) -> impl IntoResponse {
+    let vault_id = match db::get_vault_params(&state.pool).await {
+        Ok(Some(v)) => v.vault_id,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "vault_not_initialized" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    // Get owner's master key (vault must be unlocked)
+    let master_key = match state.vault_keys.require_master_key().await {
+        Ok(mk) => mk,
+        Err(_) => {
+            return (
+                StatusCode::LOCKED,
+                Json(serde_json::json!({ "error": "vault_locked", "message": "vault must be unlocked to accept devices" })),
+            )
+                .into_response()
+        }
+    };
+
+    // Get envelope vault key (the key we're distributing)
+    let envelope_key = match state.vault_keys.require_envelope_key().await {
+        Ok(ek) => ek,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "no_envelope_key", "message": "vault key not available" })),
+            )
+                .into_response()
+        }
+    };
+
+    // Get owner's private key
+    let owner_private = match identity::get_device_private_key(&state.pool, &master_key).await {
+        Ok(pk) => pk,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "owner_key_error", "message": e.to_string() })),
+            )
+                .into_response()
+        }
+    };
+
+    // Get target device's public key
+    let target_device = match db::get_device(&state.pool, &target_device_id).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "device_not_found" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    if target_device.wrapped_vault_key.is_some() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "already_accepted", "message": "device already has a wrapped vault key" })),
+        )
+            .into_response();
+    }
+
+    if target_device.revoked_at.is_some() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "device_revoked" })),
+        )
+            .into_response();
+    }
+
+    let mut member_pubkey = [0u8; 32];
+    if target_device.public_key.len() != 32 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid_device_public_key" })),
+        )
+            .into_response();
+    }
+    member_pubkey.copy_from_slice(&target_device.public_key);
+
+    // ECDH wrap vault key
+    let wrapped = match identity::wrap_vault_key_for_device(&owner_private, &member_pubkey, &envelope_key) {
+        Ok(w) => w,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "key_wrap_failed", "message": e.to_string() })),
+            )
+                .into_response()
+        }
+    };
+
+    // Store wrapped VK for device
+    if let Err(e) = db::set_device_wrapped_vault_key(&state.pool, &target_device_id, &wrapped, 1).await {
+        return internal_server_error(io_error(e));
+    }
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &vault_id,
+        "accept_device",
+        None,
+        None,
+        Some(&target_device.user_id),
+        Some(&target_device_id),
+        None,
+    )
+    .await;
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "accepted",
+            "device_id": target_device_id,
+            "user_id": target_device.user_id,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Serialize)]
+struct WrappedKeyResponse {
+    wrapped_vault_key: Option<String>, // base64
+    vault_key_generation: Option<i64>,
+    owner_public_key: Option<String>, // base64, needed for ECDH unwrap
+    status: String,
+}
+
+async fn get_my_wrapped_key(
+    State(state): State<ApiState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let device_id = match params.get("device_id") {
+        Some(id) => id.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "missing_device_id" })),
+            )
+                .into_response()
+        }
+    };
+
+    let device = match db::get_device(&state.pool, &device_id).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "device_not_found" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    if device.revoked_at.is_some() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "device_revoked" })),
+        )
+            .into_response();
+    }
+
+    let (wrapped_vk, owner_pub) = match &device.wrapped_vault_key {
+        Some(wvk) => {
+            // Find owner's public key for ECDH unwrap on the member side
+            let owner_pub = find_owner_public_key(&state.pool).await;
+            (
+                Some(base64::Engine::encode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    wvk,
+                )),
+                owner_pub,
+            )
+        }
+        None => (None, None),
+    };
+
+    let status = if device.wrapped_vault_key.is_some() {
+        "ready"
+    } else {
+        "pending_acceptance"
+    };
+
+    (
+        StatusCode::OK,
+        Json(WrappedKeyResponse {
+            wrapped_vault_key: wrapped_vk,
+            vault_key_generation: device.vault_key_generation,
+            owner_public_key: owner_pub,
+            status: status.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+#[derive(Serialize)]
+struct PendingDeviceInfo {
+    device_id: String,
+    device_name: String,
+    user_id: String,
+    public_key: String, // base64
+    created_at: i64,
+}
+
+async fn get_pending_devices(State(state): State<ApiState>) -> impl IntoResponse {
+    let vault_id = match db::get_vault_params(&state.pool).await {
+        Ok(Some(v)) => v.vault_id,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "vault_not_initialized" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    let members = match db::list_vault_members(&state.pool, &vault_id).await {
+        Ok(m) => m,
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    let mut pending = Vec::new();
+    for member in &members {
+        let devices = match db::list_devices_for_user(&state.pool, &member.user_id).await {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        for dev in devices {
+            if dev.wrapped_vault_key.is_none() && dev.revoked_at.is_none() {
+                // Skip placeholder pubkeys (all zeros = owner pre-34.1a)
+                if dev.public_key == vec![0u8; 32] {
+                    continue;
+                }
+                pending.push(PendingDeviceInfo {
+                    device_id: dev.device_id,
+                    device_name: dev.device_name,
+                    user_id: dev.user_id,
+                    public_key: base64::Engine::encode(
+                        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                        &dev.public_key,
+                    ),
+                    created_at: dev.created_at,
+                });
+            }
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "pending_devices": pending }))).into_response()
+}
+
+async fn find_owner_public_key(pool: &SqlitePool) -> Option<String> {
+    let device = db::get_local_device_identity(pool).await.ok()??;
+    let pubkey = device.public_key?;
+    if pubkey.len() == 32 && pubkey != vec![0u8; 32] {
+        Some(base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            &pubkey,
+        ))
+    } else {
+        None
+    }
+}
+
 /// CORS layer for public share API endpoints.
-/// Allows cross-origin access from share.omnidrive.app and localhost (dev).
+/// Allows cross-origin access from skarbiec.app and localhost (dev).
 fn share_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin, _| {
             let origin = origin.as_bytes();
-            origin == b"https://share.omnidrive.app"
+            origin == b"https://skarbiec.app"
                 || origin.starts_with(b"http://localhost")
                 || origin.starts_with(b"http://127.0.0.1")
         }))
