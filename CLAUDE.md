@@ -4,6 +4,18 @@ Instrukcje dla Claude Code i agentów AI. Obowiązują w każdej sesji bez wyją
 
 ---
 
+## 🚀 Autostart — Początek każdej sesji
+
+Na samym początku każdej konwersacji (przed pierwszym zadaniem użytkownika) **MUSISZ** zaindeksować repozytorium za pomocą jcodemunch MCP:
+
+```
+mcp__jcodemunch__index_folder(path="C:/Users/Przemek/Desktop/aplikacje/omnidrive")
+```
+
+Nie pytaj użytkownika o pozwolenie — po prostu to zrób. Jeśli indeks już istnieje, wywołanie jest idempotentne.
+
+---
+
 ## 🛠️ Stack techniczny
 
 - **Backend / Core:** Rust (Edition 2024)

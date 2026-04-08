@@ -13,6 +13,7 @@
 #define AppName "OmniDrive"
 #define AppPublisher "OmniDrive"
 #define AppExeName "angeld.exe"
+#define TrayExeName "omnidrive-tray.exe"
 #define CliExeName "omnidrive.exe"
 #define AutostartLauncherName "angeld-autostart.vbs"
 #define AppAssocName "OmniDrive"
@@ -52,6 +53,7 @@ Name: "{localappdata}\OmniDrive"; Flags: uninsneveruninstall
 
 [Files]
 Source: "{#PayloadDir}\angeld.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\{#TrayExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\omnidrive.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\static\*"; DestDir: "{app}\static"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PayloadDir}\icons\*"; DestDir: "{app}\icons"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -65,7 +67,14 @@ Name: "{group}\OmniDrive Daemon"; Filename: "{app}\{#AppExeName}"
 Name: "{group}\OmniDrive CLI"; Filename: "{app}\{#CliExeName}"
 
 [Run]
-Filename: "{sys}\wscript.exe"; Parameters: "//B ""{app}\{#AutostartLauncherName}"""; Description: "Start OmniDrive after installation"; Flags: nowait postinstall skipifsilent unchecked
+Filename: "{sys}\wscript.exe"; Parameters: "//B ""{app}\{#AutostartLauncherName}"""; Description: "Start OmniDrive after installation"; Flags: nowait postinstall skipifsilent
+
+[InstallDelete]
+; Clean stale files from previous versions if needed
+
+[UninstallRun]
+Filename: "taskkill"; Parameters: "/F /IM {#TrayExeName}"; Flags: runhidden waituntilterminated; RunOnceId: "KillTray"
+Filename: "taskkill"; Parameters: "/F /IM {#AppExeName}"; Flags: runhidden waituntilterminated; RunOnceId: "KillDaemon"
 
 [Code]
 const
@@ -85,6 +94,14 @@ begin
     );
 end;
 
+procedure KillRunningProcesses();
+var
+  ResultCode: Integer;
+begin
+  Exec('taskkill', '/F /IM {#TrayExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('taskkill', '/F /IM {#AppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 function InitializeSetup(): Boolean;
 begin
   if not IsCloudFilesSupported() then
@@ -97,6 +114,9 @@ begin
     Result := False;
     exit;
   end;
+
+  { Kill running processes so the installer can overwrite binaries }
+  KillRunningProcesses();
 
   Result := True;
 end;

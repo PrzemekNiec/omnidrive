@@ -6,10 +6,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIconBuilder};
 
 use serde::Deserialize;
@@ -194,6 +196,60 @@ fn open_dashboard() {
     }
 }
 
+/// Resolve the path to angeld.exe (sibling of this tray executable).
+fn angeld_exe_path() -> PathBuf {
+    let mut p = std::env::current_exe().expect("cannot resolve own exe path");
+    p.set_file_name("angeld.exe");
+    p
+}
+
+/// Kill angeld.exe via taskkill. Returns true if process was found and killed.
+fn kill_daemon() -> bool {
+    match std::process::Command::new("taskkill")
+        .args(["/F", "/IM", "angeld.exe"])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .output()
+    {
+        Ok(out) => {
+            let success = out.status.success();
+            if success {
+                info!("angeld.exe killed");
+            } else {
+                warn!("taskkill angeld.exe: not running or access denied");
+            }
+            success
+        }
+        Err(e) => {
+            error!("taskkill failed: {e}");
+            false
+        }
+    }
+}
+
+/// Start angeld.exe detached (no console window).
+fn start_daemon() {
+    let path = angeld_exe_path();
+    if !path.exists() {
+        error!("angeld.exe not found at {}", path.display());
+        return;
+    }
+    match std::process::Command::new(&path)
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .spawn()
+    {
+        Ok(child) => info!("angeld.exe started (pid {})", child.id()),
+        Err(e) => error!("failed to start angeld.exe: {e}"),
+    }
+}
+
+fn restart_daemon() {
+    info!("restarting daemon...");
+    kill_daemon();
+    // Small delay to let the port free up
+    std::thread::sleep(Duration::from_millis(500));
+    start_daemon();
+}
+
 // ── Custom user event ──────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -226,13 +282,22 @@ fn main() {
     let menu = Menu::new();
     let item_open_vault = MenuItem::new("Otwórz Skarbiec (O:\\)", true, None);
     let item_dashboard = MenuItem::new("Panel sterowania", true, None);
-    let item_exit = MenuItem::new("Wyjdź", true, None);
+    let item_restart = MenuItem::new("Restartuj demona", true, None);
+    let item_stop = MenuItem::new("Zatrzymaj demona", true, None);
+    let item_exit = MenuItem::new("Zamknij tray", true, None);
+
     menu.append(&item_open_vault).unwrap();
     menu.append(&item_dashboard).unwrap();
+    menu.append(&PredefinedMenuItem::separator()).unwrap();
+    menu.append(&item_restart).unwrap();
+    menu.append(&item_stop).unwrap();
+    menu.append(&PredefinedMenuItem::separator()).unwrap();
     menu.append(&item_exit).unwrap();
 
     let open_vault_id = item_open_vault.id().clone();
     let dashboard_id = item_dashboard.id().clone();
+    let restart_id = item_restart.id().clone();
+    let stop_id = item_stop.id().clone();
     let exit_id = item_exit.id().clone();
 
     // Build tray icon
@@ -284,8 +349,12 @@ fn main() {
                 open_vault_drive();
             } else if event.id == dashboard_id {
                 open_dashboard();
+            } else if event.id == restart_id {
+                restart_daemon();
+            } else if event.id == stop_id {
+                kill_daemon();
             } else if event.id == exit_id {
-                info!("user requested exit");
+                info!("user requested tray exit");
                 *control_flow = ControlFlow::Exit;
                 return;
             }
