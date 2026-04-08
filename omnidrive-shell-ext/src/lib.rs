@@ -89,12 +89,12 @@ unsafe extern "system" fn DllGetClassObject(
         let ppv = &mut *ppv;
         *ppv = std::ptr::null_mut();
 
-        if *rclsid != CLSID_OMNIDRIVE {
-            return CLASS_E_CLASSNOTAVAILABLE;
+        if *rclsid == CLSID_OMNIDRIVE {
+            let factory: IClassFactory = OmniDriveClassFactory.into();
+            return factory.query(riid, ppv);
         }
 
-        let factory: IClassFactory = OmniDriveClassFactory.into();
-        factory.query(riid, ppv)
+        CLASS_E_CLASSNOTAVAILABLE
     });
     match result {
         Ok(hr) => hr,
@@ -222,10 +222,14 @@ fn register_server() -> std::result::Result<(), String> {
     reg_set_string(approved_key, Some(CLSID_STR), EXTENSION_NAME)?;
     unsafe { let _ = RegCloseKey(approved_key); }
 
+    // Clean up any leftover overlay handler keys from previous versions
+    cleanup_legacy_overlay_keys();
+
     Ok(())
 }
 
 fn unregister_server() -> std::result::Result<(), String> {
+    // Context menu handlers
     reg_delete_tree(
         HKEY_CLASSES_ROOT,
         &format!("*\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
@@ -236,10 +240,13 @@ fn unregister_server() -> std::result::Result<(), String> {
     );
     reg_delete_tree(HKEY_CLASSES_ROOT, &format!("CLSID\\{CLSID_STR}"));
 
+    // Clean up legacy overlay keys
+    cleanup_legacy_overlay_keys();
+
+    // Clean Approved list
     let wide_path = wide_null(
         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
     );
-    let wide_clsid = wide_null(CLSID_STR);
     unsafe {
         let mut key = HKEY::default();
         if RegOpenKeyExW(
@@ -251,12 +258,47 @@ fn unregister_server() -> std::result::Result<(), String> {
         )
         .is_ok()
         {
+            let wide_clsid = wide_null(CLSID_STR);
             let _ = RegDeleteValueW(key, PCWSTR(wide_clsid.as_ptr()));
+            // Clean legacy overlay CLSIDs from Approved
+            for clsid_str in LEGACY_OVERLAY_CLSIDS {
+                let w = wide_null(clsid_str);
+                let _ = RegDeleteValueW(key, PCWSTR(w.as_ptr()));
+            }
             let _ = RegCloseKey(key);
         }
     }
 
     Ok(())
+}
+
+/// Remove overlay icon handler registry keys from the abandoned 35.2c approach.
+const LEGACY_OVERLAY_CLSIDS: &[&str] = &[
+    "{8D437341-B89B-4D14-9983-5A50529A88C1}",
+    "{8D437341-B89B-4D14-9983-5A50529A88C2}",
+    "{8D437341-B89B-4D14-9983-5A50529A88C3}",
+    "{8D437341-B89B-4D14-9983-5A50529A88C4}",
+];
+
+const LEGACY_OVERLAY_REG_NAMES: &[&str] = &[
+    " OmniDriveSynced",
+    " OmniDriveSyncing",
+    " OmniDriveGhost",
+    " OmniDriveError",
+];
+
+fn cleanup_legacy_overlay_keys() {
+    for clsid_str in LEGACY_OVERLAY_CLSIDS {
+        reg_delete_tree(HKEY_CLASSES_ROOT, &format!("CLSID\\{clsid_str}"));
+    }
+    for reg_name in LEGACY_OVERLAY_REG_NAMES {
+        reg_delete_tree(
+            HKEY_LOCAL_MACHINE,
+            &format!(
+                "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ShellIconOverlayIdentifiers\\{reg_name}"
+            ),
+        );
+    }
 }
 
 // ── IClassFactory ──────────────────────────────────────────────────────────
@@ -371,7 +413,11 @@ fn extract_first_path(dataobj: &IDataObject) -> Result<String> {
 
 const CMD_FREE_SPACE: u32 = 0;
 const CMD_DOWNLOAD: u32 = 1;
-const CMD_COUNT: u32 = 2;
+const CMD_LOKALNIE: u32 = 2;
+const CMD_COMBO: u32 = 3;
+const CMD_CHMURA: u32 = 4;
+const CMD_FORTECA: u32 = 5;
+const CMD_COUNT: u32 = 6;
 
 impl IContextMenu_Impl for OmniDriveContextMenu_Impl {
     fn QueryContextMenu(
@@ -400,6 +446,41 @@ impl IContextMenu_Impl for OmniDriveContextMenu_Impl {
                     MF_STRING,
                     (idcmdfirst + CMD_DOWNLOAD) as usize,
                     PCWSTR(text_dl.as_ptr()),
+                )?;
+
+                // ── Separator + protection levels ──
+                AppendMenuW(popup, MF_SEPARATOR, 0, PCWSTR::null())?;
+
+                let text_lok = wide_null("LOKALNIE \u{2014} tylko ten komputer");
+                AppendMenuW(
+                    popup,
+                    MF_STRING,
+                    (idcmdfirst + CMD_LOKALNIE) as usize,
+                    PCWSTR(text_lok.as_ptr()),
+                )?;
+
+                let text_combo = wide_null("COMBO \u{2014} chmura + lokalnie");
+                AppendMenuW(
+                    popup,
+                    MF_STRING,
+                    (idcmdfirst + CMD_COMBO) as usize,
+                    PCWSTR(text_combo.as_ptr()),
+                )?;
+
+                let text_chmura = wide_null("CHMURA \u{2014} tylko w chmurze");
+                AppendMenuW(
+                    popup,
+                    MF_STRING,
+                    (idcmdfirst + CMD_CHMURA) as usize,
+                    PCWSTR(text_chmura.as_ptr()),
+                )?;
+
+                let text_fort = wide_null("FORTECA \u{2014} pe\u{0142}na ochrona");
+                AppendMenuW(
+                    popup,
+                    MF_STRING,
+                    (idcmdfirst + CMD_FORTECA) as usize,
+                    PCWSTR(text_fort.as_ptr()),
                 )?;
 
                 let text_omni = wide_null("OmniDrive");
@@ -448,13 +529,28 @@ impl IContextMenu_Impl for OmniDriveContextMenu_Impl {
                 .unwrap_or_else(|| "<unknown>".to_string());
 
             let action = match cmd_id as u32 {
-                CMD_FREE_SPACE => "Zwolnij miejsce",
-                CMD_DOWNLOAD => "Pobierz na to urządzenie",
+                CMD_FREE_SPACE => "free_space",
+                CMD_DOWNLOAD => "download",
+                CMD_LOKALNIE => "set_lokalnie",
+                CMD_COMBO => "set_combo",
+                CMD_CHMURA => "set_chmura",
+                CMD_FORTECA => "set_forteca",
                 _ => return Err(Error::from(E_INVALIDARG)),
             };
 
             log_to_file(&format!("InvokeCommand: action=\"{action}\", path=\"{path}\""));
-            Ok(())
+
+            match send_pipe_command(action, &path) {
+                Ok(()) => {
+                    log_to_file(&format!("Pipe OK: {action} {path}"));
+                    Ok(())
+                }
+                Err(e) => {
+                    log_to_file(&format!("Pipe error: {e}"));
+                    // Never propagate pipe errors as COM failures — Explorer must not crash.
+                    Ok(())
+                }
+            }
         })
         .unwrap_or_else(|_| {
             log_to_file("PANIC in InvokeCommand");
@@ -471,5 +567,76 @@ impl IContextMenu_Impl for OmniDriveContextMenu_Impl {
         _cchmax: u32,
     ) -> Result<()> {
         Err(Error::from(E_NOTIMPL))
+    }
+}
+
+// ── Named Pipe client ─────────────────────────────────────────────────────
+
+const PIPE_NAME: &str = r"\\.\pipe\omnidrive_shellcmd";
+
+/// Send a JSON command to angeld via Named Pipe.
+/// Synchronous — safe to call from explorer.exe (no async runtime).
+fn send_pipe_command(action: &str, path: &str) -> std::result::Result<(), String> {
+    use std::io::{Read, Write};
+    use std::os::windows::io::FromRawHandle;
+    use windows::Win32::Storage::FileSystem::*;
+    use windows::Win32::System::Pipes::WaitNamedPipeW;
+
+    let pipe_name_w = wide_null(PIPE_NAME);
+
+    // Wait up to 3 seconds for the pipe to become available.
+    unsafe {
+        if !WaitNamedPipeW(PCWSTR(pipe_name_w.as_ptr()), 3000).as_bool() {
+            return Err("angeld pipe not available (timeout 3s)".into());
+        }
+    }
+
+    let handle = unsafe {
+        windows::Win32::Storage::FileSystem::CreateFileW(
+            PCWSTR(pipe_name_w.as_ptr()),
+            GENERIC_READ.0 | GENERIC_WRITE.0,
+            FILE_SHARE_NONE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+    }
+    .map_err(|e| format!("CreateFileW pipe: {e}"))?;
+
+    // Wrap in OwnedHandle for auto-close.
+    let mut pipe_file: std::fs::File = unsafe {
+        std::fs::File::from_raw_handle(handle.0 as *mut c_void)
+    };
+
+    // Build JSON request.
+    let escaped_path = path.replace('\\', "\\\\").replace('"', "\\\"");
+    let request = format!("{{\"action\":\"{action}\",\"path\":\"{escaped_path}\"}}\n");
+
+    pipe_file
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("write pipe: {e}"))?;
+    pipe_file
+        .flush()
+        .map_err(|e| format!("flush pipe: {e}"))?;
+
+    // Read response (max 4 KB).
+    let mut response_buf = [0u8; 4096];
+    let n = pipe_file
+        .read(&mut response_buf)
+        .map_err(|e| format!("read pipe: {e}"))?;
+
+    if n == 0 {
+        return Err("empty response from angeld".into());
+    }
+
+    let response_str =
+        std::str::from_utf8(&response_buf[..n]).map_err(|e| format!("utf8: {e}"))?;
+
+    // Minimal JSON parse: check for "ok":true
+    if response_str.contains("\"ok\":true") || response_str.contains("\"ok\": true") {
+        Ok(())
+    } else {
+        Err(format!("angeld error: {}", response_str.trim()))
     }
 }

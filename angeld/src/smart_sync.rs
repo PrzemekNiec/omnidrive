@@ -300,9 +300,11 @@ mod imp {
     use windows::Win32::Storage::CloudFilters::{
         CfConnectSyncRoot, CfConvertToPlaceholder, CfCreatePlaceholders,
         CfDisconnectSyncRoot, CfExecute, CfGetSyncRootInfoByPath,
-        CfHydratePlaceholder,
+        CfHydratePlaceholder, CfSetInSyncState,
         CfRegisterSyncRoot, CfSetPinState, CfUnregisterSyncRoot, CfUpdatePlaceholder,
         CF_CONVERT_FLAG_NONE,
+        CF_IN_SYNC_STATE_IN_SYNC, CF_IN_SYNC_STATE_NOT_IN_SYNC,
+        CF_SET_IN_SYNC_FLAG_NONE,
         CF_CALLBACK_INFO, CF_CALLBACK_PARAMETERS,
         CF_CALLBACK_REGISTRATION, CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
         CF_CALLBACK_TYPE_FETCH_DATA, CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS,
@@ -542,6 +544,9 @@ mod imp {
                         );
                     }
                     if let Ok(path) = projection_path_for_inode(&context.pool, request.inode_id).await {
+                        if let Err(err) = mark_in_sync(&path, true) {
+                            warn!("smart-sync: mark_in_sync after hydration failed for inode={}: {}", request.inode_id, err);
+                        }
                         notify_shell_path_changed(&path);
                     }
                 }
@@ -886,6 +891,13 @@ mod imp {
             db::set_hydration_state(pool, inode_id, 0).await?;
         }
 
+        // After pin/dehydrate changes, placeholder is still in-sync with cloud.
+        if target_path.exists() {
+            if let Err(err) = mark_in_sync(&target_path, true) {
+                warn!("smart-sync: mark_in_sync after pin state sync failed for inode={}: {}", inode_id, err);
+            }
+        }
+
         notify_shell_path_changed(&target_path);
 
         Ok(())
@@ -918,6 +930,12 @@ mod imp {
         db::set_pin_state(pool, inode_id, 1).await?;
         db::set_hydration_state(pool, inode_id, state.hydration_state.max(1))
             .await?;
+
+        // Hydrated + pinned = fully synced, show green checkmark.
+        if let Err(err) = mark_in_sync(&target_path, true) {
+            warn!("smart-sync: mark_in_sync after hydrate_now failed for inode={}: {}", inode_id, err);
+        }
+
         notify_shell_path_changed(&target_path);
         Ok(())
     }
@@ -949,6 +967,8 @@ mod imp {
             }
 
             db::set_hydration_state(pool, candidate.inode_id, 0).await?;
+            // Evicted but still in-sync with cloud (content is in remote storage).
+            let _ = mark_in_sync(&target_path, true);
             notify_shell_path_changed(&target_path);
             evicted += 1;
         }
@@ -1027,7 +1047,13 @@ mod imp {
         // Step 2: Dehydrate — remove local data, keep cloud shell.
         dehydrate_placeholder(&target_path)?;
 
-        // Step 3: Update DB — mark as dehydrated (hydration_state=0, unpinned).
+        // Step 3: Mark in-sync — dehydrated ghost is still in-sync with cloud
+        // (its revision matches). This makes Explorer show the cloud icon.
+        if let Err(err) = mark_in_sync(&target_path, true) {
+            warn!("smart-sync: mark_in_sync after ghost swap failed for inode={}: {}", inode_id, err);
+        }
+
+        // Step 4: Update DB — mark as dehydrated (hydration_state=0, unpinned).
         db::ensure_smart_sync_state(pool, inode_id, revision_id).await?;
         db::set_hydration_state(pool, inode_id, 0).await?;
 
@@ -1141,6 +1167,12 @@ mod imp {
         }
 
         apply_pin_state(&target_path, if pinned { CF_PIN_STATE_PINNED } else { CF_PIN_STATE_UNPINNED })?;
+
+        // New placeholder is in-sync with the cloud (its content matches the known revision).
+        if let Err(err) = mark_in_sync(&target_path, true) {
+            warn!("smart-sync: mark_in_sync for new placeholder {} failed: {}", relative_path, err);
+        }
+
         Ok(())
     }
 
@@ -1951,6 +1983,29 @@ mod imp {
                 as_handle(&file),
                 pin_state,
                 CF_SET_PIN_FLAGS(CF_SET_PIN_FLAG_NONE.0),
+                None,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Mark a placeholder as in-sync (or not) with the cloud.
+    /// This drives the native cfapi overlay icons in Explorer:
+    /// - IN_SYNC + hydrated → green checkmark
+    /// - IN_SYNC + dehydrated → cloud icon
+    /// - NOT_IN_SYNC → blue sync arrows / warning
+    fn mark_in_sync(path: &Path, in_sync: bool) -> Result<(), SmartSyncError> {
+        let file = open_placeholder_handle(path)?;
+        let state = if in_sync {
+            CF_IN_SYNC_STATE_IN_SYNC
+        } else {
+            CF_IN_SYNC_STATE_NOT_IN_SYNC
+        };
+        unsafe {
+            CfSetInSyncState(
+                as_handle(&file),
+                state,
+                CF_SET_IN_SYNC_FLAG_NONE,
                 None,
             )?;
         }

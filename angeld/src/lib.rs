@@ -14,6 +14,7 @@ pub mod migrator;
 pub mod onboarding;
 pub mod packer;
 pub mod peer;
+pub mod pipe_server;
 pub mod runtime_paths;
 pub mod secure_fs;
 pub mod smart_sync;

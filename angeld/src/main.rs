@@ -15,6 +15,7 @@ mod migrator;
 mod onboarding;
 mod packer;
 mod peer;
+mod pipe_server;
 mod repair;
 mod runtime_paths;
 mod scrubber;
@@ -688,6 +689,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         let mut upload_task = tokio::spawn(async move { worker.run().await });
         let mut api_task = tokio::spawn(async move { api.run().await });
         let mut peer_task = tokio::spawn(async move { peer_service.run().await });
+        let _pipe_task = tokio::spawn(pipe_server::run_pipe_server(pool.clone()));
         let watcher_future = watcher.run();
         tokio::pin!(watcher_future);
 
@@ -782,6 +784,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let mut metadata_backup_task = metadata_backup_worker;
     let mut api_task = tokio::spawn(async move { api.run().await });
     let mut peer_task = tokio::spawn(async move { peer_service.run().await });
+    let _pipe_task = tokio::spawn(pipe_server::run_pipe_server(pool.clone()));
     let watcher_future = watcher.run();
     tokio::pin!(watcher_future);
 
