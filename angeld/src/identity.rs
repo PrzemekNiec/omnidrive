@@ -591,4 +591,66 @@ mod tests {
         assert!(dev.wrapped_vault_key.is_none(), "revoked device must not have wrapped VK in DB");
         assert!(dev.revoked_at.is_some());
     }
+
+    #[tokio::test]
+    async fn user_removal_revokes_all_devices_and_deletes_membership() {
+        // 34.2c: Removing a user revokes all their devices and deletes vault membership.
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        let vault_id = "test-vault";
+
+        // Create user with 2 active devices
+        let user_id = "user-carol";
+        db::create_user(&pool, user_id, "Carol", None, "local", None)
+            .await
+            .unwrap();
+        db::create_device(&pool, "dev-carol-1", user_id, "Laptop", &[1u8; 32])
+            .await
+            .unwrap();
+        db::set_device_wrapped_vault_key(&pool, "dev-carol-1", &[0xAA; 40], 1)
+            .await
+            .unwrap();
+        db::create_device(&pool, "dev-carol-2", user_id, "Phone", &[2u8; 32])
+            .await
+            .unwrap();
+        db::set_device_wrapped_vault_key(&pool, "dev-carol-2", &[0xBB; 40], 1)
+            .await
+            .unwrap();
+
+        // Add as vault member
+        // First create the vault_state stub for the vault_id reference
+        db::add_vault_member(&pool, user_id, vault_id, "member", None)
+            .await
+            .unwrap();
+
+        // Verify: 2 active devices, 1 membership
+        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        assert_eq!(active.len(), 2);
+        assert!(db::get_vault_member(&pool, user_id, vault_id).await.unwrap().is_some());
+
+        // Simulate user removal: revoke all devices + delete membership
+        let devices = db::list_devices_for_user(&pool, user_id).await.unwrap();
+        for dev in &devices {
+            if dev.revoked_at.is_none() {
+                db::revoke_device(&pool, &dev.device_id).await.unwrap();
+            }
+        }
+        db::remove_vault_member(&pool, user_id, vault_id).await.unwrap();
+
+        // Verify: 0 active devices, no membership, devices are revoked
+        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        assert!(active.is_empty(), "all devices must be revoked");
+
+        assert!(
+            db::get_vault_member(&pool, user_id, vault_id).await.unwrap().is_none(),
+            "membership must be deleted"
+        );
+
+        let dev1 = db::get_device(&pool, "dev-carol-1").await.unwrap().unwrap();
+        assert!(dev1.revoked_at.is_some());
+        assert!(dev1.wrapped_vault_key.is_none());
+
+        let dev2 = db::get_device(&pool, "dev-carol-2").await.unwrap().unwrap();
+        assert!(dev2.revoked_at.is_some());
+        assert!(dev2.wrapped_vault_key.is_none());
+    }
 }

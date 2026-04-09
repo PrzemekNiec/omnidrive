@@ -511,7 +511,7 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 | **34.1c** | Multi-device key distribution | 34.1b | 4 | ✅ DONE (2026-04-09) |
 | **34.2a** | Device revocation | 34.0 | 5 | ✅ DONE (2026-04-09) |
 | **34.2b** | Lazy VK rotation + re-wrap queue | 34.2a, 34.1b | 6 | ✅ DONE (2026-04-09) |
-| **34.2c** | User removal | 34.2a, 34.2b | 7 | ⬜ NEXT |
+| **34.2c** | User removal | 34.2a, 34.2b | 7 | ✅ DONE (2026-04-09) |
 | **34.3a** | Session tokens (local auth) | 34.0 | 5 (parallel z 34.2) | ⬜ |
 | **34.3b** | Google OAuth2 | 34.3a | 8 (opcjonalny) | ⬜ |
 | **34.4a-b** | ACL + route protection | 34.3a | 9 | ⬜ |

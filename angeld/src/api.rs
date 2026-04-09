@@ -606,9 +606,10 @@ impl ApiServer {
             .route("/api/vault/pending-devices", get(get_pending_devices))
             // Epic 34.1c: multi-device key distribution
             .route("/api/vault/add-device", post(post_add_device))
-            // Epic 34.2a-b: device revocation + lazy VK rotation
+            // Epic 34.2a-c: device revocation, VK rotation, user removal
             .route("/api/devices/{device_id}/revoke", post(post_revoke_device))
             .route("/api/vault/rewrap-status", get(get_rewrap_status))
+            .route("/api/vault/members/{user_id}/remove", post(post_remove_member))
             .with_state(state)
             .layer(share_cors_layer());
 
@@ -4482,6 +4483,140 @@ async fn post_revoke_device(
             "device_id": target_device_id,
             "user_id": target_device.user_id,
             "remaining_active_devices": remaining,
+            "vk_rotation": rotation.as_ref().map(|r| serde_json::json!({
+                "new_generation": r.new_generation,
+                "devices_rewrapped": r.devices_rewrapped,
+                "deks_enqueued": r.deks_enqueued,
+            })),
+        })),
+    )
+        .into_response()
+}
+
+// ── Epic 34.2c: User removal ─────────────────────────────────────────
+
+/// Removes a user from the vault: revokes ALL their devices, deletes
+/// their vault membership, triggers VK rotation. Only owner/admin.
+async fn post_remove_member(
+    State(state): State<ApiState>,
+    Path(target_user_id): Path<String>,
+) -> impl IntoResponse {
+    let vault_id = match db::get_vault_params(&state.pool).await {
+        Ok(Some(v)) => v.vault_id,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "vault_not_initialized" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    // Identify caller
+    let local_device = match db::get_local_device_identity(&state.pool).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "no_device_identity" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    let caller_user_id = format!("owner-{}", &local_device.device_id);
+
+    // Block self-removal
+    if caller_user_id == target_user_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "cannot_remove_self", "message": "cannot remove yourself — transfer ownership first" })),
+        )
+            .into_response();
+    }
+
+    // ACL: only owner or admin
+    match db::get_vault_member(&state.pool, &caller_user_id, &vault_id).await {
+        Ok(Some(m)) if m.role == "owner" || m.role == "admin" => {}
+        Ok(_) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "insufficient_permissions", "message": "only owner or admin can remove members" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    }
+
+    // Verify target is a member
+    match db::get_vault_member(&state.pool, &target_user_id, &vault_id).await {
+        Ok(Some(m)) if m.role == "owner" => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "cannot_remove_owner", "message": "cannot remove the vault owner" })),
+            )
+                .into_response()
+        }
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "member_not_found" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    }
+
+    // Step 1: Revoke ALL devices for this user
+    let devices = match db::list_devices_for_user(&state.pool, &target_user_id).await {
+        Ok(d) => d,
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+    let mut devices_revoked = 0u64;
+    for dev in &devices {
+        if dev.revoked_at.is_none() {
+            if let Ok(true) = db::revoke_device(&state.pool, &dev.device_id).await {
+                devices_revoked += 1;
+            }
+        }
+    }
+
+    // Step 2: Delete vault membership
+    if let Err(e) = db::remove_vault_member(&state.pool, &target_user_id, &vault_id).await {
+        return internal_server_error(io_error(e));
+    }
+
+    // Step 3: Audit log
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &vault_id,
+        "remove_member",
+        Some(&caller_user_id),
+        Some(&local_device.device_id),
+        Some(&target_user_id),
+        None,
+        Some(&format!(r#"{{"devices_revoked":{devices_revoked}}}"#)),
+    )
+    .await;
+
+    // Step 4: Trigger VK rotation
+    let rotation = match state.vault_keys.rotate_for_revocation(&state.pool).await {
+        Ok(r) => Some(r),
+        Err(e) => {
+            warn!("VK rotation after member removal failed: {e}");
+            None
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "removed",
+            "user_id": target_user_id,
+            "devices_revoked": devices_revoked,
             "vk_rotation": rotation.as_ref().map(|r| serde_json::json!({
                 "new_generation": r.new_generation,
                 "devices_rewrapped": r.devices_rewrapped,
