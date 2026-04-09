@@ -1,7 +1,7 @@
-use crate::db;
+use crate::{db, identity};
 use hkdf::Hkdf;
 use omnidrive_core::crypto::{
-    CryptoError, KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_root_keys,
+    CryptoError, KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_kek, derive_root_keys,
     generate_random_key, unwrap_key, wrap_key,
 };
 use secrecy::{ExposeSecret, SecretBox};
@@ -11,7 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 use rand::RngCore;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 const DEFAULT_PARAMETER_SET_VERSION: u32 = 1;
 const DEFAULT_MEMORY_COST_KIB: u32 = 65_536;
@@ -32,6 +32,9 @@ struct UnlockedVaultKeys {
     vault_key: SecretBox<KeyBytes>,
     /// Random V2 Vault Key (unwrapped via AES-KW from DB). `None` if vault is still V1-only.
     envelope_vault_key: Option<SecretBox<KeyBytes>>,
+    /// Previous V2 Vault Key — kept in memory during lazy DEK re-wrap so old
+    /// DEKs can still be read until the background worker finishes.
+    previous_envelope_vault_key: Option<SecretBox<KeyBytes>>,
 }
 
 impl UnlockedVaultKeys {
@@ -41,6 +44,7 @@ impl UnlockedVaultKeys {
             master_key: SecretBox::new(Box::new(master_key)),
             vault_key: SecretBox::new(Box::new(vault_key)),
             envelope_vault_key: None,
+            previous_envelope_vault_key: None,
         }
     }
 
@@ -49,6 +53,21 @@ impl UnlockedVaultKeys {
             master_key: SecretBox::new(Box::new(master_key)),
             vault_key: SecretBox::new(Box::new(vault_key)),
             envelope_vault_key: Some(SecretBox::new(Box::new(envelope_key))),
+            previous_envelope_vault_key: None,
+        }
+    }
+
+    fn with_previous_key(
+        master_key: KeyBytes,
+        vault_key: KeyBytes,
+        envelope_key: KeyBytes,
+        previous_key: KeyBytes,
+    ) -> Self {
+        Self {
+            master_key: SecretBox::new(Box::new(master_key)),
+            vault_key: SecretBox::new(Box::new(vault_key)),
+            envelope_vault_key: Some(SecretBox::new(Box::new(envelope_key))),
+            previous_envelope_vault_key: Some(SecretBox::new(Box::new(previous_key))),
         }
     }
 
@@ -62,6 +81,10 @@ impl UnlockedVaultKeys {
 
     fn envelope_vault_key(&self) -> Option<KeyBytes> {
         self.envelope_vault_key.as_ref().map(|k| *k.expose_secret())
+    }
+
+    fn previous_envelope_vault_key(&self) -> Option<KeyBytes> {
+        self.previous_envelope_vault_key.as_ref().map(|k| *k.expose_secret())
     }
 }
 
@@ -200,6 +223,21 @@ impl VaultKeyStore {
         }
     }
 
+    /// Return the previous V2 envelope Vault Key (kept during lazy DEK re-wrap).
+    /// Returns `None` if no rotation has happened or re-wrap is complete.
+    #[allow(dead_code)]
+    pub async fn previous_envelope_key(&self) -> Option<KeyBytes> {
+        self.inner.read().await.as_ref().and_then(|k| k.previous_envelope_vault_key())
+    }
+
+    /// Clear the previous envelope key once all DEKs have been re-wrapped.
+    #[allow(dead_code)]
+    pub async fn clear_previous_envelope_key(&self) {
+        if let Some(keys) = self.inner.write().await.as_mut() {
+            keys.previous_envelope_vault_key = None;
+        }
+    }
+
     #[allow(dead_code)]
     pub async fn derive_cache_key(&self) -> Result<SecretBox<KeyBytes>, VaultError> {
         let master_key = self.require_master_key().await?;
@@ -229,7 +267,17 @@ impl VaultKeyStore {
                 .as_slice()
                 .try_into()
                 .map_err(|_| VaultError::InvalidConfig("wrapped_dek has invalid length"))?;
-            let dek = unwrap_key(&envelope_key, &wrapped)?;
+            // Try current VK first; fall back to previous VK during lazy re-wrap
+            let dek = match unwrap_key(&envelope_key, &wrapped) {
+                Ok(k) => k,
+                Err(first_err) => {
+                    if let Some(prev) = self.previous_envelope_key().await {
+                        unwrap_key(&prev, &wrapped)?
+                    } else {
+                        return Err(VaultError::Crypto(first_err));
+                    }
+                }
+            };
             return Ok((record.dek_id, SecretBox::new(Box::new(dek))));
         }
 
@@ -366,6 +414,155 @@ impl VaultKeyStore {
         })
     }
 
+    /// Rotate Vault Key after device revocation (no passphrase change).
+    ///
+    /// **Immediate phase** (<1s):
+    /// 1. Generate new random Vault Key
+    /// 2. Wrap with existing KEK → update vault_state (generation bumped)
+    /// 3. Re-wrap VK (ECDH) for each active (non-revoked) device
+    /// 4. Enqueue all DEKs for background re-wrapping
+    ///
+    /// **Background phase** handled by `process_rewrap_batch()`.
+    #[allow(dead_code)]
+    pub async fn rotate_for_revocation(
+        &self,
+        pool: &SqlitePool,
+    ) -> Result<RevocationRotationResult, VaultError> {
+        let old_envelope_key = self.require_envelope_key().await?;
+        let master_key = self.require_master_key().await?;
+        let old_generation = self.current_vault_key_generation(pool).await?;
+
+        // Step 1: Generate new random Vault Key
+        let new_vault_key = generate_random_key();
+        let new_generation = old_generation + 1;
+
+        // Step 2: Wrap new VK with existing KEK (passphrase unchanged)
+        let vault_params = db::get_vault_params(pool).await?;
+
+        // Derive KEK directly from master_key (no Argon2 re-run needed)
+        let kek = derive_kek(&master_key)?;
+        let wrapped_new_vk = wrap_key(&kek, &new_vault_key)?;
+
+        db::rotate_vault_key_only(pool, &wrapped_new_vk, new_generation).await?;
+
+        // Step 3: Re-wrap VK for each active device (ECDH)
+        let owner_private = identity::get_device_private_key(pool, &master_key).await
+            .map_err(|e| VaultError::InvalidConfig(Box::leak(format!("identity: {e}").into_boxed_str())))?;
+
+        let vault_id = vault_params
+            .as_ref()
+            .map(|v| v.vault_id.clone())
+            .ok_or(VaultError::InvalidConfig("no vault_id"))?;
+
+        let members = db::list_vault_members(pool, &vault_id).await?;
+        let mut devices_rewrapped = 0u64;
+        for member in &members {
+            let devices = db::get_active_devices_for_user(pool, &member.user_id).await?;
+            for dev in &devices {
+                if dev.public_key.len() == 32 && dev.public_key != vec![0u8; 32] {
+                    let mut pub_key = [0u8; 32];
+                    pub_key.copy_from_slice(&dev.public_key);
+                    match identity::wrap_vault_key_for_device(&owner_private, &pub_key, &new_vault_key) {
+                        Ok(wrapped) => {
+                            if let Err(e) = db::set_device_wrapped_vault_key(
+                                pool, &dev.device_id, &wrapped, new_generation,
+                            ).await {
+                                warn!("[VAULT] failed to re-wrap VK for device {}: {e}", dev.device_id);
+                            } else {
+                                devices_rewrapped += 1;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("[VAULT] ECDH wrap failed for device {}: {e}", dev.device_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 4: Enqueue DEKs for background re-wrapping
+        let deks_enqueued = db::enqueue_deks_for_rewrap(pool, new_generation).await?;
+
+        // Step 5: Update in-memory keys (keep old VK as previous for dual-read)
+        let vault_key = self.require_key().await?;
+        *self.inner.write().await = Some(UnlockedVaultKeys::with_previous_key(
+            master_key,
+            vault_key,
+            new_vault_key,
+            old_envelope_key,
+        ));
+
+        info!(
+            "[VAULT] Revocation rotation complete: generation {} → {}, {} devices re-wrapped, {} DEKs enqueued",
+            old_generation, new_generation, devices_rewrapped, deks_enqueued
+        );
+
+        Ok(RevocationRotationResult {
+            new_generation,
+            devices_rewrapped,
+            deks_enqueued,
+        })
+    }
+
+    /// Process a batch of pending DEK re-wraps. Returns the number processed.
+    #[allow(dead_code)]
+    pub async fn process_rewrap_batch(
+        &self,
+        pool: &SqlitePool,
+        batch_size: i64,
+    ) -> Result<u64, VaultError> {
+        let new_envelope_key = self.require_envelope_key().await?;
+        let old_envelope_key = match self.previous_envelope_key().await {
+            Some(k) => k,
+            None => return Ok(0), // No rotation pending
+        };
+
+        let batch = db::get_pending_rewrap_batch(pool, batch_size).await?;
+        if batch.is_empty() {
+            // Queue empty — clear previous key
+            self.clear_previous_envelope_key().await;
+            return Ok(0);
+        }
+
+        let new_generation = self.current_vault_key_generation(pool).await?;
+        let mut processed = 0u64;
+
+        for (item, wrapped_dek_bytes) in &batch {
+            let result: Result<(), VaultError> = (|| async {
+                let wrapped: [u8; WRAPPED_KEY_LEN] = wrapped_dek_bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| VaultError::InvalidConfig("wrapped_dek invalid length"))?;
+
+                // Unwrap with old VK
+                let plaintext_dek = unwrap_key(&old_envelope_key, &wrapped)?;
+                // Re-wrap with new VK
+                let new_wrapped = wrap_key(&new_envelope_key, &plaintext_dek)?;
+                // Update DB
+                db::update_wrapped_dek(pool, item.dek_id, &new_wrapped, new_generation).await?;
+                db::complete_rewrap_item(pool, item.dek_id).await?;
+                Ok(())
+            })().await;
+
+            match result {
+                Ok(()) => processed += 1,
+                Err(e) => {
+                    warn!("[VAULT] DEK re-wrap failed for dek_id={}: {e}", item.dek_id);
+                    let _ = db::fail_rewrap_item(pool, item.dek_id, &e.to_string()).await;
+                }
+            }
+        }
+
+        // Check if queue is now empty
+        let (total, pending, _) = db::get_rewrap_status(pool).await?;
+        if total == 0 || pending == 0 {
+            self.clear_previous_envelope_key().await;
+            info!("[VAULT] DEK re-wrap complete, previous VK purged from memory");
+        }
+
+        Ok(processed)
+    }
+
     #[cfg(test)]
     pub async fn set_key_for_tests(&self, key: KeyBytes) {
         *self.inner.write().await = Some(UnlockedVaultKeys::new(key, key));
@@ -376,6 +573,13 @@ impl VaultKeyStore {
 pub struct RotationResult {
     pub new_generation: i64,
     pub deks_rewrapped: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevocationRotationResult {
+    pub new_generation: i64,
+    pub devices_rewrapped: u64,
+    pub deks_enqueued: u64,
 }
 
 pub async fn bootstrap_local_vault(pool: &SqlitePool) -> Result<bool, VaultError> {
@@ -669,6 +873,76 @@ mod tests {
         // ── 5. Verify generation bumped in DB ──
         let vault = db::get_vault_params(&pool).await?.unwrap();
         assert_eq!(vault.vault_key_generation, Some(2));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rotate_for_revocation_enqueues_deks_and_lazy_rewrap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+
+        // ── 1. Create vault, unlock, create DEKs ──
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "vault-pass").await?;
+
+        let (_, dek_a) = store.get_or_create_dek(&pool, 10).await?;
+        let (_, dek_b) = store.get_or_create_dek(&pool, 20).await?;
+        let dek_a_bytes = *dek_a.expose_secret();
+        let dek_b_bytes = *dek_b.expose_secret();
+
+        // ── 2. Setup owner device identity (X25519 keypair) ──
+        db::upsert_local_device_identity(&pool, "dev-owner", "OwnerPC", "tok")
+            .await?;
+        let master_key = store.require_master_key().await?;
+        let _owner_pubkey = identity::ensure_device_keypair(&pool, &master_key).await
+            .map_err(|e| format!("keypair: {e}"))?;
+
+        // Setup multi-user schema: owner user + vault membership
+        let vault = db::get_vault_params(&pool).await?.unwrap();
+        db::create_user(&pool, "owner-dev-owner", "Owner", None, "local", None).await?;
+        db::add_vault_member(&pool, "owner-dev-owner", &vault.vault_id, "owner", None).await?;
+
+        // ── 3. Rotate for revocation ──
+        let result = store.rotate_for_revocation(&pool).await?;
+        assert_eq!(result.new_generation, 2);
+        assert_eq!(result.deks_enqueued, 2, "both DEKs should be enqueued");
+
+        // ── 4. Verify dual-VK read: old DEKs still accessible ──
+        let (_, dek_a_during) = store.get_or_create_dek(&pool, 10).await?;
+        let (_, dek_b_during) = store.get_or_create_dek(&pool, 20).await?;
+        assert_eq!(*dek_a_during.expose_secret(), dek_a_bytes, "DEK A must be readable during rewrap");
+        assert_eq!(*dek_b_during.expose_secret(), dek_b_bytes, "DEK B must be readable during rewrap");
+
+        // ── 5. Process rewrap batch ──
+        let processed = store.process_rewrap_batch(&pool, 500).await?;
+        assert_eq!(processed, 2, "both DEKs should be re-wrapped");
+
+        // Queue should be empty
+        let (total, pending, failed) = db::get_rewrap_status(&pool).await?;
+        assert_eq!(total, 0);
+        assert_eq!(pending, 0);
+        assert_eq!(failed, 0);
+
+        // Previous VK should be purged
+        assert!(store.previous_envelope_key().await.is_none(), "previous VK must be cleared");
+
+        // ── 6. DEKs still readable with new VK only ──
+        let (_, dek_a_after) = store.get_or_create_dek(&pool, 10).await?;
+        let (_, dek_b_after) = store.get_or_create_dek(&pool, 20).await?;
+        assert_eq!(*dek_a_after.expose_secret(), dek_a_bytes, "DEK A must survive full rotation");
+        assert_eq!(*dek_b_after.expose_secret(), dek_b_bytes, "DEK B must survive full rotation");
+
+        // ── 7. Verify generation in DB ──
+        let vault = db::get_vault_params(&pool).await?.unwrap();
+        assert_eq!(vault.vault_key_generation, Some(2));
+
+        // ── 8. Relock + unlock: same passphrase still works ──
+        drop(store);
+        let store2 = VaultKeyStore::new();
+        store2.unlock(&pool, "vault-pass").await?;
+        let (_, dek_a_relock) = store2.get_or_create_dek(&pool, 10).await?;
+        assert_eq!(*dek_a_relock.expose_secret(), dek_a_bytes);
 
         Ok(())
     }

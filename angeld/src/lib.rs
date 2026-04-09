@@ -9,6 +9,7 @@ pub mod device_identity;
 pub mod diagnostics;
 pub mod disaster_recovery;
 pub mod downloader;
+pub mod identity;
 pub mod logging;
 pub mod migrator;
 pub mod onboarding;

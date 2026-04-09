@@ -606,8 +606,9 @@ impl ApiServer {
             .route("/api/vault/pending-devices", get(get_pending_devices))
             // Epic 34.1c: multi-device key distribution
             .route("/api/vault/add-device", post(post_add_device))
-            // Epic 34.2a: device revocation
+            // Epic 34.2a-b: device revocation + lazy VK rotation
             .route("/api/devices/{device_id}/revoke", post(post_revoke_device))
+            .route("/api/vault/rewrap-status", get(get_rewrap_status))
             .with_state(state)
             .layer(share_cors_layer());
 
@@ -4464,6 +4465,16 @@ async fn post_revoke_device(
         .map(|d| d.len())
         .unwrap_or(0);
 
+    // Trigger VK rotation (immediate phase) — re-wraps VK for active devices,
+    // enqueues DEKs for lazy background re-wrap.
+    let rotation = match state.vault_keys.rotate_for_revocation(&state.pool).await {
+        Ok(r) => Some(r),
+        Err(e) => {
+            warn!("VK rotation after revocation failed: {e}");
+            None
+        }
+    };
+
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -4471,10 +4482,35 @@ async fn post_revoke_device(
             "device_id": target_device_id,
             "user_id": target_device.user_id,
             "remaining_active_devices": remaining,
-            "vk_rotation_pending": true,
+            "vk_rotation": rotation.as_ref().map(|r| serde_json::json!({
+                "new_generation": r.new_generation,
+                "devices_rewrapped": r.devices_rewrapped,
+                "deks_enqueued": r.deks_enqueued,
+            })),
         })),
     )
         .into_response()
+}
+
+/// Returns the status of the background DEK re-wrap queue.
+async fn get_rewrap_status(State(state): State<ApiState>) -> impl IntoResponse {
+    match db::get_rewrap_status(&state.pool).await {
+        Ok((total, pending, failed)) => {
+            let done = total - pending - failed;
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "total": total,
+                    "done": done,
+                    "pending": pending,
+                    "failed": failed,
+                    "complete": pending == 0 && failed == 0,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => internal_server_error(io_error(e)),
+    }
 }
 
 /// CORS layer for public share API endpoints.

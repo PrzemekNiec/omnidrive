@@ -1195,6 +1195,22 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
+    // Epic 34.2b: DEK re-wrap queue for lazy VK rotation
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS dek_rewrap_queue (
+            dek_id INTEGER PRIMARY KEY,
+            source_vk_generation INTEGER NOT NULL,
+            target_vk_generation INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            attempted_at INTEGER,
+            error TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
     Ok(pool)
 }
 
@@ -5929,6 +5945,141 @@ pub async fn rotate_vault_state(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Update only encrypted_vault_key and generation (no salt/params change).
+/// Used by VK rotation triggered by device revocation (passphrase unchanged).
+pub async fn rotate_vault_key_only(
+    pool: &SqlitePool,
+    new_encrypted_vault_key: &[u8],
+    new_vault_key_generation: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE vault_state SET \
+         encrypted_vault_key = ?, \
+         vault_key_generation = ? \
+         WHERE id = 1",
+    )
+    .bind(new_encrypted_vault_key)
+    .bind(new_vault_key_generation)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+// ── DEK re-wrap queue (Epic 34.2b) ──────────────────────────────────
+
+#[derive(Debug, Clone, FromRow)]
+pub struct RewrapQueueItem {
+    pub dek_id: i64,
+    pub source_vk_generation: i64,
+    pub target_vk_generation: i64,
+    pub status: String,
+    pub attempted_at: Option<i64>,
+    pub error: Option<String>,
+}
+
+/// Enqueue all DEKs with vault_key_gen < target_generation for re-wrapping.
+pub async fn enqueue_deks_for_rewrap(
+    pool: &SqlitePool,
+    target_vk_generation: i64,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "INSERT OR IGNORE INTO dek_rewrap_queue (dek_id, source_vk_generation, target_vk_generation, status) \
+         SELECT dek_id, vault_key_gen, ?, 'PENDING' \
+         FROM data_encryption_keys \
+         WHERE vault_key_gen < ?",
+    )
+    .bind(target_vk_generation)
+    .bind(target_vk_generation)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Fetch a batch of PENDING re-wrap items (with their current wrapped DEK).
+pub async fn get_pending_rewrap_batch(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<(RewrapQueueItem, Vec<u8>)>, sqlx::Error> {
+    let items = sqlx::query_as::<_, RewrapQueueItem>(
+        "SELECT dek_id, source_vk_generation, target_vk_generation, status, attempted_at, error \
+         FROM dek_rewrap_queue WHERE status = 'PENDING' ORDER BY dek_id ASC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let mut result = Vec::with_capacity(items.len());
+    for item in items {
+        let dek = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT wrapped_dek FROM data_encryption_keys WHERE dek_id = ?",
+        )
+        .bind(item.dek_id)
+        .fetch_one(pool)
+        .await?;
+        result.push((item, dek));
+    }
+    Ok(result)
+}
+
+/// Remove a successfully re-wrapped DEK from the queue.
+pub async fn complete_rewrap_item(pool: &SqlitePool, dek_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM dek_rewrap_queue WHERE dek_id = ?")
+        .bind(dek_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Mark a re-wrap item as FAILED with an error message.
+pub async fn fail_rewrap_item(
+    pool: &SqlitePool,
+    dek_id: i64,
+    error: &str,
+) -> Result<(), sqlx::Error> {
+    let now = epoch_secs();
+    sqlx::query(
+        "UPDATE dek_rewrap_queue SET status = 'FAILED', attempted_at = ?, error = ? WHERE dek_id = ?",
+    )
+    .bind(now)
+    .bind(error)
+    .bind(dek_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Get queue status: total, pending, failed counts.
+pub async fn get_rewrap_status(pool: &SqlitePool) -> Result<(i64, i64, i64), sqlx::Error> {
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dek_rewrap_queue")
+        .fetch_one(pool)
+        .await?;
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM dek_rewrap_queue WHERE status = 'PENDING'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let failed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM dek_rewrap_queue WHERE status = 'FAILED'",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok((total, pending, failed))
+}
+
+/// Get DEKs with a specific vault_key_gen (for lookup during dual-VK read).
+pub async fn get_deks_by_generation(
+    pool: &SqlitePool,
+    vault_key_gen: i64,
+) -> Result<Vec<WrappedDekRecord>, sqlx::Error> {
+    sqlx::query_as::<_, WrappedDekRecord>(
+        "SELECT dek_id, inode_id, wrapped_dek, key_version, vault_key_gen, created_at \
+         FROM data_encryption_keys WHERE vault_key_gen = ? ORDER BY dek_id ASC",
+    )
+    .bind(vault_key_gen)
+    .fetch_all(pool)
+    .await
 }
 
 // ── Shared Links (Epic 33) ───────────────────────────────────────────
