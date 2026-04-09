@@ -502,4 +502,93 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].device_id, "dev-2");
     }
+
+    #[tokio::test]
+    async fn revoke_device_clears_wrapped_vault_key() {
+        // 34.2a: Revoking a device must NULL out wrapped_vault_key so the
+        // device immediately loses the ability to unwrap VK.
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+
+        let user_id = "user-bob";
+        db::create_user(&pool, user_id, "Bob", None, "local", None)
+            .await
+            .unwrap();
+        db::create_device(&pool, "dev-bob-1", user_id, "WorkPC", &[1u8; 32])
+            .await
+            .unwrap();
+        db::set_device_wrapped_vault_key(&pool, "dev-bob-1", &[0xCC; 40], 1)
+            .await
+            .unwrap();
+
+        // Confirm device has wrapped VK
+        let dev = db::get_device(&pool, "dev-bob-1").await.unwrap().unwrap();
+        assert!(dev.wrapped_vault_key.is_some());
+        assert!(dev.vault_key_generation.is_some());
+        assert!(dev.revoked_at.is_none());
+
+        // Revoke
+        let revoked = db::revoke_device(&pool, "dev-bob-1").await.unwrap();
+        assert!(revoked);
+
+        // Verify: wrapped_vault_key cleared, revoked_at set
+        let dev = db::get_device(&pool, "dev-bob-1").await.unwrap().unwrap();
+        assert!(dev.wrapped_vault_key.is_none(), "wrapped VK must be cleared on revoke");
+        assert!(dev.vault_key_generation.is_none(), "VK generation must be cleared on revoke");
+        assert!(dev.revoked_at.is_some(), "revoked_at must be set");
+
+        // Double-revoke is a no-op
+        let revoked_again = db::revoke_device(&pool, "dev-bob-1").await.unwrap();
+        assert!(!revoked_again, "second revoke should be a no-op");
+    }
+
+    #[tokio::test]
+    async fn revoked_device_cannot_unwrap_vault_key() {
+        // 34.2a: Even if attacker has the old wrapped blob, a revoked device's
+        // ECDH relationship is broken because the owner would rotate VK (34.2b).
+        // Here we verify that the wrapped VK is no longer in the DB after revoke.
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        let master_key = [0x42u8; 32];
+
+        // Setup owner
+        db::upsert_local_device_identity(&pool, "dev-owner", "OwnerPC", "tok-own")
+            .await
+            .unwrap();
+        let owner_pubkey = ensure_device_keypair(&pool, &master_key).await.unwrap();
+        let owner_privkey = get_device_private_key(&pool, &master_key).await.unwrap();
+
+        // Setup member device
+        let mut member_priv = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut member_priv);
+        let member_secret = x25519_dalek::StaticSecret::from(member_priv);
+        let member_pubkey = x25519_dalek::PublicKey::from(&member_secret).to_bytes();
+
+        let vault_key: KeyBytes = [0xAB; 32];
+        let wrapped = wrap_vault_key_for_device(&owner_privkey, &member_pubkey, &vault_key).unwrap();
+
+        // Register member in DB
+        let user_id = "user-member";
+        db::create_user(&pool, user_id, "Member", None, "local", None)
+            .await
+            .unwrap();
+        db::create_device(&pool, "dev-member", user_id, "MemberPC", &member_pubkey)
+            .await
+            .unwrap();
+        db::set_device_wrapped_vault_key(&pool, "dev-member", &wrapped, 1)
+            .await
+            .unwrap();
+
+        // Before revoke: member can retrieve and unwrap
+        let dev = db::get_device(&pool, "dev-member").await.unwrap().unwrap();
+        let stored_wrapped: [u8; 40] = dev.wrapped_vault_key.unwrap().try_into().unwrap();
+        let recovered = unwrap_vault_key_from_device(&member_priv, &owner_pubkey, &stored_wrapped).unwrap();
+        assert_eq!(recovered, vault_key);
+
+        // Revoke device
+        db::revoke_device(&pool, "dev-member").await.unwrap();
+
+        // After revoke: wrapped_vault_key is gone from DB
+        let dev = db::get_device(&pool, "dev-member").await.unwrap().unwrap();
+        assert!(dev.wrapped_vault_key.is_none(), "revoked device must not have wrapped VK in DB");
+        assert!(dev.revoked_at.is_some());
+    }
 }

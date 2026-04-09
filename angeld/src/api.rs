@@ -606,6 +606,8 @@ impl ApiServer {
             .route("/api/vault/pending-devices", get(get_pending_devices))
             // Epic 34.1c: multi-device key distribution
             .route("/api/vault/add-device", post(post_add_device))
+            // Epic 34.2a: device revocation
+            .route("/api/devices/{device_id}/revoke", post(post_revoke_device))
             .with_state(state)
             .layer(share_cors_layer());
 
@@ -4356,6 +4358,123 @@ async fn try_auto_wrap_vault_key(
     .await;
 
     Some((wrapped_b64, vk_gen, pub_b64))
+}
+
+// ── Epic 34.2a: Device revocation ───────────────────────────────────
+
+/// Revokes a device: clears its wrapped vault key, sets revoked_at,
+/// and logs an audit event. Only owner/admin can revoke.
+/// Self-revocation (revoking the local daemon's own device) is blocked.
+async fn post_revoke_device(
+    State(state): State<ApiState>,
+    Path(target_device_id): Path<String>,
+) -> impl IntoResponse {
+    let vault_id = match db::get_vault_params(&state.pool).await {
+        Ok(Some(v)) => v.vault_id,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "vault_not_initialized" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    // Identify the calling device (local daemon)
+    let local_device = match db::get_local_device_identity(&state.pool).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "no_device_identity" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    // Block self-revocation — revoking the local device would brick this daemon
+    if local_device.device_id == target_device_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "cannot_revoke_self", "message": "cannot revoke the local device — use another device to revoke this one" })),
+        )
+            .into_response();
+    }
+
+    // ACL: only owner or admin can revoke devices
+    let caller_user_id = format!("owner-{}", &local_device.device_id);
+    match db::get_vault_member(&state.pool, &caller_user_id, &vault_id).await {
+        Ok(Some(m)) if m.role == "owner" || m.role == "admin" => {}
+        Ok(_) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "insufficient_permissions", "message": "only owner or admin can revoke devices" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    }
+
+    // Verify target device exists
+    let target_device = match db::get_device(&state.pool, &target_device_id).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "device_not_found" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    if target_device.revoked_at.is_some() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "already_revoked", "message": "device is already revoked" })),
+        )
+            .into_response();
+    }
+
+    // Revoke: sets revoked_at + clears wrapped_vault_key
+    if let Err(e) = db::revoke_device(&state.pool, &target_device_id).await {
+        return internal_server_error(io_error(e));
+    }
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &vault_id,
+        "revoke_device",
+        Some(&caller_user_id),
+        Some(&local_device.device_id),
+        Some(&target_device.user_id),
+        Some(&target_device_id),
+        Some(&format!(
+            r#"{{"device_name":"{}","user_id":"{}"}}"#,
+            target_device.device_name, target_device.user_id
+        )),
+    )
+    .await;
+
+    // Count remaining active devices for the affected user
+    let remaining = db::get_active_devices_for_user(&state.pool, &target_device.user_id)
+        .await
+        .map(|d| d.len())
+        .unwrap_or(0);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "revoked",
+            "device_id": target_device_id,
+            "user_id": target_device.user_id,
+            "remaining_active_devices": remaining,
+            "vk_rotation_pending": true,
+        })),
+    )
+        .into_response()
 }
 
 /// CORS layer for public share API endpoints.

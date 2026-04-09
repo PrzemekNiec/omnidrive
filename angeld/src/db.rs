@@ -6359,7 +6359,8 @@ pub async fn get_active_devices_for_user(
 pub async fn revoke_device(pool: &SqlitePool, device_id: &str) -> Result<bool, sqlx::Error> {
     let now = epoch_secs();
     let result = sqlx::query(
-        "UPDATE devices SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL",
+        "UPDATE devices SET revoked_at = ?, wrapped_vault_key = NULL, vault_key_generation = NULL \
+         WHERE device_id = ? AND revoked_at IS NULL",
     )
     .bind(now)
     .bind(device_id)
