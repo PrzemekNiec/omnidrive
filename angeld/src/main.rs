@@ -1,3 +1,4 @@
+mod acl;
 mod api;
 mod aws_http;
 mod cache;

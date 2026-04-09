@@ -1,3 +1,4 @@
+use crate::acl::{self, Role};
 use crate::cache;
 use crate::cloud_guard;
 use crate::config::AppConfig;
@@ -25,7 +26,7 @@ use crate::vault::{VaultError, VaultKeyStore};
 use secrecy::ExposeSecret;
 use crate::virtual_drive;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -109,6 +110,10 @@ struct UnlockRequest {
 struct UnlockResponse {
     status: String,
     initialized: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -610,6 +615,10 @@ impl ApiServer {
             .route("/api/devices/{device_id}/revoke", post(post_revoke_device))
             .route("/api/vault/rewrap-status", get(get_rewrap_status))
             .route("/api/vault/members/{user_id}/remove", post(post_remove_member))
+            // Epic 34.3a: session tokens
+            .route("/api/auth/session", get(get_auth_session))
+            .route("/api/auth/logout", post(post_auth_logout))
+            .route("/api/auth/renew", post(post_auth_renew))
             .with_state(state)
             .layer(share_cors_layer());
 
@@ -1540,11 +1549,23 @@ async fn post_unlock(
                 }
             });
 
+            // Epic 34.3a: Issue a session token for the local device/user
+            let (session_token, expires_at) =
+                match create_session_for_local_device(&state.pool).await {
+                    Ok(session) => (Some(session.token), Some(session.expires_at)),
+                    Err(err) => {
+                        warn!("[UNLOCK] session token creation failed: {err}");
+                        (None, None)
+                    }
+                };
+
             (
                 StatusCode::OK,
                 Json(UnlockResponse {
                     status: "UNLOCKED".to_string(),
                     initialized: result.initialized,
+                    session_token,
+                    expires_at,
                 }),
             )
                 .into_response()
@@ -1560,10 +1581,155 @@ async fn post_unlock(
     }
 }
 
+/// Look up local device identity → find user_id → create session.
+async fn create_session_for_local_device(
+    pool: &SqlitePool,
+) -> Result<db::UserSession, String> {
+    let device = db::get_local_device_identity(pool)
+        .await
+        .map_err(|e| format!("db error: {e}"))?
+        .ok_or_else(|| "no local device identity".to_string())?;
+
+    // Find which user owns this device
+    let device_rec = db::get_device(pool, &device.device_id)
+        .await
+        .map_err(|e| format!("db error: {e}"))?
+        .ok_or_else(|| "device not in multi-user tables".to_string())?;
+
+    let token = db::generate_session_token();
+    db::create_user_session(
+        pool,
+        &token,
+        &device_rec.user_id,
+        &device.device_id,
+        db::SESSION_TTL_SECONDS,
+    )
+    .await
+    .map_err(|e| format!("session insert error: {e}"))
+}
+
+/// Extract and validate a session token from the request `Authorization: Bearer <token>` header.
+/// Returns the valid session or None if missing/expired.
+async fn extract_session(
+    pool: &SqlitePool,
+    headers: &axum::http::HeaderMap,
+) -> Option<db::UserSession> {
+    let auth = headers.get("authorization")?.to_str().ok()?;
+    let token = auth.strip_prefix("Bearer ")?;
+    db::validate_user_session(pool, token).await.ok().flatten()
+}
+
+// ── Epic 34.3a: Session endpoints ───────────────────────────────────
+
+/// GET /api/auth/session — check current session validity
+async fn get_auth_session(
+    State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    match extract_session(&state.pool, &headers).await {
+        Some(session) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "valid": true,
+                "user_id": session.user_id,
+                "device_id": session.device_id,
+                "expires_at": session.expires_at,
+            })),
+        )
+            .into_response(),
+        None => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "valid": false,
+                "error": "invalid_or_expired_session",
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/auth/logout — invalidate current session
+async fn post_auth_logout(
+    State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "));
+
+    match token {
+        Some(tok) => match db::delete_user_session(&state.pool, tok).await {
+            Ok(true) => (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "logged_out" })),
+            )
+                .into_response(),
+            Ok(false) => (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "session_not_found" })),
+            )
+                .into_response(),
+            Err(err) => internal_server_error(err),
+        },
+        None => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "missing_authorization_header" })),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/auth/renew — extend session TTL by 24h
+async fn post_auth_renew(
+    State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "));
+
+    match token {
+        Some(tok) => {
+            match db::renew_user_session(&state.pool, tok, db::SESSION_TTL_SECONDS).await {
+                Ok(true) => {
+                    let new_expires = db::epoch_secs() + db::SESSION_TTL_SECONDS;
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "status": "renewed",
+                            "expires_at": new_expires,
+                        })),
+                    )
+                        .into_response()
+                }
+                Ok(false) => (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({ "error": "invalid_or_expired_session" })),
+                )
+                    .into_response(),
+                Err(err) => internal_server_error(err),
+            }
+        }
+        None => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "missing_authorization_header" })),
+        )
+            .into_response(),
+    }
+}
+
 async fn delete_file(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(inode_id): Path<i64>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can delete files
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
         Ok(inode) => inode,
         Err(err) => return internal_server_error(err),
@@ -1609,7 +1775,12 @@ async fn delete_file(
         .into_response()
 }
 
-async fn get_files(State(state): State<ApiState>) -> impl IntoResponse {
+async fn get_files(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
+    // ACL: Viewer+ can list files
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
+        return resp;
+    }
+
     match db::list_active_files(&state.pool).await {
         Ok(files) => (
             StatusCode::OK,
@@ -1635,8 +1806,14 @@ async fn get_files(State(state): State<ApiState>) -> impl IntoResponse {
 
 async fn get_file_sync_status(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(inode_id): Path<i64>,
 ) -> impl IntoResponse {
+    // ACL: Viewer+ can check sync status
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
+        return resp;
+    }
+
     match db::get_smart_sync_state(&state.pool, inode_id).await {
         Ok(Some(status)) => (
             StatusCode::OK,
@@ -1660,7 +1837,12 @@ async fn get_file_sync_status(
     }
 }
 
-async fn pin_file(State(state): State<ApiState>, Path(inode_id): Path<i64>) -> impl IntoResponse {
+async fn pin_file(State(state): State<ApiState>, headers: HeaderMap, Path(inode_id): Path<i64>) -> impl IntoResponse {
+    // ACL: Member+ can pin files
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
         Ok(inode) => inode,
         Err(err) => return internal_server_error(err),
@@ -1711,7 +1893,12 @@ async fn pin_file(State(state): State<ApiState>, Path(inode_id): Path<i64>) -> i
     }
 }
 
-async fn unpin_file(State(state): State<ApiState>, Path(inode_id): Path<i64>) -> impl IntoResponse {
+async fn unpin_file(State(state): State<ApiState>, headers: HeaderMap, Path(inode_id): Path<i64>) -> impl IntoResponse {
+    // ACL: Member+ can unpin files
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
         Ok(inode) => inode,
         Err(err) => return internal_server_error(err),
@@ -1764,8 +1951,14 @@ async fn unpin_file(State(state): State<ApiState>, Path(inode_id): Path<i64>) ->
 
 async fn set_filesystem_policy(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(request): Json<FilesystemPolicyRequest>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can set filesystem policies
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     let policy_type = match normalize_policy_type(&request.policy_type) {
         Some(policy_type) => policy_type,
         None => {
@@ -1818,8 +2011,14 @@ async fn set_filesystem_policy(
 
 async fn pin_filesystem_path(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(request): Json<FilesystemPathRequest>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can pin filesystem paths
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     let (inode_id, _, inode) =
         match resolve_filesystem_request_target(&state.pool, &request.path).await {
             Ok(target) => target,
@@ -1868,8 +2067,14 @@ async fn pin_filesystem_path(
 
 async fn unpin_filesystem_path(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(request): Json<FilesystemPathRequest>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can unpin filesystem paths
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     let (inode_id, _, inode) =
         match resolve_filesystem_request_target(&state.pool, &request.path).await {
             Ok(target) => target,
@@ -1920,8 +2125,14 @@ async fn unpin_filesystem_path(
 
 async fn get_file_revisions(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(inode_id): Path<i64>,
 ) -> impl IntoResponse {
+    // ACL: Viewer+ can view file revisions
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
+        return resp;
+    }
+
     let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
         Ok(inode) => inode,
         Err(err) => return internal_server_error(err),
@@ -1978,8 +2189,14 @@ async fn get_file_revisions(
 
 async fn restore_file_revision(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path((inode_id, revision_id)): Path<(i64, i64)>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can restore file revisions
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
         Ok(inode) => inode,
         Err(err) => return internal_server_error(err),
@@ -2099,8 +2316,14 @@ async fn restore_file_revision(
 
 async fn materialize_conflict_copy(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path((inode_id, revision_id)): Path<(i64, i64)>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can materialize conflict copies
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
         Ok(inode) => inode,
         Err(err) => return internal_server_error(err),
@@ -2255,7 +2478,12 @@ async fn get_scrub_status(State(state): State<ApiState>) -> impl IntoResponse {
     }
 }
 
-async fn post_scrub_now(State(state): State<ApiState>) -> impl IntoResponse {
+async fn post_scrub_now(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
+    // ACL: Admin+ can trigger scrub
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
+        return resp;
+    }
+
     match scrubber::run_scrub_batch_now(state.pool.clone()).await {
         Ok(processed_shards) => (
             StatusCode::OK,
@@ -2281,7 +2509,12 @@ async fn post_scrub_now(State(state): State<ApiState>) -> impl IntoResponse {
     }
 }
 
-async fn post_repair_now(State(state): State<ApiState>) -> impl IntoResponse {
+async fn post_repair_now(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
+    // ACL: Admin+ can trigger repair
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
+        return resp;
+    }
+
     match repair::RepairWorker::run_repair_batch_now(state.pool.clone()).await {
         Ok(report) => (
             StatusCode::OK,
@@ -2315,7 +2548,12 @@ async fn post_repair_now(State(state): State<ApiState>) -> impl IntoResponse {
     }
 }
 
-async fn post_reconcile_now(State(state): State<ApiState>) -> impl IntoResponse {
+async fn post_reconcile_now(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
+    // ACL: Admin+ can trigger reconciliation
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
+        return resp;
+    }
+
     match repair::RepairWorker::run_reconcile_batch_now(state.pool.clone()).await {
         Ok(report) => (
             StatusCode::OK,
@@ -2413,7 +2651,12 @@ async fn post_repair_shell() -> impl IntoResponse {
         .into_response()
 }
 
-async fn post_repair_sync_root(State(state): State<ApiState>) -> impl IntoResponse {
+async fn post_repair_sync_root(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
+    // ACL: Admin+ can trigger sync root repair
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
+        return resp;
+    }
+
     let runtime_paths = RuntimePaths::detect();
     match smart_sync::repair_sync_root(&state.pool, &runtime_paths.sync_root).await {
         Ok(report) => (
@@ -2467,8 +2710,14 @@ async fn get_scrub_errors(State(state): State<ApiState>) -> impl IntoResponse {
 
 async fn post_snapshot_local(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(request): Json<SnapshotLocalRequest>,
 ) -> impl IntoResponse {
+    // ACL: Admin+ can create local snapshots
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
+        return resp;
+    }
+
     let output_path = std::path::PathBuf::from(&request.output_path);
     let master_key = match state.vault_keys.require_master_key().await {
         Ok(key) => key,
@@ -2512,7 +2761,12 @@ async fn post_snapshot_local(
     }
 }
 
-async fn post_backup_now(State(state): State<ApiState>) -> impl IntoResponse {
+async fn post_backup_now(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
+    // ACL: Admin+ can trigger backups
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
+        return resp;
+    }
+
     let master_key = match state.vault_keys.require_master_key().await {
         Ok(key) => key,
         Err(VaultError::Locked) => {
@@ -3125,8 +3379,14 @@ async fn get_ingest_jobs(State(state): State<ApiState>) -> impl IntoResponse {
 
 async fn post_ingest_retry(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(job_id): Path<i64>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can retry ingest jobs
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     match db::retry_ingest_job(&state.pool, job_id).await {
         Ok(true) => {
             info!("api: ingest job {} requeued for retry", job_id);
@@ -3146,8 +3406,14 @@ async fn post_ingest_retry(
 
 async fn post_ingest_cleanup(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(job_id): Path<i64>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can cleanup ingest jobs
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     let spool_dir = env::var("OMNIDRIVE_SPOOL_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from(".omnidrive/spool"));
@@ -3230,9 +3496,15 @@ struct ShareChunkMeta {
 
 async fn create_share_link(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(inode_id): Path<i64>,
     Json(request): Json<CreateShareRequest>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can create share links
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     // Vault must be unlocked
     let envelope_key = match state.vault_keys.require_envelope_key().await {
         Ok(k) => k,
@@ -3347,7 +3619,12 @@ async fn create_share_link(
         .into_response()
 }
 
-async fn list_all_shares(State(state): State<ApiState>) -> impl IntoResponse {
+async fn list_all_shares(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
+    // ACL: Viewer+ can list shares
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
+        return resp;
+    }
+
     match db::list_shared_links(&state.pool).await {
         Ok(links) => (StatusCode::OK, Json(links)).into_response(),
         Err(err) => internal_server_error(err),
@@ -3356,8 +3633,14 @@ async fn list_all_shares(State(state): State<ApiState>) -> impl IntoResponse {
 
 async fn list_file_shares(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(inode_id): Path<i64>,
 ) -> impl IntoResponse {
+    // ACL: Viewer+ can list shares for a file
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
+        return resp;
+    }
+
     match db::list_shared_links_for_inode(&state.pool, inode_id).await {
         Ok(links) => (StatusCode::OK, Json(links)).into_response(),
         Err(err) => internal_server_error(err),
@@ -3366,8 +3649,14 @@ async fn list_file_shares(
 
 async fn revoke_share(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(share_id): Path<String>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can revoke shares
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     match db::revoke_shared_link(&state.pool, &share_id).await {
         Ok(true) => (
             StatusCode::OK,
@@ -3385,8 +3674,14 @@ async fn revoke_share(
 
 async fn delete_share(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(share_id): Path<String>,
 ) -> impl IntoResponse {
+    // ACL: Member+ can delete shares
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
+        return resp;
+    }
+
     match db::delete_shared_link(&state.pool, &share_id).await {
         Ok(true) => (StatusCode::OK, Json(serde_json::json!({"deleted": true}))).into_response(),
         Ok(false) => (
@@ -3683,45 +3978,17 @@ struct InviteResponse {
 
 async fn post_vault_invite(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(req): Json<InviteRequest>,
 ) -> impl IntoResponse {
-    let vault_id = match db::get_vault_params(&state.pool).await {
-        Ok(Some(v)) => v.vault_id,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "vault_not_initialized" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
+    // ACL: Owner or Admin can create invites
+    let caller = match acl::require_role(&state.pool, &headers, Role::Admin).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
     };
-
-    // Verify caller is owner/admin
-    let local_device = match db::get_local_device_identity(&state.pool).await {
-        Ok(Some(d)) => d,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "no_device_identity" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
-    };
-
-    let owner_user_id = format!("owner-{}", &local_device.device_id);
-    match db::get_vault_member(&state.pool, &owner_user_id, &vault_id).await {
-        Ok(Some(m)) if m.role == "owner" || m.role == "admin" => {}
-        Ok(_) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": "insufficient_permissions", "message": "only owner or admin can create invites" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
-    }
+    let vault_id = caller.vault_id;
+    let caller_device_id = caller.device_id;
+    let owner_user_id = caller.user_id;
 
     let role = req.role.unwrap_or_else(|| "member".to_string());
     let max_uses = req.max_uses.unwrap_or(1);
@@ -3751,7 +4018,7 @@ async fn post_vault_invite(
         &vault_id,
         "create_invite",
         Some(&owner_user_id),
-        Some(&local_device.device_id),
+        Some(&caller_device_id),
         None,
         None,
         Some(&format!(r#"{{"role":"{role}","max_uses":{max_uses}}}"#)),
@@ -3883,19 +4150,15 @@ async fn post_vault_join(
 
 async fn post_accept_device(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(target_device_id): Path<String>,
 ) -> impl IntoResponse {
-    let vault_id = match db::get_vault_params(&state.pool).await {
-        Ok(Some(v)) => v.vault_id,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "vault_not_initialized" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
+    // ACL: Owner or Admin can accept devices
+    let caller = match acl::require_role(&state.pool, &headers, Role::Admin).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
     };
+    let vault_id = caller.vault_id;
 
     // Get owner's master key (vault must be unlocked)
     let master_key = match state.vault_keys.require_master_key().await {
@@ -4022,8 +4285,14 @@ struct WrappedKeyResponse {
 
 async fn get_my_wrapped_key(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
+    // ACL: Viewer+ (any authenticated member) can check their wrapped key
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
+        return resp;
+    }
+
     let device_id = match params.get("device_id") {
         Some(id) => id.clone(),
         None => {
@@ -4097,18 +4366,13 @@ struct PendingDeviceInfo {
     created_at: i64,
 }
 
-async fn get_pending_devices(State(state): State<ApiState>) -> impl IntoResponse {
-    let vault_id = match db::get_vault_params(&state.pool).await {
-        Ok(Some(v)) => v.vault_id,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "vault_not_initialized" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
+async fn get_pending_devices(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
+    // ACL: Admin+ can view pending devices
+    let caller = match acl::require_role(&state.pool, &headers, Role::Admin).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
     };
+    let vault_id = caller.vault_id;
 
     let members = match db::list_vault_members(&state.pool, &vault_id).await {
         Ok(m) => m,
@@ -4369,54 +4633,25 @@ async fn try_auto_wrap_vault_key(
 /// Self-revocation (revoking the local daemon's own device) is blocked.
 async fn post_revoke_device(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(target_device_id): Path<String>,
 ) -> impl IntoResponse {
-    let vault_id = match db::get_vault_params(&state.pool).await {
-        Ok(Some(v)) => v.vault_id,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "vault_not_initialized" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
+    // ACL: Owner or Admin can revoke devices
+    let caller = match acl::require_role(&state.pool, &headers, Role::Admin).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
     };
-
-    // Identify the calling device (local daemon)
-    let local_device = match db::get_local_device_identity(&state.pool).await {
-        Ok(Some(d)) => d,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "no_device_identity" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
-    };
+    let vault_id = caller.vault_id;
+    let caller_device_id = caller.device_id;
+    let caller_user_id = caller.user_id;
 
     // Block self-revocation — revoking the local device would brick this daemon
-    if local_device.device_id == target_device_id {
+    if caller_device_id == target_device_id {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "cannot_revoke_self", "message": "cannot revoke the local device — use another device to revoke this one" })),
         )
             .into_response();
-    }
-
-    // ACL: only owner or admin can revoke devices
-    let caller_user_id = format!("owner-{}", &local_device.device_id);
-    match db::get_vault_member(&state.pool, &caller_user_id, &vault_id).await {
-        Ok(Some(m)) if m.role == "owner" || m.role == "admin" => {}
-        Ok(_) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": "insufficient_permissions", "message": "only owner or admin can revoke devices" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
     }
 
     // Verify target device exists
@@ -4450,7 +4685,7 @@ async fn post_revoke_device(
         &vault_id,
         "revoke_device",
         Some(&caller_user_id),
-        Some(&local_device.device_id),
+        Some(&caller_device_id),
         Some(&target_device.user_id),
         Some(&target_device_id),
         Some(&format!(
@@ -4499,34 +4734,17 @@ async fn post_revoke_device(
 /// their vault membership, triggers VK rotation. Only owner/admin.
 async fn post_remove_member(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(target_user_id): Path<String>,
 ) -> impl IntoResponse {
-    let vault_id = match db::get_vault_params(&state.pool).await {
-        Ok(Some(v)) => v.vault_id,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "vault_not_initialized" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
+    // ACL: Owner or Admin can remove members
+    let caller = match acl::require_role(&state.pool, &headers, Role::Admin).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
     };
-
-    // Identify caller
-    let local_device = match db::get_local_device_identity(&state.pool).await {
-        Ok(Some(d)) => d,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "no_device_identity" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
-    };
-
-    let caller_user_id = format!("owner-{}", &local_device.device_id);
+    let vault_id = caller.vault_id;
+    let caller_device_id = caller.device_id;
+    let caller_user_id = caller.user_id;
 
     // Block self-removal
     if caller_user_id == target_user_id {
@@ -4535,19 +4753,6 @@ async fn post_remove_member(
             Json(serde_json::json!({ "error": "cannot_remove_self", "message": "cannot remove yourself — transfer ownership first" })),
         )
             .into_response();
-    }
-
-    // ACL: only owner or admin
-    match db::get_vault_member(&state.pool, &caller_user_id, &vault_id).await {
-        Ok(Some(m)) if m.role == "owner" || m.role == "admin" => {}
-        Ok(_) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": "insufficient_permissions", "message": "only owner or admin can remove members" })),
-            )
-                .into_response()
-        }
-        Err(e) => return internal_server_error(io_error(e)),
     }
 
     // Verify target is a member
@@ -4595,7 +4800,7 @@ async fn post_remove_member(
         &vault_id,
         "remove_member",
         Some(&caller_user_id),
-        Some(&local_device.device_id),
+        Some(&caller_device_id),
         Some(&target_user_id),
         None,
         Some(&format!(r#"{{"devices_revoked":{devices_revoked}}}"#)),
@@ -4628,7 +4833,12 @@ async fn post_remove_member(
 }
 
 /// Returns the status of the background DEK re-wrap queue.
-async fn get_rewrap_status(State(state): State<ApiState>) -> impl IntoResponse {
+async fn get_rewrap_status(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
+    // ACL: Viewer+ can check rewrap status
+    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
+        return resp;
+    }
+
     match db::get_rewrap_status(&state.pool).await {
         Ok((total, pending, failed)) => {
             let done = total - pending - failed;
