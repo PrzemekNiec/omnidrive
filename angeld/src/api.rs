@@ -604,6 +604,8 @@ impl ApiServer {
             .route("/api/vault/accept-device/{device_id}", post(post_accept_device))
             .route("/api/vault/my-wrapped-key", get(get_my_wrapped_key))
             .route("/api/vault/pending-devices", get(get_pending_devices))
+            // Epic 34.1c: multi-device key distribution
+            .route("/api/vault/add-device", post(post_add_device))
             .with_state(state)
             .layer(share_cors_layer());
 
@@ -4149,6 +4151,211 @@ async fn find_owner_public_key(pool: &SqlitePool) -> Option<String> {
     } else {
         None
     }
+}
+
+// ── Epic 34.1c: Multi-device key distribution ───────────────────────
+
+#[derive(Deserialize)]
+struct AddDeviceRequest {
+    user_id: String,
+    device_id: String,
+    device_name: String,
+    public_key: String, // base64url, 32-byte X25519 public key
+}
+
+#[derive(Serialize)]
+struct AddDeviceResponse {
+    status: String,
+    device_id: String,
+    user_id: String,
+    wrapped_vault_key: Option<String>,        // base64url
+    vault_key_generation: Option<i64>,
+    wrapping_device_public_key: Option<String>, // base64url — for ECDH unwrap on the new device
+}
+
+/// Registers a new device for an existing vault member and auto-accepts
+/// (wraps VK) when the user already has ≥1 active device and the vault
+/// is currently unlocked on this daemon.
+async fn post_add_device(
+    State(state): State<ApiState>,
+    Json(req): Json<AddDeviceRequest>,
+) -> impl IntoResponse {
+    let vault_id = match db::get_vault_params(&state.pool).await {
+        Ok(Some(v)) => v.vault_id,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "vault_not_initialized" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    };
+
+    // Verify user is an existing vault member
+    match db::get_vault_member(&state.pool, &req.user_id, &vault_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "not_a_member", "message": "user is not a vault member — use /api/vault/join with an invite code" })),
+            )
+                .into_response()
+        }
+        Err(e) => return internal_server_error(io_error(e)),
+    }
+
+    // Decode public key
+    let public_key = match base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        &req.public_key,
+    ) {
+        Ok(pk) if pk.len() == 32 => pk,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid_public_key", "message": "expected 32-byte X25519 public key (base64url)" })),
+            )
+                .into_response()
+        }
+    };
+
+    // Check if device already exists
+    if let Ok(Some(existing)) = db::get_device(&state.pool, &req.device_id).await {
+        if existing.revoked_at.is_some() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "device_revoked" })),
+            )
+                .into_response();
+        }
+        if existing.wrapped_vault_key.is_some() {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "device_already_active", "message": "device already has a wrapped vault key" })),
+            )
+                .into_response();
+        }
+    }
+
+    // Create device entry
+    if let Err(e) = db::create_device(&state.pool, &req.device_id, &req.user_id, &req.device_name, &public_key).await {
+        // May already exist from a prior attempt — not fatal
+        warn!("create_device during add-device: {e}");
+    }
+
+    // Auto-accept: if user has ≥1 active device AND vault is unlocked → wrap VK immediately
+    let has_active_device = match db::get_active_devices_for_user(&state.pool, &req.user_id).await {
+        Ok(devs) => !devs.is_empty(),
+        Err(_) => false,
+    };
+
+    let auto_accepted = if has_active_device {
+        try_auto_wrap_vault_key(&state, &req.device_id, &public_key, &vault_id).await
+    } else {
+        // First device for this user — also auto-accept if vault is unlocked
+        // (user just entered passphrase on this new machine)
+        try_auto_wrap_vault_key(&state, &req.device_id, &public_key, &vault_id).await
+    };
+
+    let (wrapped_vk_b64, vk_gen, wrapping_pub_b64) = match auto_accepted {
+        Some((wrapped, generation, pub_key)) => (Some(wrapped), Some(generation), Some(pub_key)),
+        None => (None, None, None),
+    };
+
+    let status = if wrapped_vk_b64.is_some() {
+        "accepted"
+    } else {
+        "pending_acceptance"
+    };
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &vault_id,
+        "add_device",
+        Some(&req.user_id),
+        Some(&req.device_id),
+        None,
+        None,
+        Some(&format!(r#"{{"auto_accepted":{},"device_name":"{}"}}"#, wrapped_vk_b64.is_some(), req.device_name)),
+    )
+    .await;
+
+    (
+        StatusCode::OK,
+        Json(AddDeviceResponse {
+            status: status.to_string(),
+            device_id: req.device_id,
+            user_id: req.user_id,
+            wrapped_vault_key: wrapped_vk_b64,
+            vault_key_generation: vk_gen,
+            wrapping_device_public_key: wrapping_pub_b64,
+        }),
+    )
+        .into_response()
+}
+
+/// Attempts to wrap the vault key for a new device using the local device's
+/// private key. Returns (wrapped_vk_base64, vault_key_generation, wrapping_device_pubkey_base64)
+/// or None if the vault is locked or keys are unavailable.
+async fn try_auto_wrap_vault_key(
+    state: &ApiState,
+    target_device_id: &str,
+    target_public_key: &[u8],
+    vault_id: &str,
+) -> Option<(String, i64, String)> {
+    let master_key = state.vault_keys.require_master_key().await.ok()?;
+    let envelope_key = state.vault_keys.require_envelope_key().await.ok()?;
+    let owner_private = identity::get_device_private_key(&state.pool, &master_key).await.ok()?;
+
+    let mut target_pub = [0u8; 32];
+    if target_public_key.len() != 32 {
+        return None;
+    }
+    target_pub.copy_from_slice(target_public_key);
+
+    let wrapped = identity::wrap_vault_key_for_device(&owner_private, &target_pub, &envelope_key).ok()?;
+
+    // Get current vault_key_generation
+    let vk_gen = match db::get_vault_params(&state.pool).await {
+        Ok(Some(v)) => v.vault_key_generation.unwrap_or(1),
+        _ => 1,
+    };
+
+    // Store wrapped VK
+    db::set_device_wrapped_vault_key(&state.pool, target_device_id, &wrapped, vk_gen)
+        .await
+        .ok()?;
+
+    // Get local device's public key for ECDH unwrap on the receiving side
+    let local_device = db::get_local_device_identity(&state.pool).await.ok()??;
+    let pub_key_bytes = local_device.public_key?;
+    if pub_key_bytes.len() != 32 || pub_key_bytes == vec![0u8; 32] {
+        return None;
+    }
+
+    let wrapped_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        &wrapped,
+    );
+    let pub_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        &pub_key_bytes,
+    );
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        vault_id,
+        "auto_accept_device",
+        None,
+        Some(target_device_id),
+        None,
+        None,
+        Some(r#"{"reason":"existing_member_auto_accept"}"#),
+    )
+    .await;
+
+    Some((wrapped_b64, vk_gen, pub_b64))
 }
 
 /// CORS layer for public share API endpoints.

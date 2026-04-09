@@ -6340,6 +6340,22 @@ pub async fn set_device_wrapped_vault_key(
     Ok(result.rows_affected() > 0)
 }
 
+/// Returns active devices for a user: non-revoked and with a wrapped vault key.
+pub async fn get_active_devices_for_user(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<DeviceRecord>, sqlx::Error> {
+    sqlx::query_as::<_, DeviceRecord>(
+        "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
+         vault_key_generation, revoked_at, last_seen_at, created_at \
+         FROM devices WHERE user_id = ? AND revoked_at IS NULL AND wrapped_vault_key IS NOT NULL \
+         ORDER BY created_at ASC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn revoke_device(pool: &SqlitePool, device_id: &str) -> Result<bool, sqlx::Error> {
     let now = epoch_secs();
     let result = sqlx::query(

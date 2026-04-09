@@ -413,4 +413,93 @@ mod tests {
         let recovered = unwrap_vault_key_from_device(&member_priv, &owner_pubkey, &wrapped).unwrap();
         assert_eq!(recovered, vault_key);
     }
+
+    #[tokio::test]
+    async fn multi_device_key_distribution() {
+        // 34.1c: Existing user adds a second device.
+        // Owner wraps VK for device-1, then wraps VK again for device-2.
+        // Both devices can independently unwrap the same VK.
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        let master_key = [0x42u8; 32];
+
+        // Setup owner device
+        db::upsert_local_device_identity(&pool, "dev-owner", "OwnerPC", "tok-own")
+            .await
+            .unwrap();
+        let owner_pubkey = ensure_device_keypair(&pool, &master_key).await.unwrap();
+        let owner_privkey = get_device_private_key(&pool, &master_key).await.unwrap();
+
+        let vault_key: KeyBytes = [0xAB; 32];
+
+        // Device 1 for member
+        let mut dev1_priv = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut dev1_priv);
+        let dev1_secret = x25519_dalek::StaticSecret::from(dev1_priv);
+        let dev1_pubkey = x25519_dalek::PublicKey::from(&dev1_secret).to_bytes();
+
+        // Device 2 for same member (new machine)
+        let mut dev2_priv = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut dev2_priv);
+        let dev2_secret = x25519_dalek::StaticSecret::from(dev2_priv);
+        let dev2_pubkey = x25519_dalek::PublicKey::from(&dev2_secret).to_bytes();
+
+        // Owner wraps VK for both devices
+        let wrapped_1 = wrap_vault_key_for_device(&owner_privkey, &dev1_pubkey, &vault_key).unwrap();
+        let wrapped_2 = wrap_vault_key_for_device(&owner_privkey, &dev2_pubkey, &vault_key).unwrap();
+
+        // Wrapped blobs differ (different ECDH shared secrets)
+        assert_ne!(wrapped_1, wrapped_2);
+
+        // Both devices can unwrap to the same VK
+        let vk_1 = unwrap_vault_key_from_device(&dev1_priv, &owner_pubkey, &wrapped_1).unwrap();
+        let vk_2 = unwrap_vault_key_from_device(&dev2_priv, &owner_pubkey, &wrapped_2).unwrap();
+        assert_eq!(vk_1, vault_key);
+        assert_eq!(vk_2, vault_key);
+
+        // Cross-device unwrap must fail (device 2 can't unwrap device 1's blob)
+        let cross_unwrap = unwrap_vault_key_from_device(&dev2_priv, &owner_pubkey, &wrapped_1);
+        assert!(cross_unwrap.is_err());
+    }
+
+    #[tokio::test]
+    async fn multi_device_db_registration_and_active_lookup() {
+        // 34.1c: Verify DB-level registration and active device lookup.
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+
+        let user_id = "user-alice";
+        db::create_user(&pool, user_id, "Alice", None, "local", None)
+            .await
+            .unwrap();
+
+        // Device 1: created but no wrapped VK yet → not active
+        db::create_device(&pool, "dev-1", user_id, "Laptop", &[1u8; 32])
+            .await
+            .unwrap();
+        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        assert!(active.is_empty(), "device without wrapped VK should not be active");
+
+        // Accept device 1 → becomes active
+        db::set_device_wrapped_vault_key(&pool, "dev-1", &[0xAA; 40], 1)
+            .await
+            .unwrap();
+        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].device_id, "dev-1");
+
+        // Device 2: add and accept → 2 active devices
+        db::create_device(&pool, "dev-2", user_id, "Desktop", &[2u8; 32])
+            .await
+            .unwrap();
+        db::set_device_wrapped_vault_key(&pool, "dev-2", &[0xBB; 40], 1)
+            .await
+            .unwrap();
+        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        assert_eq!(active.len(), 2);
+
+        // Revoke device 1 → only device 2 active
+        db::revoke_device(&pool, "dev-1").await.unwrap();
+        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].device_id, "dev-2");
+    }
 }
