@@ -957,7 +957,7 @@ impl Uploader {
     fn sdk_error(
         &self,
         operation: &'static str,
-        err: impl std::error::Error + fmt::Debug,
+        err: impl std::error::Error,
     ) -> UploaderError {
         UploaderError::Upload {
             provider: self.provider_name,
@@ -1000,7 +1000,7 @@ fn bool_from_env(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-fn format_error_details(err: &(impl std::error::Error + fmt::Debug)) -> String {
+fn format_error_details(err: &impl std::error::Error) -> String {
     let mut details = vec![format!("display={err}"), format!("debug={err:?}")];
     let mut current = err.source();
     let mut depth = 0usize;

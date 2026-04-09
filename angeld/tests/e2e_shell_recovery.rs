@@ -90,7 +90,7 @@ impl ShellHarness {
     async fn wait_for_api_ready(&self) -> Result<(), Box<dyn std::error::Error>> {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            match http_get_json(&format!("{}/api/diagnostics/health", self.base_url)).await {
+            match http_get_json(&format!("{}/api/diagnostics/health", self.base_url), None).await {
                 Ok(_) => return Ok(()),
                 Err(_) if Instant::now() < deadline => sleep(Duration::from_millis(100)).await,
                 Err(err) => {
@@ -106,11 +106,11 @@ impl ShellHarness {
     }
 
     async fn get_json(&self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
-        http_get_json(&format!("{}{}", self.base_url, path)).await
+        http_get_json(&format!("{}{}", self.base_url, path), None).await
     }
 
     async fn post_json(&self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
-        http_post_json(&format!("{}{}", self.base_url, path)).await
+        http_post_json(&format!("{}{}", self.base_url, path), None).await
     }
 
     async fn shutdown(&mut self) {
@@ -187,15 +187,16 @@ async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
     Ok(port)
 }
 
-async fn http_get_json(url: &str) -> Result<Value, Box<dyn std::error::Error>> {
-    http_request_json("GET", url).await
+async fn http_get_json(url: &str, token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
+    http_request_json("GET", url, token).await
 }
 
-async fn http_post_json(url: &str) -> Result<Value, Box<dyn std::error::Error>> {
-    http_request_json("POST", url).await
+#[allow(dead_code)]
+async fn http_post_json(url: &str, token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
+    http_request_json("POST", url, token).await
 }
 
-async fn http_request_json(method: &str, url: &str) -> Result<Value, Box<dyn std::error::Error>> {
+async fn http_request_json(method: &str, url: &str, token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
     let without_scheme = url
         .strip_prefix("http://")
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http:// URLs are supported"))?;
@@ -204,9 +205,14 @@ async fn http_request_json(method: &str, url: &str) -> Result<Value, Box<dyn std
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
     let path = format!("/{}", path);
 
+    let auth = match token {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
+
     let mut stream = TcpStream::connect(host_port).await?;
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\nContent-Length: 0\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).await?;
 

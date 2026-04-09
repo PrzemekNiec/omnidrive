@@ -292,7 +292,7 @@ fn duration_from_env(key: &str, default_ms: u64) -> Duration {
         .unwrap_or_else(|| Duration::from_millis(default_ms))
 }
 
-fn format_error_details(err: &(impl std::error::Error + fmt::Debug)) -> String {
+fn format_error_details(err: &impl std::error::Error) -> String {
     let mut details = vec![format!("display={err}"), format!("debug={err:?}")];
     let mut current = err.source();
     let mut depth = 0usize;

@@ -892,11 +892,10 @@ mod imp {
         }
 
         // After pin/dehydrate changes, placeholder is still in-sync with cloud.
-        if target_path.exists() {
-            if let Err(err) = mark_in_sync(&target_path, true) {
+        if target_path.exists()
+            && let Err(err) = mark_in_sync(&target_path, true) {
                 warn!("smart-sync: mark_in_sync after pin state sync failed for inode={}: {}", inode_id, err);
             }
-        }
 
         notify_shell_path_changed(&target_path);
 

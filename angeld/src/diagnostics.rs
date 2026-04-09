@@ -63,6 +63,12 @@ pub struct DaemonDiagnostics {
     ingest: AtomicU8,
 }
 
+impl Default for DaemonDiagnostics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DaemonDiagnostics {
     pub fn new() -> Self {
         Self {

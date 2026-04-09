@@ -183,9 +183,9 @@ pub fn repair_virtual_drive() -> Result<ShellRepairReport, ShellStateError> {
     }
 
     let current_target = virtual_drive::get_virtual_drive_target(&preferred_drive_letter)?;
-    if let Some(target) = &current_target {
-        if normalized_path(target) != normalized_path(&expected_target)
-            || !is_drive_browsable(&preferred_drive_letter)
+    if let Some(target) = &current_target
+        && (normalized_path(target) != normalized_path(&expected_target)
+            || !is_drive_browsable(&preferred_drive_letter))
         {
             virtual_drive::unmount_virtual_drive(&preferred_drive_letter)?;
             actions.push(format!(
@@ -194,7 +194,6 @@ pub fn repair_virtual_drive() -> Result<ShellRepairReport, ShellStateError> {
                 target.display()
             ));
         }
-    }
 
     let current_target = virtual_drive::get_virtual_drive_target(&preferred_drive_letter)?;
     if current_target.is_none() || !is_drive_browsable(&preferred_drive_letter) {
@@ -337,14 +336,13 @@ fn virtual_drive_icon_path() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    if let Ok(current_exe) = env::current_exe() {
-        if let Some(exe_dir) = current_exe.parent() {
+    if let Ok(current_exe) = env::current_exe()
+        && let Some(exe_dir) = current_exe.parent() {
             let installed_icon = exe_dir.join("icons").join("omnidrive.ico");
             if installed_icon.exists() {
                 return installed_icon;
             }
         }
-    }
 
     PathBuf::from("icons").join("omnidrive.ico")
 }

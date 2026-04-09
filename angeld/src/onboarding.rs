@@ -46,6 +46,7 @@ impl OnboardingState {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(value: &str) -> Self {
         match value {
             "IN_PROGRESS" => Self::InProgress,
@@ -71,6 +72,7 @@ impl OnboardingMode {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(value: &str) -> Self {
         match value {
             "CLOUD_ENABLED" => Self::CloudEnabled,
@@ -1104,11 +1106,10 @@ pub async fn cleanup_stale_restore_staging(runtime_paths: &RuntimePaths) {
     while let Ok(Some(entry)) = read_dir.next_entry().await {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("restore-staging-") && name.ends_with(".db") {
-            if tokio::fs::remove_file(entry.path()).await.is_ok() {
+        if name.starts_with("restore-staging-") && name.ends_with(".db")
+            && tokio::fs::remove_file(entry.path()).await.is_ok() {
                 removed += 1;
             }
-        }
     }
     if removed > 0 {
         tracing::info!("[ONBOARDING] cleaned up {removed} stale restore-staging file(s)");

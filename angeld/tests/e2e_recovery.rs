@@ -29,6 +29,7 @@ struct DaemonHandle {
     child: Child,
     base_url: String,
     sync_root: PathBuf,
+    session_token: Option<String>,
 }
 
 impl RecoveryEnv {
@@ -71,17 +72,17 @@ impl RecoveryEnv {
 
         let root_dir = db::create_inode(&pool, None, &self.test_prefix, "DIR", 0).await?;
         let alpha = db::create_inode(&pool, Some(root_dir), "alpha.txt", "FILE", 128).await?;
-        db::create_file_revision(&pool, alpha, 128, None).await?;
+        db::create_file_revision(&pool, alpha, 128, None, None, None, "test", None).await?;
 
         let beta = db::create_inode(&pool, Some(root_dir), "beta.txt", "FILE", 256).await?;
-        db::create_file_revision(&pool, beta, 256, None).await?;
+        db::create_file_revision(&pool, beta, 256, None, None, None, "test", None).await?;
 
         let nested_dir = db::create_inode(&pool, Some(root_dir), "nested", "DIR", 0).await?;
         let gamma = db::create_inode(&pool, Some(nested_dir), "gamma.txt", "FILE", 512).await?;
-        db::create_file_revision(&pool, gamma, 512, None).await?;
+        db::create_file_revision(&pool, gamma, 512, None, None, None, "test", None).await?;
 
         let delta = db::create_inode(&pool, Some(nested_dir), "delta.txt", "FILE", 1024).await?;
-        db::create_file_revision(&pool, delta, 1024, None).await?;
+        db::create_file_revision(&pool, delta, 1024, None, None, None, "test", None).await?;
 
         Ok(vec![
             format!("{}/alpha.txt", self.test_prefix),
@@ -129,6 +130,7 @@ impl RecoveryEnv {
             child,
             base_url,
             sync_root: self.sync_root.clone(),
+            session_token: None,
         };
         handle.wait_for_api_ready().await?;
         Ok(handle)
@@ -139,7 +141,7 @@ impl DaemonHandle {
     async fn wait_for_api_ready(&self) -> Result<(), Box<dyn std::error::Error>> {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            match http_get_json(&format!("{}/api/diagnostics/health", self.base_url)).await {
+            match http_get_json(&format!("{}/api/diagnostics/health", self.base_url), None).await {
                 Ok(_) => return Ok(()),
                 Err(_) if Instant::now() < deadline => sleep(Duration::from_millis(100)).await,
                 Err(err) => {
@@ -152,16 +154,26 @@ impl DaemonHandle {
         }
     }
 
+    async fn unlock(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        let resp = http_post_json(
+            &format!("{}/api/unlock", self.base_url),
+            &serde_json::json!({ "passphrase": PASSPHRASE }),
+            None,
+        ).await?;
+        self.session_token = resp["session_token"].as_str().map(|s| s.to_string());
+        Ok(resp)
+    }
+
     async fn post_json(
         &self,
         path: &str,
         body: &Value,
     ) -> Result<Value, Box<dyn std::error::Error>> {
-        http_post_json(&format!("{}{}", self.base_url, path), body).await
+        http_post_json(&format!("{}{}", self.base_url, path), body, self.session_token.as_deref()).await
     }
 
     async fn get_json(&self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
-        http_get_json(&format!("{}{}", self.base_url, path)).await
+        http_get_json(&format!("{}{}", self.base_url, path), self.session_token.as_deref()).await
     }
 
     async fn shutdown(&mut self) {
@@ -186,12 +198,7 @@ async fn disaster_recovery_rebuilds_local_db_inventory_after_total_db_loss(
     expected_paths.sort();
 
     let mut first = env.spawn_daemon(false).await?;
-    first
-        .post_json(
-            "/api/unlock",
-            &serde_json::json!({ "passphrase": PASSPHRASE }),
-        )
-        .await?;
+    first.unlock().await?;
 
     let original_files = filtered_file_inventory(
         first.get_json("/api/files").await?,
@@ -225,6 +232,7 @@ async fn disaster_recovery_rebuilds_local_db_inventory_after_total_db_loss(
     clear_test_sync_root_subtree(&env.sync_root, &env.test_prefix).await?;
 
     let mut second = env.spawn_daemon(true).await?;
+    second.unlock().await?;
     let restored_files = filtered_file_inventory(
         second.get_json("/api/files").await?,
         &env.test_prefix,
@@ -449,21 +457,29 @@ async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
     Ok(port)
 }
 
-async fn http_get_json(url: &str) -> Result<Value, Box<dyn std::error::Error>> {
+async fn http_get_json(url: &str, token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
     let (host_port, path) = split_http_url(url)?;
+    let auth = match token {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
     let mut stream = TcpStream::connect(&host_port).await?;
-    let request = format!("GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n");
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
     let response = read_http_body(&mut stream).await?;
     Ok(serde_json::from_str(&response)?)
 }
 
-async fn http_post_json(url: &str, body: &Value) -> Result<Value, Box<dyn std::error::Error>> {
+async fn http_post_json(url: &str, body: &Value, token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
     let (host_port, path) = split_http_url(url)?;
     let body_text = body.to_string();
+    let auth = match token {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
     let mut stream = TcpStream::connect(&host_port).await?;
     let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "POST {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body_text.len(),
         body_text
     );

@@ -314,15 +314,14 @@ impl FileWatcher {
             return Ok(());
         }
 
-        if metadata.is_file() {
-            if let Err(err) = self.process_file(path.clone(), processed_files).await {
+        if metadata.is_file()
+            && let Err(err) = self.process_file(path.clone(), processed_files).await {
                 if is_vault_locked_error(&err) {
                     warn!("watcher skipped {} while vault is locked", path.display());
                     return Ok(());
                 }
                 return Err(err);
             }
-        }
 
         Ok(())
     }

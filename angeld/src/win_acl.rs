@@ -35,7 +35,7 @@ pub fn secure_directory(path: &Path) -> Result<(), AclError> {
             "skipping ACL hardening in debug build for {}",
             path.display()
         );
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(debug_assertions))]
@@ -195,7 +195,7 @@ fn apply_sddl_to_directory(
         let mut security_descriptor = PSECURITY_DESCRIPTOR::default();
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             PCWSTR(sddl_w.as_ptr()),
-            SDDL_REVISION_1 as u32,
+            SDDL_REVISION_1,
             &mut security_descriptor,
             Some(null_mut()),
         )

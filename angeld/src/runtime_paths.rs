@@ -260,11 +260,10 @@ fn detect_runtime_mode() -> RuntimeMode {
         }
     }
 
-    if let Ok(exe_path) = env::current_exe() {
-        if is_in_installed_location(&exe_path) {
+    if let Ok(exe_path) = env::current_exe()
+        && is_in_installed_location(&exe_path) {
             return RuntimeMode::Installed;
         }
-    }
 
     RuntimeMode::Workspace
 }
@@ -294,6 +293,6 @@ fn local_app_omnidrive_root() -> PathBuf {
 
 fn default_local_vault_root() -> PathBuf {
     env_path("USERPROFILE")
-        .unwrap_or_else(|| local_app_omnidrive_root())
+        .unwrap_or_else(local_app_omnidrive_root)
         .join("OmniDrive Vault")
 }

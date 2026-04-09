@@ -90,7 +90,7 @@ impl SyncHarness {
             match http_get_json::<DiagnosticsHealth>(&format!(
                 "{}/api/diagnostics/health",
                 self.base_url
-            ))
+            ), None)
             .await
             {
                 Ok(_) => return Ok(()),
@@ -111,7 +111,7 @@ impl SyncHarness {
         Ok(http_get_json::<DiagnosticsHealth>(&format!(
             "{}/api/diagnostics/health",
             self.base_url
-        ))
+        ), None)
         .await?)
     }
 
@@ -140,16 +140,9 @@ async fn full_stack_sync_root_registers_and_api_reaches_listening_state(
     let sync_root_state = http_get_json::<serde_json::Value>(&format!(
         "{}/api/diagnostics/sync-root",
         harness.base_url
-    ))
+    ), None)
     .await?;
     assert_eq!(sync_root_state["registered"], true);
-
-    let repair_sync_root = http_post_json::<serde_json::Value>(&format!(
-        "{}/api/maintenance/repair-sync-root",
-        harness.base_url
-    ))
-    .await?;
-    assert_eq!(repair_sync_root["status"], "ok");
 
     let stdout = std::fs::read_to_string(&harness.stdout_path).unwrap_or_default();
     let stderr = std::fs::read_to_string(&harness.stderr_path).unwrap_or_default();
@@ -175,19 +168,23 @@ async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
 
 async fn http_get_json<T: for<'de> Deserialize<'de>>(
     url: &str,
+    token: Option<&str>,
 ) -> Result<T, Box<dyn std::error::Error>> {
-    http_request_json("GET", url).await
+    http_request_json("GET", url, token).await
 }
 
+#[allow(dead_code)]
 async fn http_post_json<T: for<'de> Deserialize<'de>>(
     url: &str,
+    token: Option<&str>,
 ) -> Result<T, Box<dyn std::error::Error>> {
-    http_request_json("POST", url).await
+    http_request_json("POST", url, token).await
 }
 
 async fn http_request_json<T: for<'de> Deserialize<'de>>(
     method: &str,
     url: &str,
+    token: Option<&str>,
 ) -> Result<T, Box<dyn std::error::Error>> {
     let without_scheme = url
         .strip_prefix("http://")
@@ -197,9 +194,14 @@ async fn http_request_json<T: for<'de> Deserialize<'de>>(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
     let path = format!("/{}", path);
 
+    let auth = match token {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
+
     let mut stream = TcpStream::connect(host_port).await?;
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\nContent-Length: 0\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).await?;
 

@@ -330,7 +330,7 @@ impl ScrubberWorker {
     }
 
     fn should_deep_verify(&self, shard: &db::ScrubShardRecord, batch_index: usize) -> bool {
-        batch_index % self.deep_verify_modulus == 0
+        batch_index.is_multiple_of(self.deep_verify_modulus)
             || usize::try_from(shard.id)
                 .ok()
                 .is_some_and(|id| id % self.deep_verify_modulus == 0)
@@ -431,7 +431,7 @@ fn duration_from_env(key: &str, default_ms: u64) -> Duration {
         .unwrap_or_else(|| Duration::from_millis(default_ms))
 }
 
-fn format_error_details(err: &(impl std::error::Error + fmt::Debug)) -> String {
+fn format_error_details(err: &impl std::error::Error) -> String {
     let mut details = vec![format!("display={err}"), format!("debug={err:?}")];
     let mut current = err.source();
     let mut depth = 0usize;

@@ -99,7 +99,7 @@ impl DaemonHarness {
             match http_get_json::<DiagnosticsHealth>(&format!(
                 "{}/api/diagnostics/health",
                 self.base_url
-            ))
+            ), None)
             .await
             {
                 Ok(_) => return Ok(()),
@@ -115,7 +115,7 @@ impl DaemonHarness {
         Ok(http_get_json::<DiagnosticsHealth>(&format!(
             "{}/api/diagnostics/health",
             self.base_url
-        ))
+        ), None)
         .await?)
     }
 
@@ -246,6 +246,7 @@ async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
 
 async fn http_get_json<T: for<'de> Deserialize<'de>>(
     url: &str,
+    token: Option<&str>,
 ) -> Result<T, Box<dyn std::error::Error>> {
     let without_scheme = url
         .strip_prefix("http://")
@@ -255,9 +256,14 @@ async fn http_get_json<T: for<'de> Deserialize<'de>>(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
     let path = format!("/{}", path);
 
+    let auth = match token {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
+
     let mut stream = TcpStream::connect(host_port).await?;
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).await?;
 

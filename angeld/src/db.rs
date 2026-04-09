@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments, dead_code)]
+
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{FromRow, Row, SqlitePool};
 use std::path::Path;
@@ -53,6 +55,7 @@ impl StorageMode {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(value: &str) -> Self {
         match value {
             "SINGLE_REPLICA" => Self::SingleReplica,
@@ -6137,11 +6140,10 @@ pub fn is_shared_link_valid(link: &SharedLinkRecord) -> bool {
             return false;
         }
     }
-    if let Some(max) = link.max_downloads {
-        if link.download_count >= max {
+    if let Some(max) = link.max_downloads
+        && link.download_count >= max {
             return false;
         }
-    }
     true
 }
 
@@ -6734,11 +6736,10 @@ pub fn is_invite_code_valid(code: &InviteCodeRecord) -> bool {
     if code.used_count >= code.max_uses {
         return false;
     }
-    if let Some(exp) = code.expires_at {
-        if epoch_secs() > exp {
+    if let Some(exp) = code.expires_at
+        && epoch_secs() > exp {
             return false;
         }
-    }
     true
 }
 

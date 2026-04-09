@@ -528,7 +528,7 @@ impl VaultKeyStore {
         let mut processed = 0u64;
 
         for (item, wrapped_dek_bytes) in &batch {
-            let result: Result<(), VaultError> = (|| async {
+            let result: Result<(), VaultError> = async {
                 let wrapped: [u8; WRAPPED_KEY_LEN] = wrapped_dek_bytes
                     .as_slice()
                     .try_into()
@@ -542,7 +542,7 @@ impl VaultKeyStore {
                 db::update_wrapped_dek(pool, item.dek_id, &new_wrapped, new_generation).await?;
                 db::complete_rewrap_item(pool, item.dek_id).await?;
                 Ok(())
-            })().await;
+            }.await;
 
             match result {
                 Ok(()) => processed += 1,

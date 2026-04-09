@@ -345,13 +345,13 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         let result = tokio::select! {
             result = &mut upload_task => {
                 api_task.abort();
-                let outcome = result??;
-                Ok(outcome)
+                result??;
+                Ok(())
             }
             result = &mut api_task => {
                 upload_task.abort();
-                let outcome = result??;
-                Ok(outcome)
+                result??;
+                Ok(())
             }
             signal = signal::ctrl_c() => {
                 signal?;
@@ -460,8 +460,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         let mut api_task = tokio::spawn(async move { api.run().await });
         let result = tokio::select! {
             result = &mut api_task => {
-                let outcome = result??;
-                Ok(outcome)
+                result??;
+                Ok(())
             }
             signal = signal::ctrl_c() => {
                 signal?;
@@ -708,27 +708,27 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             result = &mut upload_task => {
                 api_task.abort();
                 peer_task.abort();
-                let outcome = result??;
-                Ok(outcome)
+                result??;
+                Ok(())
             }
             result = &mut watcher_future => {
                 upload_task.abort();
                 api_task.abort();
                 peer_task.abort();
-                let outcome = result?;
-                Ok(outcome)
+                result?;
+                Ok(())
             }
             result = &mut api_task => {
                 upload_task.abort();
                 peer_task.abort();
-                let outcome = result??;
-                Ok(outcome)
+                result??;
+                Ok(())
             }
             result = &mut peer_task => {
                 upload_task.abort();
                 api_task.abort();
-                let outcome = result??;
-                Ok(outcome)
+                result??;
+                Ok(())
             }
             signal = signal::ctrl_c() => {
                 signal?;
@@ -746,15 +746,14 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                     warn!("smart sync shutdown warning: {}", err);
                 }
 
-                if e2e_test_mode {
-                    if let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
+                if e2e_test_mode
+                    && let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
                         warn!(
                             "smart sync unregister warning for {}: {}",
                             sync_root.display(),
                             err
                         );
                     }
-                }
             }
 
             if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
@@ -826,8 +825,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
-            let outcome = result??;
-            Ok(outcome)
+            result??;
+            Ok(())
         }
         result = &mut repair_task => {
             upload_task.abort();
@@ -837,8 +836,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
-            let outcome = result??;
-            Ok(outcome)
+            result??;
+            Ok(())
         }
         result = &mut scrubber_task => {
             upload_task.abort();
@@ -848,8 +847,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
-            let outcome = result??;
-            Ok(outcome)
+            result??;
+            Ok(())
         }
         result = &mut gc_task => {
             upload_task.abort();
@@ -859,8 +858,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
-            let outcome = result??;
-            Ok(outcome)
+            result??;
+            Ok(())
         }
         result = &mut ingest_task => {
             upload_task.abort();
@@ -870,8 +869,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
-            let outcome = result??;
-            Ok(outcome)
+            result??;
+            Ok(())
         }
         result = &mut metadata_backup_task => {
             upload_task.abort();
@@ -893,8 +892,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
-            let outcome = result?;
-            Ok(outcome)
+            result?;
+            Ok(())
         }
         result = &mut api_task => {
             upload_task.abort();
@@ -904,8 +903,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             ingest_task.abort();
             metadata_backup_task.abort();
             peer_task.abort();
-            let outcome = result??;
-            Ok(outcome)
+            result??;
+            Ok(())
         }
         result = &mut peer_task => {
             upload_task.abort();
@@ -915,8 +914,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             ingest_task.abort();
             metadata_backup_task.abort();
             api_task.abort();
-            let outcome = result??;
-            Ok(outcome)
+            result??;
+            Ok(())
         }
         signal = signal::ctrl_c() => {
             signal?;
@@ -939,15 +938,14 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 warn!("smart sync shutdown warning: {}", err);
             }
 
-            if e2e_test_mode {
-                if let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
+            if e2e_test_mode
+                && let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
                     warn!(
                         "smart sync unregister warning for {}: {}",
                         sync_root.display(),
                         err
                     );
                 }
-            }
         }
 
         if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
@@ -969,8 +967,8 @@ async fn bootstrap_default_local_vault(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let mut bootstrapped = false;
 
-    if database_missing_on_start && !just_restored {
-        if bootstrap_local_vault(pool).await? {
+    if database_missing_on_start && !just_restored
+        && bootstrap_local_vault(pool).await? {
             info!(
                 "initialized default local vault metadata in {}",
                 runtime_paths
@@ -981,10 +979,9 @@ async fn bootstrap_default_local_vault(
             );
             bootstrapped = true;
         }
-    }
 
-    if db::list_sync_policies(pool).await?.is_empty() {
-        if let Some(default_watch_dir) = &runtime_paths.default_watch_dir {
+    if db::list_sync_policies(pool).await?.is_empty()
+        && let Some(default_watch_dir) = &runtime_paths.default_watch_dir {
             fs::create_dir_all(default_watch_dir).await?;
             let policy_path = absolute_path_to_policy_key(default_watch_dir)?;
             db::set_sync_policy_type_for_path(pool, &policy_path, "LOCAL").await?;
@@ -994,7 +991,6 @@ async fn bootstrap_default_local_vault(
             );
             bootstrapped = true;
         }
-    }
 
     Ok(bootstrapped)
 }

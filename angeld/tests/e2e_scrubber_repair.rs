@@ -40,6 +40,7 @@ struct ChaosEnv {
 struct DaemonHandle {
     child: Child,
     base_url: String,
+    session_token: Option<String>,
 }
 
 struct ScopedEnv {
@@ -185,7 +186,7 @@ impl ChaosEnv {
             .stderr(Stdio::inherit());
 
         let child = command.spawn()?;
-        let handle = DaemonHandle { child, base_url };
+        let handle = DaemonHandle { child, base_url, session_token: None };
         handle.wait_for_api_ready().await?;
         Ok(handle)
     }
@@ -198,7 +199,7 @@ impl DaemonHandle {
             match http_get_json::<DiagnosticsHealth>(&format!(
                 "{}/api/diagnostics/health",
                 self.base_url
-            ))
+            ), None)
             .await
             {
                 Ok(_) => return Ok(()),
@@ -208,26 +209,28 @@ impl DaemonHandle {
         }
     }
 
-    async fn unlock(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn unlock(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let response = http_post_json(
             &format!("{}/api/unlock", self.base_url),
             &serde_json::json!({ "passphrase": PASSPHRASE }),
+            None,
         )
         .await?;
         if response["status"] != serde_json::Value::String("UNLOCKED".to_string()) {
             return Err(format!("unlock response was unexpected: {response}").into());
         }
+        self.session_token = response["session_token"].as_str().map(|s| s.to_string());
         Ok(())
     }
 
     async fn list_files(&mut self) -> Result<Vec<FileEntry>, Box<dyn std::error::Error>> {
         self.ensure_running()?;
-        http_get_json::<Vec<FileEntry>>(&format!("{}/api/files", self.base_url)).await
+        http_get_json::<Vec<FileEntry>>(&format!("{}/api/files", self.base_url), self.session_token.as_deref()).await
     }
 
     async fn health(&mut self) -> Result<DiagnosticsHealth, Box<dyn std::error::Error>> {
         self.ensure_running()?;
-        http_get_json::<DiagnosticsHealth>(&format!("{}/api/diagnostics/health", self.base_url))
+        http_get_json::<DiagnosticsHealth>(&format!("{}/api/diagnostics/health", self.base_url), None)
             .await
     }
 
@@ -236,6 +239,7 @@ impl DaemonHandle {
         http_post_json(
             &format!("{}/api/maintenance/scrub-now", self.base_url),
             &serde_json::json!({}),
+            self.session_token.as_deref(),
         )
         .await
     }
@@ -805,6 +809,7 @@ async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
 
 async fn http_get_json<T: for<'de> Deserialize<'de>>(
     url: &str,
+    token: Option<&str>,
 ) -> Result<T, Box<dyn std::error::Error>> {
     let without_scheme = url
         .strip_prefix("http://")
@@ -814,9 +819,14 @@ async fn http_get_json<T: for<'de> Deserialize<'de>>(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
     let path = format!("/{}", path);
 
+    let auth = match token {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
+
     let mut stream = TcpStream::connect(host_port).await?;
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).await?;
 
@@ -828,6 +838,7 @@ async fn http_get_json<T: for<'de> Deserialize<'de>>(
 async fn http_post_json(
     url: &str,
     body: &serde_json::Value,
+    token: Option<&str>,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let without_scheme = url
         .strip_prefix("http://")
@@ -838,9 +849,14 @@ async fn http_post_json(
     let path = format!("/{}", path);
     let body_bytes = serde_json::to_vec(body)?;
 
+    let auth = match token {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
+
     let mut stream = TcpStream::connect(host_port).await?;
     let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        "POST {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         body_bytes.len()
     );
     stream.write_all(request.as_bytes()).await?;

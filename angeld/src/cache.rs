@@ -143,6 +143,7 @@ impl CacheManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn put_chunk(
         &self,
         inode_id: i64,

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
@@ -104,13 +106,11 @@ pub async fn ensure_device_keypair(
     // Already has a keypair?
     if let (Some(_enc_priv), Some(pubkey)) =
         (&device.encrypted_private_key, &device.public_key)
-    {
-        if pubkey.len() == 32 {
+        && pubkey.len() == 32 {
             let mut pk = [0u8; 32];
             pk.copy_from_slice(pubkey);
             return Ok(pk);
         }
-    }
 
     // Generate new X25519 keypair
     let mut secret_bytes = [0u8; 32];

@@ -23,6 +23,7 @@ pub enum Role {
 
 impl Role {
     /// Parse a role string from the database.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "owner" => Some(Self::Owner),
@@ -42,6 +43,7 @@ impl Role {
 // ── Caller identity resolved from session ───────────────────────────
 
 /// Successfully authenticated + authorized caller.
+#[allow(dead_code)]
 pub struct AuthorizedCaller {
     pub user_id: String,
     pub device_id: String,
@@ -68,7 +70,7 @@ pub async fn require_role(
     // 3. Look up vault membership
     let member = db::get_vault_member(pool, &session.user_id, &vault_id)
         .await
-        .map_err(|e| internal_err(e))?
+        .map_err(internal_err)?
         .ok_or_else(|| forbidden("user is not a vault member"))?;
 
     let role = Role::from_str(&member.role)
@@ -93,6 +95,7 @@ pub async fn require_role(
 /// Like `require_role` but only authenticates (any valid session, no
 /// vault membership required).  Used for endpoints that don't need
 /// role-based authorization (e.g. health checks with auth).
+#[allow(dead_code)]
 pub async fn require_session(
     pool: &SqlitePool,
     headers: &HeaderMap,
@@ -114,7 +117,7 @@ async fn extract_session_or_401(
 
     db::validate_user_session(pool, auth)
         .await
-        .map_err(|e| internal_err(e))?
+        .map_err(internal_err)?
         .ok_or_else(|| unauthorized("invalid or expired session token"))
 }
 

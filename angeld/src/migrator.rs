@@ -208,7 +208,7 @@ impl MigrationManager {
             &self.pool,
             &new_pack_id,
             &v2_encrypted.chunk_id,
-            &v1_pack.plaintext_hash.as_deref().unwrap_or(""),
+            v1_pack.plaintext_hash.as_deref().unwrap_or(""),
             storage_mode,
             2,
             storage_mode_scheme(storage_mode),

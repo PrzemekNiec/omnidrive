@@ -542,6 +542,7 @@ impl Downloader {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn load_plaintext_chunk(
         &self,
         inode_id: i64,
@@ -709,8 +710,8 @@ impl Downloader {
 
         let previous_chunk_index = {
             let mut state = self.prefetch_state.lock().await;
-            let previous = state.insert(revision_id, last_chunk_index);
-            previous
+            
+            state.insert(revision_id, last_chunk_index)
         };
 
         let mut targets = Vec::new();
@@ -1177,11 +1178,10 @@ fn reconstruct_ciphertext(
 
     let shard_len = to_usize(pack.shard_size, "shard size")?;
     for shard in shards.iter_mut() {
-        if let Some(bytes) = shard.as_mut() {
-            if bytes.len() != shard_len {
+        if let Some(bytes) = shard.as_mut()
+            && bytes.len() != shard_len {
                 return Err(DownloaderError::InvalidPackRecord("shard size mismatch"));
             }
-        }
     }
 
     let reed_solomon = ReedSolomon::new(DATA_SHARDS, PARITY_SHARDS)?;
@@ -1365,7 +1365,7 @@ fn to_u64(value: i64, context: &'static str) -> Result<u64, DownloaderError> {
     u64::try_from(value).map_err(|_| DownloaderError::NumericOverflow(context))
 }
 
-fn format_error_details(err: &(impl std::error::Error + fmt::Debug)) -> String {
+fn format_error_details(err: &impl std::error::Error) -> String {
     let mut details = vec![format!("display={err}"), format!("debug={err:?}")];
     let mut current = err.source();
     let mut depth = 0usize;

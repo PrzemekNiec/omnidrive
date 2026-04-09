@@ -606,7 +606,7 @@ fn send_pipe_command(action: &str, path: &str) -> std::result::Result<(), String
 
     // Wrap in OwnedHandle for auto-close.
     let mut pipe_file: std::fs::File = unsafe {
-        std::fs::File::from_raw_handle(handle.0 as *mut c_void)
+        std::fs::File::from_raw_handle(handle.0)
     };
 
     // Build JSON request.

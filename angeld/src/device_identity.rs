@@ -18,8 +18,8 @@ pub async fn ensure_local_device_identity(
     config: &AppConfig,
 ) -> Result<LocalDeviceIdentity, sqlx::Error> {
     if let Some(existing) = db::get_local_device_identity(pool).await? {
-        if let Some(device_name) = preferred_device_name(config) {
-            if device_name != existing.device_name {
+        if let Some(device_name) = preferred_device_name(config)
+            && device_name != existing.device_name {
                 db::update_local_device_name(pool, &device_name).await?;
                 let refreshed = db::get_local_device_identity(pool)
                     .await?
@@ -32,7 +32,6 @@ pub async fn ensure_local_device_identity(
                     updated_at: refreshed.updated_at,
                 });
             }
-        }
 
         return Ok(LocalDeviceIdentity {
             device_id: existing.device_id,

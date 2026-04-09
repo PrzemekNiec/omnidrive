@@ -391,8 +391,7 @@ impl IngestWorker {
             }
 
             if any_failed {
-                return Err(IngestError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(IngestError::Io(std::io::Error::other(
                     format!(
                         "one or more packs failed upload for job {}",
                         job.id
@@ -468,7 +467,7 @@ impl IngestWorker {
 
     /// Test-only: drive a single job through the full pipeline.
     /// The caller is responsible for mocking shard uploads concurrently.
-    #[cfg(any(test, feature = "test-helpers"))]
+    #[allow(dead_code)]
     pub async fn process_job_for_test(&self, job: &IngestJob) -> Result<(), IngestError> {
         self.process_job(job).await
     }

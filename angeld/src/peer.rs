@@ -508,7 +508,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(input: &str) -> Result<Vec<u8>, ()> {
-    if input.len() % 2 != 0 {
+    if !input.len().is_multiple_of(2) {
         return Err(());
     }
 

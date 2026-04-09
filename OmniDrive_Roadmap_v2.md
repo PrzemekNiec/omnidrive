@@ -147,7 +147,7 @@ Udostępnianie plików na zewnątrz bez wysyłania kluczy deszyfrujących do ser
 | | |
 |---|---|
 | **Cel** | Architektura linków opartych na DEK w fragmencie URI. |
-| **Zakres** | • Format: `https://share.omnidrive.app/{file_id}#{DEK_key}`. |
+| **Zakres** | • Format: `https://skarbiec.app/{file_id}#{DEK_key}`. |
 | | • Fragment URI (`#`) jest ignorowany przez serwery HTTP — klucz pozostaje lokalny. |
 | | • Decyzja projektowa: per-file DEK (jeden klucz na cały plik, niezależnie od ilości chunków EC). Dokumentacja tej decyzji na wypadek przyszłej zmiany na per-chunk DEK. |
 | | • Opcjonalny TTL (czas życia linku) i jednorazowe linki (burn-after-read). |
@@ -237,6 +237,73 @@ Każdy Task jest ukończony, gdy spełnia WSZYSTKIE poniższe kryteria:
 3. **Rollback:** Każda operacja stanowa ma zdefiniowany i przetestowany rollback path.
 4. **Dokumentacja:** Decyzje kryptograficzne są udokumentowane w repozytorium (nie tylko w kodzie).
 5. **Security review:** Krytyczne ścieżki (key wrapping, migration, sharing) przeszły peer review przed merge'em.
+
+---
+
+## 11. Faza 1+2: Refaktoring infrastruktury (CI, Cleanup, ApiError, Split api.rs)
+
+**Status: ✅ UKOŃCZONE (2026-04-09)**
+
+Przed dodaniem nowych feature'ów (OAuth2, per-folder permissions) — solidna baza techniczna.
+
+### Krok 1: GitHub Actions CI ✅
+
+- `.github/workflows/ci.yml` — `windows-latest` runner
+- Pipeline: `cargo check` → `cargo clippy -D warnings` → `cargo test --test-threads=1`
+- Cache: `target/`, `~/.cargo/registry`, `~/.cargo/git`
+
+### Krok 2: Dead Code Cleanup ✅
+
+- 85 clippy warnings → 0
+- `#![allow(dead_code)]` na `db.rs`, `identity.rs`, `acl.rs` (funkcje Epic 34 czekające na użycie)
+- `#[allow(clippy::should_implement_trait)]` na metodach `from_str` (nie-std konwencja)
+- Fix: `&(impl Error)` → `&impl Error` w `gc.rs`, `repair.rs`, `scrubber.rs`
+- Fix: zbędne casty `as *mut c_void` w `pipe_server.rs`, `omnidrive-shell-ext`
+- Fix: `&PathBuf` → `&Path` w `omnidrive-tray`
+
+### Krok 3: Unified ApiError ✅
+
+- `angeld/src/api/error.rs` — 7 wariantów (BadRequest, Unauthorized, Forbidden, NotFound, Conflict, Locked, Internal)
+- `impl IntoResponse for ApiError` — ujednolicony format JSON `{ "error": code, "message": msg }`
+- `impl From<sqlx::Error>` + `impl From<std::io::Error>`
+- Decyzja: `acl::require_role` zachowuje `Result<_, Response>` (26 call sites, ApiError w bin crate)
+
+### Krok 4: Split api.rs → api/ directory ✅
+
+- 5026 linii → 8 modułów + mod.rs (211 linii)
+- Zero zmian w `main.rs` (`mod api;` rozwiązuje `api/mod.rs` automatycznie)
+
+| Moduł | Trasy | Linii |
+|-------|-------|-------|
+| `mod.rs` | Router assembly, ApiState, ApiServer, shared helpers | 211 |
+| `error.rs` | ApiError enum + impls | 76 |
+| `onboarding.rs` | 7 tras bootstrap/setup/join/complete/reset | 786 |
+| `auth.rs` | unlock, session, logout, renew | 230 |
+| `diagnostics.rs` | health, shell, sync-root, storage, multidevice, transfers | 682 |
+| `files.rs` | files CRUD, pin/unpin, filesystem, revisions, quota | 966 |
+| `sharing.rs` | create/list/revoke/delete share, public endpoints | 554 |
+| `vault.rs` | invite, join, devices, revoke, rewrap, health | 975 |
+| `maintenance.rs` | scrub, repair, reconcile, backup, cache, ingest | 840 |
+
+### E2E testy — aktualizacja auth ✅
+
+- 6 plików testowych zaktualizowanych o session tokens (Bearer auth)
+- 139 testów przechodzi (60 lib + 65 bin + 14 e2e)
+- 3 pre-existing failures (provider config) — niezwiązane z refaktorem
+
+---
+
+## 12. Pozostałe zadania (backlog)
+
+| Priorytet | Zadanie | Zależności |
+|-----------|---------|------------|
+| **P0** | Fix 3 e2e test failures (provider config w reconciliation, recovery, scrubber) | — |
+| **P1** | Migracja handlerów na `Result<_, ApiError>` (26 call sites w acl pattern) | Krok 3 done |
+| **P1** | Epic 34.3b: OAuth2 Identity Layer (Google Login) | Epic 34.0-34.4a done |
+| **P1** | Epic 34.4b: Per-folder ACL permissions | Epic 34.4a done |
+| **P2** | Epic 34.3c: Recovery Keys (Shamir/BIP-39) | Epic 34.3a done |
+| **P2** | Epic 34.5: Audit Trail (kto co kiedy) | Epic 34.4a done |
+| **P2** | Task 35.4: IPC + Icon Overlays (shell ext ↔ daemon) | Epic 35.2b done |
 
 ---
 

@@ -58,7 +58,7 @@ fn load_icon(path: &PathBuf) -> Icon {
         .unwrap_or_else(|e| panic!("invalid icon data {}: {e}", path.display()))
 }
 
-fn load_icons(base: &PathBuf) -> IconSet {
+fn load_icons(base: &std::path::Path) -> IconSet {
     IconSet {
         base_cloud: load_icon(&base.join("BASE_CLOUD.png")),
         locked: load_icon(&base.join("STATE_LOCKED.png")),
@@ -140,8 +140,7 @@ async fn poll_daemon_state(client: &reqwest::Client) -> TrayState {
         .timeout(Duration::from_secs(2))
         .send()
         .await
-    {
-        if let Ok(providers) = resp.json::<Vec<ProviderHealth>>().await {
+        && let Ok(providers) = resp.json::<Vec<ProviderHealth>>().await {
             let any_failed = providers
                 .iter()
                 .any(|p| p.connection_status == "FAILED");
@@ -149,7 +148,6 @@ async fn poll_daemon_state(client: &reqwest::Client) -> TrayState {
                 return TrayState::Error;
             }
         }
-    }
 
     // 3. Check ingest queue
     if let Ok(resp) = client
@@ -157,8 +155,7 @@ async fn poll_daemon_state(client: &reqwest::Client) -> TrayState {
         .timeout(Duration::from_secs(2))
         .send()
         .await
-    {
-        if let Ok(ingest) = resp.json::<IngestResponse>().await {
+        && let Ok(ingest) = resp.json::<IngestResponse>().await {
             let has_failed = ingest.jobs.iter().any(|j| j.state == "FAILED");
             if has_failed {
                 return TrayState::Error;
@@ -171,7 +168,6 @@ async fn poll_daemon_state(client: &reqwest::Client) -> TrayState {
                 return TrayState::Syncing;
             }
         }
-    }
 
     TrayState::Synced
 }
@@ -361,15 +357,14 @@ fn main() {
         }
 
         // Handle state changes from poller
-        if let Event::UserEvent(UserEvent::StateChanged(new_state)) = event {
-            if new_state != current_state {
+        if let Event::UserEvent(UserEvent::StateChanged(new_state)) = event
+            && new_state != current_state {
                 current_state = new_state;
                 tray.set_icon(Some(icon_for_state(&icons, current_state)))
                     .unwrap_or_else(|e| error!("set_icon failed: {e}"));
                 tray.set_tooltip(Some(tooltip_for_state(current_state)))
                     .unwrap_or_else(|e| error!("set_tooltip failed: {e}"));
             }
-        }
     });
 }
 

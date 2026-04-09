@@ -75,7 +75,7 @@ fn create_pipe_instance(first: bool) -> Result<NamedPipeServer, String> {
         )
         .map_err(|e| format!("SDDL parse: {e}"))?;
 
-        let mut sa = SECURITY_ATTRIBUTES {
+        let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: sd.0,
             bInheritHandle: false.into(),
@@ -93,7 +93,7 @@ fn create_pipe_instance(first: bool) -> Result<NamedPipeServer, String> {
             4096,  // out buffer
             4096,  // in buffer
             0,     // default timeout
-            Some(&mut sa),
+            Some(&sa),
         );
 
         // Free the security descriptor allocated by ConvertString...
@@ -107,7 +107,7 @@ fn create_pipe_instance(first: bool) -> Result<NamedPipeServer, String> {
         }
 
         // Wrap in tokio NamedPipeServer (takes ownership of the handle).
-        NamedPipeServer::from_raw_handle(handle.0 as *mut std::ffi::c_void)
+        NamedPipeServer::from_raw_handle(handle.0)
             .map_err(|e| format!("from_raw_handle: {e}"))
     }
 }
