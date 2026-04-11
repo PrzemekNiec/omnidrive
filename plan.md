@@ -513,13 +513,16 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 | **34.2b** | Lazy VK rotation + re-wrap queue | 34.2a, 34.1b | 6 | ✅ DONE (2026-04-09) |
 | **34.2c** | User removal | 34.2a, 34.2b | 7 | ✅ DONE (2026-04-09) |
 | **34.3a** | Session tokens (local auth) | 34.0 | 5 (parallel z 34.2) | ✅ DONE (2026-04-09) |
-| **34.3b** | Google OAuth2 | 34.3a | 8 (opcjonalny) | ⬜ |
+| **34.3b** | Google OAuth2 | Fix user_id | 8 (opcjonalny) | ⬜ Sesja C+D |
 | **34.4a** | ACL + route protection | 34.3a | 9 | ✅ DONE (2026-04-09) |
 | **Refactor** | ApiError migration + cleanup | 34.4a | — | ✅ DONE (2026-04-11) |
 | **E2E fix** | 3 e2e testy (reconciliation, recovery, scrubber) | Refactor | — | ✅ DONE (2026-04-11) |
-| **34.5a-b** | Audit trail + UI | 34.0 | Sesja A | ⬜ |
-| **34.6a** | Recovery keys (BIP-39) | 34.1b | 10 | ⬜ |
-| **34.6b** | Safety Numbers | 34.1b | P2 (later) | ⬜ |
+| **34.5a-b** | Audit trail + UI | 34.0 | P1 | ⬜ Sesja A |
+| **34.6a** | Recovery keys (BIP-39) | 34.1b | P1 | ⬜ Sesja B |
+| **Fix ID** | Naprawa owner-{device_id} → UUID | 34.0b | **P0 blocker** | ⬜ Sesja Pre-C |
+| **34.6b** | Safety Numbers | 34.1b | P3 | ⬜ Sesja E |
+| **E2E multi** | Multi-user lifecycle test | 34.2c | P1 | ⬜ Sesja E |
+| **THREAT** | THREAT_MODEL.md (model zagrożeń + strategia platform) | — | P1 | ⬜ Sesja E |
 
 ### Refactoring: Unified ApiError + API module split — DONE (2026-04-09 → 2026-04-11)
 
@@ -578,36 +581,42 @@ Dwie fazy porządkowania po Epic 34:
 
 Stan na 2026-04-11. Kompletna migracja ApiError zakończona, 0 warnings, 7/7 e2e testów przechodzi (+ 1 ignored: shell_repair wymaga sesji desktopowej). Trzy testy e2e (reconciliation, recovery, scrubber_repair) które wcześniej failowały — teraz przechodzą (naprawione w commitach f518a08 + refaktor ApiError).
 
-### Pozostałe zadania (5 pozycji)
+### Pozostałe zadania (8 pozycji)
 
 | # | Zadanie | Priorytet | Zależności | Estymowany rozmiar |
 |---|---------|-----------|------------|-------------------|
 | 1 | 34.5a: Audit logging — brakujące callsites | P1 | Brak | Mały |
 | 2 | 34.5b: Audit log API + dashboard UI | P1 | 34.5a | Średni |
 | 3 | 34.6a: Recovery keys (BIP-39 mnemonic) | P1 | Brak | Średni |
-| 4 | 34.3b: Google OAuth2 | P2 (opcjonalny) | 34.3a | Duży |
-| 5 | 34.6b: Safety Numbers | P3 (later) | 34.1b | Mały (UI-only) |
+| 4 | **Fix user_id** — naprawa `owner-{device_id}` na UUID | **P0** | Brak | Średni |
+| 5 | 34.3b: Google OAuth2 | P2 (opcjonalny) | **Fix user_id** | Duży |
+| 6 | 34.6b: Safety Numbers | P3 | 34.1b | Mały (UI-only) |
+| 7 | **E2E test multi-user lifecycle** | P1 | 34.2c | Średni |
+| 8 | **THREAT_MODEL.md** — model zagrożeń i strategia platform | P1 | Brak | Mały (dokument) |
 
 ### Analiza współdzielonych plików
 
 Które pliki dotykają które zadania — klucz do minimalizacji ładowania kontekstu:
 
-| Plik | 34.5a | 34.5b | 34.6a | 34.3b | 34.6b |
-|------|-------|-------|-------|-------|-------|
-| `db.rs` | — | filtr queries | nowe fn | nowe tabele/fn | — |
-| `api/vault.rs` | audit callsites | GET endpoint | generate/recover endpoints | — | display endpoint |
-| `api/auth.rs` | — | — | — | OAuth flow | — |
-| `api/mod.rs` | — | — | — | routing | — |
-| `identity.rs` | — | — | — | — | hash fn |
-| `static/index.html` | — | panel UI | panel UI | login UI | panel UI |
-| `Cargo.toml` | — | — | `bip39` | `oauth2`, `jsonwebtoken` | — |
-| `acl.rs` | — | require_role check | — | session lookup | — |
+| Plik | 34.5a | 34.5b | 34.6a | Fix ID | 34.3b | 34.6b | E2E test | THREAT |
+|------|-------|-------|-------|--------|-------|-------|----------|--------|
+| `db.rs` | — | filtr queries | nowe fn | migracja | nowe tabele/fn | — | setup | — |
+| `api/vault.rs` | callsites | GET endpoint | generate/recover | user_id refs | — | display | — | — |
+| `api/auth.rs` | — | — | — | — | OAuth flow | — | — | — |
+| `api/mod.rs` | — | — | — | — | routing | — | — | — |
+| `identity.rs` | — | — | — | — | — | hash fn | — | — |
+| `local_device_identity` | — | — | — | +user_id col | — | — | — | — |
+| `static/index.html` | — | panel UI | panel UI | — | login UI | panel UI | — | — |
+| `Cargo.toml` | — | — | `bip39` | — | `oauth2` | — | — | — |
+| `acl.rs` | — | require_role | — | user lookup | session | — | — | — |
+| `tests/` | — | — | — | migracja testów | — | — | **nowy e2e** | — |
 
 **Wnioski:**
 - 34.5a+b naturalnie łączą się w jedną sesję (audit pisze → audit czyta)
 - 34.6a jest niezależny — osobna sesja
-- 34.3b jest największy i niezależny — 1-2 sesje
-- 34.6b jest mały, czysto UI — można dołączyć do dowolnej sesji
+- Fix user_id **musi** być przed OAuth — fundament pod multi-device i multi-user
+- 34.3b jest największy — 2 sesje (backend + frontend)
+- E2E test + THREAT_MODEL + Safety Numbers = naturalna sesja finalizacyjna
 
 ---
 
@@ -703,6 +712,43 @@ Które pliki dotykają które zadania — klucz do minimalizacji ładowania kont
 
 ---
 
+### Sesja Pre-C: Naprawa User ID (P0 — fundament pod OAuth i multi-device)
+
+**Cel:** Zastąpić kruchy schemat `owner-{device_id}` prawdziwymi UUID. Bez tego OAuth i multi-device z wieloma urządzeniami per user nie będą działać poprawnie.
+
+**Problem:** Migrator `34.0b` generuje `user_id = format!("owner-{}", device_id)`. Jeśli user ma 2 urządzenia i oba migrują niezależnie, powstają dwa osobne "ownerzy". `user_id` jest pochodną urządzenia zamiast być stałym identyfikatorem użytkownika.
+
+**Pliki do załadowania:** `db.rs` (migracja, CRUD), `api/vault.rs` (referencje do user_id), `acl.rs` (session → user lookup), unit testy
+
+#### Krok Pre-C.1: Nowa kolumna w local_device_identity
+- `ALTER TABLE local_device_identity ADD COLUMN user_id TEXT`
+- Przy starcie: jeśli `user_id IS NULL` → wygeneruj UUID v4, zapisz
+- Jedno urządzenie = jeden user_id, ale ten sam user na wielu urządzeniach = ten sam user_id (przekazywany przez invite/join flow)
+- Unit test: migracja zachowuje istniejące dane, nowe urządzenie dostaje UUID
+
+#### Krok Pre-C.2: Migracja istniejących danych
+- `migrate_single_to_multi_user()` — zmienić z `format!("owner-{}", device_id)` na:
+  1. Sprawdź czy `local_device_identity.user_id` istnieje → użyj go
+  2. Jeśli nie → wygeneruj UUID, zapisz w `local_device_identity`, użyj w `users`
+- Join flow (`accept-device`, `join`): nowe urządzenie dziedziczy `user_id` od zapraszającego lub z invite code context
+- Backward compat: istniejące vaults z `owner-{device_id}` → jednorazowa migracja na UUID
+
+#### Krok Pre-C.3: Aktualizacja referencji w API i ACL
+- `acl.rs`: session → `user_id` lookup bez polegania na konwencji nazewnictwa
+- `api/vault.rs`: invite/join/accept-device → operują na UUID zamiast `owner-{device_id}`
+- Sprawdzić czy `vault_members`, `devices`, `audit_logs` poprawnie referencjonują nowe UUID
+
+#### Krok Pre-C.4: Testy i weryfikacja
+- Unit: migracja starych `owner-{device_id}` → UUID
+- Unit: nowe urządzenie dostaje UUID, join flow dziedziczy user_id
+- Integration: pełny cykl owner+device z nowymi identyfikatorami
+- `cargo check` + `cargo clippy` + `cargo test`
+- Weryfikacja: istniejące e2e testy nadal przechodzą (brak regresji)
+
+**Exit criteria:** `cargo test` green, zero referencji do `owner-{device_id}` poza kodem migracyjnym, `user_id` jest UUID v4.
+
+---
+
 ### Sesja C: Google OAuth2 (34.3b) — Część 1: Backend
 
 **Cel:** Backend OAuth2 flow — Google login → user identity → session token. Bez UI.
@@ -773,11 +819,11 @@ Które pliki dotykają które zadania — klucz do minimalizacji ładowania kont
 
 ---
 
-### Sesja E: Safety Numbers (34.6b) + Polish
+### Sesja E: Safety Numbers + E2E Multi-User Test + THREAT_MODEL (Finalizacja Epic 34)
 
-**Cel:** Safety Numbers do weryfikacji out-of-band + ogólny polish Epic 34.
+**Cel:** Domknąć wszystkie otwarte luki architektoniczne. Safety Numbers, integracyjny test pełnego cyklu życia użytkownika, model zagrożeń i strategia platformowa.
 
-**Pliki do załadowania:** `identity.rs` (hash), `api/vault.rs` (endpoint), `static/index.html` (UI)
+**Pliki do załadowania:** `identity.rs`, `api/vault.rs`, `static/index.html`, `tests/` (nowy e2e), `docs/` (nowy dokument)
 
 #### Krok E.1: Safety Number generation
 - `identity.rs`: `compute_safety_number(pub_key_a: &[u8; 32], pub_key_b: &[u8; 32]) -> String`
@@ -785,39 +831,80 @@ Które pliki dotykają które zadania — klucz do minimalizacji ładowania kont
 - SHA-256(sorted_keys) → truncate → decimal format
 - Symetryczny: `safety_number(A, B) == safety_number(B, A)`
 
-#### Krok E.2: API + UI
+#### Krok E.2: Safety Numbers — API + UI
 - `GET /api/vault/safety-number/{device_id}` — zwraca safety number między moim device a wskazanym
 - Dashboard: w panelu "Urządzenia" → kliknięcie na device → modal z Safety Number
 - Instrukcja: "Porównaj ten numer z osobą posiadającą to urządzenie (telefon, osobiście)"
 
-#### Krok E.3: Epic 34 finalizacja
+#### Krok E.3: E2E test — pełny cykl życia multi-user
+- Nowy plik: `angeld/tests/e2e_multi_user_lifecycle.rs`
+- Scenariusz testowy:
+  1. Alice tworzy vault, staje się ownerem
+  2. Alice generuje invite code
+  3. Bob dołącza z invite code, otrzymuje public key registration
+  4. Alice akceptuje urządzenie Boba → Bob dostaje wrapped Vault Key
+  5. Bob unwrapuje VK → ma dostęp do plików (verify: read succeeds)
+  6. Alice usuwa Boba → VK rotation → lazy re-wrap
+  7. Bob próbuje API call → 403 Forbidden (verify: access denied)
+  8. Verify: audit logs zawierają pełny ślad (invite, join, accept, remove, rotate_vk)
+- Test operuje na in-memory SQLite, bez prawdziwego daemona (jak istniejące testy DB/vault)
+- Pokrywa styk warstw: DB ↔ krypto ↔ ACL ↔ vault — właśnie tam kryją się błędy
+
+#### Krok E.4: THREAT_MODEL.md — model zagrożeń i strategia platformowa
+- Nowy plik: `docs/THREAT_MODEL.md`
+- Sekcje:
+  1. **Granice zaufania:**
+     - Cloudflare Tunnel = brzeg sieci (TLS termination, rate limiting, DDoS protection)
+     - Daemon API = czysty backend za tunelem, nie wystawiony bezpośrednio
+     - localhost:8787 = trusted zone (brak TLS, brak CSRF — akceptowalne bo local-only na desktopie)
+  2. **Adversary model:**
+     - Cloud provider (B2/R2/Scaleway): widzi tylko zaszyfrowane blobs, zero-knowledge
+     - Sieć (MITM): Cloudflare Tunnel = TLS, fragment URI (#DEK) nigdy nie opuszcza przeglądarki
+     - Atakujący z dostępem do maszyny: vault locked = dane chronione (Argon2id + AES-256-GCM)
+     - Atakujący z dostępem do API (przez tunel): sesja + ACL + rate limiting
+  3. **Strategia platformowa:**
+     - Desktop (Windows): pełny klient z wirtualnym dyskiem O:\ (cfapi.dll) — Windows-only ze względu na koszt i specyfikę API
+     - Mobile (iOS/Android): docelowo thin client → REST API przez Cloudflare Tunnel
+     - API jest platform-agnostic (czyste REST + JSON) — backend obsługuje dowolnego klienta
+     - Brak planów na natywny klient macOS/Linux z wirtualnym dyskiem (koszt vs. wartość)
+  4. **Kiedy API przestaje być localhost-only:**
+     - Moment: aktywacja Cloudflare Tunnel (już zaimplementowana w architekturze)
+     - Wymagania: session tokens (done), ACL (done), audit trail (done po Sesji A)
+     - Brakujące do produkcji: CSRF protection dla browser clients, per-user rate limiting
+
+#### Krok E.5: Epic 34 finalizacja
 - Przegląd wszystkich endpointów — spójność error handling, response format
 - Przegląd audit trail — czy wszystkie operacje są logowane
 - `cargo clippy`, `cargo test`, sprawdzenie CI
+- Zamknięcie Epic 34 w `PROJECT_STATUS.md` i `plan.md`
 
-**Exit criteria:** Safety Numbers wyświetlane w UI, Epic 34 zamknięty.
+**Exit criteria:** Safety Numbers w UI, e2e multi-user test przechodzi, THREAT_MODEL.md zamknięty, Epic 34 oficjalnie zakończony.
 
 ---
 
 ### Podsumowanie sesji
 
-| Sesja | Zadania | Pliki główne | Rozmiar |
-|-------|---------|-------------|---------|
-| **A** | 34.5a + 34.5b (Audit Trail) | db.rs, api/vault.rs, sharing.rs, auth.rs, index.html | Średni |
-| **B** | 34.6a (Recovery Keys) | recovery.rs (nowy), vault.rs, db.rs, api/vault.rs, index.html | Średni |
-| **C** | 34.3b backend (OAuth2) | Cargo.toml, config.rs, api/auth.rs, db.rs | Średni |
-| **D** | 34.3b frontend (OAuth2 UI) | index.html, api/auth.rs | Mały-Średni |
-| **E** | 34.6b (Safety Numbers) + polish | identity.rs, api/vault.rs, index.html | Mały |
+| Sesja | Zadania | Pliki główne | Rozmiar | Mikro-kroki |
+|-------|---------|-------------|---------|-------------|
+| **A** | 34.5a + 34.5b (Audit Trail) | db.rs, api/vault.rs, sharing.rs, auth.rs, index.html | Średni | 5 (A.1–A.5) |
+| **B** | 34.6a (Recovery Keys) | recovery.rs (nowy), vault.rs, db.rs, api/vault.rs, index.html | Średni | 6 (B.1–B.6) |
+| **Pre-C** | Fix user_id (owner-{id} → UUID) | db.rs, api/vault.rs, acl.rs, local_device_identity | Średni | 4 (Pre-C.1–Pre-C.4) |
+| **C** | 34.3b backend (OAuth2) | Cargo.toml, config.rs, api/auth.rs, db.rs | Średni | 4 (C.1–C.4) |
+| **D** | 34.3b frontend (OAuth2 UI) | index.html, api/auth.rs | Mały-Średni | 4 (D.1–D.4) |
+| **E** | Safety Numbers + E2E test + THREAT_MODEL | identity.rs, tests/e2e_multi_user.rs, docs/THREAT_MODEL.md | Średni | 5 (E.1–E.5) |
 
-**Rekomendowana kolejność:** A → B → C → D → E
+**Rekomendowana kolejność:** A → B → Pre-C → C → D → E
 
 **Uzasadnienie:**
-- **A (Audit)** jest P1 i nie wymaga nowych dependencies — szybka wygrana
-- **B (Recovery Keys)** jest P1 i niezależny od OAuth — bezpieczna implementacja bez ryzyka regresji
-- **C+D (OAuth)** jest P2 i największy — wymaga nowych crate'ów i konfiguracji Google Cloud Console
-- **E (Safety Numbers)** jest P3 i czysto UI — naturalny finisher
+- **A (Audit)** — P1, nie wymaga nowych dependencies, szybka wygrana
+- **B (Recovery Keys)** — P1, niezależny od OAuth, bezpieczna implementacja
+- **Pre-C (Fix user_id)** — **P0 blocker** dla OAuth. Musi być przed C, bo OAuth tworzy nowych userów i operuje na user_id. Kruchy schemat `owner-{device_id}` złamie multi-device OAuth flow
+- **C+D (OAuth)** — P2, największy, wymaga Google Cloud Console setup
+- **E (Finalizacja)** — domyka wszystkie luki architektoniczne z krytycznej oceny projektu
 
 **Każda sesja kończy się:** `cargo check` (0 warnings) + `cargo clippy --workspace -- -D warnings` (clean) + `cargo test --workspace` (all pass) + ręczna weryfikacja UI.
+
+**Każdy mikro-krok kończy się:** pytaniem "kontynuujemy czy commit+push?" (ochrona budżetu tokenów).
 
 ---
 

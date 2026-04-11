@@ -732,13 +732,19 @@ Current saved progress for `Epic 31 + Epic 32`:
   - `angeld/static/index.html`
   - `angeld/Cargo.toml`
 
-Next execution plan:
-1. Epic 34 remaining tasks:
-   - 34.5a-b: Audit trail + dashboard UI
-   - 34.6a: Recovery keys (BIP-39 mnemonic)
-   - 34.3b: Google OAuth2 (optional)
-   - 34.6b: Safety Numbers (P2, later)
-2. Ongoing: keep CI green, fix any remaining e2e flakes
+Next execution plan (sesje A → B → Pre-C → C → D → E):
+1. **Sesja A:** 34.5a-b Audit trail — brakujące callsites + API endpoint + dashboard panel
+2. **Sesja B:** 34.6a Recovery keys — BIP-39 mnemonic generation + recovery flow
+3. **Sesja Pre-C:** Fix `owner-{device_id}` → UUID (P0 blocker dla OAuth)
+4. **Sesja C:** 34.3b Google OAuth2 backend — OAuth flow + session integration
+5. **Sesja D:** 34.3b Google OAuth2 frontend — login UI + user management panel
+6. **Sesja E:** 34.6b Safety Numbers + E2E multi-user lifecycle test + `docs/THREAT_MODEL.md`
+
+Decyzje architektoniczne (podjęte 2026-04-11):
+- API jest platform-agnostic REST — backend obsługuje desktop + przyszłe mobilne (iOS/Android)
+- Cloudflare Tunnel = brzeg sieci (TLS, rate limiting) — daemon nie jest wystawiony bezpośrednio
+- Desktop klient z wirtualnym dyskiem (cfapi) pozostaje Windows-only
+- Inne platformy będą obsługiwane przez thin client (mobile app) → REST API
 
 Working rule for future sessions on this project:
 - always use `jcodemunch` at the beginning of the session for repo context, symbol lookup, and code navigation before making implementation decisions
