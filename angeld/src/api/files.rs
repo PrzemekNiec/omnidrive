@@ -5,14 +5,14 @@ use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::http::HeaderMap;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::env;
 
+use super::error::ApiError;
 use super::ApiState;
 
 // ── Response / Request structs ──────────────────────────────────────────
@@ -147,533 +147,250 @@ async fn delete_file(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path(inode_id): Path<i64>,
-) -> impl IntoResponse {
-    // ACL: Member+ can delete files
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<Json<DeleteFileResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
 
-    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
-        Ok(inode) => inode,
-        Err(err) => return super::internal_server_error(err),
-    };
-
-    let Some(inode) = inode else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "inode_not_found",
-                "inode_id": inode_id,
-            })),
-        )
-            .into_response();
-    };
+    let inode = db::get_inode_by_id(&state.pool, inode_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "inode",
+            id: inode_id.to_string(),
+        })?;
 
     if inode.kind != "FILE" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "inode_not_file",
-                "inode_id": inode_id,
-                "kind": inode.kind,
-            })),
-        )
-            .into_response();
+        return Err(ApiError::BadRequest {
+            code: "inode_not_file",
+            message: format!("inode {} is a {}, not a file", inode_id, inode.kind),
+        });
     }
 
-    if let Err(err) = db::delete_file_chunks(&state.pool, inode_id).await {
-        return super::internal_server_error(err);
-    }
-    if let Err(err) = db::delete_inode_record(&state.pool, inode_id).await {
-        return super::internal_server_error(err);
-    }
+    db::delete_file_chunks(&state.pool, inode_id).await?;
+    db::delete_inode_record(&state.pool, inode_id).await?;
 
-    (
-        StatusCode::OK,
-        Json(DeleteFileResponse {
-            inode_id,
-            deleted: true,
-        }),
-    )
-        .into_response()
+    Ok(Json(DeleteFileResponse {
+        inode_id,
+        deleted: true,
+    }))
 }
 
-async fn get_files(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
-    // ACL: Viewer+ can list files
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
-        return resp;
-    }
+async fn get_files(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<FileEntryResponse>>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Viewer).await?;
 
-    match db::list_active_files(&state.pool).await {
-        Ok(files) => (
-            StatusCode::OK,
-            Json(
-                files
-                    .into_iter()
-                    .map(|file| FileEntryResponse {
-                        inode_id: file.inode_id,
-                        path: file.path,
-                        size: file.size,
-                        current_revision_id: file.current_revision_id,
-                        current_revision_created_at: file.current_revision_created_at,
-                        smart_sync_pin_state: file.smart_sync_pin_state,
-                        smart_sync_hydration_state: file.smart_sync_hydration_state,
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        )
-            .into_response(),
-        Err(err) => super::internal_server_error(err),
-    }
+    let files = db::list_active_files(&state.pool).await?;
+    Ok(Json(
+        files
+            .into_iter()
+            .map(|file| FileEntryResponse {
+                inode_id: file.inode_id,
+                path: file.path,
+                size: file.size,
+                current_revision_id: file.current_revision_id,
+                current_revision_created_at: file.current_revision_created_at,
+                smart_sync_pin_state: file.smart_sync_pin_state,
+                smart_sync_hydration_state: file.smart_sync_hydration_state,
+            })
+            .collect(),
+    ))
 }
 
 async fn get_file_sync_status(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path(inode_id): Path<i64>,
-) -> impl IntoResponse {
-    // ACL: Viewer+ can check sync status
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
-        return resp;
-    }
+) -> Result<Json<SmartSyncStatusResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Viewer).await?;
 
-    match db::get_smart_sync_state(&state.pool, inode_id).await {
-        Ok(Some(status)) => (
-            StatusCode::OK,
-            Json(SmartSyncStatusResponse {
-                inode_id: status.inode_id,
-                revision_id: status.revision_id,
-                pin_state: status.pin_state,
-                hydration_state: status.hydration_state,
-            }),
-        )
-            .into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "smart_sync_state_not_found",
-                "inode_id": inode_id,
-            })),
-        )
-            .into_response(),
-        Err(err) => super::internal_server_error(err),
-    }
+    let status = db::get_smart_sync_state(&state.pool, inode_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "smart_sync_state",
+            id: inode_id.to_string(),
+        })?;
+
+    Ok(Json(SmartSyncStatusResponse {
+        inode_id: status.inode_id,
+        revision_id: status.revision_id,
+        pin_state: status.pin_state,
+        hydration_state: status.hydration_state,
+    }))
 }
 
-async fn pin_file(State(state): State<ApiState>, headers: HeaderMap, Path(inode_id): Path<i64>) -> impl IntoResponse {
-    // ACL: Member+ can pin files
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
-
-    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
-        Ok(inode) => inode,
-        Err(err) => return super::internal_server_error(err),
-    };
-    let Some(inode) = inode else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "inode_not_found", "inode_id": inode_id })),
-        )
-            .into_response();
-    };
-    if inode.kind != "FILE" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "inode_not_file", "inode_id": inode_id })),
-        )
-            .into_response();
-    }
+async fn pin_file(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(inode_id): Path<i64>,
+) -> Result<Json<SmartSyncActionResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
+    require_file_inode(&state.pool, inode_id).await?;
 
     let sync_root = sync_root_path();
-    if let Err(err) = db::set_pin_state(&state.pool, inode_id, 1).await {
-        return super::internal_server_error(err);
-    }
-    if let Err(err) =
-        smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, false).await
-    {
-        return super::internal_server_error(err);
-    }
+    db::set_pin_state(&state.pool, inode_id, 1).await?;
+    smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, false)
+        .await
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
 
-    match db::get_smart_sync_state(&state.pool, inode_id).await {
-        Ok(Some(status)) => (
-            StatusCode::OK,
-            Json(SmartSyncActionResponse {
-                inode_id: status.inode_id,
-                pin_state: status.pin_state,
-                hydration_state: status.hydration_state,
-            }),
-        )
-            .into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(
-                serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id }),
-            ),
-        )
-            .into_response(),
-        Err(err) => super::internal_server_error(err),
-    }
+    get_sync_action_response(&state.pool, inode_id).await
 }
 
-async fn unpin_file(State(state): State<ApiState>, headers: HeaderMap, Path(inode_id): Path<i64>) -> impl IntoResponse {
-    // ACL: Member+ can unpin files
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
-
-    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
-        Ok(inode) => inode,
-        Err(err) => return super::internal_server_error(err),
-    };
-    let Some(inode) = inode else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "inode_not_found", "inode_id": inode_id })),
-        )
-            .into_response();
-    };
-    if inode.kind != "FILE" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "inode_not_file", "inode_id": inode_id })),
-        )
-            .into_response();
-    }
+async fn unpin_file(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(inode_id): Path<i64>,
+) -> Result<Json<SmartSyncActionResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
+    require_file_inode(&state.pool, inode_id).await?;
 
     let sync_root = sync_root_path();
-    if let Err(err) = db::set_pin_state(&state.pool, inode_id, 0).await {
-        return super::internal_server_error(err);
-    }
-    if let Err(err) =
-        smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, true).await
-    {
-        return super::internal_server_error(err);
-    }
+    db::set_pin_state(&state.pool, inode_id, 0).await?;
+    smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, true)
+        .await
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
 
-    match db::get_smart_sync_state(&state.pool, inode_id).await {
-        Ok(Some(status)) => (
-            StatusCode::OK,
-            Json(SmartSyncActionResponse {
-                inode_id: status.inode_id,
-                pin_state: status.pin_state,
-                hydration_state: status.hydration_state,
-            }),
-        )
-            .into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(
-                serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id }),
-            ),
-        )
-            .into_response(),
-        Err(err) => super::internal_server_error(err),
-    }
+    get_sync_action_response(&state.pool, inode_id).await
 }
 
 async fn set_filesystem_policy(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Json(request): Json<FilesystemPolicyRequest>,
-) -> impl IntoResponse {
-    // ACL: Member+ can set filesystem policies
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<Json<FilesystemPolicyResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
 
-    let policy_type = match normalize_policy_type(&request.policy_type) {
-        Some(policy_type) => policy_type,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "invalid_policy_type",
-                    "policy_type": request.policy_type,
-                })),
-            )
-                .into_response();
-        }
-    };
+    let policy_type = normalize_policy_type(&request.policy_type).ok_or(ApiError::BadRequest {
+        code: "invalid_policy_type",
+        message: format!("invalid policy type: {}", request.policy_type),
+    })?;
 
     let (inode_id, logical_path, inode) =
-        match resolve_filesystem_request_target(&state.pool, &request.path).await {
-            Ok(target) => target,
-            Err(response) => return response,
-        };
+        resolve_filesystem_request_target(&state.pool, &request.path).await?;
 
-    if let Err(err) =
-        db::set_sync_policy_type_for_path(&state.pool, &logical_path, policy_type).await
-    {
-        return super::internal_server_error(err);
-    }
+    db::set_sync_policy_type_for_path(&state.pool, &logical_path, policy_type).await?;
 
     if policy_type == "LOCAL" && inode.kind == "FILE" {
         let sync_root = sync_root_path();
-        if let Err(err) = db::set_pin_state(&state.pool, inode_id, 1).await {
-            return super::internal_server_error(err);
-        }
-        if let Err(err) =
-            smart_sync::hydrate_placeholder_now(&state.pool, &sync_root, inode_id).await
-        {
-            return super::internal_server_error(err);
-        }
+        db::set_pin_state(&state.pool, inode_id, 1).await?;
+        smart_sync::hydrate_placeholder_now(&state.pool, &sync_root, inode_id)
+            .await
+            .map_err(|e| ApiError::Internal {
+                message: e.to_string(),
+            })?;
     }
 
-    (
-        StatusCode::OK,
-        Json(FilesystemPolicyResponse {
-            inode_id,
-            path: logical_path,
-            policy_type: policy_type.to_string(),
-            repair_reconciliation_scheduled: policy_type == "PARANOIA",
-        }),
-    )
-        .into_response()
+    Ok(Json(FilesystemPolicyResponse {
+        inode_id,
+        path: logical_path,
+        policy_type: policy_type.to_string(),
+        repair_reconciliation_scheduled: policy_type == "PARANOIA",
+    }))
 }
 
 async fn pin_filesystem_path(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Json(request): Json<FilesystemPathRequest>,
-) -> impl IntoResponse {
-    // ACL: Member+ can pin filesystem paths
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<Json<SmartSyncActionResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
 
     let (inode_id, _, inode) =
-        match resolve_filesystem_request_target(&state.pool, &request.path).await {
-            Ok(target) => target,
-            Err(response) => return response,
-        };
+        resolve_filesystem_request_target(&state.pool, &request.path).await?;
     if inode.kind != "FILE" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "inode_not_file",
-                "inode_id": inode_id,
-                "kind": inode.kind,
-            })),
-        )
-            .into_response();
+        return Err(ApiError::BadRequest {
+            code: "inode_not_file",
+            message: format!("inode {} is a {}, not a file", inode_id, inode.kind),
+        });
     }
 
     let sync_root = sync_root_path();
-    if let Err(err) = db::set_pin_state(&state.pool, inode_id, 1).await {
-        return super::internal_server_error(err);
-    }
-    if let Err(err) = smart_sync::hydrate_placeholder_now(&state.pool, &sync_root, inode_id).await {
-        return super::internal_server_error(err);
-    }
+    db::set_pin_state(&state.pool, inode_id, 1).await?;
+    smart_sync::hydrate_placeholder_now(&state.pool, &sync_root, inode_id)
+        .await
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
 
-    match db::get_smart_sync_state(&state.pool, inode_id).await {
-        Ok(Some(status)) => (
-            StatusCode::OK,
-            Json(SmartSyncActionResponse {
-                inode_id: status.inode_id,
-                pin_state: status.pin_state,
-                hydration_state: status.hydration_state,
-            }),
-        )
-            .into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(
-                serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id }),
-            ),
-        )
-            .into_response(),
-        Err(err) => super::internal_server_error(err),
-    }
+    get_sync_action_response(&state.pool, inode_id).await
 }
 
 async fn unpin_filesystem_path(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Json(request): Json<FilesystemPathRequest>,
-) -> impl IntoResponse {
-    // ACL: Member+ can unpin filesystem paths
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<Json<SmartSyncActionResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
 
     let (inode_id, _, inode) =
-        match resolve_filesystem_request_target(&state.pool, &request.path).await {
-            Ok(target) => target,
-            Err(response) => return response,
-        };
+        resolve_filesystem_request_target(&state.pool, &request.path).await?;
     if inode.kind != "FILE" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "inode_not_file",
-                "inode_id": inode_id,
-                "kind": inode.kind,
-            })),
-        )
-            .into_response();
+        return Err(ApiError::BadRequest {
+            code: "inode_not_file",
+            message: format!("inode {} is a {}, not a file", inode_id, inode.kind),
+        });
     }
 
     let sync_root = sync_root_path();
-    if let Err(err) = db::set_pin_state(&state.pool, inode_id, 0).await {
-        return super::internal_server_error(err);
-    }
-    if let Err(err) =
-        smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, true).await
-    {
-        return super::internal_server_error(err);
-    }
+    db::set_pin_state(&state.pool, inode_id, 0).await?;
+    smart_sync::sync_placeholder_pin_state(&state.pool, &sync_root, inode_id, true)
+        .await
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
 
-    match db::get_smart_sync_state(&state.pool, inode_id).await {
-        Ok(Some(status)) => (
-            StatusCode::OK,
-            Json(SmartSyncActionResponse {
-                inode_id: status.inode_id,
-                pin_state: status.pin_state,
-                hydration_state: status.hydration_state,
-            }),
-        )
-            .into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(
-                serde_json::json!({ "error": "smart_sync_state_not_found", "inode_id": inode_id }),
-            ),
-        )
-            .into_response(),
-        Err(err) => super::internal_server_error(err),
-    }
+    get_sync_action_response(&state.pool, inode_id).await
 }
 
 async fn get_file_revisions(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path(inode_id): Path<i64>,
-) -> impl IntoResponse {
-    // ACL: Viewer+ can view file revisions
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
-        return resp;
-    }
+) -> Result<Json<Vec<FileRevisionResponse>>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Viewer).await?;
+    require_file_inode(&state.pool, inode_id).await?;
 
-    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
-        Ok(inode) => inode,
-        Err(err) => return super::internal_server_error(err),
-    };
-
-    let Some(inode) = inode else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "inode_not_found",
-                "inode_id": inode_id,
-            })),
-        )
-            .into_response();
-    };
-
-    if inode.kind != "FILE" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "inode_not_file",
-                "inode_id": inode_id,
-                "kind": inode.kind,
-            })),
-        )
-            .into_response();
-    }
-
-    match db::list_file_revisions(&state.pool, inode_id).await {
-        Ok(revisions) => (
-            StatusCode::OK,
-            Json(
-                revisions
-                    .into_iter()
-                    .map(|revision| FileRevisionResponse {
-                        revision_id: revision.revision_id,
-                        inode_id: revision.inode_id,
-                        created_at: revision.created_at,
-                        size: revision.size,
-                        is_current: revision.is_current != 0,
-                        immutable_until: revision.immutable_until,
-                        device_id: revision.device_id,
-                        parent_revision_id: revision.parent_revision_id,
-                        origin: revision.origin,
-                        conflict_reason: revision.conflict_reason,
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        )
-            .into_response(),
-        Err(err) => super::internal_server_error(err),
-    }
+    let revisions = db::list_file_revisions(&state.pool, inode_id).await?;
+    Ok(Json(
+        revisions
+            .into_iter()
+            .map(|revision| FileRevisionResponse {
+                revision_id: revision.revision_id,
+                inode_id: revision.inode_id,
+                created_at: revision.created_at,
+                size: revision.size,
+                is_current: revision.is_current != 0,
+                immutable_until: revision.immutable_until,
+                device_id: revision.device_id,
+                parent_revision_id: revision.parent_revision_id,
+                origin: revision.origin,
+                conflict_reason: revision.conflict_reason,
+            })
+            .collect(),
+    ))
 }
 
 async fn restore_file_revision(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path((inode_id, revision_id)): Path<(i64, i64)>,
-) -> impl IntoResponse {
-    // ACL: Member+ can restore file revisions
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<Json<RestoreRevisionResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
+    require_file_inode(&state.pool, inode_id).await?;
 
-    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
-        Ok(inode) => inode,
-        Err(err) => return super::internal_server_error(err),
-    };
+    db::get_file_revision(&state.pool, inode_id, revision_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "revision",
+            id: format!("{inode_id}/{revision_id}"),
+        })?;
 
-    let Some(inode) = inode else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "inode_not_found",
-                "inode_id": inode_id,
-            })),
-        )
-            .into_response();
-    };
+    let current_revision = db::get_current_file_revision(&state.pool, inode_id).await?;
 
-    if inode.kind != "FILE" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "inode_not_file",
-                "inode_id": inode_id,
-                "kind": inode.kind,
-            })),
-        )
-            .into_response();
-    }
-
-    let revision = match db::get_file_revision(&state.pool, inode_id, revision_id).await {
-        Ok(revision) => revision,
-        Err(err) => return super::internal_server_error(err),
-    };
-
-    let Some(_) = revision else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "revision_not_found",
-                "inode_id": inode_id,
-                "revision_id": revision_id,
-            })),
-        )
-            .into_response();
-    };
-
-    let current_revision = match db::get_current_file_revision(&state.pool, inode_id).await {
-        Ok(revision) => revision,
-        Err(err) => return super::internal_server_error(err),
-    };
-
-    let local_device = match db::get_local_device_identity(&state.pool).await {
-        Ok(device) => device,
-        Err(err) => return super::internal_server_error(err),
-    };
+    let local_device = db::get_local_device_identity(&state.pool).await?;
     let conflict_device_id = local_device
         .as_ref()
         .map(|device| device.device_id.as_str());
@@ -685,12 +402,8 @@ async fn restore_file_revision(
     let conflict_copy = match current_revision {
         Some(current) => {
             let lineage =
-                match db::classify_revision_lineage(&state.pool, revision_id, current.revision_id)
-                    .await
-                {
-                    Ok(lineage) => lineage,
-                    Err(err) => return super::internal_server_error(err),
-                };
+                db::classify_revision_lineage(&state.pool, revision_id, current.revision_id)
+                    .await?;
 
             let conflict_reason = match lineage {
                 db::RevisionLineageRelation::Same
@@ -700,102 +413,52 @@ async fn restore_file_revision(
             };
 
             match conflict_reason {
-                Some(reason) => match db::materialize_conflict_copy_from_revision(
-                    &state.pool,
-                    current.revision_id,
-                    conflict_device_id,
-                    conflict_device_name,
-                    reason,
-                )
-                .await
-                {
-                    Ok((conflict_inode_id, conflict_revision_id, conflict_name, _conflict_id)) => {
-                        Some((conflict_inode_id, conflict_revision_id, conflict_name))
-                    }
-                    Err(err) => return super::internal_server_error(err),
-                },
+                Some(reason) => {
+                    let (conflict_inode_id, conflict_revision_id, conflict_name, _conflict_id) =
+                        db::materialize_conflict_copy_from_revision(
+                            &state.pool,
+                            current.revision_id,
+                            conflict_device_id,
+                            conflict_device_name,
+                            reason,
+                        )
+                        .await?;
+                    Some((conflict_inode_id, conflict_revision_id, conflict_name))
+                }
                 None => None,
             }
         }
         None => None,
     };
 
-    match db::promote_revision_to_current(&state.pool, revision_id).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(RestoreRevisionResponse {
-                inode_id,
-                revision_id,
-                restored: true,
-                conflict_copy_inode_id: conflict_copy.as_ref().map(|value| value.0),
-                conflict_copy_revision_id: conflict_copy.as_ref().map(|value| value.1),
-                conflict_copy_name: conflict_copy.map(|value| value.2),
-            }),
-        )
-            .into_response(),
-        Err(err) => super::internal_server_error(err),
-    }
+    db::promote_revision_to_current(&state.pool, revision_id).await?;
+
+    Ok(Json(RestoreRevisionResponse {
+        inode_id,
+        revision_id,
+        restored: true,
+        conflict_copy_inode_id: conflict_copy.as_ref().map(|value| value.0),
+        conflict_copy_revision_id: conflict_copy.as_ref().map(|value| value.1),
+        conflict_copy_name: conflict_copy.map(|value| value.2),
+    }))
 }
 
 async fn materialize_conflict_copy(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path((inode_id, revision_id)): Path<(i64, i64)>,
-) -> impl IntoResponse {
-    // ACL: Member+ can materialize conflict copies
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<Json<ConflictCopyResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
+    require_file_inode(&state.pool, inode_id).await?;
 
-    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
-        Ok(inode) => inode,
-        Err(err) => return super::internal_server_error(err),
-    };
+    db::get_file_revision(&state.pool, inode_id, revision_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "revision",
+            id: format!("{inode_id}/{revision_id}"),
+        })?;
 
-    let Some(inode) = inode else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "inode_not_found",
-                "inode_id": inode_id,
-            })),
-        )
-            .into_response();
-    };
-
-    if inode.kind != "FILE" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "inode_not_file",
-                "inode_id": inode_id,
-                "kind": inode.kind,
-            })),
-        )
-            .into_response();
-    }
-
-    let revision = match db::get_file_revision(&state.pool, inode_id, revision_id).await {
-        Ok(revision) => revision,
-        Err(err) => return super::internal_server_error(err),
-    };
-
-    let Some(_) = revision else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "revision_not_found",
-                "inode_id": inode_id,
-                "revision_id": revision_id,
-            })),
-        )
-            .into_response();
-    };
-
-    let local_device = match db::get_local_device_identity(&state.pool).await {
-        Ok(device) => device,
-        Err(err) => return super::internal_server_error(err),
-    };
+    let local_device = db::get_local_device_identity(&state.pool).await?;
     let conflict_device_id = local_device
         .as_ref()
         .map(|device| device.device_id.as_str());
@@ -804,56 +467,86 @@ async fn materialize_conflict_copy(
         .map(|device| device.device_name.as_str())
         .unwrap_or("Unknown Device");
 
-    match db::materialize_conflict_copy_from_revision(
-        &state.pool,
-        revision_id,
-        conflict_device_id,
-        conflict_device_name,
-        "manual_conflict_copy",
-    )
-    .await
-    {
-        Ok((conflict_inode_id, conflict_revision_id, conflict_name, conflict_id)) => (
-            StatusCode::OK,
-            Json(ConflictCopyResponse {
-                inode_id,
-                source_revision_id: revision_id,
-                conflict_copy_inode_id: conflict_inode_id,
-                conflict_copy_revision_id: conflict_revision_id,
-                conflict_copy_name: conflict_name,
-                conflict_id,
-            }),
+    let (conflict_inode_id, conflict_revision_id, conflict_name, conflict_id) =
+        db::materialize_conflict_copy_from_revision(
+            &state.pool,
+            revision_id,
+            conflict_device_id,
+            conflict_device_name,
+            "manual_conflict_copy",
         )
-            .into_response(),
-        Err(err) => super::internal_server_error(err),
-    }
+        .await?;
+
+    Ok(Json(ConflictCopyResponse {
+        inode_id,
+        source_revision_id: revision_id,
+        conflict_copy_inode_id: conflict_inode_id,
+        conflict_copy_revision_id: conflict_revision_id,
+        conflict_copy_name: conflict_name,
+        conflict_id,
+    }))
 }
 
-async fn get_quota(State(state): State<ApiState>) -> impl IntoResponse {
+async fn get_quota(
+    State(state): State<ApiState>,
+) -> Result<Json<QuotaResponse>, ApiError> {
     let app_config = AppConfig::from_env();
     let mut providers = Vec::with_capacity(KNOWN_PROVIDERS.len());
 
     for provider in KNOWN_PROVIDERS {
-        match db::get_physical_usage_for_provider(&state.pool, provider).await {
-            Ok(used_physical_bytes) => providers.push(ProviderQuotaResponse {
-                provider: provider.to_string(),
-                used_physical_bytes,
-            }),
-            Err(err) => return super::internal_server_error(err),
-        }
+        let used_physical_bytes =
+            db::get_physical_usage_for_provider(&state.pool, provider).await?;
+        providers.push(ProviderQuotaResponse {
+            provider: provider.to_string(),
+            used_physical_bytes,
+        });
     }
 
-    (
-        StatusCode::OK,
-        Json(QuotaResponse {
-            max_physical_bytes_per_provider: app_config.max_physical_bytes_per_provider,
-            providers,
-        }),
-    )
-        .into_response()
+    Ok(Json(QuotaResponse {
+        max_physical_bytes_per_provider: app_config.max_physical_bytes_per_provider,
+        providers,
+    }))
 }
 
 // ── Helper functions ────────────────────────────────────────────────────
+
+/// Verify that the inode exists and is a FILE. Returns the inode on success.
+async fn require_file_inode(pool: &SqlitePool, inode_id: i64) -> Result<db::InodeRecord, ApiError> {
+    let inode = db::get_inode_by_id(pool, inode_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "inode",
+            id: inode_id.to_string(),
+        })?;
+
+    if inode.kind != "FILE" {
+        return Err(ApiError::BadRequest {
+            code: "inode_not_file",
+            message: format!("inode {} is a {}, not a file", inode_id, inode.kind),
+        });
+    }
+
+    Ok(inode)
+}
+
+/// Get the current smart sync state for an inode, returning an ApiError if not found.
+async fn get_sync_action_response(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<Json<SmartSyncActionResponse>, ApiError> {
+    let status = db::get_smart_sync_state(pool, inode_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "smart_sync_state",
+            id: inode_id.to_string(),
+        })?;
+
+    Ok(Json(SmartSyncActionResponse {
+        inode_id: status.inode_id,
+        pin_state: status.pin_state,
+        hydration_state: status.hydration_state,
+    }))
+}
 
 fn normalize_policy_type(raw: &str) -> Option<&'static str> {
     match raw.trim().to_ascii_uppercase().as_str() {
@@ -867,56 +560,29 @@ fn normalize_policy_type(raw: &str) -> Option<&'static str> {
 async fn resolve_filesystem_request_target(
     pool: &SqlitePool,
     raw_path: &str,
-) -> Result<(i64, String, db::InodeRecord), axum::response::Response> {
-    let logical_path = match normalize_filesystem_api_path(raw_path) {
-        Some(path) => path,
-        None => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "invalid_filesystem_path",
-                    "path": raw_path,
-                })),
-            )
-                .into_response());
-        }
-    };
+) -> Result<(i64, String, db::InodeRecord), ApiError> {
+    let logical_path = normalize_filesystem_api_path(raw_path).ok_or(ApiError::BadRequest {
+        code: "invalid_filesystem_path",
+        message: format!("invalid path: {raw_path}"),
+    })?;
 
-    let inode_id = match db::resolve_path(pool, &logical_path).await {
-        Ok(Some(inode_id)) => inode_id,
-        Ok(None) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "error": "inode_not_found",
-                    "path": logical_path,
-                })),
-            )
-                .into_response());
-        }
-        Err(err) => return Err(super::internal_server_error(err)),
-    };
+    let inode_id = db::resolve_path(pool, &logical_path)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "inode",
+            id: logical_path.clone(),
+        })?;
 
-    let inode = match db::get_inode_by_id(pool, inode_id).await {
-        Ok(Some(inode)) => inode,
-        Ok(None) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "error": "inode_not_found",
-                    "inode_id": inode_id,
-                })),
-            )
-                .into_response());
-        }
-        Err(err) => return Err(super::internal_server_error(err)),
-    };
+    let inode = db::get_inode_by_id(pool, inode_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "inode",
+            id: inode_id.to_string(),
+        })?;
 
-    let canonical_path = match db::get_inode_path(pool, inode_id).await {
-        Ok(Some(path)) => path,
-        Ok(None) => logical_path,
-        Err(err) => return Err(super::internal_server_error(err)),
-    };
+    let canonical_path = db::get_inode_path(pool, inode_id)
+        .await?
+        .unwrap_or(logical_path);
 
     Ok((inode_id, canonical_path, inode))
 }

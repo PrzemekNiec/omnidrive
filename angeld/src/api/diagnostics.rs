@@ -9,14 +9,14 @@ use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
 
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
-use super::{internal_server_error, unix_timestamp_millis, ApiState, MaintenanceLevel, MaintenanceStatus};
+use super::{unix_timestamp_millis, ApiState, MaintenanceLevel, MaintenanceStatus};
+use super::error::ApiError;
 
 // ── Response structs ────────────────────────────────────────────────
 
@@ -149,58 +149,50 @@ pub fn routes() -> Router<ApiState> {
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-async fn get_transfers(State(state): State<ApiState>) -> impl IntoResponse {
-    match db::list_recent_upload_jobs(&state.pool, 50).await {
-        Ok(jobs) => {
-            let mut transfers = Vec::with_capacity(jobs.len());
+async fn get_transfers(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<TransferResponse>>, ApiError> {
+    let jobs = db::list_recent_upload_jobs(&state.pool, 50).await?;
+    let mut transfers = Vec::with_capacity(jobs.len());
 
-            for job in jobs {
-                let targets = match db::get_upload_targets_for_job(&state.pool, job.id).await {
-                    Ok(targets) => targets,
-                    Err(err) => return internal_server_error(err),
-                };
-
-                transfers.push(TransferResponse {
-                    job_id: job.id,
-                    pack_id: job.pack_id,
-                    status: job.status,
-                    attempts: job.attempts.unwrap_or(0),
-                    providers: targets
-                        .into_iter()
-                        .map(|target| ProviderTransferResponse {
-                            provider: target.provider,
-                            status: target.status,
-                            attempts: target.attempts.unwrap_or(0),
-                            last_error: target.last_error,
-                            bucket: target.bucket,
-                            object_key: target.object_key,
-                            etag: target.etag,
-                            version_id: target.version_id,
-                            last_attempt_at: target.last_attempt_at,
-                            updated_at: target.updated_at,
-                            completed_at: target.completed_at,
-                        })
-                        .collect(),
-                });
-            }
-
-            (StatusCode::OK, Json(transfers)).into_response()
-        }
-        Err(err) => internal_server_error(err),
+    for job in jobs {
+        let targets = db::get_upload_targets_for_job(&state.pool, job.id).await?;
+        transfers.push(TransferResponse {
+            job_id: job.id,
+            pack_id: job.pack_id,
+            status: job.status,
+            attempts: job.attempts.unwrap_or(0),
+            providers: targets
+                .into_iter()
+                .map(|target| ProviderTransferResponse {
+                    provider: target.provider,
+                    status: target.status,
+                    attempts: target.attempts.unwrap_or(0),
+                    last_error: target.last_error,
+                    bucket: target.bucket,
+                    object_key: target.object_key,
+                    etag: target.etag,
+                    version_id: target.version_id,
+                    last_attempt_at: target.last_attempt_at,
+                    updated_at: target.updated_at,
+                    completed_at: target.completed_at,
+                })
+                .collect(),
+        });
     }
+
+    Ok(Json(transfers))
 }
 
-async fn get_health(State(state): State<ApiState>) -> impl IntoResponse {
+async fn get_health(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<ProviderHealthResponse>>, ApiError> {
     let mut providers = Vec::with_capacity(KNOWN_PROVIDERS.len());
     let mut latest_by_provider = HashMap::with_capacity(KNOWN_PROVIDERS.len());
 
     for provider in KNOWN_PROVIDERS {
-        match db::get_latest_upload_target_for_provider(&state.pool, provider).await {
-            Ok(record) => {
-                latest_by_provider.insert(provider, record);
-            }
-            Err(err) => return internal_server_error(err),
-        }
+        let record = db::get_latest_upload_target_for_provider(&state.pool, provider).await?;
+        latest_by_provider.insert(provider, record);
     }
 
     for provider in KNOWN_PROVIDERS {
@@ -229,69 +221,58 @@ async fn get_health(State(state): State<ApiState>) -> impl IntoResponse {
         providers.push(response);
     }
 
-    (StatusCode::OK, Json(providers)).into_response()
+    Ok(Json(providers))
 }
 
-async fn get_diagnostics_health(State(state): State<ApiState>) -> impl IntoResponse {
-    match build_diagnostics_health_response(&state).await {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => internal_server_error(err),
-    }
+async fn get_diagnostics_health(
+    State(state): State<ApiState>,
+) -> Result<Json<MaintenanceStatus<DiagnosticsHealthResponse>>, ApiError> {
+    let response = build_diagnostics_health_response(&state).await?;
+    Ok(Json(response))
 }
 
-async fn get_shell_state() -> impl IntoResponse {
-    let response = build_shell_state_response();
-    (StatusCode::OK, Json(response)).into_response()
+async fn get_shell_state() -> Json<MaintenanceStatus<shell_state::ShellStateSnapshot>> {
+    Json(build_shell_state_response())
 }
 
 async fn get_sync_root_state() -> impl IntoResponse {
     match build_sync_root_state_response() {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "status": "ERROR",
-                "message": err.to_string(),
-                "last_run": unix_timestamp_millis(),
-            })),
-        )
-            .into_response(),
+        Ok(response) => Json(serde_json::to_value(response).unwrap_or_default()),
+        Err(err) => Json(serde_json::json!({
+            "status": "ERROR",
+            "message": err.to_string(),
+            "last_run": unix_timestamp_millis(),
+        })),
     }
 }
 
-async fn get_storage_cost(State(state): State<ApiState>) -> impl IntoResponse {
-    match build_storage_cost_response(&state).await {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => internal_server_error(err),
-    }
+async fn get_storage_cost(
+    State(state): State<ApiState>,
+) -> Result<Json<StorageCostResponse>, ApiError> {
+    let response = build_storage_cost_response(&state).await?;
+    Ok(Json(response))
 }
 
-async fn get_multidevice_status(State(state): State<ApiState>) -> impl IntoResponse {
-    let Some(local_device) = (match db::get_local_device_identity(&state.pool).await {
-        Ok(record) => record,
-        Err(err) => return internal_server_error(err),
-    }) else {
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "WARN",
-                "message": "Tożsamość lokalnego urządzenia nie została jeszcze zainicjalizowana.",
-                "last_run": unix_timestamp_millis(),
-                "trusted_peers": [],
-                "recent_conflicts": [],
-            })),
-        )
-            .into_response();
+async fn get_multidevice_status(
+    State(state): State<ApiState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let Some(local_device) = db::get_local_device_identity(&state.pool).await? else {
+        return Ok(Json(serde_json::json!({
+            "status": "WARN",
+            "message": "Tożsamość lokalnego urządzenia nie została jeszcze zainicjalizowana.",
+            "last_run": unix_timestamp_millis(),
+            "trusted_peers": [],
+            "recent_conflicts": [],
+        })));
     };
 
-    let vault_id = match db::get_vault_params(&state.pool).await {
-        Ok(Some(record)) => record.vault_id,
-        Ok(None) => "local-vault".to_string(),
-        Err(err) => return internal_server_error(err),
+    let vault_id = match db::get_vault_params(&state.pool).await? {
+        Some(record) => record.vault_id,
+        None => "local-vault".to_string(),
     };
     let peer_port = AppConfig::from_env().peer_port;
 
-    match peer::snapshot_multi_device(
+    let snapshot = peer::snapshot_multi_device(
         &state.pool,
         &crate::device_identity::LocalDeviceIdentity {
             device_id: local_device.device_id,
@@ -304,10 +285,11 @@ async fn get_multidevice_status(State(state): State<ApiState>) -> impl IntoRespo
         peer_port,
     )
     .await
-    {
-        Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
-        Err(err) => internal_server_error(err),
-    }
+    .map_err(|e| ApiError::Internal {
+        message: e.to_string(),
+    })?;
+
+    Ok(Json(serde_json::to_value(snapshot).unwrap_or_default()))
 }
 
 // ── Builder functions (pub(super) so mod.rs maintenance handlers can use them) ──

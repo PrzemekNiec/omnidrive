@@ -10,15 +10,14 @@ use crate::shell_state;
 use crate::smart_sync;
 use crate::vault::VaultError;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use tracing::{error, info};
 
-use super::{
-    internal_server_error, unix_timestamp_millis, ApiState, MaintenanceLevel, MaintenanceOverviewItem,
+use super::error::ApiError;
+use super::{unix_timestamp_millis, ApiState, MaintenanceLevel, MaintenanceOverviewItem,
     MaintenanceStatus,
 };
 
@@ -121,7 +120,9 @@ pub(super) fn routes() -> Router<ApiState> {
 
 // ── Handlers ────────────────────────────────────────────────────────────
 
-async fn get_maintenance_status(State(state): State<ApiState>) -> impl IntoResponse {
+async fn get_maintenance_status(
+    State(state): State<ApiState>,
+) -> Json<MaintenanceOverviewResponse> {
     let health = match super::diagnostics::build_diagnostics_health_response(&state).await {
         Ok(response) => maintenance_overview_item(&response),
         Err(err) => maintenance_error_item(format!("Diagnostyka health nie powiodła się: {err}")),
@@ -140,19 +141,17 @@ async fn get_maintenance_status(State(state): State<ApiState>) -> impl IntoRespo
         )),
     };
 
-    (
-        StatusCode::OK,
-        Json(MaintenanceOverviewResponse {
-            health,
-            shell,
-            sync_root,
-            backup,
-        }),
-    )
-        .into_response()
+    Json(MaintenanceOverviewResponse {
+        health,
+        shell,
+        sync_root,
+        backup,
+    })
 }
 
-async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl IntoResponse {
+async fn get_maintenance_diagnostics(
+    State(state): State<ApiState>,
+) -> Json<serde_json::Value> {
     let health = match super::diagnostics::build_diagnostics_health_response(&state).await {
         Ok(response) => serde_json::to_value(response).unwrap_or_default(),
         Err(err) => serde_json::json!({
@@ -254,460 +253,360 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> impl Into
         }),
     };
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "OK",
-            "message": "Migawka diagnostyki utrzymaniowej została zebrana pomyślnie.",
-            "last_run": unix_timestamp_millis(),
-            "health": health,
-            "shell": shell,
-            "sync_root": sync_root,
-            "backup": backup,
-            "cache": cache,
-            "scrub": scrub,
-            "vault_health": vault_health,
-        })),
-    )
-        .into_response()
+    Json(serde_json::json!({
+        "status": "OK",
+        "message": "Migawka diagnostyki utrzymaniowej została zebrana pomyślnie.",
+        "last_run": unix_timestamp_millis(),
+        "health": health,
+        "shell": shell,
+        "sync_root": sync_root,
+        "backup": backup,
+        "cache": cache,
+        "scrub": scrub,
+        "vault_health": vault_health,
+    }))
 }
 
-async fn get_cache_status(State(state): State<ApiState>) -> impl IntoResponse {
+async fn get_cache_status(
+    State(state): State<ApiState>,
+) -> Result<Json<CacheStatusResponse>, ApiError> {
     let config = AppConfig::from_env();
-    let summary = match db::get_cache_status_summary(&state.pool).await {
-        Ok(summary) => summary,
-        Err(err) => return internal_server_error(err),
-    };
+    let summary = db::get_cache_status_summary(&state.pool).await?;
     let runtime = cache::cache_runtime_stats();
 
-    (
-        StatusCode::OK,
-        Json(CacheStatusResponse {
-            total_entries: summary.total_entries,
-            total_bytes: summary.total_bytes,
-            max_bytes: config.max_cache_bytes,
-            prefetched_entries: summary.prefetched_entries,
-            hit_count: runtime.hit_count,
-            miss_count: runtime.miss_count,
-        }),
-    )
-        .into_response()
+    Ok(Json(CacheStatusResponse {
+        total_entries: summary.total_entries,
+        total_bytes: summary.total_bytes,
+        max_bytes: config.max_cache_bytes,
+        prefetched_entries: summary.prefetched_entries,
+        hit_count: runtime.hit_count,
+        miss_count: runtime.miss_count,
+    }))
 }
 
-async fn get_recovery_status(State(state): State<ApiState>) -> impl IntoResponse {
-    match build_recovery_status_response(&state).await {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => internal_server_error(err),
-    }
+async fn get_recovery_status(
+    State(state): State<ApiState>,
+) -> Result<Json<MaintenanceStatus<RecoveryStatusResponse>>, ApiError> {
+    let response = build_recovery_status_response(&state).await?;
+    Ok(Json(response))
 }
 
-async fn get_scrub_status(State(state): State<ApiState>) -> impl IntoResponse {
-    match db::get_scrub_status_summary(&state.pool).await {
-        Ok(summary) => (
-            StatusCode::OK,
-            Json(ScrubStatusResponse {
-                total_shards: summary.total_shards,
-                verified_shards: summary.verified_shards,
-                healthy_shards: summary.healthy_shards,
-                corrupted_or_missing: summary.corrupted_or_missing,
-                verified_light_shards: summary.verified_light_shards,
-                verified_deep_shards: summary.verified_deep_shards,
-                last_scrub_timestamp: summary.last_scrub_timestamp,
-            }),
-        )
-            .into_response(),
-        Err(err) => internal_server_error(err),
-    }
+async fn get_scrub_status(
+    State(state): State<ApiState>,
+) -> Result<Json<ScrubStatusResponse>, ApiError> {
+    let summary = db::get_scrub_status_summary(&state.pool).await?;
+    Ok(Json(ScrubStatusResponse {
+        total_shards: summary.total_shards,
+        verified_shards: summary.verified_shards,
+        healthy_shards: summary.healthy_shards,
+        corrupted_or_missing: summary.corrupted_or_missing,
+        verified_light_shards: summary.verified_light_shards,
+        verified_deep_shards: summary.verified_deep_shards,
+        last_scrub_timestamp: summary.last_scrub_timestamp,
+    }))
 }
 
-async fn get_scrub_errors(State(state): State<ApiState>) -> impl IntoResponse {
-    match db::list_scrub_errors(&state.pool, 100).await {
-        Ok(errors) => (
-            StatusCode::OK,
-            Json(
-                errors
-                    .into_iter()
-                    .map(|record| ScrubErrorResponse {
-                        pack_id: record.pack_id,
-                        provider: record.provider,
-                        shard_index: record.shard_index,
-                        last_verified_at: record.last_verified_at,
-                        status: record.last_verification_status,
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-        )
-            .into_response(),
-        Err(err) => internal_server_error(err),
-    }
+async fn get_scrub_errors(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<ScrubErrorResponse>>, ApiError> {
+    let errors = db::list_scrub_errors(&state.pool, 100).await?;
+    Ok(Json(
+        errors
+            .into_iter()
+            .map(|record| ScrubErrorResponse {
+                pack_id: record.pack_id,
+                provider: record.provider,
+                shard_index: record.shard_index,
+                last_verified_at: record.last_verified_at,
+                status: record.last_verification_status,
+            })
+            .collect(),
+    ))
 }
 
-async fn post_scrub_now(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
-    // ACL: Admin+ can trigger scrub
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
-        return resp;
-    }
+async fn post_scrub_now(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     match scrubber::run_scrub_batch_now(state.pool.clone()).await {
-        Ok(processed_shards) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "OK",
-                "message": format!("Light scrub completed. Processed {} shard(s).", processed_shards),
-                "last_run": unix_timestamp_millis(),
-                "processed_shards": processed_shards,
-            })),
-        )
-        .into_response(),
-        Err(scrubber::ScrubberError::MissingProviderConfig) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "WARN",
-                "message": "Scrub jest bezczynny, ponieważ nie skonfigurowano zdalnych dostawców.",
-                "last_run": unix_timestamp_millis(),
-                "processed_shards": 0,
-            })),
-        )
-        .into_response(),
-        Err(err) => internal_server_error(err),
+        Ok(processed_shards) => Ok(Json(serde_json::json!({
+            "status": "OK",
+            "message": format!("Light scrub completed. Processed {} shard(s).", processed_shards),
+            "last_run": unix_timestamp_millis(),
+            "processed_shards": processed_shards,
+        }))),
+        Err(scrubber::ScrubberError::MissingProviderConfig) => Ok(Json(serde_json::json!({
+            "status": "WARN",
+            "message": "Scrub jest bezczynny, ponieważ nie skonfigurowano zdalnych dostawców.",
+            "last_run": unix_timestamp_millis(),
+            "processed_shards": 0,
+        }))),
+        Err(err) => {
+            error!("api request failed: {err}");
+            Err(ApiError::Internal {
+                message: err.to_string(),
+            })
+        }
     }
 }
 
-async fn post_repair_now(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
-    // ACL: Admin+ can trigger repair
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
-        return resp;
-    }
+async fn post_repair_now(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     match repair::RepairWorker::run_repair_batch_now(state.pool.clone()).await {
-        Ok(report) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "OK",
-                "message": if report.repaired_packs == 0 {
-                    "Brak zdegradowanych pakietów wymagających natychmiastowej naprawy.".to_string()
-                } else {
-                    format!("Naprawa przetworzyła {} zdegradowanych pakietów.", report.repaired_packs)
-                },
-                "last_run": unix_timestamp_millis(),
-                "processed_packs": report.processed_packs,
-                "repaired_packs": report.repaired_packs,
-                "reconciled_packs": report.reconciled_packs,
-            })),
-        )
-            .into_response(),
-        Err(RepairError::MissingProviderConfig) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "WARN",
-                "message": "Naprawa jest bezczynna, ponieważ nie skonfigurowano zdalnych dostawców.",
-                "last_run": unix_timestamp_millis(),
-                "processed_packs": 0,
-                "repaired_packs": 0,
-                "reconciled_packs": 0,
-            })),
-        )
-            .into_response(),
-        Err(err) => internal_server_error(err),
+        Ok(report) => Ok(Json(serde_json::json!({
+            "status": "OK",
+            "message": if report.repaired_packs == 0 {
+                "Brak zdegradowanych pakietów wymagających natychmiastowej naprawy.".to_string()
+            } else {
+                format!("Naprawa przetworzyła {} zdegradowanych pakietów.", report.repaired_packs)
+            },
+            "last_run": unix_timestamp_millis(),
+            "processed_packs": report.processed_packs,
+            "repaired_packs": report.repaired_packs,
+            "reconciled_packs": report.reconciled_packs,
+        }))),
+        Err(RepairError::MissingProviderConfig) => Ok(Json(serde_json::json!({
+            "status": "WARN",
+            "message": "Naprawa jest bezczynna, ponieważ nie skonfigurowano zdalnych dostawców.",
+            "last_run": unix_timestamp_millis(),
+            "processed_packs": 0,
+            "repaired_packs": 0,
+            "reconciled_packs": 0,
+        }))),
+        Err(err) => {
+            error!("api request failed: {err}");
+            Err(ApiError::Internal {
+                message: err.to_string(),
+            })
+        }
     }
 }
 
 async fn post_reconcile_now(
     State(state): State<ApiState>,
     headers: HeaderMap,
-) -> impl IntoResponse {
-    // ACL: Admin+ can trigger reconciliation
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
-        return resp;
-    }
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     match repair::RepairWorker::run_reconcile_batch_now(state.pool.clone()).await {
-        Ok(report) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "OK",
-                "message": if report.reconciled_packs == 0 {
-                    "No pack policy drift required reconciliation.".to_string()
-                } else {
-                    format!("Reconciliation processed {} pack(s).", report.reconciled_packs)
-                },
-                "last_run": unix_timestamp_millis(),
-                "processed_packs": report.processed_packs,
-                "repaired_packs": report.repaired_packs,
-                "reconciled_packs": report.reconciled_packs,
-            })),
-        )
-            .into_response(),
-        Err(RepairError::MissingProviderConfig) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "WARN",
-                "message": "Proces reconciliation jest bezczynny, ponieważ nie skonfigurowano zdalnych dostawców.",
-                "last_run": unix_timestamp_millis(),
-                "processed_packs": 0,
-                "repaired_packs": 0,
-                "reconciled_packs": 0,
-            })),
-        )
-            .into_response(),
-        Err(err) => internal_server_error(err),
+        Ok(report) => Ok(Json(serde_json::json!({
+            "status": "OK",
+            "message": if report.reconciled_packs == 0 {
+                "No pack policy drift required reconciliation.".to_string()
+            } else {
+                format!("Reconciliation processed {} pack(s).", report.reconciled_packs)
+            },
+            "last_run": unix_timestamp_millis(),
+            "processed_packs": report.processed_packs,
+            "repaired_packs": report.repaired_packs,
+            "reconciled_packs": report.reconciled_packs,
+        }))),
+        Err(RepairError::MissingProviderConfig) => Ok(Json(serde_json::json!({
+            "status": "WARN",
+            "message": "Proces reconciliation jest bezczynny, ponieważ nie skonfigurowano zdalnych dostawców.",
+            "last_run": unix_timestamp_millis(),
+            "processed_packs": 0,
+            "repaired_packs": 0,
+            "reconciled_packs": 0,
+        }))),
+        Err(err) => {
+            error!("api request failed: {err}");
+            Err(ApiError::Internal {
+                message: err.to_string(),
+            })
+        }
     }
 }
 
-async fn post_repair_shell() -> impl IntoResponse {
+async fn post_repair_shell() -> Result<Json<serde_json::Value>, ApiError> {
     let mut actions = Vec::new();
-    let mut last_state = shell_state::audit_shell_state();
 
-    match shell_state::repair_virtual_drive() {
-        Ok(report) => {
-            actions.extend(report.actions);
-            last_state = report.shell_state;
+    let drive_report = shell_state::repair_virtual_drive().map_err(|err| {
+        error!("shell repair virtual drive failed: {}", err);
+        ApiError::Internal {
+            message: format!("shell repair failed at virtual_drive: {err}"),
         }
-        Err(err) => {
-            error!("shell repair virtual drive failed: {}", err);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "status": "ERROR",
-                    "step": "virtual_drive",
-                    "message": err.to_string(),
-                    "last_run": unix_timestamp_millis(),
-                    "shell_state": last_state,
-                })),
-            )
-                .into_response();
-        }
-    }
+    })?;
+    actions.extend(drive_report.actions);
 
-    match shell_state::repair_explorer_integration() {
-        Ok(report) => {
-            actions.extend(report.actions);
-            last_state = report.shell_state;
+    let explorer_report = shell_state::repair_explorer_integration().map_err(|err| {
+        error!("shell repair explorer integration failed: {}", err);
+        ApiError::Internal {
+            message: format!("shell repair failed at explorer_integration: {err}"),
         }
-        Err(err) => {
-            error!("shell repair explorer integration failed: {}", err);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "status": "ERROR",
-                    "step": "explorer_integration",
-                    "message": err.to_string(),
-                    "last_run": unix_timestamp_millis(),
-                    "actions": actions,
-                    "shell_state": last_state,
-                })),
-            )
-                .into_response();
-        }
-    }
+    })?;
+    actions.extend(explorer_report.actions);
+    let last_state = explorer_report.shell_state;
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "OK",
-            "message": if actions.is_empty() {
-                "Stan shell byl juz poprawny.".to_string()
-            } else {
-                format!("Naprawa shell zastosowala {} akcje.", actions.len())
-            },
-            "last_run": unix_timestamp_millis(),
-            "actions": actions,
-            "shell_state": last_state,
-        })),
-    )
-        .into_response()
+    Ok(Json(serde_json::json!({
+        "status": "OK",
+        "message": if actions.is_empty() {
+            "Stan shell byl juz poprawny.".to_string()
+        } else {
+            format!("Naprawa shell zastosowala {} akcje.", actions.len())
+        },
+        "last_run": unix_timestamp_millis(),
+        "actions": actions,
+        "shell_state": last_state,
+    })))
 }
 
 async fn post_repair_sync_root(
     State(state): State<ApiState>,
     headers: HeaderMap,
-) -> impl IntoResponse {
-    // ACL: Admin+ can trigger sync root repair
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
-        return resp;
-    }
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     let runtime_paths = RuntimePaths::detect();
-    match smart_sync::repair_sync_root(&state.pool, &runtime_paths.sync_root).await {
-        Ok(report) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "OK",
-                "message": if report.actions.is_empty() {
-                    "Sync-root byl juz poprawny.".to_string()
-                } else {
-                    format!("Naprawa sync-root zastosowala {} akcje.", report.actions.len())
-                },
-                "last_run": unix_timestamp_millis(),
-                "actions": report.actions,
-                "sync_root_state": report.sync_root_state,
-            })),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "status": "ERROR",
-                "message": err.to_string(),
-                "last_run": unix_timestamp_millis(),
-            })),
-        )
-            .into_response(),
-    }
+    let report = smart_sync::repair_sync_root(&state.pool, &runtime_paths.sync_root)
+        .await
+        .map_err(|err| ApiError::Internal {
+            message: err.to_string(),
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "status": "OK",
+        "message": if report.actions.is_empty() {
+            "Sync-root byl juz poprawny.".to_string()
+        } else {
+            format!("Naprawa sync-root zastosowala {} akcje.", report.actions.len())
+        },
+        "last_run": unix_timestamp_millis(),
+        "actions": report.actions,
+        "sync_root_state": report.sync_root_state,
+    })))
 }
 
 async fn post_snapshot_local(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Json(request): Json<SnapshotLocalRequest>,
-) -> impl IntoResponse {
-    // ACL: Admin+ can create local snapshots
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
-        return resp;
-    }
+) -> Result<Json<SnapshotLocalResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     let output_path = std::path::PathBuf::from(&request.output_path);
-    let master_key = match state.vault_keys.require_master_key().await {
-        Ok(key) => key,
-        Err(VaultError::Locked) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "vault_locked",
-                    "message": "odblokuj Skarbiec przed utworzeniem zaszyfrowanej migawki metadanych"
-                })),
-            )
-                .into_response();
+    let master_key = state.vault_keys.require_master_key().await.map_err(|err| {
+        match err {
+            VaultError::Locked => ApiError::BadRequest {
+                code: "vault_locked",
+                message: "odblokuj Skarbiec przed utworzeniem zaszyfrowanej migawki metadanych".to_string(),
+            },
+            other => ApiError::Internal {
+                message: other.to_string(),
+            },
         }
-        Err(err) => return internal_server_error(err),
-    };
+    })?;
 
-    match disaster_recovery::create_encrypted_metadata_snapshot(
+    disaster_recovery::create_encrypted_metadata_snapshot(
         &state.pool,
         &output_path,
         &master_key,
     )
     .await
-    {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(SnapshotLocalResponse {
-                output_path: if output_path
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .ends_with(".enc")
-                {
-                    output_path.display().to_string()
-                } else {
-                    format!("{}.enc", output_path.display())
-                },
-                created: true,
-            }),
-        )
-            .into_response(),
-        Err(err) => internal_server_error(err),
-    }
+    .map_err(|err| ApiError::Internal {
+        message: err.to_string(),
+    })?;
+
+    Ok(Json(SnapshotLocalResponse {
+        output_path: if output_path
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .ends_with(".enc")
+        {
+            output_path.display().to_string()
+        } else {
+            format!("{}.enc", output_path.display())
+        },
+        created: true,
+    }))
 }
 
-async fn post_backup_now(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
-    // ACL: Admin+ can trigger backups
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Admin).await {
-        return resp;
-    }
+async fn post_backup_now(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
-    let master_key = match state.vault_keys.require_master_key().await {
-        Ok(key) => key,
-        Err(VaultError::Locked) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "vault_locked",
-                    "message": "odblokuj Skarbiec przed utworzeniem zaszyfrowanej kopii metadanych"
-                })),
-            )
-                .into_response();
+    let master_key = state.vault_keys.require_master_key().await.map_err(|err| {
+        match err {
+            VaultError::Locked => ApiError::BadRequest {
+                code: "vault_locked",
+                message: "odblokuj Skarbiec przed utworzeniem zaszyfrowanej kopii metadanych".to_string(),
+            },
+            other => ApiError::Internal {
+                message: other.to_string(),
+            },
         }
-        Err(err) => return internal_server_error(err),
-    };
+    })?;
 
     let provider_manager =
-        match disaster_recovery::MetadataBackupProviderManager::from_onboarding_db_all(
-            &state.pool,
-        )
-        .await
-        {
-            Ok(manager) => manager,
-            Err(err) => return internal_server_error(err),
-        };
+        disaster_recovery::MetadataBackupProviderManager::from_onboarding_db_all(&state.pool)
+            .await
+            .map_err(|err| ApiError::Internal {
+                message: err.to_string(),
+            })?;
 
-    match disaster_recovery::run_metadata_backup_now(&state.pool, &provider_manager, &master_key)
+    disaster_recovery::run_metadata_backup_now(&state.pool, &provider_manager, &master_key)
         .await
-    {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "OK",
-                "message": "Zaszyfrowana kopia metadanych została wysłana pomyślnie.",
-                "last_run": unix_timestamp_millis(),
-                "uploaded": true
-            })),
-        )
-            .into_response(),
-        Err(err) => internal_server_error(err),
-    }
+        .map_err(|err| ApiError::Internal {
+            message: err.to_string(),
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "status": "OK",
+        "message": "Zaszyfrowana kopia metadanych została wysłana pomyślnie.",
+        "last_run": unix_timestamp_millis(),
+        "uploaded": true
+    })))
 }
 
 // ── Ingest API (Epic 35.1e) ──────────────────────────────────────────
 
-async fn get_ingest_jobs(State(state): State<ApiState>) -> impl IntoResponse {
-    match db::list_ingest_jobs(&state.pool).await {
-        Ok(rows) => {
-            let jobs: Vec<serde_json::Value> = rows
-                .iter()
-                .map(|row| {
-                    serde_json::json!({
-                        "id": row.id,
-                        "file_path": row.file_path,
-                        "file_size": row.file_size,
-                        "state": row.state,
-                        "bytes_processed": row.bytes_processed,
-                        "attempt_count": row.attempt_count,
-                        "error_message": row.error_message,
-                        "created_at": row.created_at,
-                        "updated_at": row.updated_at,
-                    })
-                })
-                .collect();
-            Json(serde_json::json!({ "jobs": jobs })).into_response()
-        }
-        Err(err) => internal_server_error(err),
-    }
+async fn get_ingest_jobs(
+    State(state): State<ApiState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let rows = db::list_ingest_jobs(&state.pool).await?;
+    let jobs: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.id,
+                "file_path": row.file_path,
+                "file_size": row.file_size,
+                "state": row.state,
+                "bytes_processed": row.bytes_processed,
+                "attempt_count": row.attempt_count,
+                "error_message": row.error_message,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "jobs": jobs })))
 }
 
 async fn post_ingest_retry(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path(job_id): Path<i64>,
-) -> impl IntoResponse {
-    // ACL: Member+ can retry ingest jobs
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
 
-    match db::retry_ingest_job(&state.pool, job_id).await {
-        Ok(true) => {
-            info!("api: ingest job {} requeued for retry", job_id);
-            Json(serde_json::json!({ "ok": true, "job_id": job_id })).into_response()
-        }
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "job_not_found_or_not_failed",
-                "job_id": job_id,
-            })),
-        )
-            .into_response(),
-        Err(err) => internal_server_error(err),
+    let retried = db::retry_ingest_job(&state.pool, job_id).await?;
+    if retried {
+        info!("api: ingest job {} requeued for retry", job_id);
+        Ok(Json(serde_json::json!({ "ok": true, "job_id": job_id })))
+    } else {
+        Err(ApiError::NotFound {
+            resource: "ingest_job",
+            id: job_id.to_string(),
+        })
     }
 }
 
@@ -715,11 +614,8 @@ async fn post_ingest_cleanup(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path(job_id): Path<i64>,
-) -> impl IntoResponse {
-    // ACL: Member+ can cleanup ingest jobs
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
 
     let spool_dir = std::env::var("OMNIDRIVE_SPOOL_DIR")
         .map(std::path::PathBuf::from)
@@ -728,24 +624,16 @@ async fn post_ingest_cleanup(
     match crate::ingest::cleanup_failed_ingest(&state.pool, &spool_dir, job_id).await {
         Ok(true) => {
             info!("api: ingest job {} cleaned up", job_id);
-            Json(serde_json::json!({ "ok": true, "job_id": job_id })).into_response()
+            Ok(Json(serde_json::json!({ "ok": true, "job_id": job_id })))
         }
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "job_not_found",
-                "job_id": job_id,
-            })),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": err.to_string(),
-                "job_id": job_id,
-            })),
-        )
-            .into_response(),
+        Ok(false) => Err(ApiError::NotFound {
+            resource: "ingest_job",
+            id: job_id.to_string(),
+        }),
+        Err(err) => Err(ApiError::BadRequest {
+            code: "cleanup_failed",
+            message: err.to_string(),
+        }),
     }
 }
 

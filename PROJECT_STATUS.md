@@ -494,6 +494,16 @@ Current bridge implementation status:
   - onboarding status API never returns provider secrets or ciphertexts
   - it returns only secret presence state such as `SET` / `MISSING`
 
+### Refactoring: Unified ApiError & API Module Split [x] Completed
+- monolithic `api.rs` (5026 lines) split into `api/` directory with 8 handler modules
+- unified `ApiError` enum (10 variants) with `IntoResponse` impl replacing ad-hoc error construction
+- `ApiError` lives in `api_error.rs` (crate root, visible from both `lib.rs` and `main.rs`)
+- `acl::require_role()` returns `Result<_, ApiError>` — all handlers use `?` operator
+- all 7 handler files migrated: auth, diagnostics, files, vault, sharing, onboarding, maintenance
+- removed legacy `internal_server_error()` and `io_error()` helpers
+- GitHub Actions CI pipeline added (windows-latest)
+- clippy zero warnings, all tests passing
+
 ### Phase 0: Cryptographic Checkpoint
 Goal:
 - produce a 1-2 page decision document that defines the single source of truth for the entire key hierarchy before any Envelope Encryption code is written
@@ -723,22 +733,12 @@ Current saved progress for `Epic 31 + Epic 32`:
   - `angeld/Cargo.toml`
 
 Next execution plan:
-1. complete B8 retest on Dell using `OmniDrive-Setup-0.1.13.exe`:
-   - run `scripts/b8-dell-clean-reset.ps1` on Dell — verify all green
-   - restart Dell, install fresh 0.1.13
-   - run wizard path: `Join Existing Vault` on `backblaze-b2`
-   - if wizard does not appear, use `POST http://127.0.0.1:8787/api/onboarding/reset` then reload
-   - verify join result is true join mode, not fallback local-only cloud-enabled mode
-2. acceptance criteria for B8 pass:
-   - Dell `onboarding_mode` = `JOIN_EXISTING`
-   - Dell `multidevice.vault_id` is not local default (`local-vault-*`)
-   - Dell diagnostics shell/sync-root stay healthy in cloud mode after finalize
-3. once B8 is green, move to new roadmap sequence:
-   - Phase 0: Cryptographic Checkpoint (decision document)
-   - Phase 1: Epic 32.5 (Envelope Encryption)
-   - Phase 2: Epic 35 (Ghost Shell)
-   - Phase 3: Epic 33 (Zero-Knowledge Link Sharing)
-   - Phase 4: Epic 34 (Family Cloud)
+1. Epic 34 remaining tasks:
+   - 34.5a-b: Audit trail + dashboard UI
+   - 34.6a: Recovery keys (BIP-39 mnemonic)
+   - 34.3b: Google OAuth2 (optional)
+   - 34.6b: Safety Numbers (P2, later)
+2. Ongoing: keep CI green, fix any remaining e2e flakes
 
 Working rule for future sessions on this project:
 - always use `jcodemunch` at the beginning of the session for repo context, symbol lookup, and code navigation before making implementation decisions

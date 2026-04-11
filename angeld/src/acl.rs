@@ -4,10 +4,9 @@
 //! extracts the caller's identity from a session token, looks up their
 //! vault membership, and compares against the minimum required role.
 
+use crate::api_error::ApiError;
 use crate::db;
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
-use axum::Json;
+use axum::http::HeaderMap;
 use sqlx::SqlitePool;
 
 // ── Roles (hierarchical, highest → lowest) ──────────────────────────
@@ -55,33 +54,42 @@ pub struct AuthorizedCaller {
 
 /// Authenticate the request via session token AND authorize against a
 /// minimum vault role.  Returns `AuthorizedCaller` on success or an
-/// axum error response (401 / 403 / 500) on failure.
+/// `ApiError` (401 / 403 / 500) on failure.
 pub async fn require_role(
     pool: &SqlitePool,
     headers: &HeaderMap,
     min_role: Role,
-) -> Result<AuthorizedCaller, axum::response::Response> {
+) -> Result<AuthorizedCaller, ApiError> {
     // 1. Extract & validate session token
     let session = extract_session_or_401(pool, headers).await?;
 
     // 2. Resolve vault_id
-    let vault_id = get_vault_id_or_500(pool).await?;
+    let vault_id = match db::get_vault_params(pool).await? {
+        Some(v) => v.vault_id,
+        None => {
+            return Err(ApiError::BadRequest {
+                code: "vault_not_initialized",
+                message: "vault not initialized".to_string(),
+            })
+        }
+    };
 
     // 3. Look up vault membership
     let member = db::get_vault_member(pool, &session.user_id, &vault_id)
-        .await
-        .map_err(internal_err)?
-        .ok_or_else(|| forbidden("user is not a vault member"))?;
+        .await?
+        .ok_or_else(|| ApiError::Forbidden {
+            message: "user is not a vault member".to_string(),
+        })?;
 
-    let role = Role::from_str(&member.role)
-        .ok_or_else(|| internal_err_msg(&format!("unknown role: {}", member.role)))?;
+    let role = Role::from_str(&member.role).ok_or_else(|| ApiError::Internal {
+        message: format!("unknown role: {}", member.role),
+    })?;
 
     // 4. Check privilege
     if !role.satisfies(min_role) {
-        return Err(forbidden(&format!(
-            "requires {:?} or higher, caller is {:?}",
-            min_role, role
-        )));
+        return Err(ApiError::Forbidden {
+            message: format!("requires {:?} or higher, caller is {:?}", min_role, role),
+        });
     }
 
     Ok(AuthorizedCaller {
@@ -99,7 +107,7 @@ pub async fn require_role(
 pub async fn require_session(
     pool: &SqlitePool,
     headers: &HeaderMap,
-) -> Result<db::UserSession, axum::response::Response> {
+) -> Result<db::UserSession, ApiError> {
     extract_session_or_401(pool, headers).await
 }
 
@@ -108,73 +116,20 @@ pub async fn require_session(
 async fn extract_session_or_401(
     pool: &SqlitePool,
     headers: &HeaderMap,
-) -> Result<db::UserSession, axum::response::Response> {
+) -> Result<db::UserSession, ApiError> {
     let auth = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
-        .ok_or_else(|| unauthorized("missing or malformed Authorization header"))?;
+        .ok_or_else(|| ApiError::Unauthorized {
+            message: "missing or malformed Authorization header".to_string(),
+        })?;
 
     db::validate_user_session(pool, auth)
-        .await
-        .map_err(internal_err)?
-        .ok_or_else(|| unauthorized("invalid or expired session token"))
-}
-
-async fn get_vault_id_or_500(pool: &SqlitePool) -> Result<String, axum::response::Response> {
-    match db::get_vault_params(pool).await {
-        Ok(Some(v)) => Ok(v.vault_id),
-        Ok(None) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "vault_not_initialized" })),
-        )
-            .into_response()),
-        Err(e) => Err(internal_err(e)),
-    }
-}
-
-fn unauthorized(msg: &str) -> axum::response::Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        Json(serde_json::json!({
-            "error": "unauthorized",
-            "message": msg,
-        })),
-    )
-        .into_response()
-}
-
-fn forbidden(msg: &str) -> axum::response::Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(serde_json::json!({
-            "error": "insufficient_permissions",
-            "message": msg,
-        })),
-    )
-        .into_response()
-}
-
-fn internal_err(e: impl std::fmt::Display) -> axum::response::Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({
-            "error": "internal_error",
-            "message": e.to_string(),
-        })),
-    )
-        .into_response()
-}
-
-fn internal_err_msg(msg: &str) -> axum::response::Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({
-            "error": "internal_error",
-            "message": msg,
-        })),
-    )
-        .into_response()
+        .await?
+        .ok_or_else(|| ApiError::Unauthorized {
+            message: "invalid or expired session token".to_string(),
+        })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 // angeld/src/api/onboarding.rs — Onboarding API handlers (extracted from mod.rs)
 
-use super::{io_error, internal_server_error, ApiState, MaintenanceLevel, MaintenanceStatus};
+use super::error::ApiError;
+use super::{unix_timestamp_millis, ApiState, MaintenanceLevel, MaintenanceStatus};
 use crate::config::AppConfig;
 use crate::db;
 use crate::device_identity::ensure_local_device_identity;
@@ -20,14 +21,11 @@ use crate::uploader::KNOWN_PROVIDERS;
 use crate::virtual_drive;
 
 use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
 // ── Route table ─────────────────────────────────────────────────────────
@@ -131,422 +129,364 @@ struct CompleteOnboardingResponse {
 
 // ── Handlers ────────────────────────────────────────────────────────────
 
-async fn get_onboarding_status(State(state): State<ApiState>) -> impl IntoResponse {
-    match build_onboarding_status_response(&state).await {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => internal_server_error(err),
-    }
+async fn get_onboarding_status(
+    State(state): State<ApiState>,
+) -> Result<Json<MaintenanceStatus<OnboardingStatusResponse>>, ApiError> {
+    let response = build_onboarding_status_response(&state).await?;
+    Ok(Json(response))
 }
 
-async fn post_bootstrap_local(State(state): State<ApiState>) -> impl IntoResponse {
+async fn post_bootstrap_local(
+    State(state): State<ApiState>,
+) -> Result<Json<MaintenanceStatus<OnboardingStatusResponse>>, ApiError> {
     shell_state::set_cloud_mode_hint(false);
-    let result = async {
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_ONBOARDING_STATE,
-            OnboardingState::InProgress.as_str(),
-        )
-        .await?;
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_ONBOARDING_MODE,
-            OnboardingMode::LocalOnly.as_str(),
-        )
-        .await?;
-        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "identity")
-            .await?;
-        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_CLOUD_ENABLED, "0").await?;
-        build_onboarding_status_response(&state).await
-    }
-    .await;
 
-    match result {
-        Ok(response) => {
-            match cleanup_stale_uploads(&state.pool).await {
-                Ok(actions) => {
-                    for action in &actions {
-                        info!("[ONBOARDING] complete multipart cleanup: {}", action);
-                    }
-                }
-                Err(err) => {
-                    error!("[ONBOARDING] complete multipart cleanup failed: {}", err);
-                }
+    db::set_system_config_value(
+        &state.pool,
+        SYSTEM_CONFIG_ONBOARDING_STATE,
+        OnboardingState::InProgress.as_str(),
+    )
+    .await?;
+    db::set_system_config_value(
+        &state.pool,
+        SYSTEM_CONFIG_ONBOARDING_MODE,
+        OnboardingMode::LocalOnly.as_str(),
+    )
+    .await?;
+    db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "identity")
+        .await?;
+    db::set_system_config_value(&state.pool, SYSTEM_CONFIG_CLOUD_ENABLED, "0").await?;
+
+    match cleanup_stale_uploads(&state.pool).await {
+        Ok(actions) => {
+            for action in &actions {
+                info!("[ONBOARDING] complete multipart cleanup: {}", action);
             }
-            (StatusCode::OK, Json(response)).into_response()
         }
-        Err(err) => internal_server_error(err),
+        Err(err) => {
+            error!("[ONBOARDING] complete multipart cleanup failed: {}", err);
+        }
     }
+
+    let response = build_onboarding_status_response(&state).await?;
+    Ok(Json(response))
 }
 
 async fn post_setup_identity(
     State(state): State<ApiState>,
     Json(request): Json<SetupIdentityRequest>,
-) -> impl IntoResponse {
+) -> Result<Json<SetupIdentityResponse>, ApiError> {
     let device_name = request.device_name.trim();
     if device_name.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_device_name",
-                "message": "device_name cannot be empty"
-            })),
-        )
-            .into_response();
+        return Err(ApiError::BadRequest {
+            code: "invalid_device_name",
+            message: "device_name cannot be empty".to_string(),
+        });
     }
 
-    let result = async {
-        let mut app_config = AppConfig::from_env();
-        app_config.device_name_override = Some(device_name.to_string());
-        let local_device = ensure_local_device_identity(&state.pool, &app_config).await?;
-        db::update_local_device_name(&state.pool, device_name).await?;
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_ONBOARDING_STATE,
-            OnboardingState::InProgress.as_str(),
-        )
+    let mut app_config = AppConfig::from_env();
+    app_config.device_name_override = Some(device_name.to_string());
+    let local_device =
+        ensure_local_device_identity(&state.pool, &app_config)
+            .await
+            .map_err(|e| ApiError::Internal {
+                message: e.to_string(),
+            })?;
+    db::update_local_device_name(&state.pool, device_name).await?;
+    db::set_system_config_value(
+        &state.pool,
+        SYSTEM_CONFIG_ONBOARDING_STATE,
+        OnboardingState::InProgress.as_str(),
+    )
+    .await?;
+    db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "providers")
         .await?;
-        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "providers")
-            .await?;
 
-        Ok::<_, Box<dyn std::error::Error>>(SetupIdentityResponse {
-            device_id: local_device.device_id,
-            device_name: device_name.to_string(),
-        })
-    }
-    .await;
-
-    match result {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => internal_server_error(io_error(err)),
-    }
+    Ok(Json(SetupIdentityResponse {
+        device_id: local_device.device_id,
+        device_name: device_name.to_string(),
+    }))
 }
 
 async fn post_setup_provider(
     State(state): State<ApiState>,
     Json(request): Json<SetupProviderRequest>,
-) -> impl IntoResponse {
+) -> Result<Json<SetupProviderResponse>, ApiError> {
     let provider_name = request.provider_name.trim();
     if !KNOWN_PROVIDERS.contains(&provider_name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "unsupported_provider",
-                "provider_name": provider_name,
-            })),
-        )
-            .into_response();
+        return Err(ApiError::BadRequest {
+            code: "unsupported_provider",
+            message: format!("unsupported provider: {provider_name}"),
+        });
     }
 
     if request.endpoint.trim().is_empty()
         || request.region.trim().is_empty()
         || request.bucket.trim().is_empty()
     {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_provider_config",
-                "message": "endpoint, region i bucket są wymagane"
-            })),
-        )
-            .into_response();
+        return Err(ApiError::BadRequest {
+            code: "invalid_provider_config",
+            message: "endpoint, region i bucket są wymagane".to_string(),
+        });
     }
 
-    let result = async {
-        db::upsert_provider_config(
+    db::upsert_provider_config(
+        &state.pool,
+        provider_name,
+        request.endpoint.trim(),
+        request.region.trim(),
+        request.bucket.trim(),
+        request.force_path_style.unwrap_or(false),
+        request.enabled.unwrap_or(true),
+        None,
+        Some("CONFIG_SAVED"),
+        None,
+        None,
+    )
+    .await?;
+
+    if let (Some(access_key_id), Some(secret_access_key)) = (
+        request.access_key_id.as_deref(),
+        request.secret_access_key.as_deref(),
+    ) {
+        let (sealed_access_key_id, sealed_secret_access_key) =
+            seal_provider_secrets(access_key_id, secret_access_key).map_err(|e| {
+                ApiError::Internal {
+                    message: e.to_string(),
+                }
+            })?;
+        db::upsert_provider_secret(
             &state.pool,
             provider_name,
-            request.endpoint.trim(),
-            request.region.trim(),
-            request.bucket.trim(),
-            request.force_path_style.unwrap_or(false),
-            request.enabled.unwrap_or(true),
-            None,
-            Some("CONFIG_SAVED"),
-            None,
-            None,
+            &sealed_access_key_id,
+            &sealed_secret_access_key,
         )
         .await?;
+    }
 
-        if let (Some(access_key_id), Some(secret_access_key)) = (
-            request.access_key_id.as_deref(),
-            request.secret_access_key.as_deref(),
-        ) {
-            let (sealed_access_key_id, sealed_secret_access_key) =
-                seal_provider_secrets(access_key_id, secret_access_key).map_err(io_error)?;
-            db::upsert_provider_secret(
-                &state.pool,
-                provider_name,
-                &sealed_access_key_id,
-                &sealed_secret_access_key,
-            )
-            .await?;
-        }
-
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_ONBOARDING_STATE,
-            OnboardingState::InProgress.as_str(),
-        )
+    db::set_system_config_value(
+        &state.pool,
+        SYSTEM_CONFIG_ONBOARDING_STATE,
+        OnboardingState::InProgress.as_str(),
+    )
+    .await?;
+    db::set_system_config_value(
+        &state.pool,
+        SYSTEM_CONFIG_ONBOARDING_MODE,
+        OnboardingMode::CloudEnabled.as_str(),
+    )
+    .await?;
+    db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "security")
         .await?;
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_ONBOARDING_MODE,
-            OnboardingMode::CloudEnabled.as_str(),
-        )
-        .await?;
-        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "security")
-            .await?;
 
-        let has_secret = db::get_provider_secret(&state.pool, provider_name)
-            .await?
-            .is_some();
-        let validation = validate_persisted_provider_connection(&state.pool, provider_name).await;
-        let (last_test_status, last_test_error, last_test_at, validation_report) = match validation
-        {
-            Ok(report) => (
+    let has_secret = db::get_provider_secret(&state.pool, provider_name)
+        .await?
+        .is_some();
+    let validation = validate_persisted_provider_connection(&state.pool, provider_name).await;
+    let (last_test_status, last_test_error, last_test_at, validation_report) = match validation {
+        Ok(report) => (
+            Some(report.status.clone()),
+            None,
+            Some(report.last_run),
+            report,
+        ),
+        Err(err) => {
+            let report = ValidationReport {
+                status: "ERROR".to_string(),
+                message: err.to_string(),
+                last_run: unix_timestamp_millis(),
+                provider_name: provider_name.to_string(),
+                endpoint_reachable: !matches!(
+                    &err,
+                    crate::onboarding::ProviderError::EndpointUnreachable(_)
+                ),
+                authenticated: false,
+                list_objects_ok: false,
+                put_object_ok: false,
+                delete_object_ok: false,
+                error_kind: Some(provider_error_kind(&err).to_string()),
+            };
+            (
                 Some(report.status.clone()),
-                None,
+                Some(report.message.clone()),
                 Some(report.last_run),
                 report,
-            ),
-            Err(err) => {
-                let report = ValidationReport {
-                    status: "ERROR".to_string(),
-                    message: err.to_string(),
-                    last_run: unix_timestamp_millis(),
-                    provider_name: provider_name.to_string(),
-                    endpoint_reachable: !matches!(
-                        &err,
-                        crate::onboarding::ProviderError::EndpointUnreachable(_)
-                    ),
-                    authenticated: false,
-                    list_objects_ok: false,
-                    put_object_ok: false,
-                    delete_object_ok: false,
-                    error_kind: Some(provider_error_kind(&err).to_string()),
-                };
-                (
-                    Some(report.status.clone()),
-                    Some(report.message.clone()),
-                    Some(report.last_run),
-                    report,
-                )
-            }
-        };
-        db::upsert_provider_config(
-            &state.pool,
-            provider_name,
-            request.endpoint.trim(),
-            request.region.trim(),
-            request.bucket.trim(),
-            request.force_path_style.unwrap_or(false),
-            request.enabled.unwrap_or(true),
-            None,
-            last_test_status.as_deref(),
-            last_test_error.as_deref(),
-            last_test_at,
-        )
-        .await?;
-
-        // Hot-reload providers into the running downloader so the user does not
-        // need to restart the daemon after adding credentials for a new provider
-        // (e.g. after join-existing grafted provider_configs without secrets).
-        if let Some(ref downloader) = state.downloader {
-            if let Err(err) = downloader.reload_active_providers_from_db().await {
-                tracing::warn!("[PROVIDER] hot-reload after setup-provider failed: {err}");
-            } else {
-                tracing::info!("[PROVIDER] hot-reloaded providers after setup-provider for {provider_name}");
-            }
+            )
         }
+    };
+    db::upsert_provider_config(
+        &state.pool,
+        provider_name,
+        request.endpoint.trim(),
+        request.region.trim(),
+        request.bucket.trim(),
+        request.force_path_style.unwrap_or(false),
+        request.enabled.unwrap_or(true),
+        None,
+        last_test_status.as_deref(),
+        last_test_error.as_deref(),
+        last_test_at,
+    )
+    .await?;
 
-        Ok::<_, Box<dyn std::error::Error>>(SetupProviderResponse {
-            provider_name: provider_name.to_string(),
-            enabled: request.enabled.unwrap_or(true),
-            access_key_status: if has_secret {
-                "SET".to_string()
-            } else {
-                "MISSING".to_string()
-            },
-            secret_key_status: if has_secret {
-                "SET".to_string()
-            } else {
-                "MISSING".to_string()
-            },
-            validation: validation_report,
-        })
+    if let Some(ref downloader) = state.downloader {
+        if let Err(err) = downloader.reload_active_providers_from_db().await {
+            tracing::warn!("[PROVIDER] hot-reload after setup-provider failed: {err}");
+        } else {
+            tracing::info!("[PROVIDER] hot-reloaded providers after setup-provider for {provider_name}");
+        }
     }
-    .await;
 
-    match result {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => internal_server_error(io_error(err)),
-    }
+    Ok(Json(SetupProviderResponse {
+        provider_name: provider_name.to_string(),
+        enabled: request.enabled.unwrap_or(true),
+        access_key_status: if has_secret {
+            "SET".to_string()
+        } else {
+            "MISSING".to_string()
+        },
+        secret_key_status: if has_secret {
+            "SET".to_string()
+        } else {
+            "MISSING".to_string()
+        },
+        validation: validation_report,
+    }))
 }
 
-async fn post_complete_onboarding(State(state): State<ApiState>) -> impl IntoResponse {
-    let result = async {
-        let active_provider_configs = crate::onboarding::get_active_provider_configs(&state.pool)
-            .await
-            .map_err(io_error)?;
-        let cloud_enabled = !active_provider_configs.is_empty();
-        shell_state::set_cloud_mode_hint(cloud_enabled);
-        let onboarding_mode = if cloud_enabled {
-            OnboardingMode::CloudEnabled
-        } else {
-            OnboardingMode::LocalOnly
-        };
+async fn post_complete_onboarding(
+    State(state): State<ApiState>,
+) -> Result<Json<CompleteOnboardingResponse>, ApiError> {
+    let active_provider_configs = crate::onboarding::get_active_provider_configs(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
+    let cloud_enabled = !active_provider_configs.is_empty();
+    shell_state::set_cloud_mode_hint(cloud_enabled);
+    let onboarding_mode = if cloud_enabled {
+        OnboardingMode::CloudEnabled
+    } else {
+        OnboardingMode::LocalOnly
+    };
 
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_ONBOARDING_STATE,
-            OnboardingState::Completed.as_str(),
-        )
+    db::set_system_config_value(
+        &state.pool,
+        SYSTEM_CONFIG_ONBOARDING_STATE,
+        OnboardingState::Completed.as_str(),
+    )
+    .await?;
+    db::set_system_config_value(
+        &state.pool,
+        SYSTEM_CONFIG_ONBOARDING_MODE,
+        onboarding_mode.as_str(),
+    )
+    .await?;
+    db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "completed")
         .await?;
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_ONBOARDING_MODE,
-            onboarding_mode.as_str(),
-        )
-        .await?;
-        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "completed")
-            .await?;
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_CLOUD_ENABLED,
-            if cloud_enabled { "1" } else { "0" },
-        )
-        .await?;
+    db::set_system_config_value(
+        &state.pool,
+        SYSTEM_CONFIG_CLOUD_ENABLED,
+        if cloud_enabled { "1" } else { "0" },
+    )
+    .await?;
 
-        trigger_runtime_provider_reload(&state, cloud_enabled).await;
+    trigger_runtime_provider_reload(&state, cloud_enabled).await;
 
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(CompleteOnboardingResponse {
-            onboarding_state: OnboardingState::Completed.as_str().to_string(),
-            onboarding_mode: onboarding_mode.as_str().to_string(),
-            cloud_enabled,
-        })
-    }
-    .await;
-
-    match result {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => internal_server_error(io_error(err)),
-    }
+    Ok(Json(CompleteOnboardingResponse {
+        onboarding_state: OnboardingState::Completed.as_str().to_string(),
+        onboarding_mode: onboarding_mode.as_str().to_string(),
+        cloud_enabled,
+    }))
 }
 
 async fn post_join_existing(
     State(state): State<ApiState>,
     Json(request): Json<JoinExistingRequest>,
-) -> impl IntoResponse {
+) -> Result<Json<JoinExistingResponse>, ApiError> {
     let provider_id = request.provider_id.trim();
     if !KNOWN_PROVIDERS.contains(&provider_id) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "unsupported_provider",
-                "provider_id": provider_id,
-                "human_readable_reason": "Wybierz jednego ze skonfigurowanych dostawców OmniDrive przed dołączeniem do istniejącego Skarbca."
-            })),
-        )
-            .into_response();
+        return Err(ApiError::BadRequest {
+            code: "unsupported_provider",
+            message: "Wybierz jednego ze skonfigurowanych dostawców OmniDrive przed dołączeniem do istniejącego Skarbca.".to_string(),
+        });
     }
 
     let runtime_paths = RuntimePaths::detect();
-    let result = perform_vault_restore(
+    let restore = perform_vault_restore(
         &state.pool,
         &runtime_paths,
         &request.passphrase,
         provider_id,
     )
-    .await;
-
-    let restore = match result {
-        Ok(report) => report,
-        Err(err) => {
-            let status = match err {
-                crate::onboarding::RestoreError::IncorrectPassphrase(_) => StatusCode::BAD_REQUEST,
-                crate::onboarding::RestoreError::MetadataNotFound(_) => StatusCode::NOT_FOUND,
-                crate::onboarding::RestoreError::NetworkError(_) => StatusCode::BAD_GATEWAY,
-                crate::onboarding::RestoreError::MissingProviderConfig(_) => {
-                    StatusCode::BAD_REQUEST
-                }
-                crate::onboarding::RestoreError::SnapshotApply(_)
-                | crate::onboarding::RestoreError::Runtime(_)
-                | crate::onboarding::RestoreError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            return (
-                status,
-                Json(serde_json::json!({
-                    "error": provider_restore_error_kind(&err),
-                    "message": err.to_string(),
-                    "human_readable_reason": err.human_readable_reason(),
-                })),
-            )
-                .into_response();
+    .await
+    .map_err(|err| {
+        let (code, message) = (provider_restore_error_kind(&err), err.to_string());
+        match err {
+            crate::onboarding::RestoreError::IncorrectPassphrase(_) => ApiError::BadRequest {
+                code,
+                message,
+            },
+            crate::onboarding::RestoreError::MetadataNotFound(_) => ApiError::NotFound {
+                resource: "metadata",
+                id: provider_id.to_string(),
+            },
+            crate::onboarding::RestoreError::NetworkError(_) => ApiError::BadGateway { message },
+            crate::onboarding::RestoreError::MissingProviderConfig(_) => ApiError::BadRequest {
+                code,
+                message,
+            },
+            crate::onboarding::RestoreError::SnapshotApply(_)
+            | crate::onboarding::RestoreError::Runtime(_)
+            | crate::onboarding::RestoreError::Io(_) => ApiError::Internal { message },
         }
-    };
+    })?;
 
-    if let Err(err) = finalize_join_existing_runtime(&state, &runtime_paths, provider_id).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "runtime_activation_failed",
-                "message": err.to_string(),
-                "human_readable_reason": "Metadane Skarbca zostały odtworzone, ale OmniDrive nie mógł poprawnie przełączyć tego urządzenia do trybu sync-root."
-            })),
-        )
-            .into_response();
-    }
+    finalize_join_existing_runtime(&state, &runtime_paths, provider_id)
+        .await
+        .map_err(|err| ApiError::Internal {
+            message: format!(
+                "Metadane Skarbca zostały odtworzone, ale OmniDrive nie mógł poprawnie przełączyć tego urządzenia do trybu sync-root: {}",
+                err
+            ),
+        })?;
 
-    let result = async {
-        shell_state::set_cloud_mode_hint(true);
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_ONBOARDING_STATE,
-            OnboardingState::Completed.as_str(),
-        )
+    shell_state::set_cloud_mode_hint(true);
+    db::set_system_config_value(
+        &state.pool,
+        SYSTEM_CONFIG_ONBOARDING_STATE,
+        OnboardingState::Completed.as_str(),
+    )
+    .await?;
+    db::set_system_config_value(
+        &state.pool,
+        SYSTEM_CONFIG_ONBOARDING_MODE,
+        OnboardingMode::JoinExisting.as_str(),
+    )
+    .await?;
+    db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "completed")
         .await?;
-        db::set_system_config_value(
-            &state.pool,
-            SYSTEM_CONFIG_ONBOARDING_MODE,
-            OnboardingMode::JoinExisting.as_str(),
-        )
-        .await?;
-        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "completed")
-            .await?;
-        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_CLOUD_ENABLED, "1").await?;
+    db::set_system_config_value(&state.pool, SYSTEM_CONFIG_CLOUD_ENABLED, "1").await?;
 
-        trigger_runtime_provider_reload(&state, true).await;
+    trigger_runtime_provider_reload(&state, true).await;
 
-        Ok::<_, sqlx::Error>(JoinExistingResponse {
-            onboarding_state: OnboardingState::Completed.as_str().to_string(),
-            onboarding_mode: OnboardingMode::JoinExisting.as_str().to_string(),
-            cloud_enabled: true,
-            restore,
-        })
-    }
-    .await;
-
-    match result {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => internal_server_error(err),
-    }
+    Ok(Json(JoinExistingResponse {
+        onboarding_state: OnboardingState::Completed.as_str().to_string(),
+        onboarding_mode: OnboardingMode::JoinExisting.as_str().to_string(),
+        cloud_enabled: true,
+        restore,
+    }))
 }
 
-async fn post_reset_onboarding(State(state): State<ApiState>) -> impl IntoResponse {
-    match reset_onboarding(&state.pool).await {
-        Ok(()) => {
-            shell_state::set_cloud_mode_hint(false);
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "OK",
-                    "message": "Onboarding state has been reset. Reload the dashboard to see the wizard."
-                })),
-            )
-                .into_response()
-        }
-        Err(err) => internal_server_error(err),
-    }
+async fn post_reset_onboarding(
+    State(state): State<ApiState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    reset_onboarding(&state.pool).await?;
+    shell_state::set_cloud_mode_hint(false);
+    Ok(Json(serde_json::json!({
+        "status": "OK",
+        "message": "Onboarding state has been reset. Reload the dashboard to see the wizard."
+    })))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -599,6 +539,10 @@ async fn finalize_join_existing_runtime(
     runtime_paths: &RuntimePaths,
     provider_id: &str,
 ) -> Result<(), std::io::Error> {
+    fn io_error(e: impl std::fmt::Display) -> std::io::Error {
+        std::io::Error::other(e.to_string())
+    }
+
     let downloader = match state.downloader.clone() {
         Some(existing) => {
             if let Err(err) = existing.reload_active_providers_from_db().await {
@@ -612,7 +556,7 @@ async fn finalize_join_existing_runtime(
                 provider_id,
             )
             .await
-            .map_err(io_error)?;
+            .map_err(&io_error)?;
             Arc::new(
                 Downloader::from_provider_configs(
                     state.pool.clone(),
@@ -622,36 +566,36 @@ async fn finalize_join_existing_runtime(
                     vec![provider_config],
                 )
                 .await
-                .map_err(io_error)?,
+                .map_err(&io_error)?,
             )
         }
     };
 
-    smart_sync::install_hydration_runtime(state.pool.clone(), downloader).map_err(io_error)?;
+    smart_sync::install_hydration_runtime(state.pool.clone(), downloader).map_err(&io_error)?;
 
     let repair_report = smart_sync::repair_sync_root(&state.pool, &runtime_paths.sync_root)
         .await
-        .map_err(io_error)?;
+        .map_err(&io_error)?;
     for action in &repair_report.actions {
         info!("[RESTORE] sync-root recovery: {}", action);
     }
 
     smart_sync::project_vault_to_sync_root(&state.pool, &runtime_paths.sync_root)
         .await
-        .map_err(io_error)?;
+        .map_err(&io_error)?;
     info!(
         "[RESTORE] Placeholder hydration projected into {}",
         runtime_paths.sync_root.display()
     );
 
-    virtual_drive::hide_sync_root(&runtime_paths.sync_root).map_err(io_error)?;
+    virtual_drive::hide_sync_root(&runtime_paths.sync_root).map_err(&io_error)?;
     let preferred_drive_letter =
         env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
     let _ = virtual_drive::unmount_virtual_drive(&preferred_drive_letter);
     let drive_letter = virtual_drive::select_mount_drive_letter(&preferred_drive_letter)
         .unwrap_or(preferred_drive_letter.clone());
     virtual_drive::mount_virtual_drive(&drive_letter, &runtime_paths.sync_root)
-        .map_err(io_error)?;
+        .map_err(&io_error)?;
 
     match shell_state::repair_explorer_integration() {
         Ok(report) => {
@@ -776,11 +720,4 @@ fn provider_restore_error_kind(err: &crate::onboarding::RestoreError) -> &'stati
         crate::onboarding::RestoreError::Runtime(_) => "Runtime",
         crate::onboarding::RestoreError::Io(_) => "Io",
     }
-}
-
-fn unix_timestamp_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
 }

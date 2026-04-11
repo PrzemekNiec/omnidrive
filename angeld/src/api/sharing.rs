@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info};
 
-use super::{internal_server_error, ApiState};
+use super::error::ApiError;
+use super::ApiState;
 
 // ── Request / Response structs ──────────────────────────────────────────
 
@@ -98,63 +99,39 @@ async fn create_share_link(
     headers: HeaderMap,
     Path(inode_id): Path<i64>,
     Json(request): Json<CreateShareRequest>,
-) -> impl IntoResponse {
-    // ACL: Member+ can create share links
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<(StatusCode, Json<CreateShareResponse>), ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
 
-    // Vault must be unlocked
-    let envelope_key = match state.vault_keys.require_envelope_key().await {
-        Ok(k) => k,
-        Err(_) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "vault_locked"})),
-            )
-                .into_response()
+    let envelope_key = state.vault_keys.require_envelope_key().await.map_err(|_| {
+        ApiError::Forbidden {
+            message: "vault is locked".to_string(),
         }
-    };
+    })?;
 
-    // Look up inode
-    let inode = match db::get_inode_by_id(&state.pool, inode_id).await {
-        Ok(Some(inode)) => inode,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "inode_not_found"})),
-            )
-                .into_response()
-        }
-        Err(err) => return internal_server_error(err),
-    };
+    let inode = db::get_inode_by_id(&state.pool, inode_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "inode",
+            id: inode_id.to_string(),
+        })?;
 
-    // Get current revision
-    let revision = match db::get_current_file_revision(&state.pool, inode_id).await {
-        Ok(Some(rev)) => rev,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "no_current_revision"})),
-            )
-                .into_response()
-        }
-        Err(err) => return internal_server_error(err),
-    };
+    let revision = db::get_current_file_revision(&state.pool, inode_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "current_revision",
+            id: inode_id.to_string(),
+        })?;
 
-    // Get or create DEK — this is the key that goes in the URL fragment
-    let (_dek_id, dek_secret) =
-        match state.vault_keys.get_or_create_dek(&state.pool, inode_id).await {
-            Ok(pair) => pair,
-            Err(err) => {
-                error!("failed to get DEK for sharing: {err}");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "dek_unavailable"})),
-                )
-                    .into_response();
+    let (_dek_id, dek_secret) = state
+        .vault_keys
+        .get_or_create_dek(&state.pool, inode_id)
+        .await
+        .map_err(|err| {
+            error!("failed to get DEK for sharing: {err}");
+            ApiError::Internal {
+                message: "dek_unavailable".to_string(),
             }
-        };
+        })?;
 
     let _ = envelope_key; // used to verify vault is unlocked
 
@@ -162,7 +139,6 @@ async fn create_share_link(
     let dek_base64url = crate::sharing::encode_dek_for_url(dek_bytes);
     let share_id = crate::sharing::generate_share_id();
 
-    // Calculate expiry
     let expires_at = request.expires_in_hours.map(|hours| {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -171,10 +147,8 @@ async fn create_share_link(
         now_ms + (hours as i64 * 3_600_000)
     });
 
-    // Get file name from inode path
     let file_name = inode.name.clone();
 
-    // Hash password if provided
     let password_hash = request
         .password
         .as_deref()
@@ -182,7 +156,7 @@ async fn create_share_link(
         .map(crate::sharing::hash_share_password);
     let password_protected = password_hash.is_some();
 
-    if let Err(err) = db::create_shared_link(
+    db::create_shared_link(
         &state.pool,
         &share_id,
         inode_id,
@@ -193,17 +167,14 @@ async fn create_share_link(
         request.max_downloads,
         password_hash.as_deref(),
     )
-    .await
-    {
-        return internal_server_error(err);
-    }
+    .await?;
 
     let share_url = format!("http://localhost:8787/share/{share_id}");
     let full_link = format!("{share_url}#{dek_base64url}");
 
     info!("share link created for inode {inode_id}, share_id={share_id}");
 
-    (
+    Ok((
         StatusCode::CREATED,
         Json(CreateShareResponse {
             share_id,
@@ -214,60 +185,43 @@ async fn create_share_link(
             max_downloads: request.max_downloads,
             password_protected,
         }),
-    )
-        .into_response()
+    ))
 }
 
-async fn list_all_shares(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
-    // ACL: Viewer+ can list shares
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
-        return resp;
-    }
-
-    match db::list_shared_links(&state.pool).await {
-        Ok(links) => (StatusCode::OK, Json(links)).into_response(),
-        Err(err) => internal_server_error(err),
-    }
+async fn list_all_shares(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<db::SharedLinkRecord>>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Viewer).await?;
+    let links = db::list_shared_links(&state.pool).await?;
+    Ok(Json(links))
 }
 
 async fn list_file_shares(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path(inode_id): Path<i64>,
-) -> impl IntoResponse {
-    // ACL: Viewer+ can list shares for a file
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Viewer).await {
-        return resp;
-    }
-
-    match db::list_shared_links_for_inode(&state.pool, inode_id).await {
-        Ok(links) => (StatusCode::OK, Json(links)).into_response(),
-        Err(err) => internal_server_error(err),
-    }
+) -> Result<Json<Vec<db::SharedLinkRecord>>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Viewer).await?;
+    let links = db::list_shared_links_for_inode(&state.pool, inode_id).await?;
+    Ok(Json(links))
 }
 
 async fn revoke_share(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path(share_id): Path<String>,
-) -> impl IntoResponse {
-    // ACL: Member+ can revoke shares
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
 
-    match db::revoke_shared_link(&state.pool, &share_id).await {
-        Ok(true) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"revoked": true})),
-        )
-            .into_response(),
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "share_not_found_or_already_revoked"})),
-        )
-            .into_response(),
-        Err(err) => internal_server_error(err),
+    let revoked = db::revoke_shared_link(&state.pool, &share_id).await?;
+    if revoked {
+        Ok(Json(serde_json::json!({"revoked": true})))
+    } else {
+        Err(ApiError::NotFound {
+            resource: "share",
+            id: share_id,
+        })
     }
 }
 
@@ -275,26 +229,21 @@ async fn delete_share(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path(share_id): Path<String>,
-) -> impl IntoResponse {
-    // ACL: Member+ can delete shares
-    if let Err(resp) = acl::require_role(&state.pool, &headers, Role::Member).await {
-        return resp;
-    }
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
 
-    match db::delete_shared_link(&state.pool, &share_id).await {
-        Ok(true) => (StatusCode::OK, Json(serde_json::json!({"deleted": true}))).into_response(),
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "share_not_found"})),
-        )
-            .into_response(),
-        Err(err) => internal_server_error(err),
+    let deleted = db::delete_shared_link(&state.pool, &share_id).await?;
+    if deleted {
+        Ok(Json(serde_json::json!({"deleted": true})))
+    } else {
+        Err(ApiError::NotFound {
+            resource: "share",
+            id: share_id,
+        })
     }
 }
 
-async fn get_share_page(Path(share_id): Path<String>) -> impl IntoResponse {
-    // Validate share_id exists and is valid before serving the page
-    // (the page itself will fetch /meta for details)
+async fn get_share_page(Path(share_id): Path<String>) -> Html<&'static str> {
     let _ = share_id;
     Html(include_str!("../../static/share.html"))
 }
@@ -307,8 +256,7 @@ async fn get_share_sw_js() -> impl IntoResponse {
     )
 }
 
-async fn get_sw_download_placeholder(Path(share_id): Path<String>) -> impl IntoResponse {
-    // Service Worker intercepts this; if it doesn't, return a helpful message
+async fn get_sw_download_placeholder(Path(share_id): Path<String>) -> (StatusCode, &'static str) {
     let _ = share_id;
     (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -320,85 +268,59 @@ async fn verify_share_password(
     State(state): State<ApiState>,
     Path(share_id): Path<String>,
     Json(request): Json<VerifyPasswordRequest>,
-) -> impl IntoResponse {
-    let link = match db::get_shared_link(&state.pool, &share_id).await {
-        Ok(Some(link)) => link,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "share_not_found"})),
-            )
-                .into_response()
-        }
-        Err(err) => return internal_server_error(err),
-    };
+) -> Result<Json<VerifyPasswordResponse>, ApiError> {
+    let link = db::get_shared_link(&state.pool, &share_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "share",
+            id: share_id.clone(),
+        })?;
 
-    let password_hash = match &link.password_hash {
-        Some(h) => h,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "share_not_password_protected"})),
-            )
-                .into_response()
-        }
-    };
+    let password_hash = link.password_hash.as_deref().ok_or(ApiError::BadRequest {
+        code: "share_not_password_protected",
+        message: "this share is not password protected".to_string(),
+    })?;
 
     if !crate::sharing::verify_share_password(&request.password, password_hash) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "invalid_password"})),
-        )
-            .into_response();
+        return Err(ApiError::Unauthorized {
+            message: "invalid password".to_string(),
+        });
     }
 
     let token = crate::sharing::generate_share_token();
-    if let Err(err) =
-        db::create_share_password_token(&state.pool, &token, &share_id, SHARE_TOKEN_TTL_SECONDS)
-            .await
-    {
-        return internal_server_error(err);
-    }
+    db::create_share_password_token(&state.pool, &token, &share_id, SHARE_TOKEN_TTL_SECONDS)
+        .await?;
 
-    (
-        StatusCode::OK,
-        Json(VerifyPasswordResponse {
-            token,
-            expires_in_seconds: SHARE_TOKEN_TTL_SECONDS,
-        }),
-    )
-        .into_response()
+    Ok(Json(VerifyPasswordResponse {
+        token,
+        expires_in_seconds: SHARE_TOKEN_TTL_SECONDS,
+    }))
 }
 
 /// Check if password-protected share access is authorized.
-/// Returns None if access granted, or a response to return if denied.
+/// Returns Ok(()) if access granted, or an ApiError if denied.
 async fn check_share_password_access(
     pool: &sqlx::SqlitePool,
     link: &db::SharedLinkRecord,
     token: &Option<String>,
-) -> Option<axum::response::Response> {
-    link.password_hash.as_ref()?;
+) -> Result<(), ApiError> {
+    if link.password_hash.is_none() {
+        return Ok(());
+    }
     match token {
         Some(t) if !t.is_empty() => {
-            match db::validate_share_password_token(pool, t, &link.share_id).await {
-                Ok(true) => None,
-                Ok(false) => Some(
-                    (
-                        StatusCode::UNAUTHORIZED,
-                        Json(serde_json::json!({"error": "invalid_or_expired_token", "requires_password": true})),
-                    )
-                        .into_response(),
-                ),
-                Err(err) => Some(internal_server_error(err)),
+            let valid = db::validate_share_password_token(pool, t, &link.share_id).await?;
+            if valid {
+                Ok(())
+            } else {
+                Err(ApiError::Unauthorized {
+                    message: "invalid or expired share token".to_string(),
+                })
             }
         }
-        _ => Some(
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"requires_password": true})),
-            )
-                .into_response(),
-        ),
+        _ => Err(ApiError::Unauthorized {
+            message: "password required".to_string(),
+        }),
     }
 }
 
@@ -406,18 +328,13 @@ async fn get_share_meta(
     State(state): State<ApiState>,
     Path(share_id): Path<String>,
     Query(query): Query<ShareTokenQuery>,
-) -> impl IntoResponse {
-    let link = match db::get_shared_link(&state.pool, &share_id).await {
-        Ok(Some(link)) => link,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "share_not_found"})),
-            )
-                .into_response()
-        }
-        Err(err) => return internal_server_error(err),
-    };
+) -> Result<Json<ShareMetaResponse>, ApiError> {
+    let link = db::get_shared_link(&state.pool, &share_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "share",
+            id: share_id.clone(),
+        })?;
 
     if !db::is_shared_link_valid(&link) {
         let reason = if link.revoked != 0 {
@@ -429,23 +346,14 @@ async fn get_share_meta(
         } else {
             "expired"
         };
-        return (
-            StatusCode::GONE,
-            Json(serde_json::json!({"error": "share_invalid", "reason": reason})),
-        )
-            .into_response();
+        return Err(ApiError::Gone {
+            message: format!("share is invalid: {reason}"),
+        });
     }
 
-    // Check password access
-    if let Some(response) = check_share_password_access(&state.pool, &link, &query.token).await {
-        return response;
-    }
+    check_share_password_access(&state.pool, &link, &query.token).await?;
 
-    // Get chunk locations for this revision
-    let chunks = match db::get_chunk_locations_for_revision(&state.pool, link.revision_id).await {
-        Ok(chunks) => chunks,
-        Err(err) => return internal_server_error(err),
-    };
+    let chunks = db::get_chunk_locations_for_revision(&state.pool, link.revision_id).await?;
 
     let chunk_meta: Vec<ShareChunkMeta> = chunks
         .iter()
@@ -457,87 +365,53 @@ async fn get_share_meta(
         })
         .collect();
 
-    (
-        StatusCode::OK,
-        Json(ShareMetaResponse {
-            file_name: link.file_name,
-            file_size: link.file_size,
-            chunk_count: chunk_meta.len(),
-            chunks: chunk_meta,
-        }),
-    )
-        .into_response()
+    Ok(Json(ShareMetaResponse {
+        file_name: link.file_name,
+        file_size: link.file_size,
+        chunk_count: chunk_meta.len(),
+        chunks: chunk_meta,
+    }))
 }
 
 async fn get_share_chunk(
     State(state): State<ApiState>,
     Path((share_id, chunk_index)): Path<(String, i64)>,
     Query(query): Query<ShareTokenQuery>,
-) -> impl IntoResponse {
-    let link = match db::get_shared_link(&state.pool, &share_id).await {
-        Ok(Some(link)) => link,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "share_not_found"})),
-            )
-                .into_response()
-        }
-        Err(err) => return internal_server_error(err),
-    };
+) -> Result<impl IntoResponse, ApiError> {
+    let link = db::get_shared_link(&state.pool, &share_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "share",
+            id: share_id.clone(),
+        })?;
 
     if !db::is_shared_link_valid(&link) {
-        return (
-            StatusCode::GONE,
-            Json(serde_json::json!({"error": "share_invalid"})),
-        )
-            .into_response();
+        return Err(ApiError::Gone {
+            message: "share is invalid".to_string(),
+        });
     }
 
-    // Check password access
-    if let Some(response) = check_share_password_access(&state.pool, &link, &query.token).await {
-        return response;
-    }
+    check_share_password_access(&state.pool, &link, &query.token).await?;
 
-    let downloader = match state.downloader.as_ref() {
-        Some(d) => d,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "downloader_unavailable"})),
-            )
-                .into_response()
+    let downloader = state.downloader.as_ref().ok_or(ApiError::ServiceUnavailable {
+        message: "downloader unavailable".to_string(),
+    })?;
+
+    let chunks = db::get_chunk_locations_for_revision(&state.pool, link.revision_id).await?;
+
+    let chunk = chunks.iter().find(|c| c.chunk_index == chunk_index).ok_or(
+        ApiError::NotFound {
+            resource: "chunk",
+            id: chunk_index.to_string(),
+        },
+    )?;
+
+    let encrypted = downloader.get_encrypted_chunk_bytes(chunk).await.map_err(|err| {
+        error!("failed to get encrypted chunk for share {share_id}: {err}");
+        ApiError::Internal {
+            message: "chunk fetch failed".to_string(),
         }
-    };
-
-    // Get chunk locations for this revision
-    let chunks = match db::get_chunk_locations_for_revision(&state.pool, link.revision_id).await {
-        Ok(chunks) => chunks,
-        Err(err) => return internal_server_error(err),
-    };
-
-    let chunk = match chunks.iter().find(|c| c.chunk_index == chunk_index) {
-        Some(c) => c,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "chunk_not_found"})),
-            )
-                .into_response()
-        }
-    };
-
-    let encrypted = match downloader.get_encrypted_chunk_bytes(chunk).await {
-        Ok(data) => data,
-        Err(err) => {
-            error!("failed to get encrypted chunk for share {share_id}: {err}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "chunk_fetch_failed"})),
-            )
-                .into_response();
-        }
-    };
+    })?;
 
     // If this is the last chunk, increment download count
     let is_last_chunk = chunk_index == (chunks.len() as i64 - 1);
@@ -545,10 +419,9 @@ async fn get_share_chunk(
         let _ = db::increment_shared_link_download_count(&state.pool, &share_id).await;
     }
 
-    (
+    Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/octet-stream")],
         encrypted.to_bytes(),
-    )
-        .into_response()
+    ))
 }

@@ -1,4 +1,3 @@
-#[allow(dead_code)]
 mod auth;
 mod diagnostics;
 pub mod error;
@@ -11,10 +10,10 @@ mod vault;
 use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
 use crate::downloader::Downloader;
 use crate::vault::VaultKeyStore;
-use axum::http::{Method, StatusCode, header};
+use axum::http::{Method, header};
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 use serde::Serialize;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use sqlx::SqlitePool;
@@ -24,7 +23,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
-use tracing::{error, info};
+use tracing::info;
 
 #[derive(Clone)]
 struct ApiState {
@@ -45,7 +44,7 @@ pub struct ApiServer {
 }
 
 #[derive(Debug)]
-pub enum ApiError {
+pub enum ApiServerError {
     InvalidBindAddress(String),
     Io(std::io::Error),
 }
@@ -94,13 +93,13 @@ impl ApiServer {
         diagnostics: Arc<DaemonDiagnostics>,
         downloader: Option<Arc<Downloader>>,
         runtime_reload_tx: Option<watch::Sender<u64>>,
-    ) -> Result<Self, ApiError> {
+    ) -> Result<Self, ApiServerError> {
         let _ = dotenvy::dotenv();
 
         let bind_addr = env::var("OMNIDRIVE_API_BIND")
             .unwrap_or_else(|_| "127.0.0.1:8787".to_string())
             .parse::<SocketAddr>()
-            .map_err(|_| ApiError::InvalidBindAddress("OMNIDRIVE_API_BIND".to_string()))?;
+            .map_err(|_| ApiServerError::InvalidBindAddress("OMNIDRIVE_API_BIND".to_string()))?;
 
         Ok(Self {
             pool,
@@ -112,7 +111,7 @@ impl ApiServer {
         })
     }
 
-    pub async fn run(self) -> Result<(), ApiError> {
+    pub async fn run(self) -> Result<(), ApiServerError> {
         let diagnostics = self.diagnostics.clone();
         let state = ApiState {
             pool: self.pool,
@@ -137,15 +136,15 @@ impl ApiServer {
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
             .await
-            .map_err(ApiError::Io)?;
+            .map_err(ApiServerError::Io)?;
         diagnostics.set_worker_status(WorkerKind::Api, WorkerStatus::Idle);
         info!("api server listening on http://{}", self.bind_addr);
 
-        axum::serve(listener, app).await.map_err(ApiError::Io)
+        axum::serve(listener, app).await.map_err(ApiServerError::Io)
     }
 }
 
-impl fmt::Display for ApiError {
+impl fmt::Display for ApiServerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidBindAddress(key) => {
@@ -156,7 +155,7 @@ impl fmt::Display for ApiError {
     }
 }
 
-impl std::error::Error for ApiError {}
+impl std::error::Error for ApiServerError {}
 
 async fn get_index() -> Html<&'static str> {
     Html(include_str!("../../static/index.html"))
@@ -196,16 +195,4 @@ fn share_cors_layer() -> CorsLayer {
         ])
 }
 
-pub(crate) fn internal_server_error(err: impl std::error::Error) -> axum::response::Response {
-    error!("api request failed: {err}");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({ "error": "internal_server_error" })),
-    )
-        .into_response()
-}
-
-fn io_error(err: impl fmt::Display) -> std::io::Error {
-    std::io::Error::other(err.to_string())
-}
 

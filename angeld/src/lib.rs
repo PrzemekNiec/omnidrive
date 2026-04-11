@@ -1,4 +1,5 @@
 pub mod acl;
+pub mod api_error;
 pub mod autostart;
 pub mod ingest;
 pub mod aws_http;

@@ -1,5 +1,6 @@
 mod acl;
 mod api;
+mod api_error;
 mod aws_http;
 mod cache;
 mod cloud_guard;

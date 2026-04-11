@@ -515,9 +515,35 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 | **34.3a** | Session tokens (local auth) | 34.0 | 5 (parallel z 34.2) | ✅ DONE (2026-04-09) |
 | **34.3b** | Google OAuth2 | 34.3a | 8 (opcjonalny) | ⬜ |
 | **34.4a** | ACL + route protection | 34.3a | 9 | ✅ DONE (2026-04-09) |
-| **34.5a-b** | Audit trail + UI | 34.0 | Parallel z wszystkim | ⬜ |
+| **Refactor** | ApiError migration + cleanup | 34.4a | — | ✅ DONE (2026-04-11) |
+| **E2E fix** | 3 e2e testy (reconciliation, recovery, scrubber) | Refactor | — | ✅ DONE (2026-04-11) |
+| **34.5a-b** | Audit trail + UI | 34.0 | Sesja A | ⬜ |
 | **34.6a** | Recovery keys (BIP-39) | 34.1b | 10 | ⬜ |
 | **34.6b** | Safety Numbers | 34.1b | P2 (later) | ⬜ |
+
+### Refactoring: Unified ApiError + API module split — DONE (2026-04-09 → 2026-04-11)
+
+Dwie fazy porządkowania po Epic 34:
+
+**Faza 1 (2026-04-09):**
+- CI: GitHub Actions (`windows-latest`, cargo check + clippy + test)
+- Clippy cleanup: 85 warnings → 0 (dead code, unused imports, redundant patterns)
+- Split monolitycznego `api.rs` (5026 linii) → `api/` directory (8 modułów + `mod.rs`)
+- Początkowy `ApiError` enum w `api/error.rs` (7 wariantów)
+- 6 e2e testów zaktualizowanych o session token auth
+
+**Faza 2 (2026-04-11):**
+- `ApiError` przeniesiony do `api_error.rs` (crate root) — rozwiązuje problem widoczności `lib.rs` vs `main.rs`
+- `api/error.rs` → re-export z `crate::api_error::ApiError`
+- Rozszerzenie do 10 wariantów: BadRequest, Unauthorized, Forbidden, NotFound, Conflict, Gone, Locked, Internal, BadGateway, ServiceUnavailable
+- `From` impls: `sqlx::Error`, `std::io::Error`, `Box<dyn Error>`, `Box<dyn Error + Send + Sync>`
+- `acl.rs` → zwraca `Result<_, ApiError>` zamiast `Result<_, Response>`
+- Wszystkie 7 plików handlerów zmigrowane: `auth.rs`, `diagnostics.rs`, `files.rs`, `vault.rs`, `sharing.rs`, `onboarding.rs`, `maintenance.rs`
+- Usunięto `internal_server_error()` i `io_error()` helpery z `mod.rs`
+- Server-level `ApiError` przemianowany na `ApiServerError`
+- Wynik: 0 warnings (check + clippy), wszystkie testy pass
+
+---
 
 ### Nowe dependencies
 
@@ -545,6 +571,253 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 - 4 testy revocation (device revoke, user remove, VK rotation trigger, lazy rewrap)
 - 4 testy ACL (owner/admin/member/viewer matrix)
 - 3 testy auth (session lifecycle, expire, OAuth mock)
+
+---
+
+## Plan Sesji — Pozostałe Zadania Epic 34
+
+Stan na 2026-04-11. Kompletna migracja ApiError zakończona, 0 warnings, 7/7 e2e testów przechodzi (+ 1 ignored: shell_repair wymaga sesji desktopowej). Trzy testy e2e (reconciliation, recovery, scrubber_repair) które wcześniej failowały — teraz przechodzą (naprawione w commitach f518a08 + refaktor ApiError).
+
+### Pozostałe zadania (5 pozycji)
+
+| # | Zadanie | Priorytet | Zależności | Estymowany rozmiar |
+|---|---------|-----------|------------|-------------------|
+| 1 | 34.5a: Audit logging — brakujące callsites | P1 | Brak | Mały |
+| 2 | 34.5b: Audit log API + dashboard UI | P1 | 34.5a | Średni |
+| 3 | 34.6a: Recovery keys (BIP-39 mnemonic) | P1 | Brak | Średni |
+| 4 | 34.3b: Google OAuth2 | P2 (opcjonalny) | 34.3a | Duży |
+| 5 | 34.6b: Safety Numbers | P3 (later) | 34.1b | Mały (UI-only) |
+
+### Analiza współdzielonych plików
+
+Które pliki dotykają które zadania — klucz do minimalizacji ładowania kontekstu:
+
+| Plik | 34.5a | 34.5b | 34.6a | 34.3b | 34.6b |
+|------|-------|-------|-------|-------|-------|
+| `db.rs` | — | filtr queries | nowe fn | nowe tabele/fn | — |
+| `api/vault.rs` | audit callsites | GET endpoint | generate/recover endpoints | — | display endpoint |
+| `api/auth.rs` | — | — | — | OAuth flow | — |
+| `api/mod.rs` | — | — | — | routing | — |
+| `identity.rs` | — | — | — | — | hash fn |
+| `static/index.html` | — | panel UI | panel UI | login UI | panel UI |
+| `Cargo.toml` | — | — | `bip39` | `oauth2`, `jsonwebtoken` | — |
+| `acl.rs` | — | require_role check | — | session lookup | — |
+
+**Wnioski:**
+- 34.5a+b naturalnie łączą się w jedną sesję (audit pisze → audit czyta)
+- 34.6a jest niezależny — osobna sesja
+- 34.3b jest największy i niezależny — 1-2 sesje
+- 34.6b jest mały, czysto UI — można dołączyć do dowolnej sesji
+
+---
+
+### Sesja A: Audit Trail (34.5a + 34.5b)
+
+**Cel:** Kompletny audit trail — logowanie zdarzeń + API + panel w dashboardzie.
+
+**Pliki do załadowania:** `db.rs` (queries), `api/vault.rs` (istniejące callsites), `api/maintenance.rs` (nowy endpoint lub osobny moduł), `static/index.html` (panel UI)
+
+#### Krok A.1: Przegląd istniejących callsites i brakujących zdarzeń
+- `vault.rs` ma 7x `insert_audit_log` — zmapować które akcje już logujemy
+- Zidentyfikować brakujące: share create/revoke, role change, session login/logout, onboarding events
+- Zidentyfikować brak `vault_id` w kontekstach gdzie nie jest oczywisty (np. share)
+
+#### Krok A.2: Dodać brakujące callsites
+- `api/sharing.rs`: audit na create_share, revoke_share, delete_share
+- `api/auth.rs`: audit na login (unlock), logout
+- `api/onboarding.rs`: audit na join-existing, complete
+- Każdy INSERT jest fire-and-forget (`let _ = ...`) — zero wpływu na latencję
+
+#### Krok A.3: Audit log API endpoint
+- `GET /api/audit-logs?limit=50&offset=0` — paginacja
+- `GET /api/audit-logs?action=revoke_device` — filtrowanie po akcji
+- `GET /api/audit-logs?actor=user_id` — filtrowanie po aktorze
+- ACL: `require_role(Admin)` — tylko admin+ widzi logi
+- Nowa fn w `db.rs`: `list_audit_logs_filtered(pool, vault_id, filters, limit, offset)`
+- Dodać endpoint w `api/vault.rs` lub nowy `api/audit.rs`
+
+#### Krok A.4: Dashboard panel "Historia zmian"
+- Nowa sekcja w `index.html` — tabela z kolumnami: Data, Kto, Akcja, Cel, Szczegóły
+- Polling `GET /api/audit-logs?limit=50` co 30s
+- Filtrowanie po typie akcji (dropdown)
+- Formatowanie timestampów do czytelnej daty
+
+#### Krok A.5: Testy i weryfikacja
+- Rozszerzyć istniejący test `audit_log_lifecycle` o nowe filtry
+- `cargo check` + `cargo clippy` + `cargo test`
+- Ręczna weryfikacja w przeglądarce: audit panel wyświetla logi
+
+**Exit criteria:** `cargo test` green, nowy panel widoczny w dashboardzie, audit loguje wszystkie operacje zarządzania.
+
+---
+
+### Sesja B: Recovery Keys — BIP-39 (34.6a)
+
+**Cel:** Owner może wygenerować 24-słowny klucz odzyskiwania i użyć go do odblokowania skarbca.
+
+**Pliki do załadowania:** `Cargo.toml` (dependency), `vault.rs` (VK encode/decode), `db.rs` (hash storage), `api/vault.rs` (endpoints), `static/index.html` (UI)
+
+#### Krok B.1: Dependency i core logic
+- Dodać `bip39 = "2"` do `angeld/Cargo.toml`
+- Nowy moduł `angeld/src/recovery.rs`:
+  - `generate_mnemonic(vault_key: &[u8; 32]) -> String` — VK → 24 słowa (256 bits = 24 words)
+  - `recover_vault_key(mnemonic: &str) -> Result<[u8; 32], RecoveryError>` — 24 słowa → VK
+  - `hash_mnemonic(mnemonic: &str) -> String` — do weryfikacji w DB (nie do odtworzenia)
+- Unit testy: generate → recover roundtrip, invalid mnemonic rejection
+
+#### Krok B.2: DB i persistence
+- Nowa kolumna w `vault_state`: `recovery_key_hash TEXT` (hash mnemonic, do sprawdzenia czy user zapisał)
+- `db.rs`: `set_recovery_key_hash()`, `get_recovery_key_hash()`, `has_recovery_key()`
+- Recovery key jest generowany z aktualnego Vault Key — po rotacji VK trzeba wygenerować nowy
+
+#### Krok B.3: API endpoints
+- `POST /api/vault/generate-recovery-key` — generuje mnemonic, zwraca 24 słowa, zapisuje hash w DB
+  - ACL: Owner only
+  - Zwraca mnemonic TYLKO RAZ — potem nie da się go odczytać z API
+  - NIGDY nie logować mnemonic (zero-knowledge rule)
+- `POST /api/vault/recover` — przyjmuje mnemonic, odzyskuje VK, unlockuje vault
+  - Bez ACL (vault jest locked, nie ma sesji)
+  - Walidacja: hash mnemonic musi zgadzać się z `recovery_key_hash`
+- `GET /api/vault/recovery-status` — czy recovery key został wygenerowany (bool)
+
+#### Krok B.4: Dashboard UI — generacja
+- Nowa sekcja "Klucz Odzyskiwania" w panelu Skarbca
+- Przycisk "Generuj Klucz Odzyskiwania" → modal z 24 słowami
+- Confirmation step: user wpisuje 3 losowe słowa jako dowód zapisania
+- Po potwierdzeniu: modal się zamyka, UI pokazuje "Klucz odzyskiwania: skonfigurowany"
+- Warning: "Zapisz te 24 słowa na papierze. Bez nich nie odzyskasz danych."
+
+#### Krok B.5: Dashboard UI — odzyskiwanie
+- Na ekranie unlock (vault locked): link "Zapomniałeś hasła? Użyj klucza odzyskiwania"
+- Formularz: 24 pola input (po 1 słowo) lub jedno pole textarea
+- Submit → `POST /api/vault/recover` → jeśli OK, vault unlocked → redirect do dashboardu
+- Error handling: "Nieprawidłowy klucz odzyskiwania"
+
+#### Krok B.6: Testy i weryfikacja
+- Unit: roundtrip, invalid words, wrong checksum
+- Integration: generate → verify hash in DB → recover → vault unlocked
+- `cargo check` + `cargo clippy` + `cargo test`
+- Ręczna weryfikacja w przeglądarce
+
+**Exit criteria:** `cargo test` green, recovery key flow działa end-to-end, mnemonic nigdy nie jest logowany.
+
+---
+
+### Sesja C: Google OAuth2 (34.3b) — Część 1: Backend
+
+**Cel:** Backend OAuth2 flow — Google login → user identity → session token. Bez UI.
+
+**Pliki do załadowania:** `Cargo.toml` (dependencies), `api/auth.rs` (OAuth routes), `db.rs` (user lookup/create), `acl.rs` (session integration)
+
+**Uwaga:** To jest OPCJONALNY epic. Google OAuth = convenience identity, NIE = klucz kryptograficzny. Vault nadal wymaga passphrase do unlock po OAuth login.
+
+#### Krok C.1: Dependencies i konfiguracja
+- Dodać do `angeld/Cargo.toml`: `oauth2 = "4"`, `reqwest` (jeśli nie ma)
+- Env vars: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`
+- `config.rs`: `OAuthConfig` struct, opcjonalny (None = OAuth disabled)
+
+#### Krok C.2: OAuth2 flow — backend
+- `GET /api/auth/google` — generuj authorization URL, redirect do Google
+- `GET /api/auth/google/callback?code=...&state=...` — exchange code → access token → userinfo
+- Google userinfo → `email`, `sub` (subject)
+- Lookup/create user: `users WHERE auth_provider='google' AND auth_subject=sub`
+- Jeśli nowy user → auto-create z `role='viewer'` (owner musi upgrade'ować)
+- Generuj session token → zwróć jako cookie/JSON
+
+#### Krok C.3: Session integration
+- OAuth session = identyczny token jak passphrase session (z 34.3a)
+- Różnica: OAuth session NIE unlockuje vault — `vault_keys` pozostają locked
+- Po OAuth login: dashboard wyświetla "Zalogowano jako X" ale vault jest locked
+- Unlock nadal wymaga `POST /api/vault/unlock` z passphrase
+
+#### Krok C.4: Testy
+- Unit: mock OAuth exchange, user create/lookup, session generation
+- Integration: full flow z mock Google server (nie prawdziwy Google)
+- Verify: OAuth login does NOT unlock vault
+- `cargo check` + `cargo clippy` + `cargo test`
+
+**Exit criteria:** `cargo test` green, OAuth backend kompletny, vault bezpiecznie oddzielony od OAuth identity.
+
+---
+
+### Sesja D: Google OAuth2 (34.3b) — Część 2: Frontend
+
+**Cel:** Dashboard UI dla Google login + user management.
+
+**Pliki do załadowania:** `static/index.html` (UI), `api/auth.rs` (weryfikacja flow), `api/vault.rs` (user management UI hooks)
+
+#### Krok D.1: Login UI
+- Przycisk "Zaloguj przez Google" na stronie dashboardu (jeśli OAuth skonfigurowany)
+- Redirect do `GET /api/auth/google` → Google consent → callback → dashboard
+- Po powrocie: wyświetl "Zalogowano jako {email}" w headerze
+
+#### Krok D.2: User management panel
+- Lista userów z rolami (owner/admin/member/viewer)
+- Invite flow: generuj kod zaproszenia, wyświetl do skopiowania
+- Role management: owner może zmienić role (dropdown)
+- Remove user: przycisk z potwierdzeniem
+
+#### Krok D.3: UX — vault unlock po OAuth
+- Jeśli user zalogowany OAuth ale vault locked:
+  - Wyświetl: "Zalogowano jako X. Odblokuj Skarbiec aby uzyskać dostęp do plików."
+  - Formularz passphrase (jak dotychczas)
+- Jeśli user zalogowany OAuth i vault unlocked:
+  - Pełny dostęp do dashboardu
+
+#### Krok D.4: Weryfikacja
+- Ręczna weryfikacja w przeglądarce (prawdziwy Google login)
+- Edge cases: OAuth disabled, expired session, role mismatch
+- `cargo check` + `cargo clippy` + `cargo test`
+
+**Exit criteria:** Google login działa end-to-end, vault bezpiecznie oddzielony od OAuth, user management w UI.
+
+---
+
+### Sesja E: Safety Numbers (34.6b) + Polish
+
+**Cel:** Safety Numbers do weryfikacji out-of-band + ogólny polish Epic 34.
+
+**Pliki do załadowania:** `identity.rs` (hash), `api/vault.rs` (endpoint), `static/index.html` (UI)
+
+#### Krok E.1: Safety Number generation
+- `identity.rs`: `compute_safety_number(pub_key_a: &[u8; 32], pub_key_b: &[u8; 32]) -> String`
+- Format: 6 grup po 5 cyfr (np. `12345 67890 12345 67890 12345 67890`)
+- SHA-256(sorted_keys) → truncate → decimal format
+- Symetryczny: `safety_number(A, B) == safety_number(B, A)`
+
+#### Krok E.2: API + UI
+- `GET /api/vault/safety-number/{device_id}` — zwraca safety number między moim device a wskazanym
+- Dashboard: w panelu "Urządzenia" → kliknięcie na device → modal z Safety Number
+- Instrukcja: "Porównaj ten numer z osobą posiadającą to urządzenie (telefon, osobiście)"
+
+#### Krok E.3: Epic 34 finalizacja
+- Przegląd wszystkich endpointów — spójność error handling, response format
+- Przegląd audit trail — czy wszystkie operacje są logowane
+- `cargo clippy`, `cargo test`, sprawdzenie CI
+
+**Exit criteria:** Safety Numbers wyświetlane w UI, Epic 34 zamknięty.
+
+---
+
+### Podsumowanie sesji
+
+| Sesja | Zadania | Pliki główne | Rozmiar |
+|-------|---------|-------------|---------|
+| **A** | 34.5a + 34.5b (Audit Trail) | db.rs, api/vault.rs, sharing.rs, auth.rs, index.html | Średni |
+| **B** | 34.6a (Recovery Keys) | recovery.rs (nowy), vault.rs, db.rs, api/vault.rs, index.html | Średni |
+| **C** | 34.3b backend (OAuth2) | Cargo.toml, config.rs, api/auth.rs, db.rs | Średni |
+| **D** | 34.3b frontend (OAuth2 UI) | index.html, api/auth.rs | Mały-Średni |
+| **E** | 34.6b (Safety Numbers) + polish | identity.rs, api/vault.rs, index.html | Mały |
+
+**Rekomendowana kolejność:** A → B → C → D → E
+
+**Uzasadnienie:**
+- **A (Audit)** jest P1 i nie wymaga nowych dependencies — szybka wygrana
+- **B (Recovery Keys)** jest P1 i niezależny od OAuth — bezpieczna implementacja bez ryzyka regresji
+- **C+D (OAuth)** jest P2 i największy — wymaga nowych crate'ów i konfiguracji Google Cloud Console
+- **E (Safety Numbers)** jest P3 i czysto UI — naturalny finisher
+
+**Każda sesja kończy się:** `cargo check` (0 warnings) + `cargo clippy --workspace -- -D warnings` (clean) + `cargo test --workspace` (all pass) + ręczna weryfikacja UI.
 
 ---
 
