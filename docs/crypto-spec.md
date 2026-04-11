@@ -249,7 +249,7 @@ Jesli migracja failuje w polowie:
 ### 6.1 Share Link = DEK w URL Fragment
 
 ```
-https://share.omnidrive.app/{share_id}#{base64url(DEK)}
+https://skarbiec.app/{share_id}#{base64url(DEK)}
 ```
 
 - Serwer **nigdy nie widzi DEK** (fragment URI nie jest wysylany do serwera)

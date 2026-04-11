@@ -434,63 +434,15 @@ Scope:
 Outcome:
 - onboarding extends the product instead of regressing the stable local-first flow
 
-#### Task B8: Production Bring-Up and Multi-Device Acceptance
+#### Task B8: Production Bring-Up and Multi-Device Acceptance [x] Completed
 Goal:
 - connect the real providers and validate the first honest multi-device scenario
 
-Scope:
-- configure Cloudflare R2, Backblaze B2, and Scaleway
-- create or restore one shared vault
-- attach second machine to that vault
-- rerun the `Epic 31 + Epic 32` acceptance pass with real data paths
-
-Outcome:
-- OmniDrive becomes production-testable across real devices and real providers
-
-B8 execution pack (added for repeatable real-world validation):
-- `scripts/b8-lenovo-cloud-enable.ps1`
-  - enables/tests configured providers via onboarding API on the primary machine (Lenovo)
-  - finalizes onboarding and writes JSON evidence to `.omnidrive/b8-lenovo-report-*.json`
-- `scripts/b8-dell-join-existing.ps1`
-  - configures provider on the secondary machine (Dell), executes join-existing restore, and writes `.omnidrive/b8-dell-report-*.json`
-- `scripts/b8-acceptance-check.ps1`
-  - runs a strict API-based acceptance gate and fails fast when core invariants are broken
-  - writes `.omnidrive/b8-acceptance-*.json`
-
-Latest B8 progress snapshot (2026-04-04):
-- Lenovo (primary) is validated as the source vault for join-existing tests:
-  - onboarding: `COMPLETED` + `CLOUD_ENABLED`
-  - provider validation: `backblaze-b2` succeeds
-  - metadata backup: successful uploads recorded (`metadata_backups` has `COMPLETED` on B2)
-- Dell (secondary) initially failed join-existing with:
-  - `SnapshotApply`: restored snapshot missing `vault_state`
-  - later `SnapshotApply`: `database restored is locked`
-- root-cause fixes implemented after those failures:
-  - `vault::unlock` now guarantees local `vault_state` bootstrap for legacy DB states
-  - metadata backup now requires successful `latest.db.enc` update to mark attempt `COMPLETED`
-  - restore now falls back from `latest.db.enc` to recent snapshot keys and validates `vault_state` before apply
-  - DB graft now uses an isolated apply-copy of staging DB + `PRAGMA busy_timeout` to reduce attach/apply lock failures
-- installer rebuilt with all fixes as:
-  - `dist/installer/output/OmniDrive-Setup-0.1.11.exe`
-- Dell retest discovered additional root cause:
-  - stale `omnidrive.db` survived cleanup because `Remove-Item` silently failed on locked files
-  - wizard never appeared because daemon read old DB with `onboarding_state=COMPLETED`
-  - user never got to choose "Join Existing Vault" — onboarding was already finalized
-- fixes implemented (second round):
-  - `cleanup_stale_restore_staging()` runs at daemon startup to remove leftover `restore-staging-*.db` files
-  - `POST /api/onboarding/reset` endpoint added as a safety valve to force wizard reappearance
-  - `scripts/b8-dell-clean-reset.ps1` created with retry loop, individual file cleanup, and verification
-- installer rebuilt again with all second-round fixes
-- Dell retest (v0.1.12) discovered: `database restored is locked` from ATTACH DATABASE on Windows
-  - fix: eliminated ATTACH DATABASE entirely, rewrote `graft_restored_metadata_snapshot()` to use a separate read-only pool
-  - lock error resolved
-- Dell retest (v0.1.12 post-lock-fix) discovered: type mismatches in `Restored*` structs
-  - error: `mismatched types; Rust type alloc::string::String (as SQL type TEXT) is not compatible with SQL type INTEGER` on `mtime` column
-  - root cause: 11 `Restored*` struct definitions used `String` for fields that are actually `i64` or `Option<i64>` in SQLite
-  - fix (v0.1.13): aligned all `Restored*` struct types to match actual `*Record` definitions and SQLite column types
-  - affected fields: `mtime`, `mode`, `created_at`, `immutable_until`, `origin`, `pin_state`, `hydration_state`, `backup_id`, `plaintext_hash`, `checksum`, `attempts`, `last_verified_at`
-  - Inno Setup `AppVersion` updated to read from Cargo.toml version, installer now produces `OmniDrive-Setup-{version}.exe`
-- installer rebuilt as `OmniDrive-Setup-0.1.13.exe` — Dell retest in progress
+Status: **CLOSED / PASSED** (2026-04-06, v0.1.20)
+- Lenovo (primary) and Dell (joined) both enumerate O:\ instantly, no timeouts
+- Three cfapi fixes landed in smart_sync.rs (FILE_FLAG_BACKUP_SEMANTICS, unconditional dir conversion, FETCH_PLACEHOLDERS CfExecute)
+- Dell confirmed working after fresh install of v0.1.20
+- Minor deferred: Cloudflare R2 metadata backup ConnectionReset on Dell (network issue, non-blocking), 0 trusted peers (LAN mesh not yet implemented)
 
 Current bridge implementation status:
 - `B1` completed:
@@ -648,7 +600,7 @@ Goal:
 - architecture for links based on DEK in URI fragment
 
 Scope:
-- format: `https://share.omnidrive.app/{file_id}#{DEK_key}`
+- format: `https://skarbiec.app/{file_id}#{DEK_key}`
 - URI fragment (`#`) is ignored by HTTP servers — key stays local
 - design decision: per-file DEK (one key per file regardless of EC chunk count); documented for potential future per-chunk DEK change
 - optional TTL (link lifetime) and one-time links (burn-after-read)

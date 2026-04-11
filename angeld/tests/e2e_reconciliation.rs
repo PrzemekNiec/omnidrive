@@ -1,3 +1,5 @@
+mod common;
+
 use angeld::db;
 use angeld::downloader::Downloader;
 use angeld::vault::VaultKeyStore;
@@ -106,6 +108,12 @@ impl ReconciliationEnv {
     }
 
     async fn spawn_daemon(&self, mock_addr: std::net::SocketAddr) -> Result<DaemonHandle, Box<dyn std::error::Error>> {
+        // Pre-seed the DB with mock provider configs so the daemon starts in
+        // full cloud mode (with repair/scrubber/gc workers enabled).
+        let pool = db::init_db(&self.db_url).await?;
+        common::seed_mock_providers(&pool, mock_addr, &self.watch_root).await?;
+        pool.close().await;
+
         let api_port = reserve_port().await?;
         let base_url = format!("http://127.0.0.1:{api_port}");
         let repo_root = FsPath::new(env!("CARGO_MANIFEST_DIR"))
@@ -138,24 +146,6 @@ impl ReconciliationEnv {
             .env("OMNIDRIVE_REPAIR_READ_TIMEOUT_MS", "1000")
             .env("OMNIDRIVE_GC_POLL_INTERVAL_MS", "60000")
             .env("OMNIDRIVE_METADATA_BACKUP_INTERVAL_MS", "60000")
-            .env("OMNIDRIVE_R2_ENDPOINT", format!("http://{mock_addr}"))
-            .env("OMNIDRIVE_R2_REGION", "auto")
-            .env("OMNIDRIVE_R2_BUCKET", "bucket-r2")
-            .env("OMNIDRIVE_R2_ACCESS_KEY_ID", "test")
-            .env("OMNIDRIVE_R2_SECRET_ACCESS_KEY", "test")
-            .env("OMNIDRIVE_R2_FORCE_PATH_STYLE", "true")
-            .env("OMNIDRIVE_SCALEWAY_ENDPOINT", format!("http://{mock_addr}"))
-            .env("OMNIDRIVE_SCALEWAY_REGION", "pl-waw")
-            .env("OMNIDRIVE_SCALEWAY_BUCKET", "bucket-scaleway")
-            .env("OMNIDRIVE_SCALEWAY_ACCESS_KEY_ID", "test")
-            .env("OMNIDRIVE_SCALEWAY_SECRET_ACCESS_KEY", "test")
-            .env("OMNIDRIVE_SCALEWAY_FORCE_PATH_STYLE", "true")
-            .env("OMNIDRIVE_B2_ENDPOINT", format!("http://{mock_addr}"))
-            .env("OMNIDRIVE_B2_REGION", "eu-central-003")
-            .env("OMNIDRIVE_B2_BUCKET", "bucket-b2")
-            .env("OMNIDRIVE_B2_ACCESS_KEY_ID", "test")
-            .env("OMNIDRIVE_B2_SECRET_ACCESS_KEY", "test")
-            .env("OMNIDRIVE_B2_FORCE_PATH_STYLE", "true")
             .env("RUST_LOG", "info")
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());

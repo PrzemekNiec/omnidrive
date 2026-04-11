@@ -206,6 +206,16 @@ impl MetadataBackupProviderManager {
             .await
             .map_err(|err| DisasterRecoveryError::DownloadFailed(vec![err.to_string()]))?;
         if configs.is_empty() {
+            // Fallback: use local metadata backup directory if configured
+            if let Some(root) = std::env::var_os("OMNIDRIVE_METADATA_BACKUP_DIR") {
+                let root = PathBuf::from(root);
+                fs::create_dir_all(&root).await?;
+                return Ok(Self {
+                    uploaders: Vec::new(),
+                    download_providers: Vec::new(),
+                    local_store: Some(LocalMetadataBackupStore { root }),
+                });
+            }
             return Err(DisasterRecoveryError::NoConfiguredProviders);
         }
 
