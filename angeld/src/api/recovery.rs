@@ -16,7 +16,7 @@ use crate::vault::VaultError;
 
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use omnidrive_core::crypto::{KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_root_keys, wrap_key};
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,36 @@ pub(super) fn routes() -> Router<ApiState> {
         .route("/api/recovery/generate", post(generate_recovery_key))
         .route("/api/recovery/restore", post(restore_from_recovery_key))
         .route("/api/recovery/revoke", post(revoke_recovery_keys))
+        .route("/api/recovery/status", get(recovery_status))
+}
+
+// ── GET /api/recovery/status ───────────────────────────────────────────
+
+#[derive(Serialize)]
+struct StatusResponse {
+    active_count: usize,
+    last_created_at: Option<i64>,
+    vk_generation: i64,
+    word_count: usize,
+}
+
+async fn recovery_status(
+    State(state): State<ApiState>,
+) -> Result<Json<StatusResponse>, ApiError> {
+    let vault = db::get_vault_params(&state.pool)
+        .await?
+        .ok_or(ApiError::BadRequest {
+            code: "vault_not_initialized",
+            message: "vault not initialized".to_string(),
+        })?;
+    let active = db::list_active_recovery_keys(&state.pool, &vault.vault_id).await?;
+    let last_created_at = active.iter().map(|r| r.created_at).max();
+    Ok(Json(StatusResponse {
+        active_count: active.len(),
+        last_created_at,
+        vk_generation: vault.vault_key_generation.unwrap_or(1),
+        word_count: recovery::RECOVERY_WORD_COUNT,
+    }))
 }
 
 // ── POST /api/recovery/generate ─────────────────────────────────────────

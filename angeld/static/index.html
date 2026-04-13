@@ -591,6 +591,53 @@
     </section>
 
     <section class="glass-panel mt-8 rounded-2xl p-5">
+      <div class="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Klucz Odzyskiwania (BIP-39)</p>
+          <h2 class="mt-2 text-lg font-semibold text-white">Papierowa kopia bezpieczeństwa Skarbca</h2>
+          <p id="recoveryKeyMessage" class="mt-2 max-w-3xl text-sm text-slate-300">
+            Pobieranie statusu kluczy odzyskiwania...
+          </p>
+        </div>
+        <div class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+          <span id="recoveryKeyStatusBadge" class="inline-flex justify-center rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-sm font-medium text-slate-200">Ładowanie</span>
+          <button
+            id="recoveryKeyGenerateButton"
+            class="inline-flex items-center justify-center rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition hover:border-cyan-400/50 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Generuj klucz
+          </button>
+          <button
+            id="recoveryKeyRestoreButton"
+            class="inline-flex items-center justify-center rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-100 transition hover:border-amber-400/50 hover:bg-amber-500/20"
+          >
+            Użyj klucza odzyskiwania
+          </button>
+          <button
+            id="recoveryKeyRevokeButton"
+            class="hidden inline-flex items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-100 transition hover:border-rose-400/50 hover:bg-rose-500/20"
+          >
+            Unieważnij wszystkie
+          </button>
+        </div>
+      </div>
+      <div class="grid gap-3 md:grid-cols-3">
+        <div class="glass-muted rounded-xl px-4 py-3">
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Aktywne klucze</p>
+          <p id="recoveryKeyActiveCount" class="mt-2 text-xl font-semibold text-white">-</p>
+        </div>
+        <div class="glass-muted rounded-xl px-4 py-3">
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Ostatnio utworzony</p>
+          <p id="recoveryKeyLastCreated" class="mt-2 text-sm font-medium text-white">-</p>
+        </div>
+        <div class="glass-muted rounded-xl px-4 py-3">
+          <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Generacja Vault Key</p>
+          <p id="recoveryKeyVkGeneration" class="mt-2 text-sm font-medium text-white">-</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="glass-panel mt-8 rounded-2xl p-5">
       <div class="mb-4 flex items-center justify-between">
         <div>
           <h2 class="text-lg font-semibold text-white">Eksplorator plików</h2>
@@ -790,6 +837,120 @@
           </table>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div
+    id="recoveryKeyGenerateModal"
+    class="hidden fixed inset-0 z-[9998] overflow-y-auto bg-black/70 backdrop-blur-sm"
+  >
+    <div class="mx-auto flex min-h-screen max-w-3xl items-center px-6 py-10">
+      <section class="glass-panel w-full rounded-[28px] p-6">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Klucz Odzyskiwania</p>
+            <h2 class="mt-2 text-2xl font-semibold text-white">Twoje 24 słowa</h2>
+            <p class="mt-2 text-sm text-slate-300">
+              Te słowa są jedynym sposobem na odzyskanie Skarbca, jeśli zapomnisz hasła głównego.
+              Nie są nigdzie zapisywane na serwerze. <strong class="text-amber-200">Zapisz je na papierze</strong> — ekran zniknie po zamknięciu okna.
+            </p>
+          </div>
+          <button id="recoveryKeyGenerateCloseButton" class="rounded-lg border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-200 hover:bg-white/10">×</button>
+        </div>
+
+        <div id="recoveryKeyGenerateError" class="hidden mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100"></div>
+
+        <div id="recoveryKeyMnemonicGrid" class="mt-6 grid gap-2 sm:grid-cols-3 md:grid-cols-4 text-sm">
+          <p class="col-span-full text-slate-400">Generowanie...</p>
+        </div>
+
+        <div id="recoveryKeyVerifyPanel" class="hidden mt-6 rounded-2xl border border-amber-400/20 bg-amber-500/5 p-4">
+          <p class="text-sm font-medium text-amber-100">Potwierdzenie zapisania klucza</p>
+          <p class="mt-2 text-xs text-amber-100/80">Wpisz wskazane słowa, aby udowodnić, że masz papierową kopię.</p>
+          <div id="recoveryKeyVerifyInputs" class="mt-3 grid gap-3 sm:grid-cols-3"></div>
+          <p id="recoveryKeyVerifyError" class="hidden mt-3 text-sm text-rose-200"></p>
+        </div>
+
+        <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+          <button
+            id="recoveryKeyCopyButton"
+            class="inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-white/20 hover:bg-white/10"
+          >
+            Skopiuj słowa
+          </button>
+          <button
+            id="recoveryKeyConfirmButton"
+            class="inline-flex items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-100 transition hover:border-emerald-400/50 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Zapisałem klucz — zamknij
+          </button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div
+    id="recoveryKeyRestoreModal"
+    class="hidden fixed inset-0 z-[9998] overflow-y-auto bg-black/70 backdrop-blur-sm"
+  >
+    <div class="mx-auto flex min-h-screen max-w-3xl items-center px-6 py-10">
+      <section class="glass-panel w-full rounded-[28px] p-6">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Odzyskiwanie</p>
+            <h2 class="mt-2 text-2xl font-semibold text-white">Użyj klucza odzyskiwania</h2>
+            <p class="mt-2 text-sm text-slate-300">
+              Wklej 24 słowa rozdzielone spacjami i ustaw nowe hasło główne. Operacja przepisze hasło,
+              ale nie zmieni Vault Key — wszystkie pliki pozostaną dostępne.
+            </p>
+          </div>
+          <button id="recoveryKeyRestoreCloseButton" class="rounded-lg border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-200 hover:bg-white/10">×</button>
+        </div>
+
+        <div id="recoveryKeyRestoreError" class="hidden mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100"></div>
+        <div id="recoveryKeyRestoreSuccess" class="hidden mt-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100"></div>
+
+        <label class="mt-6 block text-sm text-slate-300">
+          <span class="text-xs uppercase tracking-[0.22em] text-slate-500">24 słowa odzyskiwania</span>
+          <textarea
+            id="recoveryKeyMnemonicInput"
+            rows="4"
+            class="mt-3 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-white/20"
+            placeholder="abandon ability able about ..."
+            autocomplete="off"
+            spellcheck="false"
+          ></textarea>
+        </label>
+
+        <label class="mt-4 block text-sm text-slate-300">
+          <span class="text-xs uppercase tracking-[0.22em] text-slate-500">Nowe hasło główne</span>
+          <input
+            id="recoveryKeyNewPassphrase"
+            type="password"
+            class="mt-3 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-white/20"
+            autocomplete="new-password"
+          />
+        </label>
+
+        <label class="mt-4 block text-sm text-slate-300">
+          <span class="text-xs uppercase tracking-[0.22em] text-slate-500">Powtórz hasło</span>
+          <input
+            id="recoveryKeyNewPassphraseConfirm"
+            type="password"
+            class="mt-3 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-white/20"
+            autocomplete="new-password"
+          />
+        </label>
+
+        <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+          <button
+            id="recoveryKeyRestoreSubmitButton"
+            class="inline-flex items-center justify-center rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-100 transition hover:border-amber-400/50 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Odzyskaj dostęp
+          </button>
+        </div>
+      </section>
     </div>
   </div>
 
@@ -1109,6 +1270,7 @@
         loadCacheStatus(),
         loadScrubStatus(),
         loadRecoveryStatus(),
+        loadRecoveryKeyStatus(),
         loadFiles(),
         loadShares(),
         loadAuditTrail(),
@@ -1734,6 +1896,239 @@
         autoRefreshHandle = setInterval(() => {
           loadDashboard().catch((error) => console.error(error));
         }, 10000);
+      }
+    }
+
+    // ── Recovery Keys (Epic 34.6a) ──────────────────────────────────────
+    const recoveryKeyState = {
+      mnemonicWords: null,
+      verifyIndices: [],
+    };
+    const recoveryKeyMessage = document.getElementById("recoveryKeyMessage");
+    const recoveryKeyStatusBadge = document.getElementById("recoveryKeyStatusBadge");
+    const recoveryKeyActiveCount = document.getElementById("recoveryKeyActiveCount");
+    const recoveryKeyLastCreated = document.getElementById("recoveryKeyLastCreated");
+    const recoveryKeyVkGeneration = document.getElementById("recoveryKeyVkGeneration");
+    const recoveryKeyGenerateButton = document.getElementById("recoveryKeyGenerateButton");
+    const recoveryKeyRestoreButton = document.getElementById("recoveryKeyRestoreButton");
+    const recoveryKeyRevokeButton = document.getElementById("recoveryKeyRevokeButton");
+    const recoveryKeyGenerateModal = document.getElementById("recoveryKeyGenerateModal");
+    const recoveryKeyGenerateCloseButton = document.getElementById("recoveryKeyGenerateCloseButton");
+    const recoveryKeyMnemonicGrid = document.getElementById("recoveryKeyMnemonicGrid");
+    const recoveryKeyVerifyPanel = document.getElementById("recoveryKeyVerifyPanel");
+    const recoveryKeyVerifyInputs = document.getElementById("recoveryKeyVerifyInputs");
+    const recoveryKeyVerifyError = document.getElementById("recoveryKeyVerifyError");
+    const recoveryKeyConfirmButton = document.getElementById("recoveryKeyConfirmButton");
+    const recoveryKeyCopyButton = document.getElementById("recoveryKeyCopyButton");
+    const recoveryKeyGenerateError = document.getElementById("recoveryKeyGenerateError");
+    const recoveryKeyRestoreModal = document.getElementById("recoveryKeyRestoreModal");
+    const recoveryKeyRestoreCloseButton = document.getElementById("recoveryKeyRestoreCloseButton");
+    const recoveryKeyMnemonicInput = document.getElementById("recoveryKeyMnemonicInput");
+    const recoveryKeyNewPassphrase = document.getElementById("recoveryKeyNewPassphrase");
+    const recoveryKeyNewPassphraseConfirm = document.getElementById("recoveryKeyNewPassphraseConfirm");
+    const recoveryKeyRestoreSubmitButton = document.getElementById("recoveryKeyRestoreSubmitButton");
+    const recoveryKeyRestoreError = document.getElementById("recoveryKeyRestoreError");
+    const recoveryKeyRestoreSuccess = document.getElementById("recoveryKeyRestoreSuccess");
+
+    recoveryKeyGenerateButton.addEventListener("click", () => openRecoveryKeyGenerate());
+    recoveryKeyGenerateCloseButton.addEventListener("click", () => closeRecoveryKeyGenerate());
+    recoveryKeyConfirmButton.addEventListener("click", () => confirmRecoveryKeyVerify());
+    recoveryKeyCopyButton.addEventListener("click", () => copyRecoveryKeyMnemonic());
+    recoveryKeyRestoreButton.addEventListener("click", () => openRecoveryKeyRestore());
+    recoveryKeyRestoreCloseButton.addEventListener("click", () => closeRecoveryKeyRestore());
+    recoveryKeyRestoreSubmitButton.addEventListener("click", () => submitRecoveryKeyRestore());
+    recoveryKeyRevokeButton.addEventListener("click", () => revokeRecoveryKeys());
+
+    async function loadRecoveryKeyStatus() {
+      try {
+        const status = await fetchJson("/api/recovery/status");
+        const active = status.active_count ?? 0;
+        recoveryKeyActiveCount.textContent = String(active);
+        recoveryKeyLastCreated.textContent = status.last_created_at
+          ? formatTimestamp(Number(status.last_created_at) * 1000)
+          : "Brak";
+        recoveryKeyVkGeneration.textContent = `gen ${status.vk_generation ?? "-"}`;
+        if (active > 0) {
+          recoveryKeyStatusBadge.textContent = "Skonfigurowany";
+          recoveryKeyStatusBadge.className = "inline-flex justify-center rounded-full border px-3 py-1 text-sm font-medium status-ok";
+          recoveryKeyMessage.textContent = `Aktywne klucze odzyskiwania: ${active}. Trzymaj wydruk w bezpiecznym miejscu — bez niego nie odzyskasz Skarbca.`;
+          recoveryKeyRevokeButton.classList.remove("hidden");
+        } else {
+          recoveryKeyStatusBadge.textContent = "Brak klucza";
+          recoveryKeyStatusBadge.className = "inline-flex justify-center rounded-full border px-3 py-1 text-sm font-medium status-warn";
+          recoveryKeyMessage.textContent = "Skarbiec nie ma jeszcze klucza odzyskiwania. Wygeneruj 24-słowny klucz, aby zabezpieczyć się przed utratą hasła.";
+          recoveryKeyRevokeButton.classList.add("hidden");
+        }
+      } catch (error) {
+        recoveryKeyStatusBadge.textContent = "Błąd";
+        recoveryKeyStatusBadge.className = "inline-flex justify-center rounded-full border px-3 py-1 text-sm font-medium status-error";
+        recoveryKeyMessage.textContent = `Nie udało się pobrać statusu kluczy odzyskiwania: ${error.message}`;
+      }
+    }
+
+    async function openRecoveryKeyGenerate() {
+      recoveryKeyGenerateModal.classList.remove("hidden");
+      recoveryKeyGenerateError.classList.add("hidden");
+      recoveryKeyVerifyPanel.classList.add("hidden");
+      recoveryKeyVerifyError.classList.add("hidden");
+      recoveryKeyMnemonicGrid.innerHTML = `<p class="col-span-full text-slate-400">Generowanie...</p>`;
+      recoveryKeyConfirmButton.disabled = true;
+      recoveryKeyState.mnemonicWords = null;
+      recoveryKeyState.verifyIndices = [];
+      try {
+        const response = await fetchJson("/api/recovery/generate", { method: "POST" });
+        const words = (response.mnemonic || "").trim().split(/\s+/);
+        recoveryKeyState.mnemonicWords = words;
+        recoveryKeyMnemonicGrid.innerHTML = words.map((word, i) => `
+          <div class="glass-muted rounded-xl px-3 py-2 font-mono">
+            <span class="text-xs text-slate-500">${String(i + 1).padStart(2, "0")}.</span>
+            <span class="ml-2 text-sm text-white">${escapeHtml(word)}</span>
+          </div>
+        `).join("");
+        renderVerifyInputs(words.length);
+        recoveryKeyVerifyPanel.classList.remove("hidden");
+      } catch (error) {
+        recoveryKeyGenerateError.textContent = error.message;
+        recoveryKeyGenerateError.classList.remove("hidden");
+        recoveryKeyMnemonicGrid.innerHTML = "";
+      }
+    }
+
+    function renderVerifyInputs(wordCount) {
+      const indices = new Set();
+      while (indices.size < 3) {
+        indices.add(Math.floor(Math.random() * wordCount));
+      }
+      recoveryKeyState.verifyIndices = Array.from(indices).sort((a, b) => a - b);
+      recoveryKeyVerifyInputs.innerHTML = recoveryKeyState.verifyIndices.map((idx) => `
+        <label class="block text-xs text-amber-100/80">
+          <span>Słowo nr ${idx + 1}</span>
+          <input
+            type="text"
+            data-verify-index="${idx}"
+            autocomplete="off"
+            spellcheck="false"
+            class="mt-1 w-full rounded-lg border border-amber-400/30 bg-black/30 px-3 py-2 text-sm font-mono text-white outline-none focus:border-amber-300/60"
+          />
+        </label>
+      `).join("");
+      recoveryKeyConfirmButton.disabled = false;
+    }
+
+    function confirmRecoveryKeyVerify() {
+      if (!recoveryKeyState.mnemonicWords) {
+        closeRecoveryKeyGenerate();
+        return;
+      }
+      const inputs = recoveryKeyVerifyInputs.querySelectorAll("input[data-verify-index]");
+      let allMatch = true;
+      inputs.forEach((input) => {
+        const idx = Number(input.dataset.verifyIndex);
+        const expected = recoveryKeyState.mnemonicWords[idx]?.toLowerCase().trim();
+        const provided = input.value.toLowerCase().trim();
+        if (!expected || provided !== expected) {
+          allMatch = false;
+          input.classList.add("border-rose-400/60");
+        } else {
+          input.classList.remove("border-rose-400/60");
+        }
+      });
+      if (!allMatch) {
+        recoveryKeyVerifyError.textContent = "Słowa nie zgadzają się — upewnij się, że masz papierową kopię.";
+        recoveryKeyVerifyError.classList.remove("hidden");
+        return;
+      }
+      closeRecoveryKeyGenerate();
+      loadRecoveryKeyStatus();
+    }
+
+    async function copyRecoveryKeyMnemonic() {
+      if (!recoveryKeyState.mnemonicWords) return;
+      try {
+        await navigator.clipboard.writeText(recoveryKeyState.mnemonicWords.join(" "));
+        recoveryKeyCopyButton.textContent = "Skopiowane";
+        setTimeout(() => { recoveryKeyCopyButton.textContent = "Skopiuj słowa"; }, 2000);
+      } catch (_) {
+        recoveryKeyCopyButton.textContent = "Brak dostępu do schowka";
+      }
+    }
+
+    function closeRecoveryKeyGenerate() {
+      recoveryKeyGenerateModal.classList.add("hidden");
+      recoveryKeyState.mnemonicWords = null;
+      recoveryKeyState.verifyIndices = [];
+      recoveryKeyMnemonicGrid.innerHTML = "";
+      recoveryKeyVerifyInputs.innerHTML = "";
+    }
+
+    function openRecoveryKeyRestore() {
+      recoveryKeyRestoreModal.classList.remove("hidden");
+      recoveryKeyRestoreError.classList.add("hidden");
+      recoveryKeyRestoreSuccess.classList.add("hidden");
+      recoveryKeyMnemonicInput.value = "";
+      recoveryKeyNewPassphrase.value = "";
+      recoveryKeyNewPassphraseConfirm.value = "";
+      recoveryKeyRestoreSubmitButton.disabled = false;
+      recoveryKeyRestoreSubmitButton.textContent = "Odzyskaj dostęp";
+    }
+
+    function closeRecoveryKeyRestore() {
+      recoveryKeyRestoreModal.classList.add("hidden");
+    }
+
+    async function submitRecoveryKeyRestore() {
+      const mnemonic = recoveryKeyMnemonicInput.value.trim();
+      const newPass = recoveryKeyNewPassphrase.value;
+      const confirm = recoveryKeyNewPassphraseConfirm.value;
+      recoveryKeyRestoreError.classList.add("hidden");
+      recoveryKeyRestoreSuccess.classList.add("hidden");
+      if (!mnemonic) {
+        recoveryKeyRestoreError.textContent = "Wpisz 24 słowa odzyskiwania.";
+        recoveryKeyRestoreError.classList.remove("hidden");
+        return;
+      }
+      if (!newPass) {
+        recoveryKeyRestoreError.textContent = "Podaj nowe hasło główne.";
+        recoveryKeyRestoreError.classList.remove("hidden");
+        return;
+      }
+      if (newPass !== confirm) {
+        recoveryKeyRestoreError.textContent = "Potwierdzenie hasła nie zgadza się.";
+        recoveryKeyRestoreError.classList.remove("hidden");
+        return;
+      }
+      recoveryKeyRestoreSubmitButton.disabled = true;
+      recoveryKeyRestoreSubmitButton.textContent = "Odzyskiwanie...";
+      try {
+        await fetchJson("/api/recovery/restore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mnemonic, new_passphrase: newPass }),
+        });
+        recoveryKeyRestoreSuccess.textContent = "Hasło zostało zresetowane. Możesz teraz zalogować się nowym hasłem.";
+        recoveryKeyRestoreSuccess.classList.remove("hidden");
+        recoveryKeyMnemonicInput.value = "";
+        recoveryKeyNewPassphrase.value = "";
+        recoveryKeyNewPassphraseConfirm.value = "";
+        loadRecoveryKeyStatus();
+      } catch (error) {
+        recoveryKeyRestoreError.textContent = error.message;
+        recoveryKeyRestoreError.classList.remove("hidden");
+      } finally {
+        recoveryKeyRestoreSubmitButton.disabled = false;
+        recoveryKeyRestoreSubmitButton.textContent = "Odzyskaj dostęp";
+      }
+    }
+
+    async function revokeRecoveryKeys() {
+      if (!confirm("Na pewno unieważnić wszystkie aktywne klucze odzyskiwania? Stare papierowe kopie przestaną działać.")) {
+        return;
+      }
+      try {
+        await fetchJson("/api/recovery/revoke", { method: "POST" });
+        await loadRecoveryKeyStatus();
+      } catch (error) {
+        recoveryKeyMessage.textContent = `Nie udało się unieważnić kluczy: ${error.message}`;
       }
     }
 
