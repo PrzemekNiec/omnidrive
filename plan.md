@@ -882,6 +882,166 @@ Które pliki dotykają które zadania — klucz do minimalizacji ładowania kont
 
 ---
 
+## Phase 5: Epic 36 — UI Redesign (Skarbiec Console)
+
+**Cel:** Wdrożyć nowy layout dashboardu bazujący na mockupie ze Stitcha (glass-panel, paleta cyan/green/orange, Material Symbols Outlined, sidebar + header + content). Obecny `index.html` (panel diagnostyki) staje się legacy; nowy UI organizuje funkcje w 6 zakładek: **Przegląd, Pliki, Skarbiec, Multi-Device, Chmura, Audyt** + Ustawienia.
+
+**Snapshot designu:** `docs/ui-mockups/stitch-dashboard.html` (NIE edytować — referencja).
+
+Sesje F i G są sekwencyjne. F dostarcza działający shell + zakładkę „Przegląd" z realnymi danymi audit/recovery (reszta KPI/chart/tiles to placeholdery). G wypełnia brakujące endpointy backendu i pozostałe widoki.
+
+---
+
+### Sesja F: UI Shell + Przegląd (z placeholderami)
+
+**Cel:** Podmienić obecny `index.html` na layout Stitcha — sidebar 240px + header 64px + scrollowalny content. Podłączyć TYLKO te sekcje które mają gotowe API (audit log + recovery alert). Hero KPI, chart 24h i stat tiles zostają jako wizualne placeholdery z widocznym badge'em „MOCK" + TODO.
+
+**Pliki do załadowania:** `dist/installer/payload/static/index.html` (całkowita podmiana), `api/audit.rs` (kontrakt odpowiedzi), `api/recovery.rs` (kontrakt odpowiedzi), `docs/ui-mockups/stitch-dashboard.html` (referencja), `angeld/src/api/mod.rs` (routing, zachowanie wizard.js)
+
+#### Krok F.1: Zachowanie obecnego UI jako legacy
+- Nowy route: `GET /legacy` — serwuje obecny `index.html` (zostawia dostęp do panelu diagnostyki na wypadek regresji)
+- `GET /` — będzie serwował nowy layout po F.2
+
+#### Krok F.2: Shell layout (sidebar + header + main)
+- Podmienić `static/index.html` na strukturę ze Stitcha (Tailwind config + tokeny + `.glass-panel` + keyframe `pulse-secondary`)
+- Sidebar: 6 pozycji nawigacji + Ustawienia + Wyloguj (na razie wszystkie to `href="#"`, aktywna `Przegląd`)
+- Header: pill „Skarbiec: OK" (status dynamiczny z `/api/health`), avatar/user (z session po OAuth, inaczej „Local")
+- Main: `<div id="view-przeglad">` z sekcjami — pozostałe widoki ukryte w Sesji F (pojawią się w Sesji G)
+
+#### Krok F.3: Wiring sekcji „Logi Audytowe"
+- Fetch `GET /api/audit?limit=5` (istnieje od commit 5a2ee26)
+- Render 5 ostatnich wpisów: ikona Material Symbols per `action` type (login/sync_saved_locally/add_moderator/gpp_maybe/upload_file), tytuł PL, timestamp relative (dzisiaj → `HH:MM:SS`, wczoraj → „Wczoraj", starsze → data)
+- „Zobacz Pełny Log" → na razie disabled (otwarty w Sesji G jako widok Audyt)
+
+#### Krok F.4: Wiring alertu „Brak klucza odzyskiwania"
+- Fetch `GET /api/recovery/status` (istnieje od commit 57d0a76)
+- Jeśli status = „missing" lub „not_verified_30d" → pokaż kartę tertiary z CTA `Weryfikuj teraz` (przenosi do widoku Skarbiec → sekcja recovery w Sesji G, na razie otwiera modal z istniejącym flow)
+- Jeśli status = „ok" → ukryj kartę, grid staje się 1-kolumnowy
+
+#### Krok F.5: Placeholdery dla Hero / Chart / Tiles
+- Hero KPI: wartości `—` + badge `MOCK`, komentarz w HTML `<!-- TODO Sesja G.1: GET /api/stats/overview -->`
+- Chart 24h: statyczne słupki ze Stitcha + badge `MOCK`, komentarz `<!-- TODO Sesja G.2: GET /api/stats/traffic -->`
+- 4 stat tiles: wartości `—` + badge `MOCK`, komentarz `<!-- TODO Sesja G.3: GET /api/stats/system -->`
+- Karta „Status Shardów" — podłączyć do `GET /api/diagnostics` jeśli zwraca liczbę shardów; inaczej placeholder
+
+#### Krok F.6: Status pill w headerze + pulse
+- Fetch `GET /api/health` co 10s (reuse logiki z obecnego `auto-refresh` w legacy)
+- Mapowanie: `ok` → green (`bg-secondary`), `degraded` → orange (`bg-tertiary`), `error` → red
+- `pulse-secondary` animacja zapożyczona ze Stitcha
+
+#### Krok F.7: Routing klientowy (stub)
+- Prosty hash-router: `#przeglad` (domyślny), `#pliki`, `#skarbiec`, `#multi-device`, `#chmura`, `#audyt`, `#ustawienia`
+- W Sesji F wszystkie widoki poza `#przeglad` pokazują prosty placeholder „Wkrótce (Sesja G)"
+- Sidebar update: active state pod aktualny hash
+
+#### Krok F.8: Weryfikacja
+- `cargo check --workspace` (zmiana tylko w static, ale routing `/legacy` dotyka `api/mod.rs`)
+- `cargo build --release --workspace`
+- Kopia binarki do `dist/installer/payload/`
+- Ręczny test: `angeld.exe` → `http://127.0.0.1:8787` → layout Stitcha z realnym audit log i recovery alert
+- Weryfikacja: `/legacy` zwraca stary panel (rollback path)
+
+**Exit criteria:** nowy layout działa w przeglądarce, audit log + recovery alert mają realne dane, reszta to widoczne placeholdery, `/legacy` jako fallback, `cargo test --workspace` zielony.
+
+**Rozmiar:** Duży (pojedynczy plik HTML ~600 linii + ~100 linii JS fetch/router + drobna zmiana w `api/mod.rs`)
+
+**Mikro-kroki:** 8 (F.1–F.8)
+
+---
+
+### Sesja G: Dashboard backend (stats endpoints) + pozostałe widoki
+
+**Cel:** Dopełnić UI — dorobić 3 brakujące endpointy statystyk (hero/chart/tiles) i 5 widoków (Pliki, Skarbiec, Multi-Device, Chmura, Audyt, Ustawienia).
+
+**Pliki do załadowania:** `api/mod.rs`, nowy moduł `api/stats.rs`, `api/files.rs` (istnieje), `api/vault.rs`, `api/audit.rs`, `api/recovery.rs`, `static/index.html`, `diagnostics.rs`, `config.rs` (dla widoku Ustawienia)
+
+Ze względu na rozmiar Sesja G dzieli się na podsesje G-BE (backend) i G-FE (frontend views). Każdą można osobno commitować.
+
+#### Krok G.1: `GET /api/stats/overview` — Hero KPI
+- Nowy plik: `angeld/src/api/stats.rs`, route w `api/mod.rs`
+- Response: `{ files_count, logical_size_bytes, monthly_cost_usd, devices_count }`
+- Źródła:
+  - `files_count` = `SELECT COUNT(*) FROM inodes WHERE deleted_at IS NULL`
+  - `logical_size_bytes` = `SELECT SUM(size) FROM inodes WHERE deleted_at IS NULL`
+  - `monthly_cost_usd` = estymata z `cloud_guard` (istnieje moduł) — bytes × rate per provider
+  - `devices_count` = `SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL`
+- Cache: 30s (wartości i tak wolno się zmieniają)
+- Test: unit z in-memory SQLite + seeded data
+
+#### Krok G.2: `GET /api/stats/traffic?hours=24` — Chart
+- Response: `{ buckets: [{ timestamp, upload_bytes, download_bytes }, ...] }` — 12 buckets po 2h
+- Źródło: nowa tabela `traffic_stats` (albo istniejąca jeśli już coś jest w `uploader.rs`/`downloader.rs` — sprawdzić w Sesji G kick-off)
+- Jeśli brak agregacji → dodać zapisy w `uploader::complete_upload()` i `downloader::read_range_streamed()` (bump counterów per bucket)
+- Test: seed kilka wpisów → fetch → weryfikacja bucket-owania
+
+#### Krok G.3: `GET /api/stats/system` — Tiles
+- Response: `{ nodes_count, nodes_delta, cpu_percent, latency_ms, latency_delta_ms, integrity_percent }`
+- Źródła:
+  - `nodes_count` = liczba aktywnych devices + providers
+  - `cpu_percent` = proc self stats (crate `sysinfo` — prawdopodobnie już w drzewie)
+  - `latency_ms` = ewma latency z `diagnostics.rs` (istnieje worker tracking)
+  - `integrity_percent` = wynik ostatniego przebiegu `scrubber.rs`
+- Cache: 5s
+
+#### Krok G.4: Podłączenie endpointów w Hero/Chart/Tiles
+- Usunąć badge `MOCK` z F.5
+- Dodać poll: KPI co 30s, chart co 60s, tiles co 5s, audit log co 30s
+- Wskaźnik „ostatnio odświeżono" w headerze (reuse logiki z legacy)
+
+#### Krok G.5: Widok „Pliki"
+- Użyć `api/files.rs` (istnieje `GET /api/files/list`)
+- Drzewo folderów + lista: ikona, nazwa, rozmiar, status (LOCAL/COMBO/CLOUD/FORTECA — 4 poziomy z Epic 35.2b), data modyfikacji
+- Kontekst menu (prawy klik): zmień politykę, pobierz, share (Epic 33), usuń
+- Breadcrumbs, search
+
+#### Krok G.6: Widok „Skarbiec"
+- Sekcje:
+  1. Status vault (locked/unlocked, format v1/v2, ostatnia rotacja)
+  2. Unlock/lock (passphrase)
+  3. Rotate Vault Key (istniejące z Epic 32.5.2d)
+  4. Migracja V1→V2 (progress bar, live status z `migrator.rs`)
+  5. Recovery Keys — full view (generate, download, revoke) — reuse z 34.6a
+
+#### Krok G.7: Widok „Multi-Device"
+- Lista `devices` z: nazwa, public key fingerprint, last_seen, safety number (Epic 34 E.1–E.2)
+- Invite flow: przycisk „Zaproś urządzenie" → modal z kodem + QR
+- Pending devices: lista czekających na akceptację + przycisk „Akceptuj" (ECDH wrap VK)
+- Revoke device
+
+#### Krok G.8: Widok „Chmura"
+- Lista providerów (B2/R2/Scaleway) z: status, bytes stored, monthly cost, latency, error rate
+- Cloud Guard: budget threshold, ostrzeżenia
+- Provider config (read-only; edycja wymaga re-auth)
+
+#### Krok G.9: Widok „Audyt"
+- Pełny widok audit log (paginacja, filtry: action type, user, date range)
+- Export CSV/JSON
+- Link z „Zobacz Pełny Log" na Przeglądzie
+
+#### Krok G.10: Widok „Ustawienia"
+- Autostart (HKCU\...\Run toggle)
+- Auto-refresh interval
+- OAuth (Sesja C+D) login status
+- Cache size, spool dir
+- Shell Extension: 4 poziomy ochrony — pokaż stan rejestracji DLL
+- Diagnostics: link do logów, restart daemona, factory reset (z potwierdzeniem)
+
+#### Krok G.11: Weryfikacja pełna
+- `cargo check --workspace`, `cargo clippy -- -D warnings`, `cargo test --workspace`
+- `cargo build --release --workspace` + kopia binarek do `dist/installer/payload/`
+- Bump wersji instalatora + wszystkich `Cargo.toml` (zgodnie z CLAUDE.md workflow)
+- Generacja `.exe` instalatora
+- Ręczny test: każda zakładka ładuje się, dane są realne, `/legacy` nadal dostępny
+- Usunięcie `/legacy` (decyzja: zostawić czy usunąć? — dyskusja przy G.11)
+
+**Exit criteria:** Wszystkie 7 widoków mają realne dane, 3 nowe endpointy stats są stabilne, `/legacy` decyzja podjęta, nowa wersja zbudowana i zainstalowana, token budget nie przekroczony.
+
+**Rozmiar:** Bardzo duży — prawdopodobnie zostanie rozbity na G-BE (kroki G.1–G.4) i G-FE (G.5–G.10) jako dwa osobne commity w obrębie sesji.
+
+**Mikro-kroki:** 11 (G.1–G.11)
+
+---
+
 ### Podsumowanie sesji
 
 | Sesja | Zadania | Pliki główne | Rozmiar | Mikro-kroki |
@@ -892,8 +1052,10 @@ Które pliki dotykają które zadania — klucz do minimalizacji ładowania kont
 | **C** | 34.3b backend (OAuth2) | Cargo.toml, config.rs, api/auth.rs, db.rs | Średni | 4 (C.1–C.4) |
 | **D** | 34.3b frontend (OAuth2 UI) | index.html, api/auth.rs | Mały-Średni | 4 (D.1–D.4) |
 | **E** | Safety Numbers + E2E test + THREAT_MODEL | identity.rs, tests/e2e_multi_user.rs, docs/THREAT_MODEL.md | Średni | 5 (E.1–E.5) |
+| **F** | Epic 36 — UI Shell + Przegląd (Stitch layout, placeholdery) | static/index.html, api/mod.rs | Duży | 8 (F.1–F.8) |
+| **G** | Epic 36 — Stats endpoints + pozostałe widoki | api/stats.rs (nowy), api/files/vault/audit/recovery, static/index.html, diagnostics.rs | Bardzo duży | 11 (G.1–G.11) |
 
-**Rekomendowana kolejność:** A → B → Pre-C → C → D → E
+**Rekomendowana kolejność:** A → B → Pre-C → C → D → E → F → G
 
 **Uzasadnienie:**
 - **A (Audit)** — P1, nie wymaga nowych dependencies, szybka wygrana
@@ -901,6 +1063,8 @@ Które pliki dotykają które zadania — klucz do minimalizacji ładowania kont
 - **Pre-C (Fix user_id)** — **P0 blocker** dla OAuth. Musi być przed C, bo OAuth tworzy nowych userów i operuje na user_id. Kruchy schemat `owner-{device_id}` złamie multi-device OAuth flow
 - **C+D (OAuth)** — P2, największy, wymaga Google Cloud Console setup
 - **E (Finalizacja)** — domyka wszystkie luki architektoniczne z krytycznej oceny projektu
+- **F (UI Shell)** — ten sam chrome obsłuży Sesję G i kolejne; placeholdery zamiast blokowania się na endpointach stats
+- **G (Backend + widoki)** — wykonalne dopiero po F (layout), powinno być po A/B/E, bo część widoków pokazuje dane z audit/recovery/multi-device
 
 **Każda sesja kończy się:** `cargo check` (0 warnings) + `cargo clippy --workspace -- -D warnings` (clean) + `cargo test --workspace` (all pass) + ręczna weryfikacja UI.
 

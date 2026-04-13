@@ -1,0 +1,391 @@
+<!--
+  Źródło: Google Stitch (wygenerowano 2026-04-13)
+  Stan: RAW — paleta i tokeny do normalizacji przy integracji.
+  Do zrobienia przy sklejaniu:
+    - podmiana palety na tokeny z Przeglądu (primary #00daf3, secondary #4edea3, tertiary #ffb95f)
+    - podmiana surface #0d0e15 → #2C2C2C (+ radial gradient)
+    - ujednolicenie border-radius do skali Przeglądu (2xl 1.5rem, 3xl 1.75rem)
+    - usunięcie duplikatu <link> do Material Symbols
+    - wycięcie własnego sidebar/header — są globalne w index.html
+    - avatar <img> (Google user content) → <span>account_circle</span>
+    - stat cards (12,842 / 452 / 18 / 3) → wiązać z /api/audit/stats (nowy endpoint — prosty count z audit_log)
+    - filter "Action type" i date-range → już mamy backend /api/audit z query params (action, since, until), zmapować selecty
+    - CSV/JSON eksport → /api/audit/export?format=csv|json (dodać w G-BE albo rozszerzyć /api/audit)
+    - tabela: 3 mockowe wiersze → stronicowanie JS z /api/audit?limit=10&offset=X
+    - "Decrypted Vault" / "Access Denied" / "Bulk Upload" → PL: "Odszyfrowanie" / "Dostęp odmówiony" / "Masowy upload"
+    - "Unknown Actor / IP: 192.168..." — backend już zapisuje actor w audit_log, wyrenderować
+-->
+<!DOCTYPE html>
+
+<html class="dark" lang="pl"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "primary": "#69daff",
+                    "surface-bright": "#2a2b37",
+                    "secondary-fixed-dim": "#58e7ab",
+                    "surface-container-high": "#1e1f29",
+                    "primary-fixed-dim": "#00c0ea",
+                    "tertiary": "#ff6f7e",
+                    "tertiary-fixed": "#ff9099",
+                    "tertiary-container": "#fc4563",
+                    "on-tertiary-fixed-variant": "#780021",
+                    "surface-container-lowest": "#000000",
+                    "on-error-container": "#ffa8a3",
+                    "error-container": "#9f0519",
+                    "surface-variant": "#242530",
+                    "primary-dim": "#00c0ea",
+                    "outline-variant": "#474750",
+                    "on-primary-fixed-variant": "#004a5c",
+                    "surface-tint": "#69daff",
+                    "surface-dim": "#0d0e15",
+                    "secondary-dim": "#58e7ab",
+                    "error-dim": "#d7383b",
+                    "on-tertiary": "#490010",
+                    "on-surface-variant": "#abaab5",
+                    "on-primary-fixed": "#002a35",
+                    "surface": "#0d0e15",
+                    "error": "#ff716c",
+                    "on-secondary-fixed-variant": "#006544",
+                    "on-primary-container": "#004050",
+                    "inverse-surface": "#fbf8ff",
+                    "inverse-on-surface": "#54545d",
+                    "surface-container-low": "#12131b",
+                    "on-secondary-fixed": "#00452d",
+                    "secondary": "#69f6b8",
+                    "on-surface": "#f4f2fe",
+                    "background": "#0d0e15",
+                    "tertiary-dim": "#ff6f7e",
+                    "inverse-primary": "#006880",
+                    "on-secondary-container": "#e1ffec",
+                    "on-secondary": "#005a3c",
+                    "on-error": "#490006",
+                    "on-background": "#f4f2fe",
+                    "surface-container-highest": "#242530",
+                    "on-tertiary-fixed": "#39000b",
+                    "primary-container": "#00cffc",
+                    "primary-fixed": "#00cffc",
+                    "surface-container": "#181922",
+                    "outline": "#75747e",
+                    "secondary-fixed": "#69f6b8",
+                    "on-primary": "#004a5d",
+                    "tertiary-fixed-dim": "#ff7986",
+                    "on-tertiary-container": "#100001",
+                    "secondary-container": "#006c49"
+            },
+            "borderRadius": {
+                    "DEFAULT": "1rem",
+                    "lg": "2rem",
+                    "xl": "3rem",
+                    "full": "9999px"
+            },
+            "fontFamily": {
+                    "headline": ["Inter"],
+                    "body": ["Inter"],
+                    "label": ["Inter"]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; background-color: #0d0e15; color: #f4f2fe; }
+        .glass-panel {
+            background-color: rgba(24, 25, 34, 0.8);
+            backdrop-filter: blur(20px);
+            border-radius: 1.5rem;
+        }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background min-h-screen">
+<!-- SideNavBar Shell -->
+<aside class="bg-[#0d0e15] w-[240px] h-screen rounded-r-[28px] flex flex-col fixed left-0 top-0 py-8 space-y-6 shadow-2xl shadow-black/20 z-50">
+<div class="px-8">
+<h1 class="text-[#69daff] font-black text-lg tracking-tighter">Skarbiec</h1>
+<p class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium text-slate-500">The Ethereal Vault</p>
+</div>
+<nav class="flex-1 px-4 space-y-1">
+<a class="flex items-center space-x-3 px-4 py-3 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all duration-300" href="#">
+<span class="material-symbols-outlined" data-icon="folder_open">folder_open</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Files</span>
+</a>
+<a class="flex items-center space-x-3 px-4 py-3 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all duration-300" href="#">
+<span class="material-symbols-outlined" data-icon="enhanced_encryption">enhanced_encryption</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Vault</span>
+</a>
+<a class="flex items-center space-x-3 px-4 py-3 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all duration-300" href="#">
+<span class="material-symbols-outlined" data-icon="devices">devices</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Multi-Device</span>
+</a>
+<a class="flex items-center space-x-3 px-4 py-3 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all duration-300" href="#">
+<span class="material-symbols-outlined" data-icon="cloud">cloud</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Cloud</span>
+</a>
+<a class="flex items-center space-x-3 px-4 py-3 rounded-xl text-[#69daff] border-r-2 border-[#69daff] bg-gradient-to-r from-[#69daff]/10 to-transparent transition-all duration-300 active:translate-x-1" href="#">
+<span class="material-symbols-outlined" data-icon="history_edu">history_edu</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-semibold">Audit</span>
+</a>
+<a class="flex items-center space-x-3 px-4 py-3 rounded-xl text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all duration-300" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Settings</span>
+</a>
+</nav>
+<div class="px-4 mt-auto border-t border-white/5 pt-6">
+<button class="w-full bg-gradient-to-r from-primary to-primary-container text-on-primary py-3 px-4 rounded-full font-bold text-sm mb-6 active:scale-95 duration-200">
+                Lock Vault
+            </button>
+<div class="space-y-1">
+<a class="flex items-center space-x-3 px-4 py-2 text-slate-500 hover:text-slate-300 transition-colors" href="#">
+<span class="material-symbols-outlined text-sm" data-icon="help">help</span>
+<span class="font-['Inter'] uppercase text-[0.7rem] tracking-[0.05em]">Support</span>
+</a>
+<a class="flex items-center space-x-3 px-4 py-2 text-slate-500 hover:text-slate-300 transition-colors" href="#">
+<span class="material-symbols-outlined text-sm" data-icon="logout">logout</span>
+<span class="font-['Inter'] uppercase text-[0.7rem] tracking-[0.05em]">Sign Out</span>
+</a>
+</div>
+</div>
+</aside>
+<!-- Main Canvas -->
+<main class="ml-[240px] min-h-screen">
+<!-- TopNavBar Shell -->
+<header class="bg-[#181922]/80 backdrop-blur-xl h-[64px] w-full border-b border-white/5 flex justify-between items-center px-8 sticky top-0 z-40">
+<div class="flex items-center space-x-2">
+<span class="text-xl font-bold tracking-tighter text-slate-100">Audit Dashboard</span>
+</div>
+<div class="flex items-center space-x-6">
+<div class="relative group">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm" data-icon="search">search</span>
+<input class="bg-surface-container-low border-none rounded-full pl-10 pr-4 py-1.5 text-xs w-64 focus:ring-1 focus:ring-primary placeholder-slate-500" placeholder="Search logs..." type="text"/>
+</div>
+<div class="flex items-center space-x-4">
+<button class="text-slate-400 hover:text-primary transition-colors">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+</button>
+<div class="h-8 w-8 rounded-full bg-surface-container-high border border-white/10 flex items-center justify-center overflow-hidden">
+<span class="material-symbols-outlined text-slate-300">account_circle</span>
+</div>
+</div>
+</div>
+</header>
+<!-- Content Area -->
+<div class="p-8 max-w-7xl mx-auto space-y-8">
+<!-- Header -->
+<div class="space-y-1">
+<h1 class="text-4xl font-bold tracking-tight text-on-surface">Dziennik Audytu</h1>
+<p class="text-on-surface-variant max-w-2xl font-light">Pełna historia zdarzeń bezpieczeństwa i operacji na plikach.</p>
+</div>
+<!-- Stats Row -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+<div class="glass-panel p-6 border border-white/5 hover:border-primary/20 transition-all">
+<div class="flex justify-between items-start mb-4">
+<span class="material-symbols-outlined p-2 bg-primary/10 text-primary rounded-lg" data-icon="analytics">analytics</span>
+<span class="text-[10px] uppercase tracking-widest font-bold text-slate-500">Total</span>
+</div>
+<div class="text-3xl font-bold">12,842</div>
+<div class="text-xs text-secondary mt-1 flex items-center">
+<span class="material-symbols-outlined text-[14px] mr-1" data-icon="trending_up">trending_up</span>
+                        +12% vs last month
+                    </div>
+</div>
+<div class="glass-panel p-6 border border-white/5 hover:border-primary/20 transition-all">
+<div class="flex justify-between items-start mb-4">
+<span class="material-symbols-outlined p-2 bg-secondary/10 text-secondary rounded-lg" data-icon="today">today</span>
+<span class="text-[10px] uppercase tracking-widest font-bold text-slate-500">Today</span>
+</div>
+<div class="text-3xl font-bold">452</div>
+<div class="text-xs text-slate-500 mt-1">Real-time sync active</div>
+</div>
+<div class="glass-panel p-6 border border-white/5 hover:border-tertiary/20 transition-all">
+<div class="flex justify-between items-start mb-4">
+<span class="material-symbols-outlined p-2 bg-tertiary/10 text-tertiary rounded-lg" data-icon="security">security</span>
+<span class="text-[10px] uppercase tracking-widest font-bold text-slate-500">Security</span>
+</div>
+<div class="text-3xl font-bold">18</div>
+<div class="text-xs text-tertiary mt-1">Requires review</div>
+</div>
+<div class="glass-panel p-6 border border-white/5 hover:border-error/20 transition-all">
+<div class="flex justify-between items-start mb-4">
+<span class="material-symbols-outlined p-2 bg-error/10 text-error rounded-lg" data-icon="dangerous">dangerous</span>
+<span class="text-[10px] uppercase tracking-widest font-bold text-slate-500">Unauth attempts</span>
+</div>
+<div class="text-3xl font-bold">3</div>
+<div class="text-xs text-error mt-1 flex items-center">
+<span class="material-symbols-outlined text-[14px] mr-1" data-icon="warning">warning</span>
+                        Blocked from SG IP
+                    </div>
+</div>
+</div>
+<!-- Filter Bar -->
+<div class="flex flex-col lg:flex-row items-center gap-4 bg-surface-container p-4 rounded-xl border border-white/5">
+<div class="relative w-full lg:flex-1">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" data-icon="search">search</span>
+<input class="w-full bg-surface-dim border-none rounded-lg pl-10 pr-4 py-2.5 text-sm focus:ring-2 focus:ring-primary/50 text-on-surface" placeholder="Search by actor or target..." type="text"/>
+</div>
+<div class="flex items-center gap-4 w-full lg:w-auto">
+<select class="bg-surface-dim border-none rounded-lg py-2.5 px-4 text-sm focus:ring-2 focus:ring-primary/50 text-slate-300 min-w-[160px]">
+<option>Action type: All</option>
+<option>File Upload</option>
+<option>Key Access</option>
+<option>Login Attempt</option>
+<option>Permission Change</option>
+</select>
+<div class="flex items-center bg-surface-dim rounded-lg px-4 py-2.5 text-sm text-slate-300 cursor-pointer hover:bg-surface-bright transition-colors border-none">
+<span class="material-symbols-outlined text-sm mr-2" data-icon="calendar_today">calendar_today</span>
+<span>Oct 12 - Oct 19</span>
+</div>
+<div class="h-10 w-px bg-white/5 mx-2"></div>
+<div class="flex items-center gap-2">
+<button class="flex items-center px-4 py-2.5 bg-surface-bright hover:bg-surface-container-high text-sm font-medium rounded-lg transition-colors group">
+<span class="material-symbols-outlined text-sm mr-2 text-primary" data-icon="file_download">file_download</span>
+                            CSV
+                        </button>
+<button class="flex items-center px-4 py-2.5 bg-surface-bright hover:bg-surface-container-high text-sm font-medium rounded-lg transition-colors group">
+<span class="material-symbols-outlined text-sm mr-2 text-primary" data-icon="file_download">file_download</span>
+                            JSON
+                        </button>
+</div>
+</div>
+</div>
+<!-- Audit Table -->
+<div class="glass-panel overflow-hidden border border-white/5">
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="border-b border-white/5">
+<th class="px-8 py-4 text-[10px] uppercase tracking-[0.2em] font-extrabold text-slate-500">Timestamp</th>
+<th class="px-6 py-4 text-[10px] uppercase tracking-[0.2em] font-extrabold text-slate-500">Action</th>
+<th class="px-6 py-4 text-[10px] uppercase tracking-[0.2em] font-extrabold text-slate-500">Actor</th>
+<th class="px-6 py-4 text-[10px] uppercase tracking-[0.2em] font-extrabold text-slate-500">Target</th>
+<th class="px-6 py-4 text-[10px] uppercase tracking-[0.2em] font-extrabold text-slate-500 text-right">Details</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-white/5">
+<!-- Row 1 -->
+<tr class="hover:bg-white/5 transition-colors group">
+<td class="px-8 py-5">
+<div class="text-sm font-medium">Oct 19, 2023</div>
+<div class="text-[11px] text-slate-500">14:23:45 UTC</div>
+</td>
+<td class="px-6 py-5">
+<div class="flex items-center gap-3">
+<div class="p-2 bg-secondary/10 rounded-full text-secondary">
+<span class="material-symbols-outlined text-sm block" data-icon="lock_open">lock_open</span>
+</div>
+<span class="text-sm font-semibold">Decrypted Vault</span>
+</div>
+</td>
+<td class="px-6 py-5">
+<div class="flex items-center gap-3">
+<div class="h-7 w-7 rounded-full bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary">JD</div>
+<div>
+<div class="text-sm">John Doe</div>
+<div class="text-[11px] text-slate-500">MacBook Pro M2</div>
+</div>
+</div>
+</td>
+<td class="px-6 py-5">
+<span class="px-3 py-1 bg-surface-container-high rounded text-xs font-mono text-slate-300">vlt_8829_ops</span>
+</td>
+<td class="px-6 py-5 text-right">
+<button class="p-2 hover:bg-primary/10 hover:text-primary rounded-lg transition-colors">
+<span class="material-symbols-outlined text-sm" data-icon="open_in_new">open_in_new</span>
+</button>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="hover:bg-white/5 transition-colors group">
+<td class="px-8 py-5">
+<div class="text-sm font-medium">Oct 19, 2023</div>
+<div class="text-[11px] text-slate-500">12:11:02 UTC</div>
+</td>
+<td class="px-6 py-5">
+<div class="flex items-center gap-3">
+<div class="p-2 bg-tertiary/10 rounded-full text-tertiary">
+<span class="material-symbols-outlined text-sm block" data-icon="sync_problem">sync_problem</span>
+</div>
+<span class="text-sm font-semibold text-tertiary">Access Denied</span>
+</div>
+</td>
+<td class="px-6 py-5">
+<div class="flex items-center gap-3">
+<div class="h-7 w-7 rounded-full bg-slate-800 flex items-center justify-center">
+<span class="material-symbols-outlined text-xs" data-icon="question_mark">question_mark</span>
+</div>
+<div>
+<div class="text-sm">Unknown Actor</div>
+<div class="text-[11px] text-slate-500">IP: 192.168.1.45</div>
+</div>
+</div>
+</td>
+<td class="px-6 py-5">
+<span class="px-3 py-1 bg-error/10 rounded text-xs font-mono text-error">Root Admin Panel</span>
+</td>
+<td class="px-6 py-5 text-right">
+<button class="p-2 hover:bg-primary/10 hover:text-primary rounded-lg transition-colors">
+<span class="material-symbols-outlined text-sm" data-icon="open_in_new">open_in_new</span>
+</button>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="hover:bg-white/5 transition-colors group">
+<td class="px-8 py-5">
+<div class="text-sm font-medium">Oct 18, 2023</div>
+<div class="text-[11px] text-slate-500">09:45:12 UTC</div>
+</td>
+<td class="px-6 py-5">
+<div class="flex items-center gap-3">
+<div class="p-2 bg-primary/10 rounded-full text-primary">
+<span class="material-symbols-outlined text-sm block" data-icon="cloud_upload">cloud_upload</span>
+</div>
+<span class="text-sm font-semibold">Bulk Upload</span>
+</div>
+</td>
+<td class="px-6 py-5">
+<div class="flex items-center gap-3">
+<div class="h-7 w-7 rounded-full bg-secondary/20 flex items-center justify-center text-[10px] font-bold text-secondary">AM</div>
+<div>
+<div class="text-sm">Anna Markowska</div>
+<div class="text-[11px] text-slate-500">System API</div>
+</div>
+</div>
+</td>
+<td class="px-6 py-5">
+<span class="px-3 py-1 bg-surface-container-high rounded text-xs font-mono text-slate-300">archive_2023_q3.zip</span>
+</td>
+<td class="px-6 py-5 text-right">
+<button class="p-2 hover:bg-primary/10 hover:text-primary rounded-lg transition-colors">
+<span class="material-symbols-outlined text-sm" data-icon="open_in_new">open_in_new</span>
+</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="px-8 py-4 border-t border-white/5 flex justify-between items-center bg-surface-container-low/50">
+<span class="text-xs text-slate-500">Showing 1-10 of 12,842 events</span>
+<div class="flex items-center gap-2">
+<button class="p-2 rounded-lg hover:bg-white/5 disabled:opacity-50" disabled="">
+<span class="material-symbols-outlined text-sm" data-icon="chevron_left">chevron_left</span>
+</button>
+<button class="p-2 rounded-lg hover:bg-white/5">
+<span class="material-symbols-outlined text-sm" data-icon="chevron_right">chevron_right</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</main>
+</body></html>

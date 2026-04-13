@@ -1,0 +1,349 @@
+<!--
+  Źródło: Google Stitch (wygenerowano 2026-04-13)
+  Stan: RAW — paleta i tokeny do normalizacji przy integracji.
+  Do zrobienia przy sklejaniu:
+    - podmiana palety na tokeny z Przeglądu (primary #00daf3, secondary #4edea3, tertiary #ffb95f)
+    - podmiana surface #0d0e15 → #2C2C2C (+ radial gradient)
+    - ujednolicenie border-radius do skali Przeglądu (2xl 1.5rem, 3xl 1.75rem)
+    - usunięcie duplikatu <link> do Material Symbols
+    - wycięcie własnego sidebar/header — są globalne w index.html
+    - UWAGA: w tym bloku Stitch zrobił DUPLIKAT navigacji (topbar + sidebar) — wywalić oba, zostaje tylko content
+    - avatar <img> w topbar + account card (Google user content) → <span>account_circle</span> (brak avatarów w naszej app)
+    - "admin@skarbiec.eth" placeholder → ukryć pod flagą (nie mamy kont email)
+    - Vault Path "/Users/admin/Skarbiec/Data" (macOS!) → pobierać z /api/config (już mamy endpoint) i formatować Windows-like C:\Users\...
+    - Cache slider 4.2 GB → wiązać z /api/stats/system (nowy endpoint) lub /api/config
+    - Shell Extension: "Zarejestrowano poprawnie" → sprawdzać real-time przez /api/shell_ext/status (w planie osobnym)
+    - Factory Reset przycisk → musi mieć 2-step confirm modal (BEZ WZGLĘDU na design)
+    - pill "V 2.4.1-STABLE" → wiązać z build info z omnidrive-core
+    - przycisk "ZAPISZ KONFIGURACJĘ" → wiąże się z kilkoma panelami, trzeba rozdzielić na per-section save albo zrobić diff
+-->
+<!DOCTYPE html>
+
+<html class="dark" lang="pl"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "primary": "#69daff",
+                        "surface-bright": "#2a2b37",
+                        "secondary-fixed-dim": "#58e7ab",
+                        "surface-container-high": "#1e1f29",
+                        "primary-fixed-dim": "#00c0ea",
+                        "tertiary": "#ff6f7e",
+                        "tertiary-fixed": "#ff9099",
+                        "tertiary-container": "#fc4563",
+                        "on-tertiary-fixed-variant": "#780021",
+                        "surface-container-lowest": "#000000",
+                        "on-error-container": "#ffa8a3",
+                        "error-container": "#9f0519",
+                        "surface-variant": "#242530",
+                        "primary-dim": "#00c0ea",
+                        "outline-variant": "#474750",
+                        "on-primary-fixed-variant": "#004a5c",
+                        "surface-tint": "#69daff",
+                        "surface-dim": "#0d0e15",
+                        "secondary-dim": "#58e7ab",
+                        "error-dim": "#d7383b",
+                        "on-tertiary": "#490010",
+                        "on-surface-variant": "#abaab5",
+                        "on-primary-fixed": "#002a35",
+                        "surface": "#0d0e15",
+                        "error": "#ff716c",
+                        "on-secondary-fixed-variant": "#006544",
+                        "on-primary-container": "#004050",
+                        "inverse-surface": "#fbf8ff",
+                        "inverse-on-surface": "#54545d",
+                        "surface-container-low": "#12131b",
+                        "on-secondary-fixed": "#00452d",
+                        "secondary": "#69f6b8",
+                        "on-surface": "#f4f2fe",
+                        "background": "#0d0e15",
+                        "tertiary-dim": "#ff6f7e",
+                        "inverse-primary": "#006880",
+                        "on-secondary-container": "#e1ffec",
+                        "on-secondary": "#005a3c",
+                        "on-error": "#490006",
+                        "on-background": "#f4f2fe",
+                        "surface-container-highest": "#242530",
+                        "on-tertiary-fixed": "#39000b",
+                        "primary-container": "#00cffc",
+                        "primary-fixed": "#00cffc",
+                        "surface-container": "#181922",
+                        "outline": "#75747e",
+                        "secondary-fixed": "#69f6b8",
+                        "on-primary": "#004a5d",
+                        "tertiary-fixed-dim": "#ff7986",
+                        "on-tertiary-container": "#100001",
+                        "secondary-container": "#006c49"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "1rem",
+                        "lg": "2rem",
+                        "xl": "3rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Inter"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .glass-panel {
+            background: rgba(24, 25, 34, 0.8);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface min-h-screen">
+<!-- TopNavBar (Shared Component) -->
+<header class="bg-[#181922]/80 backdrop-blur-xl h-[64px] w-full border-none flex justify-between items-center px-8 w-full border-b border-white/5 z-50 fixed top-0 left-0">
+<div class="flex items-center gap-4">
+<span class="text-xl font-bold tracking-tighter text-slate-100">Skarbiec</span>
+<nav class="hidden md:flex ml-8 space-x-6 font-['Inter'] font-medium text-sm tracking-tight">
+<a class="text-slate-400 hover:bg-slate-800/50 transition-colors px-3 py-2 rounded-lg" href="#">Files</a>
+<a class="text-slate-400 hover:bg-slate-800/50 transition-colors px-3 py-2 rounded-lg" href="#">Vault</a>
+<a class="text-[#69daff] font-semibold px-3 py-2 rounded-lg" href="#">Settings</a>
+</nav>
+</div>
+<div class="flex items-center space-x-4">
+<button class="material-symbols-outlined text-slate-400 hover:text-white transition-colors">notifications</button>
+<div class="h-8 w-8 rounded-full bg-surface-container-high overflow-hidden border border-outline-variant/20 flex items-center justify-center">
+<span class="material-symbols-outlined text-slate-300">account_circle</span>
+</div>
+</div>
+</header>
+<!-- SideNavBar (Shared Component) -->
+<aside class="hidden md:flex flex-col fixed left-0 top-0 h-full py-8 space-y-6 w-[240px] bg-[#0d0e15] rounded-r-[28px] border-r border-white/5 z-40 pt-[80px]">
+<div class="px-6 mb-4">
+<h2 class="text-[#69daff] font-black text-lg">Skarbiec</h2>
+<p class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium text-slate-500">The Ethereal Vault</p>
+</div>
+<nav class="flex-1 px-4 space-y-2">
+<a class="flex items-center px-4 py-3 space-x-3 text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all rounded-xl active:translate-x-1 duration-300" href="#">
+<span class="material-symbols-outlined">folder_open</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Files</span>
+</a>
+<a class="flex items-center px-4 py-3 space-x-3 text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all rounded-xl active:translate-x-1 duration-300" href="#">
+<span class="material-symbols-outlined">enhanced_encryption</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Vault</span>
+</a>
+<a class="flex items-center px-4 py-3 space-x-3 text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all rounded-xl active:translate-x-1 duration-300" href="#">
+<span class="material-symbols-outlined">devices</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Multi-Device</span>
+</a>
+<a class="flex items-center px-4 py-3 space-x-3 text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all rounded-xl active:translate-x-1 duration-300" href="#">
+<span class="material-symbols-outlined">cloud</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Cloud</span>
+</a>
+<a class="flex items-center px-4 py-3 space-x-3 text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all rounded-xl active:translate-x-1 duration-300" href="#">
+<span class="material-symbols-outlined">history_edu</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Audit</span>
+</a>
+<a class="flex items-center px-4 py-3 space-x-3 text-[#69daff] border-r-2 border-[#69daff] bg-gradient-to-r from-[#69daff]/10 to-transparent rounded-xl active:translate-x-1 duration-300" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Settings</span>
+</a>
+</nav>
+<div class="px-4 space-y-2 mt-auto">
+<a class="flex items-center px-4 py-3 space-x-3 text-slate-500 hover:text-slate-300 rounded-xl" href="#">
+<span class="material-symbols-outlined">help</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Support</span>
+</a>
+<a class="flex items-center px-4 py-3 space-x-3 text-slate-500 hover:text-slate-300 rounded-xl" href="#">
+<span class="material-symbols-outlined">logout</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Sign Out</span>
+</a>
+<button class="w-full mt-4 bg-[#69daff] text-[#002a35] font-bold py-3 rounded-xl hover:shadow-[0_0_20px_rgba(105,218,255,0.3)] transition-all">
+                Lock Vault
+            </button>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="md:ml-[240px] pt-[80px] min-h-screen">
+<div class="p-8 max-w-7xl mx-auto space-y-8">
+<!-- Header Section -->
+<div class="flex flex-col md:flex-row md:items-end justify-between gap-6">
+<div class="space-y-1">
+<h1 class="text-5xl font-black tracking-tighter text-on-surface">Ustawienia</h1>
+<p class="text-on-surface-variant font-medium">Konfiguracja lokalnego daemona i parametrów aplikacji.</p>
+</div>
+<div class="flex bg-surface-container rounded-full p-1.5 border border-outline-variant/10">
+<button class="px-6 py-2 rounded-full bg-primary-container text-on-primary-container font-semibold text-sm transition-all shadow-lg shadow-primary/10">Wszystkie</button>
+<button class="px-6 py-2 rounded-full text-on-surface-variant hover:text-on-surface font-medium text-sm transition-all">Prywatność</button>
+<button class="px-6 py-2 rounded-full text-on-surface-variant hover:text-on-surface font-medium text-sm transition-all">Sieć</button>
+</div>
+</div>
+<!-- Bento Settings Layout -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+<!-- Left Column: Navigation & Profile -->
+<div class="lg:col-span-4 space-y-8">
+<!-- Tab Group Card -->
+<div class="glass-panel p-6 rounded-xl space-y-4">
+<span class="text-[0.7rem] font-bold tracking-[0.1em] uppercase text-primary/70">Sekcje</span>
+<nav class="space-y-1">
+<a class="flex items-center gap-4 p-3 rounded-xl bg-surface-container-high text-primary border-l-4 border-primary" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-semibold">Ogólne</span>
+</a>
+<a class="flex items-center gap-4 p-3 rounded-xl text-on-surface-variant hover:bg-surface-container-high/50 transition-all" href="#">
+<span class="material-symbols-outlined">account_circle</span>
+<span class="font-medium">Konto</span>
+</a>
+<a class="flex items-center gap-4 p-3 rounded-xl text-on-surface-variant hover:bg-surface-container-high/50 transition-all" href="#">
+<span class="material-symbols-outlined">tune</span>
+<span class="font-medium">Zaawansowane</span>
+</a>
+<a class="flex items-center gap-4 p-3 rounded-xl text-on-surface-variant hover:bg-surface-container-high/50 transition-all" href="#">
+<span class="material-symbols-outlined">extension</span>
+<span class="font-medium">Shell Extension</span>
+</a>
+<a class="flex items-center gap-4 p-3 rounded-xl text-on-surface-variant hover:bg-surface-container-high/50 transition-all" href="#">
+<span class="material-symbols-outlined">monitoring</span>
+<span class="font-medium">Diagnostyka</span>
+</a>
+</nav>
+</div>
+<!-- Account Card -->
+<div class="glass-panel p-8 rounded-xl flex flex-col items-center text-center space-y-6">
+<div class="relative">
+<div class="w-24 h-24 rounded-full p-1 bg-gradient-to-tr from-primary to-secondary flex items-center justify-center">
+<span class="material-symbols-outlined text-slate-300 text-6xl">account_circle</span>
+</div>
+<div class="absolute bottom-0 right-0 bg-secondary w-6 h-6 rounded-full border-4 border-surface"></div>
+</div>
+<div>
+<h3 class="text-xl font-bold">Admin Skarbiec</h3>
+<p class="text-sm text-on-surface-variant">admin@skarbiec.eth</p>
+</div>
+<button class="w-full py-3 rounded-xl border border-outline-variant/30 text-on-surface hover:bg-surface-variant transition-all font-semibold flex items-center justify-center gap-2">
+<span class="material-symbols-outlined text-xl">logout</span>
+                            Wyloguj się
+                        </button>
+</div>
+</div>
+<!-- Right Column: Specific Settings Panels -->
+<div class="lg:col-span-8 space-y-8">
+<!-- Advanced & Shell Extension Section -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+<!-- Advanced: Cache & Paths -->
+<div class="glass-panel p-8 rounded-xl space-y-6">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">tune</span>
+<h3 class="text-lg font-bold">Zaawansowane</h3>
+</div>
+<div class="space-y-4">
+<div>
+<div class="flex justify-between mb-2">
+<label class="text-[0.7rem] font-bold tracking-widest uppercase text-on-surface-variant">Cache Size</label>
+<span class="text-primary font-bold">4.2 GB</span>
+</div>
+<input class="w-full h-1.5 bg-surface-container-highest rounded-lg appearance-none cursor-pointer accent-primary" type="range"/>
+</div>
+<div class="space-y-2">
+<label class="text-[0.7rem] font-bold tracking-widest uppercase text-on-surface-variant">Vault Path</label>
+<div class="flex gap-2">
+<div class="flex-1 bg-surface-container-low px-4 py-3 rounded-xl border border-outline-variant/10 text-sm font-mono truncate">
+                                            /Users/admin/Skarbiec/Data
+                                        </div>
+<button class="p-3 bg-surface-container-high rounded-xl text-primary hover:bg-primary hover:text-on-primary transition-all">
+<span class="material-symbols-outlined">folder</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<!-- Shell Extension Status -->
+<div class="glass-panel p-8 rounded-xl space-y-6">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-secondary">extension</span>
+<h3 class="text-lg font-bold">Shell Extension</h3>
+</div>
+<div class="bg-secondary/10 border border-secondary/20 p-4 rounded-xl flex items-center gap-4">
+<span class="material-symbols-outlined text-secondary" style="font-variation-settings: 'FILL' 1;">check_circle</span>
+<div>
+<p class="text-sm font-bold text-secondary">Zarejestrowano poprawnie</p>
+<p class="text-xs text-on-surface-variant">System integration is active.</p>
+</div>
+</div>
+<div class="space-y-4">
+<label class="flex items-center gap-4 group cursor-pointer">
+<div class="w-6 h-6 rounded border-2 border-outline-variant group-hover:border-primary transition-all flex items-center justify-center">
+<div class="w-3 h-3 bg-primary rounded-sm"></div>
+</div>
+<span class="text-sm font-medium">Context Menu Integration</span>
+</label>
+<label class="flex items-center gap-4 group cursor-pointer">
+<div class="w-6 h-6 rounded border-2 border-outline-variant group-hover:border-primary transition-all flex items-center justify-center">
+<div class="w-3 h-3 bg-primary rounded-sm"></div>
+</div>
+<span class="text-sm font-medium">Overlay Icon Badges</span>
+</label>
+<label class="flex items-center gap-4 group cursor-pointer">
+<div class="w-6 h-6 rounded border-2 border-outline-variant transition-all flex items-center justify-center"></div>
+<span class="text-sm font-medium text-on-surface-variant">Deep Hardware Encryption</span>
+</label>
+</div>
+</div>
+</div>
+<!-- Diagnostics & System Control -->
+<div class="glass-panel p-8 rounded-xl space-y-8">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-tertiary">warning</span>
+<h3 class="text-lg font-bold">Diagnostyka i System</h3>
+</div>
+<span class="px-3 py-1 bg-surface-container-high rounded-full text-[0.65rem] font-bold tracking-tighter text-on-surface-variant">V 2.4.1-STABLE</span>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+<button class="flex flex-col items-center gap-3 p-6 bg-surface-container rounded-xl hover:bg-surface-container-high transition-all border border-outline-variant/10 group">
+<span class="material-symbols-outlined text-primary text-3xl group-hover:scale-110 transition-transform">description</span>
+<span class="text-sm font-semibold">Plik Logów</span>
+</button>
+<button class="flex flex-col items-center gap-3 p-6 bg-surface-container rounded-xl hover:bg-surface-container-high transition-all border border-outline-variant/10 group">
+<span class="material-symbols-outlined text-secondary text-3xl group-hover:rotate-180 transition-transform duration-500">autorenew</span>
+<span class="text-sm font-semibold">Restart Daemon</span>
+</button>
+<button class="flex flex-col items-center gap-3 p-6 bg-tertiary/10 rounded-xl hover:bg-tertiary-container transition-all border border-tertiary/20 group">
+<span class="material-symbols-outlined text-tertiary text-3xl group-hover:scale-110 transition-transform">priority_high</span>
+<span class="text-sm font-bold text-tertiary group-hover:text-on-tertiary">Factory Reset</span>
+</button>
+</div>
+<div class="bg-surface-container-lowest p-6 rounded-2xl border border-outline-variant/5">
+<div class="flex items-start gap-4">
+<span class="material-symbols-outlined text-on-surface-variant mt-1">info</span>
+<p class="text-xs leading-relaxed text-on-surface-variant">
+                                    Factory reset spowoduje trwałe usunięcie wszystkich lokalnych kluczy sesji oraz cache'u. Operacja ta nie usuwa danych z chmury, ale będzie wymagać ponownej synchronizacji i logowania przy użyciu frazy odzyskiwania.
+                                </p>
+</div>
+</div>
+</div>
+<!-- Subtle Footer -->
+<div class="flex justify-end gap-4 py-4">
+<button class="px-8 py-3 rounded-full text-on-surface-variant font-bold hover:text-on-surface transition-colors">Anuluj zmiany</button>
+<button class="px-10 py-3 rounded-full bg-gradient-to-r from-primary to-primary-container text-on-primary font-black shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all">ZAPISZ KONFIGURACJĘ</button>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- Contextual Background Glows (Atmospheric Design) -->
+<div class="fixed top-[-10%] right-[-10%] w-[40%] h-[40%] bg-primary/5 blur-[120px] rounded-full -z-10 pointer-events-none"></div>
+<div class="fixed bottom-[-5%] left-[-5%] w-[30%] h-[30%] bg-tertiary/5 blur-[100px] rounded-full -z-10 pointer-events-none"></div>
+</body></html>

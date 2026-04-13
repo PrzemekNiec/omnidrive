@@ -1,0 +1,359 @@
+<!--
+  Źródło: Google Stitch (wygenerowano 2026-04-13)
+  Stan: RAW — paleta i tokeny do normalizacji przy integracji.
+  Do zrobienia przy sklejaniu:
+    - podmiana palety na tokeny z Przeglądu (primary #00daf3, secondary #4edea3, tertiary #ffb95f)
+    - podmiana surface #0d0e15 → #2C2C2C (+ radial gradient)
+    - ujednolicenie border-radius do skali Przeglądu (2xl 1.5rem, 3xl 1.75rem)
+    - usunięcie duplikatu <link> do Material Symbols
+    - wycięcie własnego sidebar/header — są globalne w index.html
+    - etykiety sidebar PL (Skarbiec jest aktywne — zgodność z plan-G)
+    - podmiana #69daff / #69f6b8 / #ff6f7e w shadow-[...] (Recovery, migration) na wartości primary/secondary
+    - treści do PL: "Locked State" → "Stan: Zablokowany"; "Metadata Sync / Synced" → "Synchronizacja metadanych / OK"
+    - Recovery keys grid: obecnie tylko 6/24 widoczne — w integracji dopiąć endpoint /api/recovery/list_words lub rerender po fetch
+    - frazy EN w recovery (ethereal/vault/secure/…) to placeholdery, podmiana na dane z backendu
+-->
+<!DOCTYPE html>
+
+<html class="dark" lang="pl"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "primary": "#69daff",
+                    "surface-bright": "#2a2b37",
+                    "secondary-fixed-dim": "#58e7ab",
+                    "surface-container-high": "#1e1f29",
+                    "primary-fixed-dim": "#00c0ea",
+                    "tertiary": "#ff6f7e",
+                    "tertiary-fixed": "#ff9099",
+                    "tertiary-container": "#fc4563",
+                    "on-tertiary-fixed-variant": "#780021",
+                    "surface-container-lowest": "#000000",
+                    "on-error-container": "#ffa8a3",
+                    "error-container": "#9f0519",
+                    "surface-variant": "#242530",
+                    "primary-dim": "#00c0ea",
+                    "outline-variant": "#474750",
+                    "on-primary-fixed-variant": "#004a5c",
+                    "surface-tint": "#69daff",
+                    "surface-dim": "#0d0e15",
+                    "secondary-dim": "#58e7ab",
+                    "error-dim": "#d7383b",
+                    "on-tertiary": "#490010",
+                    "on-surface-variant": "#abaab5",
+                    "on-primary-fixed": "#002a35",
+                    "surface": "#0d0e15",
+                    "error": "#ff716c",
+                    "on-secondary-fixed-variant": "#006544",
+                    "on-primary-container": "#004050",
+                    "inverse-surface": "#fbf8ff",
+                    "inverse-on-surface": "#54545d",
+                    "surface-container-low": "#12131b",
+                    "on-secondary-fixed": "#00452d",
+                    "secondary": "#69f6b8",
+                    "on-surface": "#f4f2fe",
+                    "background": "#0d0e15",
+                    "tertiary-dim": "#ff6f7e",
+                    "inverse-primary": "#006880",
+                    "on-secondary-container": "#e1ffec",
+                    "on-secondary": "#005a3c",
+                    "on-error": "#490006",
+                    "on-background": "#f4f2fe",
+                    "surface-container-highest": "#242530",
+                    "on-tertiary-fixed": "#39000b",
+                    "primary-container": "#00cffc",
+                    "primary-fixed": "#00cffc",
+                    "surface-container": "#181922",
+                    "outline": "#75747e",
+                    "secondary-fixed": "#69f6b8",
+                    "on-primary": "#004a5d",
+                    "tertiary-fixed-dim": "#ff7986",
+                    "on-tertiary-container": "#100001",
+                    "secondary-container": "#006c49"
+            },
+            "borderRadius": {
+                    "DEFAULT": "1rem",
+                    "lg": "2rem",
+                    "xl": "3rem",
+                    "full": "9999px"
+            },
+            "fontFamily": {
+                    "headline": ["Inter"],
+                    "body": ["Inter"],
+                    "label": ["Inter"]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; background-color: #0d0e15; color: #f4f2fe; }
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+        .glass-panel {
+            background: rgba(24, 25, 34, 0.8);
+            backdrop-filter: blur(24px);
+        }
+        .bento-grid {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: 2rem;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background min-h-screen">
+<!-- SideNavBar Shell -->
+<aside class="w-[240px] h-screen rounded-r-[28px] bg-[#0d0e15] flex flex-col fixed left-0 top-0 h-full py-8 space-y-6 z-50 shadow-2xl shadow-black/20">
+<div class="px-8 mb-4">
+<div class="flex items-center space-x-3">
+<div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-on-primary-container" style="font-variation-settings: 'FILL' 1;">enhanced_encryption</span>
+</div>
+<div>
+<h2 class="text-[#69daff] font-black text-lg tracking-tighter">Skarbiec</h2>
+<p class="text-[10px] uppercase tracking-widest text-on-surface-variant/60">The Ethereal Vault</p>
+</div>
+</div>
+</div>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center px-8 py-3 space-x-4 text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all group" href="#">
+<span class="material-symbols-outlined text-xl" data-icon="folder_open">folder_open</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Files</span>
+</a>
+<!-- Active Tab: Vault -->
+<a class="flex items-center px-8 py-3 space-x-4 text-[#69daff] border-r-2 border-[#69daff] bg-gradient-to-r from-[#69daff]/10 to-transparent group active:translate-x-1 duration-300" href="#">
+<span class="material-symbols-outlined text-xl" data-icon="enhanced_encryption" style="font-variation-settings: 'FILL' 1;">enhanced_encryption</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-semibold">Vault</span>
+</a>
+<a class="flex items-center px-8 py-3 space-x-4 text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all group" href="#">
+<span class="material-symbols-outlined text-xl" data-icon="devices">devices</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Multi-Device</span>
+</a>
+<a class="flex items-center px-8 py-3 space-x-4 text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all group" href="#">
+<span class="material-symbols-outlined text-xl" data-icon="cloud">cloud</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Cloud</span>
+</a>
+<a class="flex items-center px-8 py-3 space-x-4 text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all group" href="#">
+<span class="material-symbols-outlined text-xl" data-icon="history_edu">history_edu</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Audit</span>
+</a>
+<a class="flex items-center px-8 py-3 space-x-4 text-slate-500 hover:text-slate-300 hover:bg-[#1e1f29] transition-all group" href="#">
+<span class="material-symbols-outlined text-xl" data-icon="settings">settings</span>
+<span class="font-['Inter'] uppercase text-[0.75rem] tracking-[0.05em] font-medium">Settings</span>
+</a>
+</nav>
+<div class="px-6 pt-6 border-t border-white/5 space-y-4">
+<button class="w-full py-3 rounded-xl bg-surface-container-high border border-outline-variant/20 text-on-surface text-xs font-bold uppercase tracking-widest hover:bg-surface-bright transition-colors">
+                Lock Vault
+            </button>
+<div class="space-y-1">
+<a class="flex items-center px-4 py-2 space-x-3 text-slate-500 hover:text-slate-300 transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="help">help</span>
+<span class="text-[0.7rem] uppercase tracking-wider font-medium">Support</span>
+</a>
+<a class="flex items-center px-4 py-2 space-x-3 text-tertiary/70 hover:text-tertiary transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="logout">logout</span>
+<span class="text-[0.7rem] uppercase tracking-wider font-medium">Sign Out</span>
+</a>
+</div>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="ml-[240px] min-h-screen">
+<!-- TopAppBar -->
+<header class="h-[64px] w-full bg-[#181922]/80 backdrop-blur-xl flex justify-between items-center px-8 border-b border-white/5 sticky top-0 z-40">
+<div class="flex items-center space-x-4">
+<span class="text-xl font-bold tracking-tighter text-slate-100">Skarbiec Console</span>
+<span class="px-2 py-0.5 rounded bg-primary/10 text-primary text-[10px] font-bold tracking-widest uppercase">Production</span>
+</div>
+<div class="flex items-center space-x-6">
+<div class="relative">
+<span class="material-symbols-outlined text-slate-400 hover:text-primary transition-colors cursor-pointer" data-icon="notifications">notifications</span>
+<span class="absolute -top-1 -right-1 w-2 h-2 bg-tertiary rounded-full"></span>
+</div>
+<div class="flex items-center space-x-3 pl-6 border-l border-white/10">
+<div class="text-right hidden sm:block">
+<p class="text-[11px] font-bold text-on-surface uppercase tracking-tighter leading-none">Admin Operator</p>
+<p class="text-[10px] text-on-surface-variant leading-none mt-1">ID: 882-VAULT</p>
+</div>
+<span class="material-symbols-outlined text-slate-300 text-3xl" data-icon="account_circle">account_circle</span>
+</div>
+</div>
+</header>
+<!-- Page Content -->
+<div class="p-8 max-w-7xl mx-auto space-y-8">
+<!-- Header Section -->
+<section class="flex flex-col md:flex-row md:items-end justify-between gap-4">
+<div>
+<h1 class="text-5xl font-black text-on-surface tracking-tighter mb-2">Skarbiec</h1>
+<p class="text-on-surface-variant text-lg max-w-2xl font-light">Zarządzanie kluczami, szyfrowaniem i integralnością danych w bezpiecznym środowisku Ethereal Vault.</p>
+</div>
+<div class="flex gap-3">
+<div class="glass-panel px-4 py-2 rounded-2xl flex items-center space-x-3 border border-outline-variant/10">
+<span class="w-2 h-2 rounded-full bg-secondary shadow-[0_0_8px_#69f6b8]"></span>
+<span class="text-[10px] font-bold uppercase tracking-widest text-secondary">System Online</span>
+</div>
+</div>
+</section>
+<!-- Bento Grid Content -->
+<div class="bento-grid">
+<!-- Status Vault card (v2) - Span 4 -->
+<div class="col-span-12 lg:col-span-4 glass-panel rounded-xl p-8 border border-outline-variant/5 flex flex-col justify-between min-h-[320px] relative overflow-hidden">
+<div class="absolute -top-12 -right-12 w-48 h-48 bg-primary/5 rounded-full blur-3xl"></div>
+<div>
+<div class="flex justify-between items-start mb-8">
+<div class="w-14 h-14 rounded-2xl bg-surface-container-high flex items-center justify-center text-tertiary shadow-xl">
+<span class="material-symbols-outlined text-3xl" data-icon="enhanced_encryption" style="font-variation-settings: 'FILL' 1;">enhanced_encryption</span>
+</div>
+<span class="text-[10px] font-bold uppercase tracking-[0.2em] text-on-surface-variant">Vault v2.4.0</span>
+</div>
+<h3 class="text-3xl font-bold text-on-surface tracking-tight mb-2">Locked State</h3>
+<p class="text-on-surface-variant text-sm font-medium">Global vault access is currently restricted. Cryptographic operations are queued.</p>
+</div>
+<div class="mt-8 pt-6 border-t border-white/5 space-y-3">
+<div class="flex justify-between text-[11px] uppercase tracking-widest font-bold">
+<span class="text-on-surface-variant">Metadata Sync</span>
+<span class="text-secondary">Synced</span>
+</div>
+<div class="h-1.5 w-full bg-surface-container-lowest rounded-full overflow-hidden">
+<div class="h-full bg-secondary w-full"></div>
+</div>
+</div>
+</div>
+<!-- Unlock Panel - Span 8 -->
+<div class="col-span-12 lg:col-span-8 glass-panel rounded-xl p-8 border border-outline-variant/5 flex flex-col justify-center">
+<div class="max-w-xl mx-auto w-full">
+<div class="flex items-center space-x-3 mb-6">
+<span class="material-symbols-outlined text-primary" data-icon="key">key</span>
+<h4 class="text-sm font-bold uppercase tracking-widest text-on-surface">Odblokuj Instancję</h4>
+</div>
+<div class="space-y-6">
+<div class="space-y-2">
+<label class="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant ml-1">Vault Passphrase</label>
+<input class="w-full bg-surface-container-low border-outline-variant/15 border rounded-2xl px-6 py-4 text-on-surface focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all outline-none" placeholder="••••••••••••••••••••••••" type="password"/>
+</div>
+<button class="w-full bg-gradient-to-r from-primary to-primary-container text-on-primary font-bold py-4 rounded-2xl shadow-lg shadow-primary/10 hover:brightness-110 active:scale-[0.98] transition-all uppercase tracking-widest text-sm">
+                                Odblokuj
+                            </button>
+<p class="text-center text-[10px] text-on-surface-variant/60 uppercase tracking-tight">Warning: 3 failed attempts will trigger a 24-hour lockout.</p>
+</div>
+</div>
+</div>
+<!-- Rotation Panel - Span 6 -->
+<div class="col-span-12 md:col-span-6 glass-panel rounded-xl p-8 border border-outline-variant/5 space-y-6">
+<div class="flex items-center justify-between">
+<div class="flex items-center space-x-3">
+<span class="material-symbols-outlined text-tertiary" data-icon="autorenew">autorenew</span>
+<h4 class="text-sm font-bold uppercase tracking-widest text-on-surface">Rotacja Kluczy</h4>
+</div>
+<span class="bg-tertiary/10 text-tertiary text-[9px] font-black px-2 py-1 rounded uppercase tracking-tighter">Wymagana Akcja</span>
+</div>
+<div class="p-4 rounded-2xl bg-tertiary/5 border border-tertiary/10">
+<p class="text-xs text-tertiary leading-relaxed font-medium">Klucz główny wygasa za 4 dni. Brak rotacji spowoduje zablokowanie operacji zapisu dla nowych segmentów danych.</p>
+</div>
+<div class="space-y-4">
+<div class="space-y-2">
+<label class="text-[9px] font-bold uppercase tracking-widest text-on-surface-variant">Nowe hasło główne</label>
+<input class="w-full bg-surface-container-low/50 border-outline-variant/10 border rounded-xl px-4 py-3 text-sm focus:border-tertiary/40 outline-none transition-colors" type="password"/>
+</div>
+<div class="space-y-2">
+<label class="text-[9px] font-bold uppercase tracking-widest text-on-surface-variant">Potwierdź nowe hasło</label>
+<input class="w-full bg-surface-container-low/50 border-outline-variant/10 border rounded-xl px-4 py-3 text-sm focus:border-tertiary/40 outline-none transition-colors" type="password"/>
+</div>
+<button class="w-full bg-surface-container-high border border-tertiary/30 text-tertiary py-3 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-tertiary hover:text-on-tertiary transition-all">
+                            Rotuj klucz
+                        </button>
+</div>
+</div>
+<!-- Migration Panel - Span 6 -->
+<div class="col-span-12 md:col-span-6 glass-panel rounded-xl p-8 border border-outline-variant/5 flex flex-col justify-between">
+<div class="space-y-6">
+<div class="flex items-center space-x-3">
+<span class="material-symbols-outlined text-secondary" data-icon="database">storage</span>
+<h4 class="text-sm font-bold uppercase tracking-widest text-on-surface">Migracja Schematu (V1 ➔ V2)</h4>
+</div>
+<div class="space-y-4">
+<div class="flex justify-between items-end">
+<div>
+<p class="text-3xl font-black text-on-surface tracking-tighter">64%</p>
+<p class="text-[10px] text-on-surface-variant uppercase font-bold tracking-widest">Przetworzone rekordy</p>
+</div>
+<p class="text-[10px] text-on-surface-variant font-medium">241.092 / 380.000</p>
+</div>
+<div class="h-4 w-full bg-surface-container-lowest rounded-full p-1 border border-white/5">
+<div class="h-full bg-gradient-to-r from-secondary/40 to-secondary w-[64%] rounded-full shadow-[0_0_15px_rgba(105,246,184,0.3)]"></div>
+</div>
+</div>
+<div class="flex items-start space-x-4 text-on-surface-variant">
+<span class="material-symbols-outlined text-lg mt-1" data-icon="info">info</span>
+<p class="text-[11px] leading-relaxed">System automatycznie re-szyfruje metadane przy użyciu nowego algorytmu AES-GCM-256. Przewidywany czas zakończenia: 1h 22m.</p>
+</div>
+</div>
+<button class="w-full mt-6 py-4 rounded-2xl bg-surface-bright text-on-surface font-bold text-xs uppercase tracking-[0.2em] hover:bg-surface-container-highest transition-colors flex items-center justify-center space-x-2">
+<span>Uruchom batch</span>
+<span class="material-symbols-outlined text-sm" data-icon="play_arrow">play_arrow</span>
+</button>
+</div>
+<!-- Recovery Keys card - Span 12 -->
+<div class="col-span-12 glass-panel rounded-xl p-10 border border-outline-variant/5 flex flex-col lg:flex-row items-center gap-12 relative overflow-hidden">
+<div class="absolute bottom-0 right-0 w-96 h-96 bg-primary/5 rounded-full blur-[120px] -z-10"></div>
+<div class="flex-1 space-y-6">
+<div class="flex items-center space-x-3">
+<div class="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary" data-icon="verified_user" style="font-variation-settings: 'FILL' 1;">verified_user</span>
+</div>
+<div>
+<h4 class="text-xl font-bold text-on-surface tracking-tight">Klucze Odzyskiwania (BIP-39)</h4>
+<p class="text-on-surface-variant text-sm font-medium">Status: Klucz 24-wyrazowy wygenerowany i zweryfikowany.</p>
+</div>
+</div>
+<div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+<div class="bg-surface-container-low/40 px-3 py-2 rounded-lg border border-white/5 text-[10px] font-mono text-on-surface-variant flex items-center space-x-2">
+<span class="text-primary/40">01</span> <span>ethereal</span>
+</div>
+<div class="bg-surface-container-low/40 px-3 py-2 rounded-lg border border-white/5 text-[10px] font-mono text-on-surface-variant flex items-center space-x-2">
+<span class="text-primary/40">02</span> <span>vault</span>
+</div>
+<div class="bg-surface-container-low/40 px-3 py-2 rounded-lg border border-white/5 text-[10px] font-mono text-on-surface-variant flex items-center space-x-2">
+<span class="text-primary/40">03</span> <span>secure</span>
+</div>
+<div class="bg-surface-container-low/40 px-3 py-2 rounded-lg border border-white/5 text-[10px] font-mono text-on-surface-variant flex items-center space-x-2">
+<span class="text-primary/40">04</span> <span>matrix</span>
+</div>
+<div class="bg-surface-container-low/40 px-3 py-2 rounded-lg border border-white/5 text-[10px] font-mono text-on-surface-variant flex items-center space-x-2">
+<span class="text-primary/40">05</span> <span>shadow</span>
+</div>
+<div class="bg-surface-container-low/40 px-3 py-2 rounded-lg border border-white/5 text-[10px] font-mono text-on-surface-variant flex items-center space-x-2">
+<span class="text-primary/40">06</span> <span>nebula</span>
+</div>
+<!-- ... abbreviated for UI visual ... -->
+<div class="col-span-full text-center py-2 text-[9px] uppercase tracking-widest text-on-surface-variant/40 italic">Remaining 18 words encrypted and hidden for security</div>
+</div>
+</div>
+<div class="flex flex-col gap-3 w-full lg:w-72">
+<button class="w-full bg-surface-container-highest border border-outline-variant/20 text-on-surface py-4 rounded-2xl font-bold text-xs uppercase tracking-widest hover:bg-surface-bright transition-all flex items-center justify-center space-x-3">
+<span class="material-symbols-outlined text-lg" data-icon="refresh">refresh</span>
+<span>Wygeneruj nowy klucz</span>
+</button>
+<button class="w-full bg-primary/10 border border-primary/30 text-primary py-4 rounded-2xl font-bold text-xs uppercase tracking-widest hover:bg-primary hover:text-on-primary transition-all flex items-center justify-center space-x-3">
+<span class="material-symbols-outlined text-lg" data-icon="verified">verified</span>
+<span>Zweryfikuj</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<!-- Footer Info -->
+<footer class="p-8 border-t border-white/5 mt-12 text-center">
+<p class="text-[10px] font-bold uppercase tracking-[0.4em] text-on-surface-variant/40">Skarbiec Protocol • Military Grade AES-256-GCM Encryption • Zero-Knowledge Architecture</p>
+</footer>
+</main>
+</body></html>
