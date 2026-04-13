@@ -124,6 +124,7 @@ impl ApiServer {
         };
         let app = Router::new()
             .route("/", get(get_index))
+            .route("/legacy", get(get_legacy))
             .route("/wizard.js", get(get_wizard_js))
             .merge(onboarding::routes())
             .merge(diagnostics::routes())
@@ -165,6 +166,10 @@ impl std::error::Error for ApiServerError {}
 
 async fn get_index() -> Html<&'static str> {
     Html(include_str!("../../static/index.html"))
+}
+
+async fn get_legacy() -> Html<&'static str> {
+    Html(include_str!("../../static/legacy.html"))
 }
 
 async fn get_wizard_js() -> impl IntoResponse {
