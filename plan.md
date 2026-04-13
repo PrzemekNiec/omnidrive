@@ -144,11 +144,11 @@ Kluczowe decyzje podjęte w RFC:
 - Kliknięcie → POST do angeld z polityką i ścieżką pliku
 - Angeld stosuje politykę (zmiana sync_policy, ingest jeśli potrzebny)
 
-### 35.2c: Overlay icons
-- Ikony overlay w Eksploratorze: synced, uploading, ghost, error
-- IShellIconOverlayIdentifier implementation
-- Stan z angeld via named pipe lub shared memory (szybki polling)
-- Test: zmień stan pliku → ikona się zmienia w Eksploratorze
+### 35.2c: Natywne stany cfapi (SKASOWANE custom overlays)
+- **DECYZJA ARCHITEKTONICZNA (2026-04-13):** Zero custom `IShellIconOverlayIdentifier`. Używamy WYŁĄCZNIE natywnych stanów i ikon Windows Cloud Files API (cfapi).
+- Powód: slot overlay'i w Windowsie jest ograniczony (15 globalnie, zazwyczaj 4 wolne), OneDrive/Dropbox/Google Drive już je zajmują — własne nakładki prowadzą do konfliktów i bugów. cfapi dostarcza natywne wizualizacje (chmurka, ptaszek, pobieranie) bez rejestracji w rejestrze.
+- Zakres: upewnić się, że `CfSetPlaceholderState` / `CfUpdatePlaceholder` poprawnie raportują stany (`CF_PLACEHOLDER_STATE_IN_SYNC`, `PARTIAL`, `PARTIALLY_ON_DISK`) i pin state (`CfSetPinState`), żeby Eksplorator rysował natywne ikony
+- Test: zmień stan placeholdera → natywna ikona cfapi w Eksploratorze się zmienia (bez własnych DLL overlay)
 
 ### 35.3: System Tray Companion
 - **Cel:** Lekka aplikacja w Rust (biblioteka `tray-item` lub `windows-rs` Shell_NotifyIcon), działająca niezależnie od angeld
