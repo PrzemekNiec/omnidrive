@@ -438,7 +438,7 @@ async fn restore(
 
 async fn backup_now(client: &Client, api_base: &str) -> Result<(), CliError> {
     let response = client
-        .post(format!("{api_base}/api/recovery/backup-now"))
+        .post(format!("{api_base}/api/metadata-backup/backup-now"))
         .send()
         .await?;
 
@@ -456,7 +456,7 @@ async fn backup_now(client: &Client, api_base: &str) -> Result<(), CliError> {
 
 async fn recovery_status(client: &Client, api_base: &str) -> Result<(), CliError> {
     let status: RecoveryStatusResponse =
-        get_json(client, &format!("{api_base}/api/recovery/status")).await?;
+        get_json(client, &format!("{api_base}/api/metadata-backup/status")).await?;
 
     println!("Recovery Status");
     println!(

@@ -207,7 +207,7 @@ async fn disaster_recovery_rebuilds_local_db_inventory_after_total_db_loss(
     assert_eq!(original_files, expected_paths);
 
     let backup_response = first
-        .post_json("/api/recovery/backup-now", &serde_json::json!({}))
+        .post_json("/api/metadata-backup/backup-now", &serde_json::json!({}))
         .await?;
     assert_eq!(backup_response["uploaded"], Value::Bool(true));
 
@@ -271,7 +271,7 @@ async fn wait_for_backup_completion(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let status = handle.get_json("/api/recovery/status").await?;
+        let status = handle.get_json("/api/metadata-backup/status").await?;
         let recent = status["recent_attempts"].as_array().cloned().unwrap_or_default();
         let has_completed = recent
             .iter()

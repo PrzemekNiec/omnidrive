@@ -110,9 +110,9 @@ pub(super) fn routes() -> Router<ApiState> {
             "/api/maintenance/repair-sync-root",
             post(post_repair_sync_root),
         )
-        .route("/api/recovery/status", get(get_recovery_status))
-        .route("/api/recovery/backup-now", post(post_backup_now))
-        .route("/api/recovery/snapshot-local", post(post_snapshot_local))
+        .route("/api/metadata-backup/status", get(get_recovery_status))
+        .route("/api/metadata-backup/backup-now", post(post_backup_now))
+        .route("/api/metadata-backup/snapshot-local", post(post_snapshot_local))
         .route("/api/ingest", get(get_ingest_jobs))
         .route("/api/ingest/{job_id}/retry", post(post_ingest_retry))
         .route("/api/ingest/{job_id}/cleanup", post(post_ingest_cleanup))

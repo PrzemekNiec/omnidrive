@@ -1093,7 +1093,7 @@
       "Napraw SyncRoot"
     ));
     maintenanceBackupButton.addEventListener("click", () => triggerMaintenanceAction(
-      "/api/recovery/backup-now",
+      "/api/metadata-backup/backup-now",
       maintenanceBackupButton,
       "Tworzenie kopii...",
       "Kopia metadanych teraz"
@@ -1639,7 +1639,7 @@
     }
 
     async function loadRecoveryStatus() {
-      const recovery = await fetchJson("/api/recovery/status");
+      const recovery = await fetchJson("/api/metadata-backup/status");
       recoveryLastBackup.textContent = recovery.last_successful_backup
         ? `Ostatnia kopia: ${formatTimestamp(recovery.last_successful_backup)}`
         : "Ostatnia kopia: nigdy";
@@ -1800,7 +1800,7 @@
       backupNowButton.disabled = true;
       backupNowButton.textContent = "Tworzenie kopii...";
       try {
-        await fetchJson("/api/recovery/backup-now", { method: "POST" });
+        await fetchJson("/api/metadata-backup/backup-now", { method: "POST" });
         await Promise.all([loadRecoveryStatus(), loadMaintenanceStatus()]);
       } catch (error) {
         alert(error.message);
