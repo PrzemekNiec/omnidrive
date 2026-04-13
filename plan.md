@@ -710,6 +710,44 @@ Które pliki dotykają które zadania — klucz do minimalizacji ładowania kont
 
 **Exit criteria:** `cargo test` green, recovery key flow działa end-to-end, mnemonic nigdy nie jest logowany.
 
+#### Krok B.7: Unlock-screen recovery link + Karta wydruku A4 (follow-up po review)
+
+**Kontekst:** Implementacja B.4+B.5 (commit `57d0a76`) wpięła restore modal w dashboard panelu Skarbca — czyli **dostępny dopiero po zalogowaniu**. Klasyczny flow „zapomniałem hasła" zakłada że user **nie jest zalogowany**, więc obecny restore jest funkcjonalnie niedostępny w jedynym momencie kiedy jest potrzebny. Plan oryginalny B.5 mówił o linku w unlock screen — implementacja od tego odeszła. Dodatkowo brakuje karty wydruku A4 (standard branżowy: Bitwarden Emergency Sheet, 1Password Emergency Kit).
+
+**B.7.1 — Recovery link na unlock screen (`wizard.js`)**
+- Pod polem master password w wizardzie unlock dodać link „Zapomniałem hasła / Użyj klucza odzyskiwania"
+- Klik otwiera ten sam restore modal (lub osobny widok wizard'a) z polami: 24 słowa + nowe hasło + potwierdzenie
+- Po udanym `POST /api/recovery/restore`: backend musi zwrócić token sesji (sprawdzić obecny response — jeśli nie, dorobić); FE od razu odblokowuje vault i ładuje dashboard z nowym hasłem (auto-login, bez powrotu do unlocka)
+- Restore w dashboardzie zostawić jako wtórny entry point (np. dla użytkownika który chce zmienić hasło bez zapominania go)
+
+**B.7.2 — Print karty wydruku A4**
+- W generate modal nowy duży CTA `[Wydrukuj kartę odzyskiwania]` obok `Skopiuj`
+- Dwa warianty implementacji: (a) `@media print` z dedykowanymi stylami chowającymi sidebar/header/modal-chrome i pokazującymi tylko czystą kartę, lub (b) `window.open()` nowego okna z wbudowanym minimalnym HTML
+- Szablon karty (A4 portrait, czarno-biały, monospace na słowa):
+  - Nagłówek: „OmniDrive — Karta Odzyskiwania Skarbca"
+  - Nazwa skarbca + data wygenerowania + vault_key generation
+  - Numerowana lista 24 słów (np. siatka 4×6 z indeksami `1.` do `24.`)
+  - Sekcja „Bezpieczeństwo" z punktami: „Nie rób zdjęć tej karty", „Nie przechowuj cyfrowo (skanu, fotki, chmury)", „Trzymaj w sejfie / safety deposit box", „Każdy kto zna te 24 słowa może odszyfrować Twój skarbiec"
+  - Stopka: skrócony fingerprint klucza (do weryfikacji że to ta sama karta) + „Wygenerowano przez OmniDrive vX.Y.Z"
+- `tabindex` i fokus na `Wydrukowano i zabezpieczono` przed zamknięciem modala (żeby user nie zamknął okna bez akcji)
+
+**B.7.3 — Ostrzeżenie o nadpisaniu poprzedniego klucza**
+- Sprawdzić w `recovery.rs` czy `/generate` automatycznie unieważnia poprzedni klucz (czy wymaga osobnego `/revoke` najpierw)
+- Jeśli automatycznie nadpisuje: w generate modal **przed** wywołaniem API pokazać confirm step z ostrzeżeniem „Wygenerowanie nowego klucza unieważni poprzedni — papierowa karta którą posiadasz nie będzie już działać. Kontynuować?"
+- Jeśli nie nadpisuje (klucze kumulatywne): pokazać aktualną liczbę aktywnych w confirm step
+
+**B.7.4 — Testy i weryfikacja**
+- Manualnie: zapomnij hasło → otwórz unlock → klik recovery link → wpisz 24 słowa + nowe hasło → vault otwarty bez powrotu do unlocka
+- Manualnie: print preview karty A4 (Chrome `Ctrl+P`) — czysta karta, brak sidebar/header, czytelne 24 słowa
+- Manualnie: drugi `/generate` na żywym vaulcie — confirm dialog z ostrzeżeniem o nadpisaniu pojawia się
+- `cargo test --workspace` zielony
+
+**Exit criteria:** recovery dostępne na unlock screen z auto-login, karta wydruku A4 generowalna z generate modala, generate ostrzega o nadpisaniu starego klucza.
+
+**Rozmiar:** Średni (zmiany w `wizard.js` + nowy print template w `static/index.html` + drobna zmiana w `recovery.rs` jeśli `/restore` nie zwraca tokenu)
+
+**Mikro-kroki:** 4 (B.7.1–B.7.4)
+
 ---
 
 ### Sesja Pre-C: Naprawa User ID (P0 — fundament pod OAuth i multi-device)
@@ -1000,7 +1038,11 @@ Ze względu na rozmiar Sesja G dzieli się na podsesje G-BE (backend) i G-FE (fr
   2. Unlock/lock (passphrase)
   3. Rotate Vault Key (istniejące z Epic 32.5.2d)
   4. Migracja V1→V2 (progress bar, live status z `migrator.rs`)
-  5. Recovery Keys — full view (generate, download, revoke) — reuse z 34.6a
+  5. Recovery Keys — full view (generate, restore, revoke) — reuse z 34.6a + uzupełnienia z B.7:
+     - przycisk `[Wydrukuj kartę odzyskiwania]` w generate modalu (szablon A4, `@media print`, czarno-biały, 24 słowa numerowane + sekcja bezpieczeństwa, patrz B.7.2)
+     - confirm step z ostrzeżeniem o nadpisaniu poprzedniego klucza przed `/generate` (patrz B.7.3)
+     - restore także dostępny tutaj jako wtórny entry point (główny w wizard'zie unlock z B.7.1)
+     - po udanym restore: auto-login bez powrotu do unlocka (jeśli backend zwraca token sesji)
 
 #### Krok G.7: Widok „Multi-Device"
 - Lista `devices` z: nazwa, public key fingerprint, last_seen, safety number (Epic 34 E.1–E.2)
