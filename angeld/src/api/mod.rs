@@ -5,6 +5,7 @@ pub mod error;
 mod files;
 mod maintenance;
 mod onboarding;
+mod recovery;
 mod sharing;
 mod vault;
 
@@ -134,6 +135,8 @@ impl ApiServer {
             .merge(sharing::routes())
             // ── Audit trail (Epic 34.5) ──
             .merge(audit::routes())
+            // ── Recovery keys (Epic 34.6a) ──
+            .merge(recovery::routes())
             .with_state(state)
             .layer(share_cors_layer());
 

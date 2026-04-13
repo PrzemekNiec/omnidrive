@@ -19,6 +19,7 @@ mod onboarding;
 mod packer;
 mod peer;
 mod pipe_server;
+mod recovery;
 mod repair;
 mod runtime_paths;
 mod scrubber;
