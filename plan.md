@@ -936,25 +936,29 @@ Sesje F i G są sekwencyjne. F dostarcza działający shell + zakładkę „Prze
 
 **Pliki do załadowania:** `dist/installer/payload/static/index.html` (całkowita podmiana), `api/audit.rs` (kontrakt odpowiedzi), `api/recovery.rs` (kontrakt odpowiedzi), `docs/ui-mockups/stitch-dashboard.html` (referencja), `angeld/src/api/mod.rs` (routing, zachowanie wizard.js)
 
-#### Krok F.1: Zachowanie obecnego UI jako legacy
+#### Krok F.1: Zachowanie obecnego UI jako legacy ✅ DONE (commit `5d1527d`)
 - Nowy route: `GET /legacy` — serwuje obecny `index.html` (zostawia dostęp do panelu diagnostyki na wypadek regresji)
 - `GET /` — będzie serwował nowy layout po F.2
+- **Realizacja:** snapshot `static/legacy.html` (kopia poprzedniego `index.html`, 117KB / 2258 linii) + handler `get_legacy()` w `api/mod.rs`
 
-#### Krok F.2: Shell layout (sidebar + header + main)
+#### Krok F.2: Shell layout (sidebar + header + main) ✅ DONE (commit `5d1527d`)
 - Podmienić `static/index.html` na strukturę ze Stitcha (Tailwind config + tokeny + `.glass-panel` + keyframe `pulse-secondary`)
 - Sidebar: 6 pozycji nawigacji + Ustawienia + Wyloguj (na razie wszystkie to `href="#"`, aktywna `Przegląd`)
 - Header: pill „Skarbiec: OK" (status dynamiczny z `/api/health`), avatar/user (z session po OAuth, inaczej „Local")
 - Main: `<div id="view-przeglad">` z sekcjami — pozostałe widoki ukryte w Sesji F (pojawią się w Sesji G)
+- **Realizacja:** pełna podmiana `static/index.html`; wszystkie sekcje Przegląd (Hero, Recovery alert, Status shardów, Chart, Audit log, 4 stat tiles) z DOM placeholderami i MOCK badge'ami; status pill jako statyczny „Skarbiec: OK" (live fetch w F.6); nav z `data-view` pod hash router F.7; user widget z `account_circle` (zamiast `<img>`) i fallbackiem „Local"
 
-#### Krok F.3: Wiring sekcji „Logi Audytowe"
+#### Krok F.3: Wiring sekcji „Logi Audytowe" ✅ DONE
 - Fetch `GET /api/audit?limit=5` (istnieje od commit 5a2ee26)
 - Render 5 ostatnich wpisów: ikona Material Symbols per `action` type (login/sync_saved_locally/add_moderator/gpp_maybe/upload_file), tytuł PL, timestamp relative (dzisiaj → `HH:MM:SS`, wczoraj → „Wczoraj", starsze → data)
 - „Zobacz Pełny Log" → na razie disabled (otwarty w Sesji G jako widok Audyt)
+- **Realizacja:** `AUDIT_ACTION_MAP` z 25 akcjami obecnymi w kodzie (vault_unlock, recovery_*, share_*, accept_device, revoke_device, scrub/repair/backup/reconcile, onboarding_*, migrate_single_to_multi …) z mapowaniem ikona / polski tytuł / `tone` (slate/primary/secondary/tertiary); `formatAuditTimestamp` używa unix seconds (`epoch_secs` z `db.rs`); `auditSubtitle` z fallbackiem `details → actor→target → "Zdarzenie systemowe"`; empty state „Brak zdarzeń audytowych" + error state w kolorze rose; polling co 30s przyjdzie z G.4
 
-#### Krok F.4: Wiring alertu „Brak klucza odzyskiwania"
+#### Krok F.4: Wiring alertu „Brak klucza odzyskiwania" ✅ DONE
 - Fetch `GET /api/recovery/status` (istnieje od commit 57d0a76)
 - Jeśli status = „missing" lub „not_verified_30d" → pokaż kartę tertiary z CTA `Weryfikuj teraz` (przenosi do widoku Skarbiec → sekcja recovery w Sesji G, na razie otwiera modal z istniejącym flow)
 - Jeśli status = „ok" → ukryj kartę, grid staje się 1-kolumnowy
+- **Realizacja:** `/api/recovery/status` zwraca `{ active_count, last_created_at, vk_generation, word_count }` (bez stringa statusu) — klasyfikator `classifyRecoveryStatus` po FE: `active_count <= 0` → `missing`, klucz starszy niż 30 dni → `stale`, inaczej `ok`; `applyRecoveryStatus` przełącza grid `#overviewAlertsGrid` przez toggle klasy `md:grid-cols-2`; CTA otwiera `/legacy#recoveryKeyGenerateButton` w nowej karcie (reuse modala B.4); G.6 podmieni to na natywny modal w widoku Skarbiec; przy błędzie sieci pokazuję `missing` (bezpieczniej zaalarmować niż zignorować)
 
 #### Krok F.5: Placeholdery dla Hero / Chart / Tiles
 - Hero KPI: wartości `—` + badge `MOCK`, komentarz w HTML `<!-- TODO Sesja G.1: GET /api/stats/overview -->`

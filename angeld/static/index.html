@@ -383,11 +383,200 @@
   </main>
 
   <script>
-    // F.2: shell + Przegląd skeleton bez wiringu danych.
-    // F.3-F.7 dodadzą: audit fetch, recovery alert, MOCK→real, status pill polling, hash router.
+    // ============================================================
+    // OmniDrive — Skarbiec Console (frontend bootstrap)
+    // F.3 → audit log; F.4 recovery alert; F.5 placeholders; F.6 status pill; F.7 router; G.* stats
+    // ============================================================
+
+    // ── Mapa typów audytu na ikonę / polski tytuł / kolor ─────────
+    const AUDIT_ACTION_MAP = {
+      'vault_unlock':           { icon: 'lock_open',              label: 'Odblokowano Skarbiec',              tone: 'primary'   },
+      'logout':                 { icon: 'logout',                 label: 'Wylogowano z konsoli',              tone: 'slate'     },
+      'reconcile_start':        { icon: 'published_with_changes', label: 'Uruchomiono uzgodnienie',           tone: 'slate'     },
+      'repair_start':           { icon: 'build',                  label: 'Uruchomiono naprawę pakietów',      tone: 'slate'     },
+      'repair_sync_root':       { icon: 'sync_problem',           label: 'Naprawa SyncRoot',                  tone: 'slate'     },
+      'scrub_start':            { icon: 'cleaning_services',      label: 'Uruchomiono scrub integralności',   tone: 'slate'     },
+      'backup_start':           { icon: 'cloud_upload',           label: 'Backup metadanych',                 tone: 'slate'     },
+      'onboarding_complete':    { icon: 'task_alt',               label: 'Konfiguracja wstępna ukończona',    tone: 'secondary' },
+      'onboarding_reset':       { icon: 'restart_alt',            label: 'Konfiguracja zresetowana',          tone: 'tertiary'  },
+      'provider_configure':     { icon: 'cloud_sync',             label: 'Skonfigurowano dostawcę chmury',    tone: 'slate'     },
+      'vault_join_existing':    { icon: 'link',                   label: 'Dołączono do istniejącego Skarbca', tone: 'primary'   },
+      'recovery_key_generate':  { icon: 'key',                    label: 'Wygenerowano klucz odzyskiwania',   tone: 'primary'   },
+      'recovery_key_restore':   { icon: 'key',                    label: 'Odzyskanie hasła z karty',          tone: 'tertiary'  },
+      'recovery_key_revoke':    { icon: 'key_off',                label: 'Unieważniono klucz odzyskiwania',   tone: 'tertiary'  },
+      'share_create':           { icon: 'share',                  label: 'Utworzono udostępnienie',           tone: 'primary'   },
+      'share_delete':           { icon: 'share_off',              label: 'Usunięto udostępnienie',            tone: 'slate'     },
+      'share_revoke':           { icon: 'share_off',              label: 'Unieważniono udostępnienie',        tone: 'tertiary'  },
+      'accept_device':          { icon: 'verified_user',          label: 'Zaakceptowano urządzenie',          tone: 'secondary' },
+      'auto_accept_device':     { icon: 'verified_user',          label: 'Auto-zaakceptowano urządzenie',     tone: 'secondary' },
+      'add_device':             { icon: 'add_to_queue',           label: 'Dodano urządzenie',                 tone: 'primary'   },
+      'create_invite':          { icon: 'card_giftcard',          label: 'Utworzono zaproszenie',             tone: 'primary'   },
+      'join':                   { icon: 'group_add',              label: 'Dołączenie do Skarbca',             tone: 'secondary' },
+      'remove_member':          { icon: 'person_remove',          label: 'Usunięto członka',                  tone: 'tertiary'  },
+      'revoke_device':          { icon: 'gpp_bad',                label: 'Unieważniono urządzenie',           tone: 'tertiary'  },
+      'migrate_single_to_multi':{ icon: 'group',                  label: 'Migracja do trybu wielo-użytkownika', tone: 'secondary' }
+    };
+    const AUDIT_TONE_CLASS = {
+      slate:     'text-slate-300',
+      primary:   'text-primary',
+      secondary: 'text-secondary',
+      tertiary:  'text-tertiary'
+    };
+
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatAuditTimestamp(epochSeconds) {
+      const d = new Date(epochSeconds * 1000);
+      const now = new Date();
+      const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+      if (sameDay) {
+        return d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      }
+      const yesterday = new Date(now);
+      yesterday.setDate(now.getDate() - 1);
+      const isYesterday = d.getFullYear() === yesterday.getFullYear() && d.getMonth() === yesterday.getMonth() && d.getDate() === yesterday.getDate();
+      if (isYesterday) return 'Wczoraj';
+      return d.toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    }
+
+    function shortenId(id) {
+      if (!id) return null;
+      return id.length > 12 ? id.slice(0, 8) + '…' : id;
+    }
+
+    function auditSubtitle(event) {
+      if (event.details && event.details.trim()) {
+        const firstLine = event.details.split(/\r?\n/)[0].trim();
+        return firstLine.length > 90 ? firstLine.slice(0, 87) + '…' : firstLine;
+      }
+      const actor = shortenId(event.actor_user_id) || shortenId(event.actor_device_id);
+      const target = shortenId(event.target_user_id) || shortenId(event.target_device_id);
+      if (actor && target && actor !== target) return `${actor} → ${target}`;
+      if (actor) return `Aktor: ${actor}`;
+      if (target) return `Cel: ${target}`;
+      return 'Zdarzenie systemowe';
+    }
+
+    function renderAuditEvent(event) {
+      const meta = AUDIT_ACTION_MAP[event.action] || { icon: 'history', label: event.action, tone: 'slate' };
+      const toneClass = AUDIT_TONE_CLASS[meta.tone] || AUDIT_TONE_CLASS.slate;
+      return `
+        <div class="flex items-center justify-between p-3 rounded-xl hover:bg-white/5 transition-colors group">
+          <div class="flex items-center gap-4 min-w-0">
+            <div class="w-10 h-10 rounded-lg bg-surface-container-high flex items-center justify-center ${toneClass} shrink-0">
+              <span class="material-symbols-outlined text-[20px]">${escapeHtml(meta.icon)}</span>
+            </div>
+            <div class="min-w-0">
+              <p class="text-sm font-semibold text-on-surface truncate">${escapeHtml(meta.label)}</p>
+              <p class="text-xs text-slate-400 truncate">${escapeHtml(auditSubtitle(event))}</p>
+            </div>
+          </div>
+          <p class="text-[10px] font-label text-slate-400 uppercase shrink-0 ml-3">${escapeHtml(formatAuditTimestamp(event.timestamp))}</p>
+        </div>`;
+    }
+
+    // ── Recovery key status (F.4) ─────────────────────────────────
+    const RECOVERY_STALE_DAYS = 30;
+
+    function classifyRecoveryStatus(status) {
+      if (!status || typeof status.active_count !== 'number' || status.active_count <= 0) return 'missing';
+      if (typeof status.last_created_at !== 'number' || !Number.isFinite(status.last_created_at)) return 'ok';
+      const ageDays = (Date.now() / 1000 - status.last_created_at) / 86400;
+      return ageDays > RECOVERY_STALE_DAYS ? 'stale' : 'ok';
+    }
+
+    function setOverviewAlertsGridColumns(twoCols) {
+      const grid = document.getElementById('overviewAlertsGrid');
+      if (!grid) return;
+      grid.classList.toggle('md:grid-cols-2', twoCols);
+    }
+
+    function applyRecoveryStatus(state, status) {
+      const card = document.getElementById('recoveryAlertCard');
+      const titleEl = document.getElementById('recoveryAlertTitle');
+      const messageEl = document.getElementById('recoveryAlertMessage');
+      const ctaEl = document.getElementById('recoveryAlertCta');
+      if (!card || !titleEl || !messageEl || !ctaEl) return;
+      if (state === 'ok') {
+        card.classList.add('hidden');
+        card.classList.remove('flex');
+        setOverviewAlertsGridColumns(false);
+        return;
+      }
+      if (state === 'missing') {
+        titleEl.textContent = 'Brak klucza odzyskiwania';
+        messageEl.textContent = 'Nie masz wygenerowanego klucza odzyskiwania. Bez niego nie odzyskasz dostępu do Skarbca, jeśli zapomnisz hasła głównego.';
+        ctaEl.textContent = 'Wygeneruj klucz';
+      } else {
+        const ageDays = Math.floor((Date.now() / 1000 - status.last_created_at) / 86400);
+        titleEl.textContent = 'Klucz odzyskiwania wymaga weryfikacji';
+        messageEl.textContent = `Twój klucz odzyskiwania ma ${ageDays} dni. Upewnij się, że karta jest nadal w bezpiecznym miejscu i czytelna. W razie wątpliwości wygeneruj nowy.`;
+        ctaEl.textContent = 'Weryfikuj teraz';
+      }
+      card.classList.remove('hidden');
+      card.classList.add('flex');
+      setOverviewAlertsGridColumns(true);
+    }
+
+    async function fetchRecoveryStatus() {
+      try {
+        const res = await fetch('/api/recovery/status', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const status = await res.json();
+        applyRecoveryStatus(classifyRecoveryStatus(status), status);
+      } catch (err) {
+        // Bez statusu zakładamy bezpieczniej („missing") — lepiej pokazać alert niż go ukryć.
+        applyRecoveryStatus('missing', null);
+      }
+    }
+
+    function attachRecoveryCta() {
+      const cta = document.getElementById('recoveryAlertCta');
+      if (!cta) return;
+      // TODO Sesja G.6: otworzyć modal generowania w widoku Skarbiec zamiast legacy.
+      cta.addEventListener('click', () => {
+        window.open('/legacy#recoveryKeyGenerateButton', '_blank', 'noopener');
+      });
+    }
+
+    async function fetchAuditLog() {
+      const list = document.getElementById('auditList');
+      if (!list) return;
+      try {
+        const res = await fetch('/api/audit?limit=5', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const events = Array.isArray(data.events) ? data.events : [];
+        if (events.length === 0) {
+          list.innerHTML = '<p class="text-xs text-slate-400">Brak zdarzeń audytowych.</p>';
+          return;
+        }
+        list.innerHTML = events.map(renderAuditEvent).join('');
+      } catch (err) {
+        list.innerHTML = `<p class="text-xs text-rose-300">Nie udało się pobrać logów audytu (${escapeHtml(err.message || 'błąd sieci')}).</p>`;
+      }
+    }
+
+    // ── Init ──────────────────────────────────────────────────────
     (function init() {
+      // F.6: zastąpić statycznym tekstem live fetch /api/health
       const pillLabel = document.getElementById('systemStatusLabel');
       if (pillLabel) pillLabel.textContent = 'Skarbiec: OK';
+
+      // F.3: audit log (initial fetch; G.4 doda polling co 30s)
+      fetchAuditLog();
+
+      // F.4: recovery alert (initial fetch + CTA → legacy generate flow)
+      attachRecoveryCta();
+      fetchRecoveryStatus();
     })();
   </script>
 </body>
