@@ -68,6 +68,25 @@ async fn post_unlock(
         }
     };
 
+    if let Ok(Some(vault)) = db::get_vault_params(&state.pool).await {
+        let actor_device = db::get_local_device_identity(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|d| d.device_id);
+        let _ = db::insert_audit_log(
+            &state.pool,
+            &vault.vault_id,
+            "vault_unlock",
+            None,
+            actor_device.as_deref(),
+            None,
+            None,
+            Some(r#"{"result":"success"}"#),
+        )
+        .await;
+    }
+
     Ok(Json(UnlockResponse {
         status: "UNLOCKED".to_string(),
         initialized: result.initialized,
@@ -149,8 +168,26 @@ async fn post_auth_logout(
             message: "missing Authorization header".to_string(),
         })?;
 
+    // Capture session identity before deleting so we can emit an audit event
+    let session_before = db::validate_user_session(&state.pool, token).await.ok().flatten();
+
     let deleted = db::delete_user_session(&state.pool, token).await?;
     if deleted {
+        if let (Some(session), Ok(Some(vault))) =
+            (session_before, db::get_vault_params(&state.pool).await)
+        {
+            let _ = db::insert_audit_log(
+                &state.pool,
+                &vault.vault_id,
+                "logout",
+                Some(&session.user_id),
+                Some(&session.device_id),
+                None,
+                None,
+                None,
+            )
+            .await;
+        }
         Ok(Json(serde_json::json!({ "status": "logged_out" })))
     } else {
         Err(ApiError::NotFound {

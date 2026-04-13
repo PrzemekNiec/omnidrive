@@ -337,6 +337,28 @@ async fn post_setup_provider(
         }
     }
 
+    if let Ok(Some(vault)) = db::get_vault_params(&state.pool).await {
+        let actor_device = db::get_local_device_identity(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|d| d.device_id);
+        let _ = db::insert_audit_log(
+            &state.pool,
+            &vault.vault_id,
+            "provider_configure",
+            None,
+            actor_device.as_deref(),
+            None,
+            None,
+            Some(&format!(
+                r#"{{"provider":"{provider_name}","status":"{}"}}"#,
+                last_test_status.as_deref().unwrap_or("UNKNOWN")
+            )),
+        )
+        .await;
+    }
+
     Ok(Json(SetupProviderResponse {
         provider_name: provider_name.to_string(),
         enabled: request.enabled.unwrap_or(true),
@@ -392,6 +414,28 @@ async fn post_complete_onboarding(
     .await?;
 
     trigger_runtime_provider_reload(&state, cloud_enabled).await;
+
+    if let Ok(Some(vault)) = db::get_vault_params(&state.pool).await {
+        let actor_device = db::get_local_device_identity(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|d| d.device_id);
+        let _ = db::insert_audit_log(
+            &state.pool,
+            &vault.vault_id,
+            "onboarding_complete",
+            None,
+            actor_device.as_deref(),
+            None,
+            None,
+            Some(&format!(
+                r#"{{"mode":"{}","cloud_enabled":{cloud_enabled}}}"#,
+                onboarding_mode.as_str()
+            )),
+        )
+        .await;
+    }
 
     Ok(Json(CompleteOnboardingResponse {
         onboarding_state: OnboardingState::Completed.as_str().to_string(),
@@ -470,6 +514,25 @@ async fn post_join_existing(
 
     trigger_runtime_provider_reload(&state, true).await;
 
+    if let Ok(Some(vault)) = db::get_vault_params(&state.pool).await {
+        let actor_device = db::get_local_device_identity(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|d| d.device_id);
+        let _ = db::insert_audit_log(
+            &state.pool,
+            &vault.vault_id,
+            "vault_join_existing",
+            None,
+            actor_device.as_deref(),
+            None,
+            None,
+            Some(&format!(r#"{{"provider":"{provider_id}"}}"#)),
+        )
+        .await;
+    }
+
     Ok(Json(JoinExistingResponse {
         onboarding_state: OnboardingState::Completed.as_str().to_string(),
         onboarding_mode: OnboardingMode::JoinExisting.as_str().to_string(),
@@ -481,8 +544,31 @@ async fn post_join_existing(
 async fn post_reset_onboarding(
     State(state): State<ApiState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Capture vault_id BEFORE reset (reset_onboarding may clear vault_state)
+    let vault_before = db::get_vault_params(&state.pool).await.ok().flatten();
+    let actor_device = db::get_local_device_identity(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|d| d.device_id);
+
     reset_onboarding(&state.pool).await?;
     shell_state::set_cloud_mode_hint(false);
+
+    if let Some(vault) = vault_before {
+        let _ = db::insert_audit_log(
+            &state.pool,
+            &vault.vault_id,
+            "onboarding_reset",
+            None,
+            actor_device.as_deref(),
+            None,
+            None,
+            None,
+        )
+        .await;
+    }
+
     Ok(Json(serde_json::json!({
         "status": "OK",
         "message": "Onboarding state has been reset. Reload the dashboard to see the wizard."

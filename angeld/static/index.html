@@ -416,6 +416,36 @@
       </div>
     </section>
 
+    <section class="glass-panel mt-8 rounded-[28px] p-6">
+      <div class="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.28em] text-slate-400">Ślad audytowy</p>
+          <h2 class="mt-2 text-2xl font-semibold text-white">Historia wrażliwych zdarzeń Skarbca</h2>
+          <p id="auditMessage" class="mt-2 max-w-3xl text-sm text-slate-300">
+            Pobieranie najnowszych zdarzeń audytu (logowanie, udostępnienia, dostawcy, utrzymanie)...
+          </p>
+        </div>
+        <p id="auditTimestamp" class="text-xs text-slate-500">Pobieranie migawki...</p>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[720px] text-left text-sm">
+          <thead class="text-xs uppercase tracking-[0.22em] text-slate-500">
+            <tr>
+              <th class="px-3 py-2">Czas</th>
+              <th class="px-3 py-2">Zdarzenie</th>
+              <th class="px-3 py-2">Aktor</th>
+              <th class="px-3 py-2">Cel</th>
+              <th class="px-3 py-2">Szczegóły</th>
+            </tr>
+          </thead>
+          <tbody id="auditTableBody" class="divide-y divide-slate-700/40 text-slate-200">
+            <tr><td colspan="5" class="px-3 py-6 text-center text-slate-400">Oczekiwanie na dane...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <div class="glass-panel rounded-2xl p-5">
         <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Wszystkie pakiety</p>
@@ -1081,6 +1111,7 @@
         loadRecoveryStatus(),
         loadFiles(),
         loadShares(),
+        loadAuditTrail(),
       ]);
       lastRefreshedLabel.textContent = `Ostatnie odświeżenie: ${new Date().toLocaleTimeString()}`;
     }
@@ -1339,6 +1370,46 @@
             <p class="mt-3 text-sm text-slate-300">Brak zmaterializowanych kopii konfliktowych dla tego Skarbca.</p>
           </article>
         `;
+    }
+
+    async function loadAuditTrail() {
+      const body = document.getElementById("auditTableBody");
+      const message = document.getElementById("auditMessage");
+      const timestamp = document.getElementById("auditTimestamp");
+      try {
+        const snapshot = await fetchJson("/api/audit?limit=50");
+        const events = snapshot.events || [];
+        timestamp.textContent = `Migawka: ${new Date().toLocaleTimeString()}`;
+        if (events.length === 0) {
+          message.textContent = "Brak zdarzeń audytowych w tym Skarbcu.";
+          body.innerHTML = `<tr><td colspan="5" class="px-3 py-6 text-center text-slate-400">Brak zdarzeń.</td></tr>`;
+          return;
+        }
+        message.textContent = `Ostatnie ${events.length} zdarzeń w Skarbcu ${escapeHtml(snapshot.vault_id || "-")}.`;
+        body.innerHTML = events.map((ev) => {
+          const actor = ev.actor_user_id
+            ? `${escapeHtml(ev.actor_user_id)}${ev.actor_device_id ? ` / ${escapeHtml(ev.actor_device_id)}` : ""}`
+            : (ev.actor_device_id ? escapeHtml(ev.actor_device_id) : "<span class='text-slate-500'>-</span>");
+          const target = ev.target_user_id || ev.target_device_id
+            ? `${ev.target_user_id ? escapeHtml(ev.target_user_id) : ""}${ev.target_device_id ? ` / ${escapeHtml(ev.target_device_id)}` : ""}`
+            : "<span class='text-slate-500'>-</span>";
+          const details = ev.details
+            ? `<code class="text-xs text-slate-400">${escapeHtml(ev.details)}</code>`
+            : "<span class='text-slate-500'>-</span>";
+          return `
+            <tr>
+              <td class="px-3 py-2 text-xs text-slate-400 whitespace-nowrap">${formatTimestamp(ev.timestamp)}</td>
+              <td class="px-3 py-2 font-medium text-white">${escapeHtml(ev.action)}</td>
+              <td class="px-3 py-2 text-xs">${actor}</td>
+              <td class="px-3 py-2 text-xs">${target}</td>
+              <td class="px-3 py-2">${details}</td>
+            </tr>
+          `;
+        }).join("");
+      } catch (error) {
+        message.textContent = "Nie można pobrać śladu audytowego (wymagane uprawnienia admin).";
+        body.innerHTML = `<tr><td colspan="5" class="px-3 py-6 text-center text-rose-300">${escapeHtml(error.message)}</td></tr>`;
+      }
     }
 
     async function loadQuota() {

@@ -1,3 +1,4 @@
+mod audit;
 mod auth;
 mod diagnostics;
 pub mod error;
@@ -131,6 +132,8 @@ impl ApiServer {
             .merge(auth::routes())
             // ── Sharing (Epic 33) ──
             .merge(sharing::routes())
+            // ── Audit trail (Epic 34.5) ──
+            .merge(audit::routes())
             .with_state(state)
             .layer(share_cors_layer());
 

@@ -100,7 +100,7 @@ async fn create_share_link(
     Path(inode_id): Path<i64>,
     Json(request): Json<CreateShareRequest>,
 ) -> Result<(StatusCode, Json<CreateShareResponse>), ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Member).await?;
+    let caller = acl::require_role(&state.pool, &headers, Role::Member).await?;
 
     let envelope_key = state.vault_keys.require_envelope_key().await.map_err(|_| {
         ApiError::Forbidden {
@@ -174,6 +174,24 @@ async fn create_share_link(
 
     info!("share link created for inode {inode_id}, share_id={share_id}");
 
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &caller.vault_id,
+        "share_create",
+        Some(&caller.user_id),
+        Some(&caller.device_id),
+        None,
+        None,
+        Some(&format!(
+            r#"{{"share_id":"{share_id}","inode_id":{inode_id},"password_protected":{password_protected},"max_downloads":{}}}"#,
+            request
+                .max_downloads
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        )),
+    )
+    .await;
+
     Ok((
         StatusCode::CREATED,
         Json(CreateShareResponse {
@@ -212,10 +230,21 @@ async fn revoke_share(
     headers: HeaderMap,
     Path(share_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Member).await?;
+    let caller = acl::require_role(&state.pool, &headers, Role::Member).await?;
 
     let revoked = db::revoke_shared_link(&state.pool, &share_id).await?;
     if revoked {
+        let _ = db::insert_audit_log(
+            &state.pool,
+            &caller.vault_id,
+            "share_revoke",
+            Some(&caller.user_id),
+            Some(&caller.device_id),
+            None,
+            None,
+            Some(&format!(r#"{{"share_id":"{share_id}"}}"#)),
+        )
+        .await;
         Ok(Json(serde_json::json!({"revoked": true})))
     } else {
         Err(ApiError::NotFound {
@@ -230,10 +259,21 @@ async fn delete_share(
     headers: HeaderMap,
     Path(share_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Member).await?;
+    let caller = acl::require_role(&state.pool, &headers, Role::Member).await?;
 
     let deleted = db::delete_shared_link(&state.pool, &share_id).await?;
     if deleted {
+        let _ = db::insert_audit_log(
+            &state.pool,
+            &caller.vault_id,
+            "share_delete",
+            Some(&caller.user_id),
+            Some(&caller.device_id),
+            None,
+            None,
+            Some(&format!(r#"{{"share_id":"{share_id}"}}"#)),
+        )
+        .await;
         Ok(Json(serde_json::json!({"deleted": true})))
     } else {
         Err(ApiError::NotFound {

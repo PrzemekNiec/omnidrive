@@ -328,15 +328,28 @@ async fn post_scrub_now(
     State(state): State<ApiState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Admin).await?;
+    let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     match scrubber::run_scrub_batch_now(state.pool.clone()).await {
-        Ok(processed_shards) => Ok(Json(serde_json::json!({
+        Ok(processed_shards) => {
+            let _ = db::insert_audit_log(
+                &state.pool,
+                &caller.vault_id,
+                "scrub_start",
+                Some(&caller.user_id),
+                Some(&caller.device_id),
+                None,
+                None,
+                Some(&format!(r#"{{"processed_shards":{processed_shards}}}"#)),
+            )
+            .await;
+            Ok(Json(serde_json::json!({
             "status": "OK",
             "message": format!("Light scrub completed. Processed {} shard(s).", processed_shards),
             "last_run": unix_timestamp_millis(),
             "processed_shards": processed_shards,
-        }))),
+        })))
+        }
         Err(scrubber::ScrubberError::MissingProviderConfig) => Ok(Json(serde_json::json!({
             "status": "WARN",
             "message": "Scrub jest bezczynny, ponieważ nie skonfigurowano zdalnych dostawców.",
@@ -356,10 +369,25 @@ async fn post_repair_now(
     State(state): State<ApiState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Admin).await?;
+    let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     match repair::RepairWorker::run_repair_batch_now(state.pool.clone()).await {
-        Ok(report) => Ok(Json(serde_json::json!({
+        Ok(report) => {
+            let _ = db::insert_audit_log(
+                &state.pool,
+                &caller.vault_id,
+                "repair_start",
+                Some(&caller.user_id),
+                Some(&caller.device_id),
+                None,
+                None,
+                Some(&format!(
+                    r#"{{"processed":{},"repaired":{},"reconciled":{}}}"#,
+                    report.processed_packs, report.repaired_packs, report.reconciled_packs
+                )),
+            )
+            .await;
+            Ok(Json(serde_json::json!({
             "status": "OK",
             "message": if report.repaired_packs == 0 {
                 "Brak zdegradowanych pakietów wymagających natychmiastowej naprawy.".to_string()
@@ -370,7 +398,8 @@ async fn post_repair_now(
             "processed_packs": report.processed_packs,
             "repaired_packs": report.repaired_packs,
             "reconciled_packs": report.reconciled_packs,
-        }))),
+        })))
+        }
         Err(RepairError::MissingProviderConfig) => Ok(Json(serde_json::json!({
             "status": "WARN",
             "message": "Naprawa jest bezczynna, ponieważ nie skonfigurowano zdalnych dostawców.",
@@ -392,10 +421,25 @@ async fn post_reconcile_now(
     State(state): State<ApiState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Admin).await?;
+    let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     match repair::RepairWorker::run_reconcile_batch_now(state.pool.clone()).await {
-        Ok(report) => Ok(Json(serde_json::json!({
+        Ok(report) => {
+            let _ = db::insert_audit_log(
+                &state.pool,
+                &caller.vault_id,
+                "reconcile_start",
+                Some(&caller.user_id),
+                Some(&caller.device_id),
+                None,
+                None,
+                Some(&format!(
+                    r#"{{"processed":{},"repaired":{},"reconciled":{}}}"#,
+                    report.processed_packs, report.repaired_packs, report.reconciled_packs
+                )),
+            )
+            .await;
+            Ok(Json(serde_json::json!({
             "status": "OK",
             "message": if report.reconciled_packs == 0 {
                 "No pack policy drift required reconciliation.".to_string()
@@ -406,7 +450,8 @@ async fn post_reconcile_now(
             "processed_packs": report.processed_packs,
             "repaired_packs": report.repaired_packs,
             "reconciled_packs": report.reconciled_packs,
-        }))),
+        })))
+        }
         Err(RepairError::MissingProviderConfig) => Ok(Json(serde_json::json!({
             "status": "WARN",
             "message": "Proces reconciliation jest bezczynny, ponieważ nie skonfigurowano zdalnych dostawców.",
@@ -461,7 +506,7 @@ async fn post_repair_sync_root(
     State(state): State<ApiState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Admin).await?;
+    let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     let runtime_paths = RuntimePaths::detect();
     let report = smart_sync::repair_sync_root(&state.pool, &runtime_paths.sync_root)
@@ -469,6 +514,18 @@ async fn post_repair_sync_root(
         .map_err(|err| ApiError::Internal {
             message: err.to_string(),
         })?;
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &caller.vault_id,
+        "repair_sync_root",
+        Some(&caller.user_id),
+        Some(&caller.device_id),
+        None,
+        None,
+        Some(&format!(r#"{{"actions_count":{}}}"#, report.actions.len())),
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "status": "OK",
@@ -531,7 +588,7 @@ async fn post_backup_now(
     State(state): State<ApiState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Admin).await?;
+    let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     let master_key = state.vault_keys.require_master_key().await.map_err(|err| {
         match err {
@@ -557,6 +614,18 @@ async fn post_backup_now(
         .map_err(|err| ApiError::Internal {
             message: err.to_string(),
         })?;
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &caller.vault_id,
+        "backup_start",
+        Some(&caller.user_id),
+        Some(&caller.device_id),
+        None,
+        None,
+        None,
+    )
+    .await;
 
     Ok(Json(serde_json::json!({
         "status": "OK",
