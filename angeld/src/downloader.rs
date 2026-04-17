@@ -927,6 +927,9 @@ impl Downloader {
             .await
             .map_err(|err| DownloaderError::Io(std::io::Error::other(err.to_string())))?;
 
+        // G.2: record download traffic for stats chart
+        let _ = db::record_traffic(&self.pool, 0, manifest_bytes.len() as i64).await;
+
         Ok(RestoredPackSource {
             pack_id: pack_id.to_string(),
             providers: downloaded_from,

@@ -686,6 +686,8 @@ impl UploadWorker {
                         "uploaded pack={} shard={} provider={} key={}",
                         job.pack_id, shard.shard_index, uploaded.provider, uploaded.key
                     );
+                    // G.2: record upload traffic for stats chart
+                    let _ = db::record_traffic(&self.pool, shard.size, 0).await;
                 }
                 Ok(Err(err)) => {
                     if err.is_retryable() {

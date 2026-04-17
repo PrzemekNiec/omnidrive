@@ -7,6 +7,7 @@ mod maintenance;
 mod onboarding;
 mod recovery;
 mod sharing;
+mod stats;
 mod vault;
 
 use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
@@ -138,6 +139,8 @@ impl ApiServer {
             .merge(audit::routes())
             // ── Recovery keys (Epic 34.6a) ──
             .merge(recovery::routes())
+            // ── Stats (Epic 36 G-BE) ──
+            .merge(stats::routes())
             .with_state(state)
             .layer(share_cors_layer());
 
