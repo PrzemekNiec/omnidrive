@@ -172,10 +172,10 @@
   <header class="fixed top-0 right-0 left-[240px] h-16 bg-[#2C2C2C]/60 backdrop-blur-md flex items-center justify-between px-8 z-40 border-b border-white/5">
     <div class="flex items-center gap-4">
       <span class="text-[11px] font-bold font-label tracking-[0.1em] text-slate-400 uppercase">Status Systemu</span>
-      <!-- TODO Sesja F.6: wiring /api/health co 10s + dynamiczna paleta (ok/degraded/error) -->
-      <div id="systemStatusPill" class="flex items-center gap-2 bg-secondary/10 px-3 py-1 rounded-full border border-secondary/20" data-state="loading">
-        <div class="w-2 h-2 rounded-full bg-secondary pulse-secondary" id="systemStatusDot"></div>
-        <span class="text-[10px] font-bold text-secondary uppercase tracking-wider" id="systemStatusLabel">Skarbiec: ładowanie</span>
+      <!-- F.6 DONE: polling /api/health/vault co 10s + dynamiczna paleta (ok/degraded/error) -->
+      <div id="systemStatusPill" class="flex items-center gap-2 bg-slate-500/10 px-3 py-1 rounded-full border border-slate-500/20" data-state="loading">
+        <div class="w-2 h-2 rounded-full bg-slate-400 pulse-secondary" id="systemStatusDot"></div>
+        <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider" id="systemStatusLabel">Skarbiec: ładowanie</span>
       </div>
     </div>
     <div class="flex items-center gap-6">
@@ -184,7 +184,7 @@
         <button class="material-symbols-outlined hover:text-primary transition-opacity cursor-pointer active:opacity-70" id="manualRefreshButton" title="Odśwież dane">sync</button>
         <button class="material-symbols-outlined hover:text-primary transition-opacity cursor-pointer active:opacity-70" id="notificationsButton" title="Powiadomienia">notifications</button>
       </div>
-      <!-- TODO Sesja F.6: wiring user (z session po OAuth, fallback „Local") -->
+      <!-- TODO Sesja G: wiring user (z session po OAuth, fallback „Local") -->
       <div class="flex items-center gap-3 ml-2 pl-6 border-l border-white/10">
         <div class="text-right">
           <p class="text-[11px] font-bold text-on-surface" id="userName">Local</p>
@@ -239,9 +239,7 @@
         </div>
       </section>
 
-      <!-- ALERT: brak klucza odzyskiwania + STATUS SHARDÓW -->
-      <!-- TODO Sesja F.4: GET /api/recovery/status — pokaż/ukryj kartę alertu -->
-      <!-- TODO Sesja F.5: status shardów z /api/diagnostics jeśli dostępne -->
+      <!-- ALERT: brak klucza odzyskiwania (F.4 DONE) + STATUS SHARDÓW (F.5 DONE — /api/health/vault) -->
       <section id="overviewAlertsGrid" class="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div id="recoveryAlertCard" class="hidden bg-tertiary/10 border border-tertiary/20 p-6 rounded-2xl items-start gap-4">
           <div class="bg-tertiary/20 p-2 rounded-xl">
@@ -253,16 +251,18 @@
             <button id="recoveryAlertCta" class="mt-4 text-[10px] font-bold text-tertiary uppercase border border-tertiary/30 px-3 py-1.5 rounded-lg hover:bg-tertiary/10 transition-colors">Weryfikuj teraz</button>
           </div>
         </div>
-        <div id="shardStatusCard" class="glass-panel p-6 rounded-2xl flex items-start gap-4 opacity-80">
-          <div class="bg-slate-500/10 p-2 rounded-xl">
-            <span class="material-symbols-outlined text-slate-400">storage</span>
+        <div id="shardStatusCard" class="glass-panel p-6 rounded-2xl flex items-start gap-4">
+          <div class="p-2 rounded-xl" id="shardStatusIconWrap">
+            <span class="material-symbols-outlined text-slate-400" id="shardStatusIcon">storage</span>
           </div>
           <div>
-            <h3 class="text-sm font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-              <span id="shardStatusTitle">Status shardów</span>
-              <span class="mock-badge">MOCK</span>
-            </h3>
+            <h3 class="text-sm font-bold text-slate-300 uppercase tracking-wider" id="shardStatusTitle">Status shardów</h3>
             <p class="text-xs text-slate-400 mt-1" id="shardStatusMessage">Pobieranie informacji o shardach kryptograficznych...</p>
+            <div class="flex gap-4 mt-3 text-[10px] uppercase tracking-widest font-label" id="shardStatusCounters" style="display:none;">
+              <span class="text-secondary"><span id="shardHealthy">0</span> zdrowych</span>
+              <span class="text-tertiary"><span id="shardDegraded">0</span> zdegradowanych</span>
+              <span class="text-error"><span id="shardUnreadable">0</span> nieosiągalnych</span>
+            </div>
           </div>
         </div>
       </section>
@@ -385,7 +385,7 @@
   <script>
     // ============================================================
     // OmniDrive — Skarbiec Console (frontend bootstrap)
-    // F.3 → audit log; F.4 recovery alert; F.5 placeholders; F.6 status pill; F.7 router; G.* stats
+    // F.3 audit log ✅; F.4 recovery alert ✅; F.5 shard status ✅; F.6 status pill ✅; F.7 router; G.* stats
     // ============================================================
 
     // ── Mapa typów audytu na ikonę / polski tytuł / kolor ─────────
@@ -565,11 +565,106 @@
       }
     }
 
+    // ── Shard status card (F.5) ─────────────────────────────────
+    function applyShardStatus(vault) {
+      const title = document.getElementById('shardStatusTitle');
+      const msg = document.getElementById('shardStatusMessage');
+      const counters = document.getElementById('shardStatusCounters');
+      const iconWrap = document.getElementById('shardStatusIconWrap');
+      const icon = document.getElementById('shardStatusIcon');
+      if (!title || !msg || !counters) return;
+
+      document.getElementById('shardHealthy').textContent = vault.healthy_packs;
+      document.getElementById('shardDegraded').textContent = vault.degraded_packs;
+      document.getElementById('shardUnreadable').textContent = vault.unreadable_packs;
+      counters.style.display = '';
+
+      if (vault.unreadable_packs > 0) {
+        title.textContent = 'Shardy: wymaga naprawy';
+        title.className = title.className.replace('text-slate-300', 'text-error');
+        msg.textContent = `${vault.unreadable_packs} z ${vault.total_packs} pakietów jest nieosiągalnych. Uruchom naprawę.`;
+        icon.textContent = 'error';
+        icon.className = icon.className.replace('text-slate-400', 'text-error');
+        iconWrap.className = iconWrap.className.replace('bg-slate-500/10', 'bg-error/10');
+      } else if (vault.degraded_packs > 0) {
+        title.textContent = 'Shardy: częściowa degradacja';
+        title.className = title.className.replace('text-slate-300', 'text-tertiary');
+        msg.textContent = `${vault.degraded_packs} z ${vault.total_packs} pakietów jest zdegradowanych. Redundancja obniżona.`;
+        icon.textContent = 'warning';
+        icon.className = icon.className.replace('text-slate-400', 'text-tertiary');
+        iconWrap.className = iconWrap.className.replace('bg-slate-500/10', 'bg-tertiary/10');
+      } else {
+        title.textContent = 'Shardy: pełna integralność';
+        title.className = title.className.replace('text-slate-300', 'text-secondary');
+        msg.textContent = `Wszystkie ${vault.total_packs} pakietów jest zdrowych. Redundancja pełna.`;
+        icon.textContent = 'verified';
+        icon.className = icon.className.replace('text-slate-400', 'text-secondary');
+        iconWrap.className = iconWrap.className.replace('bg-slate-500/10', 'bg-secondary/10');
+      }
+    }
+
+    // ── System status pill (F.6) ─────────────────────────────────
+    const STATUS_PILL_PALETTE = {
+      ok:       { dot: 'bg-secondary',  label: 'text-secondary',  border: 'border-secondary/20',  bg: 'bg-secondary/10',  pulse: 'pulse-secondary' },
+      degraded: { dot: 'bg-tertiary',   label: 'text-tertiary',   border: 'border-tertiary/20',   bg: 'bg-tertiary/10',   pulse: '' },
+      error:    { dot: 'bg-error',      label: 'text-error',      border: 'border-error/20',      bg: 'bg-error/10',      pulse: '' },
+      loading:  { dot: 'bg-slate-400',  label: 'text-slate-400',  border: 'border-slate-500/20',  bg: 'bg-slate-500/10',  pulse: 'pulse-secondary' },
+    };
+    let currentPillState = 'loading';
+
+    function deriveVaultState(vault) {
+      if (vault.unreadable_packs > 0) return 'error';
+      if (vault.degraded_packs > 0) return 'degraded';
+      return 'ok';
+    }
+
+    function pillLabelText(state, vault) {
+      if (state === 'ok') return 'Skarbiec: OK';
+      if (state === 'degraded') return `Skarbiec: ${vault.degraded_packs} zdegradowanych`;
+      if (state === 'error') return `Skarbiec: ${vault.unreadable_packs} nieosiągalnych`;
+      return 'Skarbiec: ładowanie';
+    }
+
+    function applyPillState(state, vault) {
+      const pill = document.getElementById('systemStatusPill');
+      const dot = document.getElementById('systemStatusDot');
+      const label = document.getElementById('systemStatusLabel');
+      if (!pill || !dot || !label) return;
+
+      const prev = STATUS_PILL_PALETTE[currentPillState] || STATUS_PILL_PALETTE.loading;
+      const next = STATUS_PILL_PALETTE[state] || STATUS_PILL_PALETTE.loading;
+
+      pill.classList.remove(prev.bg, prev.border);
+      pill.classList.add(next.bg, next.border);
+      dot.classList.remove(prev.dot, prev.pulse);
+      dot.classList.add(next.dot);
+      if (next.pulse) dot.classList.add(next.pulse);
+      label.classList.remove(prev.label);
+      label.classList.add(next.label);
+      label.textContent = pillLabelText(state, vault);
+
+      pill.dataset.state = state;
+      currentPillState = state;
+    }
+
+    async function fetchSystemStatus() {
+      try {
+        const res = await fetch('/api/health/vault', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const vault = await res.json();
+        const state = deriveVaultState(vault);
+        applyPillState(state, vault);
+        applyShardStatus(vault);
+      } catch (_err) {
+        applyPillState('error', { degraded_packs: 0, unreadable_packs: 0 });
+      }
+    }
+
     // ── Init ──────────────────────────────────────────────────────
     (function init() {
-      // F.6: zastąpić statycznym tekstem live fetch /api/health
-      const pillLabel = document.getElementById('systemStatusLabel');
-      if (pillLabel) pillLabel.textContent = 'Skarbiec: OK';
+      // F.6: status pill — initial fetch + polling co 10s
+      fetchSystemStatus();
+      setInterval(fetchSystemStatus, 10_000);
 
       // F.3: audit log (initial fetch; G.4 doda polling co 30s)
       fetchAuditLog();

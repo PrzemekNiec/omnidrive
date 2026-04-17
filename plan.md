@@ -960,16 +960,16 @@ Sesje F i G są sekwencyjne. F dostarcza działający shell + zakładkę „Prze
 - Jeśli status = „ok" → ukryj kartę, grid staje się 1-kolumnowy
 - **Realizacja:** `/api/recovery/status` zwraca `{ active_count, last_created_at, vk_generation, word_count }` (bez stringa statusu) — klasyfikator `classifyRecoveryStatus` po FE: `active_count <= 0` → `missing`, klucz starszy niż 30 dni → `stale`, inaczej `ok`; `applyRecoveryStatus` przełącza grid `#overviewAlertsGrid` przez toggle klasy `md:grid-cols-2`; CTA otwiera `/legacy#recoveryKeyGenerateButton` w nowej karcie (reuse modala B.4); G.6 podmieni to na natywny modal w widoku Skarbiec; przy błędzie sieci pokazuję `missing` (bezpieczniej zaalarmować niż zignorować)
 
-#### Krok F.5: Placeholdery dla Hero / Chart / Tiles
-- Hero KPI: wartości `—` + badge `MOCK`, komentarz w HTML `<!-- TODO Sesja G.1: GET /api/stats/overview -->`
-- Chart 24h: statyczne słupki ze Stitcha + badge `MOCK`, komentarz `<!-- TODO Sesja G.2: GET /api/stats/traffic -->`
-- 4 stat tiles: wartości `—` + badge `MOCK`, komentarz `<!-- TODO Sesja G.3: GET /api/stats/system -->`
-- Karta „Status Shardów" — podłączyć do `GET /api/diagnostics` jeśli zwraca liczbę shardów; inaczej placeholder
+#### Krok F.5: Placeholdery dla Hero / Chart / Tiles ✅ DONE
+- Hero KPI: wartości `—` + badge `MOCK` + TODO G.1 — zrobione w F.2
+- Chart 24h: statyczne słupki + badge `MOCK` + TODO G.2 — zrobione w F.2
+- 4 stat tiles: wartości `—` + badge `MOCK` + TODO G.3 — zrobione w F.2
+- **Realizacja:** karta „Status Shardów" podłączona do `GET /api/health/vault` (total/healthy/degraded/unreadable); dynamiczny kolor ikony/tytułu (secondary/tertiary/error) + countery; usunięto MOCK badge; reuse danych z poll F.6
 
-#### Krok F.6: Status pill w headerze + pulse
-- Fetch `GET /api/health` co 10s (reuse logiki z obecnego `auto-refresh` w legacy)
-- Mapowanie: `ok` → green (`bg-secondary`), `degraded` → orange (`bg-tertiary`), `error` → red
-- `pulse-secondary` animacja zapożyczona ze Stitcha
+#### Krok F.6: Status pill w headerze + pulse ✅ DONE
+- Fetch `GET /api/health/vault` co 10s (`setInterval`); odpowiedź: `{ total_packs, healthy_packs, degraded_packs, unreadable_packs }`
+- Mapowanie: `ok` → green (`bg-secondary` + pulse), `degraded` → orange (`bg-tertiary`), `error` → red (`bg-error`)
+- **Realizacja:** `fetchSystemStatus()` → `deriveVaultState()` → `applyPillState()` + `applyShardStatus()`; pill startuje w loading (szary); błąd sieci → stan error; jeden fetch obsługuje pill + shard card
 
 #### Krok F.7: Routing klientowy (stub)
 - Prosty hash-router: `#przeglad` (domyślny), `#pliki`, `#skarbiec`, `#multi-device`, `#chmura`, `#audyt`, `#ustawienia`
