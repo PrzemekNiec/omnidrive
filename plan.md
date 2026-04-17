@@ -971,21 +971,23 @@ Sesje F i G są sekwencyjne. F dostarcza działający shell + zakładkę „Prze
 - Mapowanie: `ok` → green (`bg-secondary` + pulse), `degraded` → orange (`bg-tertiary`), `error` → red (`bg-error`)
 - **Realizacja:** `fetchSystemStatus()` → `deriveVaultState()` → `applyPillState()` + `applyShardStatus()`; pill startuje w loading (szary); błąd sieci → stan error; jeden fetch obsługuje pill + shard card
 
-#### Krok F.7: Routing klientowy (stub)
+#### Krok F.7: Routing klientowy (stub) ✅ DONE
 - Prosty hash-router: `#przeglad` (domyślny), `#pliki`, `#skarbiec`, `#multi-device`, `#chmura`, `#audyt`, `#ustawienia`
-- W Sesji F wszystkie widoki poza `#przeglad` pokazują prosty placeholder „Wkrótce (Sesja G)"
-- Sidebar update: active state pod aktualny hash
+- W Sesji F wszystkie widoki poza `#przeglad` pokazują placeholder z ikoną Material Symbols + „{Nazwa} — wkrótce"
+- Sidebar update: active state pod aktualny hash, klik na link → `location.hash`, `hashchange` → `navigateTo()`
+- **Realizacja:** `VALID_VIEWS[]` + `PLACEHOLDER_META{}` (ikona/tytuł per widok); `currentView()` parsuje hash; `navigateTo()` przełącza `#view-przeglad` / `#view-placeholder`; `updateSidebarActive()` iteruje `.nav-item[data-view]` i toggluje klasę `active`; link `wyloguj` ma TODO guard
 
-#### Krok F.8: Weryfikacja
-- `cargo check --workspace` (zmiana tylko w static, ale routing `/legacy` dotyka `api/mod.rs`)
-- `cargo build --release --workspace`
-- Kopia binarki do `dist/installer/payload/`
-- Ręczny test: `angeld.exe` → `http://127.0.0.1:8787` → layout Stitcha z realnym audit log i recovery alert
-- Weryfikacja: `/legacy` zwraca stary panel (rollback path)
+#### Krok F.8: Weryfikacja ✅ DONE
+- `cargo check --workspace` — OK
+- `cargo test --workspace` — 11 passed, 0 failed
+- `cargo build --release --workspace` — OK
+- Kopia `angeld.exe` (32 MB) do `dist/installer/payload/`
+- Ręczny test: daemon na :8787 → `/api/health/vault` zwraca `{total:2, healthy:2, degraded:0, unreadable:0}` → pill zielony; `/api/recovery/status` → `active_count:0` → alert widoczny; `/legacy` → stary panel działa
+- Routing weryfikacja: placeholder div + router JS present w serwowanym HTML
 
-**Exit criteria:** nowy layout działa w przeglądarce, audit log + recovery alert mają realne dane, reszta to widoczne placeholdery, `/legacy` jako fallback, `cargo test --workspace` zielony.
+**Exit criteria:** ✅ spełnione — nowy layout, audit log + recovery alert z live data, shard card z /api/health/vault, status pill polling, hash router + sidebar, `/legacy` jako fallback, testy zielone.
 
-**Rozmiar:** Duży (pojedynczy plik HTML ~600 linii + ~100 linii JS fetch/router + drobna zmiana w `api/mod.rs`)
+**Rozmiar:** Duży (pojedynczy plik HTML ~700 linii + ~200 linii JS fetch/router/poll + drobna zmiana w `api/mod.rs`)
 
 **Mikro-kroki:** 8 (F.1–F.8)
 

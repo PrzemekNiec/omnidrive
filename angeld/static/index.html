@@ -378,14 +378,19 @@
       </section>
     </div>
 
-    <!-- TODO Sesja F.7: dodać widoki #pliki #skarbiec #multi-device #chmura #audyt #ustawienia z placeholderem „Wkrótce (Sesja G)" + hash router -->
+    <!-- F.7 DONE: placeholder dla widoków Sesji G -->
+    <div id="view-placeholder" class="hidden flex-col items-center justify-center h-[calc(100vh-64px)] text-center px-8">
+      <span class="material-symbols-outlined text-6xl text-slate-600 mb-4" id="placeholderIcon">construction</span>
+      <h2 class="text-2xl font-bold text-slate-400" id="placeholderTitle">Wkrótce</h2>
+      <p class="text-sm text-slate-500 mt-2 max-w-md" id="placeholderSubtitle">Ten widok zostanie dostarczony w Sesji G. Na razie korzystaj z zakładki Przegląd.</p>
+    </div>
 
   </main>
 
   <script>
     // ============================================================
     // OmniDrive — Skarbiec Console (frontend bootstrap)
-    // F.3 audit log ✅; F.4 recovery alert ✅; F.5 shard status ✅; F.6 status pill ✅; F.7 router; G.* stats
+    // F.3 audit log ✅; F.4 recovery alert ✅; F.5 shard status ✅; F.6 status pill ✅; F.7 router ✅; G.* stats
     // ============================================================
 
     // ── Mapa typów audytu na ikonę / polski tytuł / kolor ─────────
@@ -660,8 +665,79 @@
       }
     }
 
+    // ── Hash router (F.7) ───────────────────────────────────────
+    const VALID_VIEWS = ['przeglad', 'pliki', 'skarbiec', 'multi-device', 'chmura', 'audyt', 'ustawienia'];
+    const PLACEHOLDER_META = {
+      pliki:          { icon: 'folder_open',         title: 'Pliki' },
+      skarbiec:       { icon: 'enhanced_encryption', title: 'Skarbiec' },
+      'multi-device': { icon: 'devices',             title: 'Multi-Device' },
+      chmura:         { icon: 'cloud',               title: 'Chmura' },
+      audyt:          { icon: 'analytics',            title: 'Audyt' },
+      ustawienia:     { icon: 'settings',             title: 'Ustawienia' },
+    };
+
+    function currentView() {
+      const hash = location.hash.replace('#', '') || 'przeglad';
+      return VALID_VIEWS.includes(hash) ? hash : 'przeglad';
+    }
+
+    function navigateTo(view) {
+      const przeglad = document.getElementById('view-przeglad');
+      const placeholder = document.getElementById('view-placeholder');
+      if (!przeglad || !placeholder) return;
+
+      if (view === 'przeglad') {
+        przeglad.classList.remove('hidden');
+        placeholder.classList.add('hidden');
+        placeholder.classList.remove('flex');
+      } else {
+        przeglad.classList.add('hidden');
+        placeholder.classList.remove('hidden');
+        placeholder.classList.add('flex');
+        const meta = PLACEHOLDER_META[view] || { icon: 'construction', title: view };
+        document.getElementById('placeholderIcon').textContent = meta.icon;
+        document.getElementById('placeholderTitle').textContent = meta.title + ' — wkrótce';
+        document.getElementById('placeholderSubtitle').textContent = 'Ten widok zostanie dostarczony w Sesji G. Na razie korzystaj z zakładki Przegląd.';
+      }
+
+      updateSidebarActive(view);
+    }
+
+    function updateSidebarActive(view) {
+      const navItems = document.querySelectorAll('#primaryNav .nav-item, .nav-item[data-view]');
+      navItems.forEach(item => {
+        const itemView = item.dataset.view;
+        if (itemView === view) {
+          item.classList.add('active');
+        } else {
+          item.classList.remove('active');
+        }
+      });
+    }
+
+    function onHashChange() {
+      navigateTo(currentView());
+    }
+
     // ── Init ──────────────────────────────────────────────────────
     (function init() {
+      // F.7: hash router
+      window.addEventListener('hashchange', onHashChange);
+      // Prevent default link behavior, set hash instead
+      document.querySelectorAll('.nav-item[data-view]').forEach(link => {
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          const view = link.dataset.view;
+          if (view === 'wyloguj') {
+            // TODO: logout logic
+            return;
+          }
+          location.hash = view;
+        });
+      });
+      // Initial route
+      onHashChange();
+
       // F.6: status pill — initial fetch + polling co 10s
       fetchSystemStatus();
       setInterval(fetchSystemStatus, 10_000);
