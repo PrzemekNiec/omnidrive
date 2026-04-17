@@ -750,6 +750,52 @@
 
     </div>
 
+    <!-- ===== Widok: Chmura (G.8) ===== -->
+    <div id="view-chmura" data-view="chmura" class="hidden p-8 max-w-4xl mx-auto space-y-6 pb-16">
+      <div>
+        <h1 class="text-3xl font-bold tracking-tight text-on-surface mb-1">Chmura</h1>
+        <p class="text-slate-400 text-sm">Wykorzystanie miejsca u dostawców obiektów.</p>
+      </div>
+      <section id="cloudQuotaSection" class="space-y-4">
+        <div class="glass-panel rounded-2xl p-6">
+          <p class="text-center text-sm text-slate-400">Ładowanie danych...</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===== Widok: Audyt (G.9) ===== -->
+    <div id="view-audyt" data-view="audyt" class="hidden p-8 max-w-4xl mx-auto space-y-6 pb-16">
+      <div class="flex items-end justify-between gap-4">
+        <div>
+          <h1 class="text-3xl font-bold tracking-tight text-on-surface mb-1">Audyt</h1>
+          <p class="text-slate-400 text-sm">Historia wszystkich zdarzeń w Skarbcu.</p>
+        </div>
+        <button id="auditRefreshBtn" class="flex items-center gap-2 text-slate-400 border border-white/10 px-4 py-2 rounded-xl text-sm font-bold hover:bg-white/5 transition-colors">
+          <span class="material-symbols-outlined text-lg">refresh</span>Odśwież
+        </button>
+      </div>
+      <section class="glass-panel rounded-2xl overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="border-b border-white/5 bg-surface-container-high/50">
+                <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 w-10"></th>
+                <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Zdarzenie</th>
+                <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 w-40">Czas</th>
+              </tr>
+            </thead>
+            <tbody id="auditFullTableBody" class="divide-y divide-white/5">
+              <tr><td colspan="3" class="px-6 py-8 text-center text-sm text-slate-400">Ładowanie logów audytu...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="px-6 py-4 border-t border-white/5 flex items-center justify-between">
+          <span class="text-xs text-slate-500" id="auditCountLabel"></span>
+          <button id="auditLoadMoreBtn" class="hidden text-xs font-bold text-primary border border-primary/20 px-3 py-1.5 rounded-lg hover:bg-primary/10 transition-colors">Załaduj więcej</button>
+        </div>
+      </section>
+    </div>
+
     <!-- F.7 DONE: placeholder dla widoków Sesji G -->
     <div id="view-placeholder" class="hidden flex-col items-center justify-center h-[calc(100vh-64px)] text-center px-8">
       <span class="material-symbols-outlined text-6xl text-slate-600 mb-4" id="placeholderIcon">construction</span>
@@ -1242,6 +1288,115 @@
       }
       await Promise.allSettled(tasks);
       if (btn) btn.classList.remove('pulse-secondary');
+    }
+
+    // ── Widok „Chmura" (G.8) ─────────────────────────────────────
+    async function activateChmuraView() {
+      const view = document.getElementById('view-chmura');
+      if (!view.dataset.initialized) view.dataset.initialized = '1';
+      const section = document.getElementById('cloudQuotaSection');
+      section.innerHTML = '<div class="glass-panel rounded-2xl p-6"><p class="text-center text-sm text-slate-400">Ładowanie...</p></div>';
+      try {
+        const res = await fetch('/api/quota', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const max = Number(data.max_physical_bytes_per_provider) || 1;
+        const providers = Array.isArray(data.providers) ? data.providers : [];
+        if (providers.length === 0) {
+          section.innerHTML = '<div class="glass-panel rounded-2xl p-6"><p class="text-sm text-slate-500 text-center">Brak skonfigurowanych dostawców chmury.</p></div>';
+          return;
+        }
+        section.innerHTML = providers.map(p => {
+          const used = Number(p.used_physical_bytes) || 0;
+          const pct = Math.min(100, Math.round((used / max) * 100));
+          const barCls = pct > 85 ? 'bg-error' : pct > 60 ? 'bg-tertiary' : 'bg-secondary';
+          return `<div class="glass-panel rounded-2xl p-6 space-y-4">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div class="bg-primary/10 p-2 rounded-lg"><span class="material-symbols-outlined text-primary">cloud</span></div>
+                <div>
+                  <p class="font-semibold text-on-surface text-sm">${escapeHtml(p.provider)}</p>
+                  <p class="text-[10px] text-slate-400 uppercase tracking-widest">Dostawca obiektów S3</p>
+                </div>
+              </div>
+              <span class="text-sm font-bold text-on-surface">${escapeHtml(humanBytes(used))}<span class="text-slate-500 font-normal"> / ${escapeHtml(humanBytes(max))}</span></span>
+            </div>
+            <div class="space-y-1">
+              <div class="w-full bg-white/5 h-2 rounded-full overflow-hidden">
+                <div class="${barCls} h-full rounded-full transition-all" style="width:${pct}%"></div>
+              </div>
+              <p class="text-[10px] text-slate-500 text-right">${pct}% wykorzystania</p>
+            </div>
+          </div>`;
+        }).join('');
+      } catch (err) {
+        section.innerHTML = `<div class="glass-panel rounded-2xl p-6"><p class="text-sm text-rose-300 text-center">Błąd pobierania danych o miejscu: ${escapeHtml(err.message || '')}</p></div>`;
+      }
+    }
+
+    // ── Widok „Audyt" (G.9) ──────────────────────────────────────
+    const AUDIT_STATE = { offset: 0, total: 0, pageSize: 50 };
+
+    function renderAuditRow(event) {
+      const meta = AUDIT_ACTION_MAP[event.action] || { icon: 'history', label: event.action, tone: 'slate' };
+      const toneClass = AUDIT_TONE_CLASS[meta.tone] || AUDIT_TONE_CLASS.slate;
+      return `<tr class="hover:bg-white/5 transition-colors">
+        <td class="px-6 py-3">
+          <div class="w-8 h-8 rounded-lg bg-surface-container-high flex items-center justify-center ${toneClass} shrink-0">
+            <span class="material-symbols-outlined text-[18px]">${escapeHtml(meta.icon)}</span>
+          </div>
+        </td>
+        <td class="px-6 py-3">
+          <p class="text-sm font-semibold text-on-surface">${escapeHtml(meta.label)}</p>
+          <p class="text-xs text-slate-400 truncate max-w-sm">${escapeHtml(auditSubtitle(event))}</p>
+        </td>
+        <td class="px-6 py-3 text-xs text-slate-400 whitespace-nowrap">${escapeHtml(formatAuditTimestamp(event.timestamp))}</td>
+      </tr>`;
+    }
+
+    async function fetchAuditFull(append) {
+      const tbody = document.getElementById('auditFullTableBody');
+      const countEl = document.getElementById('auditCountLabel');
+      const moreBtn = document.getElementById('auditLoadMoreBtn');
+      if (!tbody) return;
+      if (!append) {
+        tbody.innerHTML = '<tr><td colspan="3" class="px-6 py-8 text-center text-sm text-slate-400">Ładowanie...</td></tr>';
+        AUDIT_STATE.offset = 0;
+      }
+      try {
+        const res = await fetch(`/api/audit?limit=${AUDIT_STATE.pageSize}&offset=${AUDIT_STATE.offset}`, { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const events = Array.isArray(data.events) ? data.events : [];
+        AUDIT_STATE.total = data.total ?? events.length;
+        AUDIT_STATE.offset += events.length;
+        if (!append) tbody.innerHTML = '';
+        if (events.length === 0 && !append) {
+          tbody.innerHTML = '<tr><td colspan="3" class="px-6 py-8 text-center text-sm text-slate-400">Brak zdarzeń audytowych.</td></tr>';
+        } else {
+          tbody.insertAdjacentHTML('beforeend', events.map(renderAuditRow).join(''));
+        }
+        if (countEl) countEl.textContent = `${AUDIT_STATE.offset} z ${AUDIT_STATE.total} zdarzeń`;
+        if (moreBtn) {
+          const hasMore = AUDIT_STATE.offset < AUDIT_STATE.total;
+          moreBtn.classList.toggle('hidden', !hasMore);
+        }
+      } catch (err) {
+        if (!append) tbody.innerHTML = `<tr><td colspan="3" class="px-6 py-8 text-center text-sm text-rose-300">Błąd pobierania logów: ${escapeHtml(err.message || '')}</td></tr>`;
+      }
+    }
+
+    function activateAudytView() {
+      const view = document.getElementById('view-audyt');
+      if (!view.dataset.initialized) {
+        view.dataset.initialized = '1';
+        document.getElementById('auditRefreshBtn').addEventListener('click', () => fetchAuditFull(false));
+        document.getElementById('auditLoadMoreBtn').addEventListener('click', () => fetchAuditFull(true));
+        // Aktywuj link "Pełny log" w Przeglądzie
+        const link = document.getElementById('auditFullLogLink');
+        if (link) { link.disabled = false; link.classList.remove('cursor-not-allowed', 'opacity-50'); link.addEventListener('click', () => { location.hash = 'audyt'; }); }
+      }
+      fetchAuditFull(false);
     }
 
     // ── Widok „Multi-Device" (G.7) ──────────────────────────────
@@ -2171,6 +2326,7 @@
       if (skarbiec) skarbiec.classList.add('hidden');
       const multiDevice = document.getElementById('view-multi-device');
       if (multiDevice) multiDevice.classList.add('hidden');
+      ['view-chmura', 'view-audyt'].forEach(id => { const el = document.getElementById(id); if (el) el.classList.add('hidden'); });
       placeholder.classList.add('hidden');
       placeholder.classList.remove('flex');
 
@@ -2185,6 +2341,12 @@
       } else if (view === 'multi-device') {
         document.getElementById('view-multi-device').classList.remove('hidden');
         activateMultiDeviceView();
+      } else if (view === 'chmura') {
+        document.getElementById('view-chmura').classList.remove('hidden');
+        activateChmuraView();
+      } else if (view === 'audyt') {
+        document.getElementById('view-audyt').classList.remove('hidden');
+        activateAudytView();
       } else {
         placeholder.classList.remove('hidden');
         placeholder.classList.add('flex');
