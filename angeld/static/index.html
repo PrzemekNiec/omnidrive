@@ -180,7 +180,7 @@
     </div>
     <div class="flex items-center gap-6">
       <div class="flex items-center gap-4 text-slate-400">
-        <!-- TODO Sesja G.4: wskaźnik „ostatnio odświeżono" + manual refresh -->
+        <span class="text-[10px] font-label uppercase tracking-widest text-slate-500 hidden sm:inline" id="lastRefreshedLabel" title="Ostatnie udane odświeżenie danych">Odświeżono: —</span>
         <button class="material-symbols-outlined hover:text-primary transition-opacity cursor-pointer active:opacity-70" id="manualRefreshButton" title="Odśwież dane">sync</button>
         <button class="material-symbols-outlined hover:text-primary transition-opacity cursor-pointer active:opacity-70" id="notificationsButton" title="Powiadomienia">notifications</button>
       </div>
@@ -204,7 +204,7 @@
     <div id="view-przeglad" data-view="przeglad" class="p-8 max-w-7xl mx-auto space-y-8">
 
       <!-- HERO KPI -->
-      <!-- TODO Sesja G.1: GET /api/stats/overview { files_count, logical_size_bytes, monthly_cost_usd, devices_count } -->
+      <!-- G.4 DONE: GET /api/stats/overview (poll 30s) -->
       <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-3 glass-panel p-8 rounded-3xl relative overflow-hidden group">
           <div class="absolute top-0 right-0 w-64 h-64 bg-secondary/5 blur-[100px] rounded-full pointer-events-none"></div>
@@ -213,7 +213,6 @@
               <div class="flex items-center gap-3 mb-2">
                 <span class="material-symbols-outlined text-secondary text-3xl" style="font-variation-settings: 'FILL' 1;">verified_user</span>
                 <h1 class="text-3xl font-bold tracking-tight text-on-surface" id="heroTitle">Skarbiec gotowy</h1>
-                <span class="mock-badge">MOCK</span>
               </div>
               <p class="text-slate-400 text-sm max-w-md" id="heroSubtitle">Wszystkie protokoły bezpieczeństwa są aktywne. Shardy danych są zreplikowane w wielu lokalizacjach.</p>
             </div>
@@ -270,13 +269,12 @@
       <!-- CHART 24h + AUDIT LOG -->
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-8">
         <!-- CHART 24h -->
-        <!-- TODO Sesja G.2: GET /api/stats/traffic?hours=24 — buckets co 2h, upload/download bytes -->
+        <!-- G.4 DONE: GET /api/stats/traffic?hours=24 (poll 60s, 12 bucketów po 2h) -->
         <div class="glass-panel rounded-3xl p-8 flex flex-col h-[400px]">
           <div class="flex items-center justify-between mb-8">
             <div>
               <div class="flex items-center gap-2">
                 <h2 class="text-lg font-bold text-on-surface">Aktywność w tle 24h</h2>
-                <span class="mock-badge">MOCK</span>
               </div>
               <p class="text-[10px] text-slate-400 uppercase tracking-widest font-label mt-1">Ruch sieciowy Skarbca</p>
             </div>
@@ -321,12 +319,11 @@
       </div>
 
       <!-- 4 STAT TILES -->
-      <!-- TODO Sesja G.3: GET /api/stats/system { nodes_count, nodes_delta, cpu_percent, latency_ms, latency_delta_ms, integrity_percent } -->
+      <!-- G.4 DONE: GET /api/stats/system (poll 5s) -->
       <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 pb-8">
         <div class="glass-panel p-6 rounded-2xl">
           <div class="flex items-center justify-between mb-4">
             <p class="text-[10px] font-label text-slate-400 uppercase tracking-widest">Węzły sieci</p>
-            <span class="mock-badge">MOCK</span>
           </div>
           <div class="flex items-center justify-between">
             <span class="text-2xl font-bold text-on-surface" id="tileNodesCount">—</span>
@@ -339,7 +336,6 @@
         <div class="glass-panel p-6 rounded-2xl">
           <div class="flex items-center justify-between mb-4">
             <p class="text-[10px] font-label text-slate-400 uppercase tracking-widest">Użycie CPU</p>
-            <span class="mock-badge">MOCK</span>
           </div>
           <div class="flex items-center justify-between">
             <span class="text-2xl font-bold text-on-surface" id="tileCpuPercent">—</span>
@@ -352,7 +348,6 @@
         <div class="glass-panel p-6 rounded-2xl">
           <div class="flex items-center justify-between mb-4">
             <p class="text-[10px] font-label text-slate-400 uppercase tracking-widest">Opóźnienie (ms)</p>
-            <span class="mock-badge">MOCK</span>
           </div>
           <div class="flex items-center justify-between">
             <span class="text-2xl font-bold text-on-surface" id="tileLatencyMs">—</span>
@@ -365,7 +360,6 @@
         <div class="glass-panel p-6 rounded-2xl">
           <div class="flex items-center justify-between mb-4">
             <p class="text-[10px] font-label text-slate-400 uppercase tracking-widest">Integralność danych</p>
-            <span class="mock-badge">MOCK</span>
           </div>
           <div class="flex items-center justify-between">
             <span class="text-2xl font-bold text-on-surface" id="tileIntegrityPercent">—</span>
@@ -665,6 +659,208 @@
       }
     }
 
+    // ── Stats widgets (G.4) ─────────────────────────────────────
+    function humanBytes(bytes) {
+      if (bytes === null || bytes === undefined) return '—';
+      const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+      let value = Number(bytes);
+      if (!Number.isFinite(value)) return '—';
+      let unit = 0;
+      while (Math.abs(value) >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+      }
+      return `${value.toFixed(unit === 0 ? 0 : 2)} ${units[unit]}`;
+    }
+
+    function formatCount(n) {
+      if (n === null || n === undefined || !Number.isFinite(Number(n))) return '—';
+      return Number(n).toLocaleString('pl-PL');
+    }
+
+    function formatCurrencyUsd(v) {
+      if (v === null || v === undefined || !Number.isFinite(Number(v))) return '—';
+      return `$${Number(v).toFixed(2)}`;
+    }
+
+    function formatDelta(n, unit) {
+      if (n === null || n === undefined || !Number.isFinite(Number(n))) return '—';
+      const sign = n > 0 ? '+' : '';
+      return `${sign}${n}${unit || ''}`;
+    }
+
+    function setLastRefreshed() {
+      const el = document.getElementById('lastRefreshedLabel');
+      if (!el) return;
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mm = String(now.getMinutes()).padStart(2, '0');
+      const ss = String(now.getSeconds()).padStart(2, '0');
+      el.textContent = `Odświeżono: ${hh}:${mm}:${ss}`;
+      el.classList.remove('text-error');
+      el.classList.add('text-slate-500');
+    }
+
+    function markRefreshError() {
+      const el = document.getElementById('lastRefreshedLabel');
+      if (!el) return;
+      el.classList.remove('text-slate-500');
+      el.classList.add('text-error');
+    }
+
+    async function fetchStatsOverview() {
+      try {
+        const res = await fetch('/api/stats/overview', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const filesEl = document.getElementById('kpiFilesCount');
+        const sizeEl  = document.getElementById('kpiLogicalSize');
+        const costEl  = document.getElementById('kpiMonthlyCost');
+        const devEl   = document.getElementById('kpiDevicesCount');
+        if (filesEl) filesEl.textContent = formatCount(data.files_count);
+        if (sizeEl)  sizeEl.textContent  = humanBytes(data.logical_size_bytes);
+        if (costEl)  costEl.textContent  = formatCurrencyUsd(data.monthly_cost_usd);
+        if (devEl)   devEl.textContent   = formatCount(data.devices_count);
+        setLastRefreshed();
+        return true;
+      } catch (_err) {
+        markRefreshError();
+        return false;
+      }
+    }
+
+    function renderTrafficChart(buckets) {
+      const container = document.getElementById('trafficChart');
+      if (!container) return;
+      if (!Array.isArray(buckets) || buckets.length === 0) {
+        container.innerHTML = '<div class="flex-1 flex items-center justify-center text-[11px] text-slate-500 uppercase tracking-widest">Brak ruchu w ostatnich 24 godzinach</div>';
+        return;
+      }
+      const maxVal = buckets.reduce((acc, b) => {
+        return Math.max(acc, Number(b.upload_bytes) || 0, Number(b.download_bytes) || 0);
+      }, 0);
+      const scale = (v) => {
+        if (maxVal <= 0) return 0;
+        return Math.max(2, Math.round((Number(v) / maxVal) * 100));
+      };
+      container.innerHTML = buckets.map(b => {
+        const up = scale(b.upload_bytes);
+        const dn = scale(b.download_bytes);
+        const title = `${new Date(Number(b.bucket_epoch) * 1000).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}  ↑ ${humanBytes(b.upload_bytes)}  ↓ ${humanBytes(b.download_bytes)}`;
+        return `<div class="flex-1 space-y-1 flex flex-col justify-end h-full" title="${escapeHtml(title)}">
+          <div class="w-full bg-primary/20 rounded-t-sm" style="height:${up}%"></div>
+          <div class="w-full bg-secondary/40 rounded-t-sm" style="height:${dn}%"></div>
+        </div>`;
+      }).join('');
+    }
+
+    async function fetchStatsTraffic() {
+      try {
+        const res = await fetch('/api/stats/traffic?hours=24', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        renderTrafficChart(data.buckets || []);
+        setLastRefreshed();
+        return true;
+      } catch (_err) {
+        markRefreshError();
+        return false;
+      }
+    }
+
+    function applyIntegrityTone(percent) {
+      const statusEl = document.getElementById('tileIntegrityStatus');
+      const barEl    = document.getElementById('tileIntegrityBar');
+      if (!statusEl || !barEl) return;
+      statusEl.classList.remove('text-secondary', 'text-tertiary', 'text-error', 'text-slate-400');
+      barEl.classList.remove('bg-secondary', 'bg-tertiary', 'bg-error', 'bg-on-surface-variant');
+      if (!Number.isFinite(percent)) {
+        statusEl.textContent = '—';
+        statusEl.classList.add('text-slate-400');
+        barEl.classList.add('bg-on-surface-variant');
+        return;
+      }
+      if (percent >= 99.0) {
+        statusEl.textContent = 'OK';
+        statusEl.classList.add('text-secondary');
+        barEl.classList.add('bg-secondary');
+      } else if (percent >= 90.0) {
+        statusEl.textContent = 'WARN';
+        statusEl.classList.add('text-tertiary');
+        barEl.classList.add('bg-tertiary');
+      } else {
+        statusEl.textContent = 'FAILED';
+        statusEl.classList.add('text-error');
+        barEl.classList.add('bg-error');
+      }
+    }
+
+    async function fetchStatsSystem() {
+      try {
+        const res = await fetch('/api/stats/system', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const nodesEl = document.getElementById('tileNodesCount');
+        const nodesDeltaEl = document.getElementById('tileNodesDelta');
+        const nodesBarEl = document.getElementById('tileNodesBar');
+        if (nodesEl) nodesEl.textContent = formatCount(data.nodes_count);
+        if (nodesDeltaEl) nodesDeltaEl.textContent = formatDelta(data.nodes_delta);
+        if (nodesBarEl) {
+          const pct = Math.min(100, Math.max(0, Number(data.nodes_count) * 10));
+          nodesBarEl.style.width = `${pct}%`;
+        }
+
+        const cpuEl = document.getElementById('tileCpuPercent');
+        const cpuStatusEl = document.getElementById('tileCpuStatus');
+        const cpuBarEl = document.getElementById('tileCpuBar');
+        const cpuPct = Number(data.cpu_percent);
+        if (cpuEl) cpuEl.textContent = Number.isFinite(cpuPct) ? `${cpuPct.toFixed(1)}%` : '—';
+        if (cpuStatusEl) cpuStatusEl.textContent = Number.isFinite(cpuPct)
+          ? (cpuPct < 50 ? 'OK' : (cpuPct < 85 ? 'WARN' : 'FAILED'))
+          : '—';
+        if (cpuBarEl) cpuBarEl.style.width = `${Math.min(100, Math.max(0, cpuPct || 0))}%`;
+
+        const latEl = document.getElementById('tileLatencyMs');
+        const latDeltaEl = document.getElementById('tileLatencyDelta');
+        const latBarEl = document.getElementById('tileLatencyBar');
+        const latMs = Number(data.latency_ms);
+        if (latEl) latEl.textContent = Number.isFinite(latMs) ? latMs.toFixed(0) : '—';
+        if (latDeltaEl) latDeltaEl.textContent = formatDelta(data.latency_delta_ms, ' ms');
+        if (latBarEl) {
+          const pct = Number.isFinite(latMs) ? Math.min(100, (latMs / 500) * 100) : 0;
+          latBarEl.style.width = `${pct}%`;
+        }
+
+        const intEl = document.getElementById('tileIntegrityPercent');
+        const intBarEl = document.getElementById('tileIntegrityBar');
+        const intPct = Number(data.integrity_percent);
+        if (intEl) intEl.textContent = Number.isFinite(intPct) ? `${intPct.toFixed(1)}%` : '—';
+        if (intBarEl) intBarEl.style.width = `${Math.min(100, Math.max(0, intPct || 0))}%`;
+        applyIntegrityTone(intPct);
+
+        setLastRefreshed();
+        return true;
+      } catch (_err) {
+        markRefreshError();
+        return false;
+      }
+    }
+
+    async function refreshAll() {
+      const btn = document.getElementById('manualRefreshButton');
+      if (btn) btn.classList.add('pulse-secondary');
+      await Promise.allSettled([
+        fetchStatsOverview(),
+        fetchStatsTraffic(),
+        fetchStatsSystem(),
+        fetchSystemStatus(),
+        fetchAuditLog(),
+        fetchRecoveryStatus(),
+      ]);
+      if (btn) btn.classList.remove('pulse-secondary');
+    }
+
     // ── Hash router (F.7) ───────────────────────────────────────
     const VALID_VIEWS = ['przeglad', 'pliki', 'skarbiec', 'multi-device', 'chmura', 'audyt', 'ustawienia'];
     const PLACEHOLDER_META = {
@@ -742,12 +938,25 @@
       fetchSystemStatus();
       setInterval(fetchSystemStatus, 10_000);
 
-      // F.3: audit log (initial fetch; G.4 doda polling co 30s)
+      // F.3 + G.4: audit log — initial fetch + polling co 30s
       fetchAuditLog();
+      setInterval(fetchAuditLog, 30_000);
 
       // F.4: recovery alert (initial fetch + CTA → legacy generate flow)
       attachRecoveryCta();
       fetchRecoveryStatus();
+
+      // G.4: stats — initial fetch + polling wg planu (KPI 30s, chart 60s, tiles 5s)
+      fetchStatsOverview();
+      fetchStatsTraffic();
+      fetchStatsSystem();
+      setInterval(fetchStatsOverview, 30_000);
+      setInterval(fetchStatsTraffic,  60_000);
+      setInterval(fetchStatsSystem,    5_000);
+
+      // G.4: manual refresh (wszystkie panele naraz)
+      const refreshBtn = document.getElementById('manualRefreshButton');
+      if (refreshBtn) refreshBtn.addEventListener('click', refreshAll);
     })();
   </script>
 </body>
