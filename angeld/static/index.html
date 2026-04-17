@@ -443,6 +443,215 @@
       </div>
     </div>
 
+    <!-- ===== Widok: Skarbiec (G.6) ===== -->
+    <!-- G.6 DONE: vault status/unlock + recovery keys + print A4 -->
+    <div id="view-skarbiec" data-view="skarbiec" class="hidden p-8 max-w-4xl mx-auto space-y-6 pb-16">
+
+      <!-- HERO -->
+      <div class="flex items-end justify-between gap-4">
+        <div>
+          <h1 class="text-3xl font-bold tracking-tight text-on-surface mb-1">Skarbiec</h1>
+          <p class="text-slate-400 text-sm">Zarządzanie kluczami, bezpieczeństwem i dostępem.</p>
+        </div>
+      </div>
+
+      <!-- SEKCJA 1: Status i blokada -->
+      <section class="glass-panel rounded-2xl p-6 space-y-5">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold uppercase tracking-widest text-slate-400">Status Skarbca</h2>
+          <span id="vaultStatusBadge" class="px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border bg-slate-500/10 text-slate-400 border-slate-500/20">Sprawdzanie...</span>
+        </div>
+
+        <!-- Formularz odblokowania (tylko gdy locked) -->
+        <div id="vaultUnlockForm" class="hidden space-y-4">
+          <p class="text-sm text-slate-400">Skarbiec jest zablokowany. Wprowadź hasło główne, aby uzyskać dostęp.</p>
+          <div class="flex gap-3">
+            <div class="flex-1 relative">
+              <input id="vaultPassphraseInput" type="password" placeholder="Hasło główne (passphrase)..."
+                class="w-full bg-surface-container border border-white/10 rounded-xl px-4 py-3 text-sm text-on-surface placeholder-slate-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30" />
+              <button id="vaultPassphraseToggle" type="button" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-on-surface transition-colors" tabindex="-1">
+                <span class="material-symbols-outlined text-lg">visibility</span>
+              </button>
+            </div>
+            <button id="vaultUnlockBtn" class="bg-primary text-on-primary px-6 py-3 rounded-xl font-bold text-sm hover:bg-primary-container active:scale-95 transition-all flex items-center gap-2 whitespace-nowrap">
+              <span class="material-symbols-outlined text-lg">lock_open</span>Odblokuj
+            </button>
+          </div>
+          <p id="vaultUnlockError" class="hidden text-xs text-error"></p>
+          <!-- Odzyskaj dostęp jako wtórny entry point -->
+          <button id="vaultOpenRestoreFromLock" class="text-xs text-slate-500 hover:text-primary transition-colors underline underline-offset-2">
+            Zapomniałem hasła — odzyskaj dostęp kluczem BIP-39
+          </button>
+        </div>
+
+        <!-- Panel "odblokowany" -->
+        <div id="vaultUnlockedPanel" class="hidden space-y-4">
+          <div class="flex flex-wrap gap-6">
+            <div class="space-y-1">
+              <p class="text-[10px] font-label text-slate-400 uppercase tracking-widest">Klucz główny</p>
+              <p class="text-lg font-semibold text-on-surface" id="vaultKeyGenLabel">VK gen —</p>
+            </div>
+            <div class="space-y-1">
+              <p class="text-[10px] font-label text-slate-400 uppercase tracking-widest">Format Skarbca</p>
+              <p class="text-lg font-semibold text-on-surface" id="vaultFormatLabel">—</p>
+            </div>
+          </div>
+          <div class="flex flex-wrap gap-3">
+            <button class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-slate-400 border border-white/10 cursor-not-allowed opacity-50"
+              disabled title="Endpoint /api/lock nie jest jeszcze dostępny — zablokuj przez narzędzie angelctl lub restart serwisu">
+              <span class="material-symbols-outlined text-lg">lock</span>Zablokuj Skarbiec
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- SEKCJA 2: Rotacja klucza i Migracja -->
+      <section class="glass-panel rounded-2xl p-6 space-y-5">
+        <h2 class="text-sm font-bold uppercase tracking-widest text-slate-400">Zarządzanie kluczem</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div class="bg-surface-container rounded-xl p-4 flex items-start gap-4">
+            <div class="bg-primary/10 p-2 rounded-lg shrink-0">
+              <span class="material-symbols-outlined text-primary">autorenew</span>
+            </div>
+            <div class="min-w-0">
+              <p class="text-sm font-semibold text-on-surface">Rotacja klucza głównego</p>
+              <p class="text-xs text-slate-400 mt-1 leading-relaxed">Wymuś rotację Vault Key — używane automatycznie przy unieważnianiu urządzeń.</p>
+              <button class="mt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500 border border-white/10 px-3 py-1.5 rounded-lg cursor-not-allowed opacity-50"
+                disabled title="Rotacja odbywa się automatycznie podczas odwoływania dostępu urządzeniom. Bezpośredni endpoint nie jest jeszcze dostępny.">
+                Wymuś rotację (niedostępne przez API)
+              </button>
+            </div>
+          </div>
+          <div class="bg-surface-container rounded-xl p-4 flex items-start gap-4">
+            <div class="bg-tertiary/10 p-2 rounded-lg shrink-0">
+              <span class="material-symbols-outlined text-tertiary">upgrade</span>
+            </div>
+            <div class="min-w-0">
+              <p class="text-sm font-semibold text-on-surface">Migracja V1 → V2</p>
+              <p class="text-xs text-slate-400 mt-1 leading-relaxed">Upgrade formatu szyfrowania do Envelope Encryption (AES-KW + DEK per plik).</p>
+              <div id="vaultMigrationStatus" class="mt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                Status migracji — brak endpointu statusu
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SEKCJA 3: Klucze odzyskiwania -->
+      <section class="glass-panel rounded-2xl p-6 space-y-5">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold uppercase tracking-widest text-slate-400">Klucz odzyskiwania BIP-39</h2>
+          <span id="vaultRecoveryBadge" class="px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border bg-slate-500/10 text-slate-400 border-slate-500/20">Sprawdzanie...</span>
+        </div>
+        <div id="vaultRecoveryInfo" class="space-y-1">
+          <p class="text-sm text-slate-400" id="vaultRecoveryDescription">Ładowanie statusu kluczy odzyskiwania...</p>
+          <p class="text-xs text-slate-500" id="vaultRecoveryMeta"></p>
+        </div>
+        <div class="flex flex-wrap gap-3">
+          <button id="vaultOpenGenerateBtn" class="flex items-center gap-2 bg-secondary/10 text-secondary border border-secondary/20 px-4 py-2 rounded-xl font-bold text-sm hover:bg-secondary/20 transition-colors">
+            <span class="material-symbols-outlined text-lg">key</span>Generuj nowy klucz
+          </button>
+          <button id="vaultOpenRestoreBtn" class="flex items-center gap-2 text-slate-400 border border-white/10 px-4 py-2 rounded-xl font-bold text-sm hover:bg-white/5 transition-colors">
+            <span class="material-symbols-outlined text-lg">restore</span>Odzyskaj dostęp
+          </button>
+          <button id="vaultRevokeBtn" class="hidden flex items-center gap-2 text-error/70 border border-error/20 px-4 py-2 rounded-xl font-bold text-sm hover:bg-error/10 transition-colors">
+            <span class="material-symbols-outlined text-lg">key_off</span>Unieważnij klucze
+          </button>
+        </div>
+        <p id="vaultRecoveryActionError" class="hidden text-xs text-error"></p>
+      </section>
+
+      <!-- MODAL: Generuj klucz odzyskiwania -->
+      <div id="vaultGenerateModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+        <div class="glass-panel rounded-2xl border border-white/10 w-full max-w-lg max-h-[90vh] overflow-y-auto p-6 space-y-5">
+          <!-- Krok 1: Potwierdzenie -->
+          <div id="generateStep1" class="space-y-4">
+            <div class="flex items-start gap-3">
+              <div class="bg-tertiary/10 p-2 rounded-lg shrink-0 mt-0.5">
+                <span class="material-symbols-outlined text-tertiary">warning</span>
+              </div>
+              <div>
+                <h3 class="font-bold text-on-surface">Wygenerować nowy klucz?</h3>
+                <p class="text-sm text-slate-300 mt-1 leading-relaxed">
+                  Wygenerowanie nowego klucza odzyskiwania <strong>zastąpi</strong> wszystkie poprzednie klucze.
+                  Poprzednie karty odzyskiwania staną się nieważne.
+                </p>
+                <p class="text-sm text-tertiary mt-2">Upewnij się, że masz przy sobie nośnik do zapisania 24 słów.</p>
+              </div>
+            </div>
+            <div class="flex gap-3 justify-end">
+              <button id="generateStep1Cancel" class="px-4 py-2 rounded-xl text-sm text-slate-400 hover:bg-white/5 transition-colors">Anuluj</button>
+              <button id="generateStep1Confirm" class="px-4 py-2 rounded-xl text-sm font-bold bg-secondary/10 text-secondary border border-secondary/20 hover:bg-secondary/20 transition-colors">
+                Rozumiem, generuj klucz
+              </button>
+            </div>
+          </div>
+
+          <!-- Krok 2: Słowa (po wygenerowaniu) -->
+          <div id="generateStep2" class="hidden space-y-4">
+            <div class="flex items-center justify-between">
+              <h3 class="font-bold text-on-surface">Klucz odzyskiwania BIP-39</h3>
+              <span id="generateVkGenBadge" class="text-[10px] font-bold text-slate-400 uppercase tracking-widest"></span>
+            </div>
+            <p class="text-xs text-tertiary leading-relaxed">
+              Zapisz te 24 słowa w kolejności. Bez nich nie odzyskasz dostępu do Skarbca, jeśli zapomnisz hasła.
+              <strong>Nie rób zrzutu ekranu — wydrukuj kartę.</strong>
+            </p>
+            <div id="generateWordGrid" class="grid grid-cols-3 sm:grid-cols-4 gap-2"></div>
+            <div class="flex gap-3 justify-end pt-2">
+              <button id="generatePrintBtn" class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-primary border border-primary/20 hover:bg-primary/10 transition-colors">
+                <span class="material-symbols-outlined text-lg">print</span>Wydrukuj kartę A4
+              </button>
+              <button id="generateDoneBtn" class="px-4 py-2 rounded-xl text-sm font-bold bg-secondary/10 text-secondary border border-secondary/20 hover:bg-secondary/20 transition-colors">
+                Zapisałem, Zamknij
+              </button>
+            </div>
+          </div>
+
+          <!-- Stan ładowania -->
+          <div id="generateLoading" class="hidden text-center py-8">
+            <div class="w-8 h-8 border-2 border-secondary/30 border-t-secondary rounded-full animate-spin mx-auto mb-3"></div>
+            <p class="text-sm text-slate-400">Generowanie klucza odzyskiwania...</p>
+          </div>
+          <!-- Błąd generowania -->
+          <p id="generateError" class="hidden text-xs text-error text-center py-4"></p>
+        </div>
+      </div>
+
+      <!-- MODAL: Odzyskaj dostęp -->
+      <div id="vaultRestoreModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+        <div class="glass-panel rounded-2xl border border-white/10 w-full max-w-lg p-6 space-y-5">
+          <div class="flex items-start gap-3">
+            <div class="bg-primary/10 p-2 rounded-lg shrink-0 mt-0.5">
+              <span class="material-symbols-outlined text-primary">restore</span>
+            </div>
+            <h3 class="font-bold text-on-surface pt-1">Odzyskaj dostęp do Skarbca</h3>
+          </div>
+          <p class="text-sm text-slate-400 leading-relaxed">
+            Wprowadź 24 słowa BIP-39 ze swojej karty odzyskiwania i ustaw nowe hasło główne.
+          </p>
+          <div class="space-y-3">
+            <label class="block text-[10px] font-bold uppercase tracking-widest text-slate-400">24 słowa BIP-39 (oddzielone spacjami lub wierszami)</label>
+            <textarea id="restoreMnemonicInput" rows="4" placeholder="słowo1 słowo2 słowo3 ..."
+              class="w-full bg-surface-container border border-white/10 rounded-xl px-4 py-3 text-sm text-on-surface placeholder-slate-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 resize-none font-mono"></textarea>
+          </div>
+          <div class="space-y-3">
+            <label class="block text-[10px] font-bold uppercase tracking-widest text-slate-400">Nowe hasło główne</label>
+            <input id="restoreNewPassphrase" type="password" placeholder="Nowe hasło główne..."
+              class="w-full bg-surface-container border border-white/10 rounded-xl px-4 py-3 text-sm text-on-surface placeholder-slate-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30" />
+          </div>
+          <p id="restoreError" class="hidden text-xs text-error"></p>
+          <div class="flex gap-3 justify-end">
+            <button id="restoreCancelBtn" class="px-4 py-2 rounded-xl text-sm text-slate-400 hover:bg-white/5 transition-colors">Anuluj</button>
+            <button id="restoreSubmitBtn" class="px-4 py-2 rounded-xl text-sm font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors flex items-center gap-2">
+              <span class="material-symbols-outlined text-lg">restore</span>Odzyskaj dostęp
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
     <!-- F.7 DONE: placeholder dla widoków Sesji G -->
     <div id="view-placeholder" class="hidden flex-col items-center justify-center h-[calc(100vh-64px)] text-center px-8">
       <span class="material-symbols-outlined text-6xl text-slate-600 mb-4" id="placeholderIcon">construction</span>
@@ -937,6 +1146,360 @@
       if (btn) btn.classList.remove('pulse-secondary');
     }
 
+    // ── Widok „Skarbiec" (G.6) ──────────────────────────────────
+    const VAULT_STATE = {
+      unlocked: null,          // null=unknown, true, false
+      sessionToken: null,      // Bearer token z /api/unlock
+      vk_generation: null,
+      recovery: null,          // StatusResponse z /api/recovery/status
+      loading: false,
+    };
+
+    function vaultAuthHeaders() {
+      const h = { 'Accept': 'application/json', 'Content-Type': 'application/json' };
+      if (VAULT_STATE.sessionToken) h['Authorization'] = `Bearer ${VAULT_STATE.sessionToken}`;
+      return h;
+    }
+
+    function renderVaultStatus() {
+      const badge = document.getElementById('vaultStatusBadge');
+      const unlockForm = document.getElementById('vaultUnlockForm');
+      const unlockedPanel = document.getElementById('vaultUnlockedPanel');
+      const genBtn = document.getElementById('vaultOpenGenerateBtn');
+      const revokeBtn = document.getElementById('vaultRevokeBtn');
+      if (!badge || !unlockForm || !unlockedPanel) return;
+
+      if (VAULT_STATE.unlocked === true) {
+        badge.textContent = 'Odblokowany';
+        badge.className = badge.className.replace(/bg-\S+\/10\s?|text-\S+\s?|border-\S+\/\d+\s?/g, '');
+        badge.classList.add('bg-secondary/10', 'text-secondary', 'border-secondary/20');
+        unlockForm.classList.add('hidden');
+        unlockedPanel.classList.remove('hidden');
+        const vkEl = document.getElementById('vaultKeyGenLabel');
+        if (vkEl && VAULT_STATE.vk_generation !== null) vkEl.textContent = `VK gen ${VAULT_STATE.vk_generation}`;
+        if (genBtn) genBtn.disabled = false;
+        if (revokeBtn) revokeBtn.classList.remove('hidden');
+      } else if (VAULT_STATE.unlocked === false) {
+        badge.textContent = 'Zablokowany';
+        badge.className = badge.className.replace(/bg-\S+\/10\s?|text-\S+\s?|border-\S+\/\d+\s?/g, '');
+        badge.classList.add('bg-error/10', 'text-error', 'border-error/20');
+        unlockForm.classList.remove('hidden');
+        unlockedPanel.classList.add('hidden');
+        if (genBtn) genBtn.disabled = true;
+        if (revokeBtn) revokeBtn.classList.add('hidden');
+      } else {
+        badge.textContent = 'Sprawdzanie...';
+      }
+    }
+
+    function renderVaultRecovery() {
+      const status = VAULT_STATE.recovery;
+      const badge = document.getElementById('vaultRecoveryBadge');
+      const desc = document.getElementById('vaultRecoveryDescription');
+      const meta = document.getElementById('vaultRecoveryMeta');
+      if (!badge || !desc) return;
+      if (!status) {
+        badge.textContent = 'Nieznany';
+        desc.textContent = 'Nie udało się pobrać statusu kluczy odzykiwania.';
+        return;
+      }
+      if (status.active_count > 0) {
+        badge.textContent = 'Aktywny';
+        badge.className = badge.className.replace(/bg-\S+\/10\s?|text-\S+\s?|border-\S+\/\d+\s?/g, '');
+        badge.classList.add('bg-secondary/10', 'text-secondary', 'border-secondary/20');
+        desc.textContent = `Masz ${status.active_count} aktywny ${pluralPl(status.active_count, 'klucz odzykiwania', 'klucze odzykiwania', 'kluczy odzykiwania')}.`;
+        if (meta && status.last_created_at) {
+          const ageDays = Math.floor((Date.now() / 1000 - status.last_created_at) / 86400);
+          meta.textContent = `Wygenerowano ${ageDays} ${pluralPl(ageDays, 'dzień', 'dni', 'dni')} temu · generacja klucza VK ${status.vk_generation}`;
+        }
+      } else {
+        badge.textContent = 'Brak klucza';
+        badge.className = badge.className.replace(/bg-\S+\/10\s?|text-\S+\s?|border-\S+\/\d+\s?/g, '');
+        badge.classList.add('bg-error/10', 'text-error', 'border-error/20');
+        desc.textContent = 'Nie masz wygenerowanego klucza odzykiwania. Bez niego nie odzyskasz dostępu po zgubieniu hasła.';
+        if (meta) meta.textContent = '';
+      }
+    }
+
+    async function fetchVaultStatus() {
+      try {
+        const res = await fetch('/api/vault/status', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        VAULT_STATE.unlocked = !!data.unlocked;
+      } catch (_err) {
+        VAULT_STATE.unlocked = false;
+      }
+      renderVaultStatus();
+    }
+
+    async function fetchVaultRecoveryStatus() {
+      try {
+        const res = await fetch('/api/recovery/status', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        VAULT_STATE.recovery = await res.json();
+        if (VAULT_STATE.recovery) {
+          VAULT_STATE.vk_generation = VAULT_STATE.recovery.vk_generation;
+        }
+      } catch (_err) {
+        VAULT_STATE.recovery = null;
+      }
+      renderVaultRecovery();
+      renderVaultStatus();
+    }
+
+    async function postVaultUnlock(passphrase) {
+      const errEl = document.getElementById('vaultUnlockError');
+      const btn = document.getElementById('vaultUnlockBtn');
+      if (errEl) { errEl.classList.add('hidden'); errEl.textContent = ''; }
+      if (btn) { btn.disabled = true; btn.textContent = 'Odblokowywanie...'; }
+      try {
+        const res = await fetch('/api/unlock', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ passphrase }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          const msg = data?.error?.message || data?.message || `Błąd HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+        VAULT_STATE.unlocked = true;
+        VAULT_STATE.sessionToken = data.session_token || null;
+        renderVaultStatus();
+        await fetchVaultRecoveryStatus();
+        // Zaktualizuj systemStatusPill
+        fetchSystemStatus();
+        if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined text-lg">lock_open</span>Odblokuj'; }
+      } catch (err) {
+        VAULT_STATE.unlocked = false;
+        if (errEl) { errEl.textContent = err.message || 'Nieprawidłowe hasło lub błąd serwera.'; errEl.classList.remove('hidden'); }
+        if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined text-lg">lock_open</span>Odblokuj'; }
+        renderVaultStatus();
+      }
+    }
+
+    function openPrintCard(words, vk_generation) {
+      const numbered = words.map((w, i) =>
+        `<div style="display:flex;align-items:baseline;gap:8px;padding:6px 12px;border:1px solid #ddd;border-radius:6px;break-inside:avoid">
+          <span style="color:#999;font-size:11px;min-width:24px;text-align:right">${i + 1}.</span>
+          <span style="font-family:monospace;font-size:14px;font-weight:600">${escapeHtml(w)}</span>
+        </div>`).join('');
+
+      const html = `<!DOCTYPE html>
+<html lang="pl"><head>
+<meta charset="utf-8"/>
+<title>Karta odzykiwania OmniDrive — VK gen ${vk_generation}</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; padding: 24mm 20mm; color: #000; background: #fff; }
+  @media print { body { padding: 20mm 18mm; } }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  .sub { font-size: 12px; color: #555; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 16px 0; }
+  .warn { margin-top: 20px; padding: 12px; border: 2px solid #000; font-size: 11px; line-height: 1.5; }
+  .warn strong { font-size: 12px; display: block; margin-bottom: 4px; }
+</style>
+</head><body>
+<h1>Karta odzykiwania — OmniDrive Skarbiec</h1>
+<p class="sub">Vault Key generacja ${vk_generation} · Wygenerowano: ${new Date().toLocaleString('pl-PL')}</p>
+<div class="grid">${numbered}</div>
+<div class="warn">
+  <strong>⚠ PRZECHOWUJ W BEZPIECZNYM MIEJSCU</strong>
+  Karta odzykiwania umożliwia dostęp do Skarbca bez hasła głównego.
+  Nie przechowuj jej w formie cyfrowej. Trzymaj z dala od urządzeń elektronicznych.
+  Po odtworzeniu wygeneruj nową kartę i zniszcz tę.
+</div>
+<script>window.onload = function(){ window.print(); }<\/script>
+</body></html>`;
+
+      const win = window.open('about:blank', '_blank', 'noopener,width=800,height=600');
+      if (win) { win.document.write(html); win.document.close(); }
+    }
+
+    function setupVaultGenerateModal() {
+      let generatedWords = [];
+      let generatedVkGen = null;
+
+      function reset() {
+        document.getElementById('generateStep1').classList.remove('hidden');
+        document.getElementById('generateStep2').classList.add('hidden');
+        document.getElementById('generateLoading').classList.add('hidden');
+        document.getElementById('generateError').classList.add('hidden');
+        generatedWords = [];
+        generatedVkGen = null;
+      }
+
+      function closeModal() {
+        document.getElementById('vaultGenerateModal').classList.add('hidden');
+        reset();
+      }
+
+      document.getElementById('generateStep1Cancel').addEventListener('click', closeModal);
+      document.getElementById('generateDoneBtn').addEventListener('click', () => {
+        closeModal();
+        fetchVaultRecoveryStatus();
+      });
+      document.getElementById('vaultGenerateModal').addEventListener('mousedown', (e) => {
+        if (e.target === document.getElementById('vaultGenerateModal')) closeModal();
+      });
+
+      document.getElementById('generatePrintBtn').addEventListener('click', () => {
+        if (generatedWords.length > 0) openPrintCard(generatedWords, generatedVkGen);
+      });
+
+      document.getElementById('generateStep1Confirm').addEventListener('click', async () => {
+        const step1 = document.getElementById('generateStep1');
+        const loading = document.getElementById('generateLoading');
+        const errEl = document.getElementById('generateError');
+        step1.classList.add('hidden');
+        loading.classList.remove('hidden');
+        errEl.classList.add('hidden');
+        try {
+          const res = await fetch('/api/recovery/generate', {
+            method: 'POST',
+            headers: vaultAuthHeaders(),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            const msg = data?.error?.message || data?.message || `HTTP ${res.status}`;
+            throw new Error(msg);
+          }
+          generatedWords = data.mnemonic.trim().split(/\s+/);
+          generatedVkGen = data.vk_generation;
+          loading.classList.add('hidden');
+          // Render word grid
+          const grid = document.getElementById('generateWordGrid');
+          if (grid) {
+            grid.innerHTML = generatedWords.map((w, i) =>
+              `<div class="flex items-baseline gap-2 bg-surface-container rounded-lg px-3 py-2">
+                <span class="text-[10px] text-slate-500 min-w-[18px] text-right">${i + 1}.</span>
+                <span class="text-sm font-mono font-semibold text-on-surface">${escapeHtml(w)}</span>
+              </div>`).join('');
+          }
+          const badge = document.getElementById('generateVkGenBadge');
+          if (badge) badge.textContent = `VK gen ${data.vk_generation} · ${data.word_count} słów`;
+          document.getElementById('generateStep2').classList.remove('hidden');
+        } catch (err) {
+          loading.classList.add('hidden');
+          errEl.textContent = err.message || 'Błąd generowania klucza.';
+          errEl.classList.remove('hidden');
+          // Wróć do kroku 1 po chwili
+          setTimeout(() => { reset(); }, 3000);
+        }
+      });
+    }
+
+    function setupVaultRestoreModal() {
+      function closeModal() {
+        document.getElementById('vaultRestoreModal').classList.add('hidden');
+        document.getElementById('restoreError').classList.add('hidden');
+        document.getElementById('restoreMnemonicInput').value = '';
+        document.getElementById('restoreNewPassphrase').value = '';
+        document.getElementById('restoreSubmitBtn').disabled = false;
+        document.getElementById('restoreSubmitBtn').innerHTML = '<span class="material-symbols-outlined text-lg">restore</span>Odzyskaj dostęp';
+      }
+      document.getElementById('restoreCancelBtn').addEventListener('click', closeModal);
+      document.getElementById('vaultRestoreModal').addEventListener('mousedown', (e) => {
+        if (e.target === document.getElementById('vaultRestoreModal')) closeModal();
+      });
+      document.getElementById('restoreSubmitBtn').addEventListener('click', async () => {
+        const mnemonic = (document.getElementById('restoreMnemonicInput').value || '').trim();
+        const newPass = (document.getElementById('restoreNewPassphrase').value || '').trim();
+        const errEl = document.getElementById('restoreError');
+        const btn = document.getElementById('restoreSubmitBtn');
+        errEl.classList.add('hidden');
+        if (!mnemonic) { errEl.textContent = 'Wprowadź 24 słowa BIP-39.'; errEl.classList.remove('hidden'); return; }
+        if (!newPass) { errEl.textContent = 'Wprowadź nowe hasło główne.'; errEl.classList.remove('hidden'); return; }
+        btn.disabled = true;
+        btn.textContent = 'Odtwarzanie...';
+        try {
+          const res = await fetch('/api/recovery/restore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ mnemonic, new_passphrase: newPass }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data?.error?.message || data?.message || `HTTP ${res.status}`);
+          closeModal();
+          // Po restore próbuj auto-login tym nowym hasłem
+          document.getElementById('vaultPassphraseInput').value = newPass;
+          await postVaultUnlock(newPass);
+        } catch (err) {
+          btn.disabled = false;
+          btn.innerHTML = '<span class="material-symbols-outlined text-lg">restore</span>Odzyskaj dostęp';
+          errEl.textContent = err.message || 'Odtwarzanie nie powiodło się.';
+          errEl.classList.remove('hidden');
+        }
+      });
+    }
+
+    function setupVaultRevokeBtn() {
+      const btn = document.getElementById('vaultRevokeBtn');
+      if (!btn) return;
+      btn.addEventListener('click', async () => {
+        if (!confirm('Unieważnić wszystkie klucze odykiwania? Tej operacji nie można cofnąć.')) return;
+        btn.disabled = true;
+        const errEl = document.getElementById('vaultRecoveryActionError');
+        if (errEl) errEl.classList.add('hidden');
+        try {
+          const res = await fetch('/api/recovery/revoke', { method: 'POST', headers: vaultAuthHeaders() });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data?.error?.message || `HTTP ${res.status}`);
+          }
+          VAULT_STATE.recovery = null;
+          await fetchVaultRecoveryStatus();
+        } catch (err) {
+          if (errEl) { errEl.textContent = err.message || 'Błąd unieważniania.'; errEl.classList.remove('hidden'); }
+          btn.disabled = false;
+        }
+      });
+    }
+
+    function activateSkarbiecView() {
+      if (document.getElementById('view-skarbiec').dataset.initialized) {
+        renderVaultStatus();
+        renderVaultRecovery();
+        return;
+      }
+      document.getElementById('view-skarbiec').dataset.initialized = '1';
+
+      // Passphrase toggle
+      const toggle = document.getElementById('vaultPassphraseToggle');
+      const passInput = document.getElementById('vaultPassphraseInput');
+      if (toggle && passInput) {
+        toggle.addEventListener('click', () => {
+          const isPass = passInput.type === 'password';
+          passInput.type = isPass ? 'text' : 'password';
+          toggle.querySelector('.material-symbols-outlined').textContent = isPass ? 'visibility_off' : 'visibility';
+        });
+      }
+
+      // Unlock button
+      const unlockBtn = document.getElementById('vaultUnlockBtn');
+      if (unlockBtn && passInput) {
+        const doUnlock = () => { if (!unlockBtn.disabled) postVaultUnlock(passInput.value); };
+        unlockBtn.addEventListener('click', doUnlock);
+        passInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doUnlock(); });
+      }
+
+      // Open generate/restore modals
+      document.getElementById('vaultOpenGenerateBtn').addEventListener('click', () => {
+        document.getElementById('vaultGenerateModal').classList.remove('hidden');
+      });
+      const openRestore = () => document.getElementById('vaultRestoreModal').classList.remove('hidden');
+      document.getElementById('vaultOpenRestoreBtn').addEventListener('click', openRestore);
+      document.getElementById('vaultOpenRestoreFromLock').addEventListener('click', openRestore);
+
+      setupVaultGenerateModal();
+      setupVaultRestoreModal();
+      setupVaultRevokeBtn();
+
+      // Initial data fetch
+      fetchVaultStatus();
+      fetchVaultRecoveryStatus();
+    }
+
     // ── Widok „Pliki" (G.5) ─────────────────────────────────────
     const PLURAL_PL = (typeof Intl !== 'undefined' && Intl.PluralRules)
       ? new Intl.PluralRules('pl-PL')
@@ -1231,7 +1794,6 @@
     // ── Hash router (F.7) ───────────────────────────────────────
     const VALID_VIEWS = ['przeglad', 'pliki', 'skarbiec', 'multi-device', 'chmura', 'audyt', 'ustawienia'];
     const PLACEHOLDER_META = {
-      skarbiec:       { icon: 'enhanced_encryption', title: 'Skarbiec' },
       'multi-device': { icon: 'devices',             title: 'Multi-Device' },
       chmura:         { icon: 'cloud',               title: 'Chmura' },
       audyt:          { icon: 'analytics',           title: 'Audyt' },
@@ -1246,12 +1808,14 @@
     function navigateTo(view) {
       const przeglad    = document.getElementById('view-przeglad');
       const pliki       = document.getElementById('view-pliki');
+      const skarbiec    = document.getElementById('view-skarbiec');
       const placeholder = document.getElementById('view-placeholder');
       if (!przeglad || !pliki || !placeholder) return;
 
       // Ukryj wszystkie widoki
       przeglad.classList.add('hidden');
       pliki.classList.add('hidden');
+      if (skarbiec) skarbiec.classList.add('hidden');
       placeholder.classList.add('hidden');
       placeholder.classList.remove('flex');
 
@@ -1260,6 +1824,9 @@
       } else if (view === 'pliki') {
         pliki.classList.remove('hidden');
         activatePlikiView();
+      } else if (view === 'skarbiec') {
+        document.getElementById('view-skarbiec').classList.remove('hidden');
+        activateSkarbiecView();
       } else {
         placeholder.classList.remove('hidden');
         placeholder.classList.add('flex');
