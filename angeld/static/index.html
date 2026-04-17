@@ -372,6 +372,77 @@
       </section>
     </div>
 
+    <!-- ===== Widok: Pliki (G.5) ===== -->
+    <!-- G.5 DONE: GET /api/files (flat) → breadcrumbs + tabela + status LOCAL/COMBO/CLOUD -->
+    <div id="view-pliki" data-view="pliki" class="hidden p-8 max-w-7xl mx-auto space-y-6">
+      <!-- HERO HEADER -->
+      <div class="flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+          <h1 class="text-3xl font-bold tracking-tight text-on-surface mb-1">Pliki</h1>
+          <p class="text-slate-400 text-sm">Zaszyfrowane i rozproszone pliki w Twoim Skarbcu.</p>
+        </div>
+        <div class="flex gap-3">
+          <button class="bg-white/5 text-slate-400 px-4 py-2 rounded-xl font-bold text-xs uppercase tracking-widest border border-white/10 cursor-not-allowed opacity-50 flex items-center gap-2" title="Wkrótce (G-FE)" disabled>
+            <span class="material-symbols-outlined text-lg">upload</span>
+            Wyślij
+          </button>
+          <button class="bg-white/5 text-slate-400 px-4 py-2 rounded-xl font-bold text-xs uppercase tracking-widest border border-white/10 cursor-not-allowed opacity-50 flex items-center gap-2" title="Wkrótce (G-FE)" disabled>
+            <span class="material-symbols-outlined text-lg">create_new_folder</span>
+            Nowy folder
+          </button>
+        </div>
+      </div>
+
+      <!-- TOOLBAR: breadcrumbs + search -->
+      <div class="flex flex-wrap items-center justify-between gap-4 glass-panel p-3 rounded-2xl">
+        <nav id="filesBreadcrumbs" class="flex items-center text-sm text-slate-400 gap-2 px-2 flex-wrap min-w-0">
+          <span class="material-symbols-outlined text-lg shrink-0">home</span>
+          <button class="hover:text-primary transition-colors shrink-0" data-folder="">Skarbiec</button>
+        </nav>
+        <div class="flex items-center gap-2 bg-surface-container-low border border-white/10 rounded-full px-3 py-1.5 w-72 max-w-full">
+          <span class="material-symbols-outlined text-slate-400 text-lg">search</span>
+          <input id="filesSearchInput" class="bg-transparent border-none focus:ring-0 focus:outline-none text-sm text-on-surface w-full placeholder-slate-500" placeholder="Szukaj w Skarbcu..." type="text" />
+        </div>
+      </div>
+
+      <!-- TABELA -->
+      <section class="glass-panel rounded-2xl overflow-hidden border border-white/5 flex flex-col">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="border-b border-white/5 bg-surface-container-high/50">
+                <th class="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Nazwa</th>
+                <th class="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400 w-28">Rozmiar</th>
+                <th class="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400 w-40">Modyfikacja</th>
+                <th class="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400 w-28">Status</th>
+                <th class="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400 text-right w-16">Akcje</th>
+              </tr>
+            </thead>
+            <tbody id="filesTableBody" class="divide-y divide-white/5">
+              <tr><td colspan="5" class="px-6 py-12 text-center text-sm text-slate-400">Ładowanie plików...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Floating context menu (single instance, repositioned per click) -->
+      <div id="fileActionsMenu" class="hidden fixed z-50 glass-panel border border-white/10 rounded-xl shadow-2xl py-2 min-w-[200px]">
+        <button class="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-400 cursor-not-allowed opacity-50" disabled title="Wkrótce">
+          <span class="material-symbols-outlined text-lg">download</span>Pobierz
+        </button>
+        <button class="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-400 cursor-not-allowed opacity-50" disabled title="Wkrótce">
+          <span class="material-symbols-outlined text-lg">tune</span>Zmień politykę
+        </button>
+        <button class="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-400 cursor-not-allowed opacity-50" disabled title="Wkrótce">
+          <span class="material-symbols-outlined text-lg">share</span>Udostępnij
+        </button>
+        <div class="h-px bg-white/5 my-1"></div>
+        <button class="w-full flex items-center gap-3 px-4 py-2 text-sm text-error/80 cursor-not-allowed opacity-50" disabled title="Wkrótce">
+          <span class="material-symbols-outlined text-lg">delete</span>Usuń
+        </button>
+      </div>
+    </div>
+
     <!-- F.7 DONE: placeholder dla widoków Sesji G -->
     <div id="view-placeholder" class="hidden flex-col items-center justify-center h-[calc(100vh-64px)] text-center px-8">
       <span class="material-symbols-outlined text-6xl text-slate-600 mb-4" id="placeholderIcon">construction</span>
@@ -850,26 +921,321 @@
     async function refreshAll() {
       const btn = document.getElementById('manualRefreshButton');
       if (btn) btn.classList.add('pulse-secondary');
-      await Promise.allSettled([
+      const tasks = [
         fetchStatsOverview(),
         fetchStatsTraffic(),
         fetchStatsSystem(),
         fetchSystemStatus(),
         fetchAuditLog(),
         fetchRecoveryStatus(),
-      ]);
+      ];
+      // Listę plików odświeżamy tylko jeśli widok został zainicjowany (lazy).
+      if (typeof FILES_STATE !== 'undefined' && FILES_STATE.initialized) {
+        tasks.push(fetchFilesList());
+      }
+      await Promise.allSettled(tasks);
       if (btn) btn.classList.remove('pulse-secondary');
+    }
+
+    // ── Widok „Pliki" (G.5) ─────────────────────────────────────
+    const PLURAL_PL = (typeof Intl !== 'undefined' && Intl.PluralRules)
+      ? new Intl.PluralRules('pl-PL')
+      : { select: (n) => (n === 1 ? 'one' : 'other') };
+    function pluralPl(n, one, few, many) {
+      switch (PLURAL_PL.select(Number(n))) {
+        case 'one':  return one;
+        case 'few':  return few;
+        default:     return many; // 'many' + 'other' fallback
+      }
+    }
+
+    const FILES_STATE = {
+      items: [],          // FileEntryResponse[]
+      currentFolder: '',  // '' = root, 'docs' = /docs, 'docs/2024' = /docs/2024
+      search: '',
+      status: 'idle',     // 'idle' | 'loading' | 'error' | 'ok'
+      errorMessage: '',
+      initialized: false,
+    };
+
+    function fileIcon(name) {
+      const ext = (name.split('.').pop() || '').toLowerCase();
+      if (['pdf'].includes(ext))                                       return { icon: 'picture_as_pdf', tone: 'primary',   label: 'Dokument PDF'      };
+      if (['doc', 'docx', 'odt', 'rtf'].includes(ext))                 return { icon: 'description',    tone: 'primary',   label: 'Dokument tekstowy' };
+      if (['xls', 'xlsx', 'csv', 'ods'].includes(ext))                 return { icon: 'table_chart',    tone: 'secondary', label: 'Arkusz'            };
+      if (['ppt', 'pptx', 'odp'].includes(ext))                        return { icon: 'slideshow',      tone: 'tertiary',  label: 'Prezentacja'       };
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext))  return { icon: 'image',          tone: 'secondary', label: 'Obraz'             };
+      if (['mp4', 'mov', 'mkv', 'webm', 'avi'].includes(ext))          return { icon: 'movie',          tone: 'tertiary',  label: 'Wideo'             };
+      if (['mp3', 'wav', 'flac', 'ogg', 'm4a'].includes(ext))          return { icon: 'audiotrack',     tone: 'secondary', label: 'Audio'             };
+      if (['zip', 'tar', 'gz', 'rar', '7z'].includes(ext))             return { icon: 'folder_zip',     tone: 'tertiary',  label: 'Archiwum'          };
+      if (['kdbx', 'gpg', 'pgp', 'enc'].includes(ext))                 return { icon: 'shield',         tone: 'secondary', label: 'Kontener szyfrowany' };
+      if (['log', 'txt', 'md'].includes(ext))                          return { icon: 'article',        tone: 'slate',     label: 'Tekst'             };
+      if (['js', 'ts', 'rs', 'py', 'go', 'html', 'css', 'json'].includes(ext)) return { icon: 'code', tone: 'primary', label: 'Kod źródłowy' };
+      return { icon: 'draft', tone: 'slate', label: ext ? ext.toUpperCase() : 'Plik' };
+    }
+
+    const TONE_ICON_BG = {
+      primary:   'bg-primary/10 text-primary',
+      secondary: 'bg-secondary/10 text-secondary',
+      tertiary:  'bg-tertiary/10 text-tertiary',
+      slate:     'bg-surface-container-high text-slate-300',
+    };
+
+    // Mapuje pin+hydration → { label, class } dla pill statusu.
+    // Z /api/files mamy pin_state (0/1) i hydration_state (0/1); FORTECA (PARANOIA policy)
+    // nie jest exposed w tym endpointcie — TODO: dodać gdy powstanie /api/filesystem/policies.
+    function deriveFileStatus(pin, hyd) {
+      const p = Number(pin);
+      const h = Number(hyd);
+      if (p === 1 && h === 1) return { label: 'Lokalnie', cls: 'bg-primary/10 text-primary border-primary/20' };
+      if (p === 0 && h === 1) return { label: 'Combo',    cls: 'bg-secondary/10 text-secondary border-secondary/20' };
+      if (p === 0 && h === 0) return { label: 'Chmura',   cls: 'bg-tertiary/10 text-tertiary border-tertiary/20' };
+      // pin=1, hyd=0 — pinned ale jeszcze nie pobrany (edge case)
+      return { label: 'Pobieranie', cls: 'bg-on-surface-variant/10 text-on-surface-variant border-white/10' };
+    }
+
+    function formatModifiedRelative(epochSeconds) {
+      if (!Number.isFinite(Number(epochSeconds))) return '—';
+      const d = new Date(Number(epochSeconds) * 1000);
+      const now = new Date();
+      const sameDay = d.toDateString() === now.toDateString();
+      const time = d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit', hour12: false });
+      if (sameDay) return `Dzisiaj, ${time}`;
+      const y = new Date(now);
+      y.setDate(now.getDate() - 1);
+      if (d.toDateString() === y.toDateString()) return `Wczoraj, ${time}`;
+      return d.toLocaleDateString('pl-PL', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+
+    // Zwraca listę wpisów (folderów + plików) dla aktualnie wybranego folderu.
+    function computeFolderListing(items, folder, search) {
+      const prefix = folder ? folder + '/' : '';
+      const folderMap = new Map(); // name → { name, path, fileCount }
+      const fileList = [];
+      const searchLc = (search || '').trim().toLowerCase();
+
+      for (const f of items) {
+        if (!f.path || !f.path.startsWith(prefix)) continue;
+        const rest = f.path.slice(prefix.length);
+        const slashIdx = rest.indexOf('/');
+        if (slashIdx === -1) {
+          const name = rest;
+          if (searchLc && !name.toLowerCase().includes(searchLc)) continue;
+          fileList.push({ ...f, displayName: name });
+        } else {
+          const folderName = rest.slice(0, slashIdx);
+          if (searchLc && !folderName.toLowerCase().includes(searchLc)) {
+            // gdy szukamy, foldery też filtrujemy po nazwie — inaczej oszukują
+            if (!folderMap.has(folderName)) continue;
+          }
+          if (!folderMap.has(folderName)) {
+            folderMap.set(folderName, { name: folderName, path: prefix + folderName, fileCount: 0 });
+          }
+          folderMap.get(folderName).fileCount += 1;
+        }
+      }
+
+      const folders = Array.from(folderMap.values()).sort((a, b) => a.name.localeCompare(b.name, 'pl'));
+      fileList.sort((a, b) => a.displayName.localeCompare(b.displayName, 'pl'));
+      return { folders, files: fileList };
+    }
+
+    function renderFilesBreadcrumbs(folder) {
+      const nav = document.getElementById('filesBreadcrumbs');
+      if (!nav) return;
+      const segments = folder ? folder.split('/') : [];
+      const parts = [];
+      parts.push(`<span class="material-symbols-outlined text-lg shrink-0">home</span>`);
+      parts.push(`<button class="hover:text-primary transition-colors shrink-0 ${folder === '' ? 'text-on-surface font-medium' : ''}" data-folder="">Skarbiec</button>`);
+      let accumulated = '';
+      for (let i = 0; i < segments.length; i += 1) {
+        accumulated = accumulated ? `${accumulated}/${segments[i]}` : segments[i];
+        const isLast = i === segments.length - 1;
+        parts.push(`<span class="material-symbols-outlined text-xs shrink-0">chevron_right</span>`);
+        parts.push(`<button class="hover:text-primary transition-colors truncate ${isLast ? 'text-on-surface font-medium' : ''}" data-folder="${escapeHtml(accumulated)}">${escapeHtml(segments[i])}</button>`);
+      }
+      nav.innerHTML = parts.join('');
+      nav.querySelectorAll('button[data-folder]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          FILES_STATE.currentFolder = btn.dataset.folder || '';
+          renderFilesTable();
+        });
+      });
+    }
+
+    function renderFilesEmpty(message, tone) {
+      const tbody = document.getElementById('filesTableBody');
+      if (!tbody) return;
+      const cls = tone === 'error' ? 'text-rose-300' : 'text-slate-400';
+      tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-12 text-center text-sm ${cls}">${escapeHtml(message)}</td></tr>`;
+    }
+
+    function renderFilesTable() {
+      renderFilesBreadcrumbs(FILES_STATE.currentFolder);
+      const tbody = document.getElementById('filesTableBody');
+      if (!tbody) return;
+
+      if (FILES_STATE.status === 'loading') {
+        renderFilesEmpty('Ładowanie plików...', 'muted');
+        return;
+      }
+      if (FILES_STATE.status === 'error') {
+        renderFilesEmpty(`Nie udało się pobrać listy plików (${FILES_STATE.errorMessage || 'błąd sieci'}).`, 'error');
+        return;
+      }
+
+      const { folders, files } = computeFolderListing(FILES_STATE.items, FILES_STATE.currentFolder, FILES_STATE.search);
+      if (folders.length === 0 && files.length === 0) {
+        const msg = FILES_STATE.search
+          ? `Brak wyników dla „${FILES_STATE.search}".`
+          : (FILES_STATE.currentFolder ? 'Ten folder jest pusty.' : 'Brak plików w Skarbcu.');
+        renderFilesEmpty(msg, 'muted');
+        return;
+      }
+
+      const rowsHtml = [];
+
+      for (const folder of folders) {
+        rowsHtml.push(`
+          <tr class="group hover:bg-white/5 transition-colors cursor-pointer" data-folder="${escapeHtml(folder.path)}">
+            <td class="px-6 py-4">
+              <div class="flex items-center gap-4">
+                <div class="w-10 h-10 rounded-xl bg-tertiary/10 flex items-center justify-center text-tertiary shrink-0">
+                  <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">folder</span>
+                </div>
+                <div class="min-w-0">
+                  <p class="font-semibold text-sm text-on-surface truncate">${escapeHtml(folder.name)}</p>
+                  <p class="text-[10px] text-slate-400 uppercase tracking-tighter">Folder · ${folder.fileCount} ${pluralPl(folder.fileCount, 'plik', 'pliki', 'plików')}</p>
+                </div>
+              </div>
+            </td>
+            <td class="px-6 py-4 text-sm text-slate-500">—</td>
+            <td class="px-6 py-4 text-sm text-slate-500">—</td>
+            <td class="px-6 py-4 text-sm text-slate-500">—</td>
+            <td class="px-6 py-4 text-right"><span class="material-symbols-outlined text-slate-500">chevron_right</span></td>
+          </tr>`);
+      }
+
+      for (const f of files) {
+        const meta = fileIcon(f.displayName);
+        const status = deriveFileStatus(f.smart_sync_pin_state, f.smart_sync_hydration_state);
+        const bgCls = TONE_ICON_BG[meta.tone] || TONE_ICON_BG.slate;
+        rowsHtml.push(`
+          <tr class="group hover:bg-white/5 transition-colors" data-inode="${f.inode_id}">
+            <td class="px-6 py-4">
+              <div class="flex items-center gap-4">
+                <div class="w-10 h-10 rounded-xl ${bgCls} flex items-center justify-center shrink-0">
+                  <span class="material-symbols-outlined">${escapeHtml(meta.icon)}</span>
+                </div>
+                <div class="min-w-0">
+                  <p class="font-semibold text-sm text-on-surface truncate" title="${escapeHtml(f.path)}">${escapeHtml(f.displayName)}</p>
+                  <p class="text-[10px] text-slate-400 uppercase tracking-tighter">${escapeHtml(meta.label)}</p>
+                </div>
+              </div>
+            </td>
+            <td class="px-6 py-4 text-sm text-slate-300 whitespace-nowrap">${escapeHtml(humanBytes(f.size))}</td>
+            <td class="px-6 py-4 text-sm text-slate-300 whitespace-nowrap">${escapeHtml(formatModifiedRelative(f.current_revision_created_at))}</td>
+            <td class="px-6 py-4">
+              <span class="px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border ${status.cls}">${escapeHtml(status.label)}</span>
+            </td>
+            <td class="px-6 py-4 text-right">
+              <button class="p-2 text-slate-400 hover:text-on-surface transition-colors rounded-lg hover:bg-white/5 file-actions-trigger" data-inode="${f.inode_id}" aria-label="Akcje dla pliku ${escapeHtml(f.displayName)}">
+                <span class="material-symbols-outlined">more_horiz</span>
+              </button>
+            </td>
+          </tr>`);
+      }
+
+      tbody.innerHTML = rowsHtml.join('');
+
+      // Folder drill-in
+      tbody.querySelectorAll('tr[data-folder]').forEach(row => {
+        row.addEventListener('click', () => {
+          FILES_STATE.currentFolder = row.dataset.folder;
+          renderFilesTable();
+        });
+      });
+
+      // Actions menu trigger
+      tbody.querySelectorAll('.file-actions-trigger').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openFileActionsMenu(btn);
+        });
+      });
+    }
+
+    function openFileActionsMenu(triggerBtn) {
+      const menu = document.getElementById('fileActionsMenu');
+      if (!menu) return;
+      const rect = triggerBtn.getBoundingClientRect();
+      menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+      const right = Math.max(16, window.innerWidth - Math.round(rect.right));
+      menu.style.right = `${right}px`;
+      menu.style.left = 'auto';
+      menu.classList.remove('hidden');
+      // Zamknij przy kliknięciu poza menu
+      const closer = (ev) => {
+        if (!menu.contains(ev.target) && ev.target !== triggerBtn) {
+          menu.classList.add('hidden');
+          document.removeEventListener('mousedown', closer, true);
+          document.removeEventListener('keydown', keyCloser, true);
+        }
+      };
+      const keyCloser = (ev) => {
+        if (ev.key === 'Escape') {
+          menu.classList.add('hidden');
+          document.removeEventListener('mousedown', closer, true);
+          document.removeEventListener('keydown', keyCloser, true);
+        }
+      };
+      document.addEventListener('mousedown', closer, true);
+      document.addEventListener('keydown', keyCloser, true);
+    }
+
+    async function fetchFilesList() {
+      FILES_STATE.status = 'loading';
+      renderFilesTable();
+      try {
+        const res = await fetch('/api/files', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        FILES_STATE.items = Array.isArray(data) ? data : [];
+        FILES_STATE.status = 'ok';
+        FILES_STATE.errorMessage = '';
+        setLastRefreshed();
+      } catch (err) {
+        FILES_STATE.status = 'error';
+        FILES_STATE.errorMessage = err && err.message ? err.message : 'błąd sieci';
+        markRefreshError();
+      }
+      renderFilesTable();
+    }
+
+    function activatePlikiView() {
+      if (!FILES_STATE.initialized) {
+        FILES_STATE.initialized = true;
+        const search = document.getElementById('filesSearchInput');
+        if (search) {
+          search.addEventListener('input', (e) => {
+            FILES_STATE.search = e.target.value || '';
+            renderFilesTable();
+          });
+        }
+        fetchFilesList();
+      } else {
+        renderFilesTable();
+      }
     }
 
     // ── Hash router (F.7) ───────────────────────────────────────
     const VALID_VIEWS = ['przeglad', 'pliki', 'skarbiec', 'multi-device', 'chmura', 'audyt', 'ustawienia'];
     const PLACEHOLDER_META = {
-      pliki:          { icon: 'folder_open',         title: 'Pliki' },
       skarbiec:       { icon: 'enhanced_encryption', title: 'Skarbiec' },
       'multi-device': { icon: 'devices',             title: 'Multi-Device' },
       chmura:         { icon: 'cloud',               title: 'Chmura' },
-      audyt:          { icon: 'analytics',            title: 'Audyt' },
-      ustawienia:     { icon: 'settings',             title: 'Ustawienia' },
+      audyt:          { icon: 'analytics',           title: 'Audyt' },
+      ustawienia:     { icon: 'settings',            title: 'Ustawienia' },
     };
 
     function currentView() {
@@ -878,22 +1244,29 @@
     }
 
     function navigateTo(view) {
-      const przeglad = document.getElementById('view-przeglad');
+      const przeglad    = document.getElementById('view-przeglad');
+      const pliki       = document.getElementById('view-pliki');
       const placeholder = document.getElementById('view-placeholder');
-      if (!przeglad || !placeholder) return;
+      if (!przeglad || !pliki || !placeholder) return;
+
+      // Ukryj wszystkie widoki
+      przeglad.classList.add('hidden');
+      pliki.classList.add('hidden');
+      placeholder.classList.add('hidden');
+      placeholder.classList.remove('flex');
 
       if (view === 'przeglad') {
         przeglad.classList.remove('hidden');
-        placeholder.classList.add('hidden');
-        placeholder.classList.remove('flex');
+      } else if (view === 'pliki') {
+        pliki.classList.remove('hidden');
+        activatePlikiView();
       } else {
-        przeglad.classList.add('hidden');
         placeholder.classList.remove('hidden');
         placeholder.classList.add('flex');
         const meta = PLACEHOLDER_META[view] || { icon: 'construction', title: view };
         document.getElementById('placeholderIcon').textContent = meta.icon;
         document.getElementById('placeholderTitle').textContent = meta.title + ' — wkrótce';
-        document.getElementById('placeholderSubtitle').textContent = 'Ten widok zostanie dostarczony w Sesji G. Na razie korzystaj z zakładki Przegląd.';
+        document.getElementById('placeholderSubtitle').textContent = 'Ten widok zostanie dostarczony w dalszej części Sesji G. Na razie korzystaj z zakładki Przegląd lub Pliki.';
       }
 
       updateSidebarActive(view);
