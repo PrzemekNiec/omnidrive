@@ -652,6 +652,104 @@
 
     </div>
 
+    <!-- ===== Widok: Multi-Device (G.7) ===== -->
+    <!-- G.7 DONE: GET /api/vault/devices + pending + invite flow -->
+    <div id="view-multi-device" data-view="multi-device" class="hidden p-8 max-w-4xl mx-auto space-y-6 pb-16">
+
+      <!-- HERO -->
+      <div class="flex items-end justify-between gap-4">
+        <div>
+          <h1 class="text-3xl font-bold tracking-tight text-on-surface mb-1">Multi-Device</h1>
+          <p class="text-slate-400 text-sm">Urządzenia z dostępem do Skarbca i zaproszenia.</p>
+        </div>
+        <button id="mdOpenInviteBtn" class="flex items-center gap-2 bg-primary/10 text-primary border border-primary/20 px-4 py-2 rounded-xl font-bold text-sm hover:bg-primary/20 transition-colors">
+          <span class="material-symbols-outlined text-lg">add_to_queue</span>Zaproś urządzenie
+        </button>
+      </div>
+
+      <!-- SEKCJA 1: Twoje urządzenia -->
+      <section class="glass-panel rounded-2xl overflow-hidden border border-white/5">
+        <div class="px-6 py-4 border-b border-white/5 flex items-center justify-between">
+          <h2 class="text-sm font-bold uppercase tracking-widest text-slate-400">Urządzenia Skarbca</h2>
+          <button id="mdRefreshDevicesBtn" class="material-symbols-outlined text-slate-400 hover:text-primary transition-colors text-lg" title="Odśwież">refresh</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="border-b border-white/5 bg-surface-container-high/50">
+                <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Urządzenie</th>
+                <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 w-36">Ostatnio widziane</th>
+                <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 w-36">Klucz VK</th>
+                <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 w-28">Odcisk</th>
+                <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 text-right w-16">Akcje</th>
+              </tr>
+            </thead>
+            <tbody id="mdDevicesTableBody" class="divide-y divide-white/5">
+              <tr><td colspan="5" class="px-6 py-8 text-center text-sm text-slate-400">Ładowanie urządzeń...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- SEKCJA 2: Oczekujące urządzenia -->
+      <section class="glass-panel rounded-2xl overflow-hidden border border-white/5">
+        <div class="px-6 py-4 border-b border-white/5">
+          <h2 class="text-sm font-bold uppercase tracking-widest text-slate-400">Oczekujące na akceptację</h2>
+        </div>
+        <div id="mdPendingContainer" class="px-6 py-8 text-center text-sm text-slate-500">
+          Ładowanie...
+        </div>
+      </section>
+
+      <!-- MODAL: Zaproś urządzenie -->
+      <div id="mdInviteModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+        <div class="glass-panel rounded-2xl border border-white/10 w-full max-w-md p-6 space-y-5">
+          <div class="flex items-center justify-between">
+            <h3 class="font-bold text-on-surface">Zaproś urządzenie</h3>
+            <button id="mdInviteClose" class="material-symbols-outlined text-slate-400 hover:text-on-surface transition-colors">close</button>
+          </div>
+
+          <!-- Stan: gotowy do wygenerowania -->
+          <div id="mdInviteIdle" class="space-y-4">
+            <p class="text-sm text-slate-400">Wygeneruj jednorazowy kod zaproszenia. Na nowym urządzeniu wpisz ten kod podczas konfiguracji OmniDrive.</p>
+            <button id="mdGenerateInviteBtn" class="w-full bg-primary/10 text-primary border border-primary/20 py-3 rounded-xl font-bold text-sm hover:bg-primary/20 transition-colors flex items-center justify-center gap-2">
+              <span class="material-symbols-outlined text-lg">key</span>Generuj kod zaproszenia
+            </button>
+          </div>
+
+          <!-- Stan: kod wygenerowany -->
+          <div id="mdInviteGenerated" class="hidden space-y-4">
+            <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Kod zaproszenia (jednorazowy)</p>
+            <div class="bg-surface-container-high rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+              <code id="mdInviteCode" class="text-lg font-mono font-bold text-primary tracking-widest"></code>
+              <button id="mdCopyCodeBtn" class="material-symbols-outlined text-slate-400 hover:text-primary transition-colors text-xl" title="Kopiuj do schowka">content_copy</button>
+            </div>
+            <p class="text-xs text-slate-500" id="mdInviteExpiry"></p>
+
+            <!-- QR placeholder -->
+            <div class="flex flex-col items-center gap-3 py-2">
+              <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Kod QR</p>
+              <div class="w-48 h-48 bg-white rounded-xl flex flex-col items-center justify-center border-4 border-dashed border-slate-300 gap-2">
+                <span class="material-symbols-outlined text-4xl text-slate-400">qr_code_2</span>
+                <p class="text-[10px] text-slate-400 text-center px-3">TODO: biblioteka QR<br>(np. qrcode.js)</p>
+              </div>
+            </div>
+
+            <button id="mdInviteReset" class="w-full text-xs text-slate-500 hover:text-primary transition-colors underline underline-offset-2">
+              Wygeneruj nowy kod
+            </button>
+          </div>
+
+          <!-- Stan: ładowanie -->
+          <div id="mdInviteLoading" class="hidden text-center py-4">
+            <div class="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin mx-auto"></div>
+          </div>
+          <p id="mdInviteError" class="hidden text-xs text-error text-center"></p>
+        </div>
+      </div>
+
+    </div>
+
     <!-- F.7 DONE: placeholder dla widoków Sesji G -->
     <div id="view-placeholder" class="hidden flex-col items-center justify-center h-[calc(100vh-64px)] text-center px-8">
       <span class="material-symbols-outlined text-6xl text-slate-600 mb-4" id="placeholderIcon">construction</span>
@@ -1144,6 +1242,261 @@
       }
       await Promise.allSettled(tasks);
       if (btn) btn.classList.remove('pulse-secondary');
+    }
+
+    // ── Widok „Multi-Device" (G.7) ──────────────────────────────
+    const MD_STATE = {
+      devices: [],
+      pending: [],
+      devicesStatus: 'idle',  // 'idle'|'loading'|'ok'|'error'
+      pendingStatus: 'idle',
+    };
+
+    function mdAuthHeaders() {
+      const h = { 'Accept': 'application/json', 'Content-Type': 'application/json' };
+      // Reuse session token from Skarbiec view if available
+      if (typeof VAULT_STATE !== 'undefined' && VAULT_STATE.sessionToken) {
+        h['Authorization'] = `Bearer ${VAULT_STATE.sessionToken}`;
+      }
+      return h;
+    }
+
+    function renderMdDevices() {
+      const tbody = document.getElementById('mdDevicesTableBody');
+      if (!tbody) return;
+      if (MD_STATE.devicesStatus === 'loading') {
+        tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-8 text-center text-sm text-slate-400">Ładowanie urządzeń...</td></tr>';
+        return;
+      }
+      if (MD_STATE.devicesStatus === 'error') {
+        tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-8 text-center text-sm text-rose-300">Nie udało się pobrać listy urządzeń (wymagane odblokowanie Skarbca).</td></tr>';
+        return;
+      }
+      const active = MD_STATE.devices.filter(d => !d.revoked);
+      if (active.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-8 text-center text-sm text-slate-500">Brak urządzeń w Skarbcu.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = active.map(dev => {
+        const vkBadge = dev.has_vault_key
+          ? '<span class="text-[10px] font-bold text-secondary uppercase tracking-widest">Aktywny</span>'
+          : '<span class="text-[10px] font-bold text-tertiary uppercase tracking-widest">Oczekuje</span>';
+        return `<tr class="group hover:bg-white/5 transition-colors">
+          <td class="px-6 py-4">
+            <div class="flex items-center gap-3">
+              <div class="w-9 h-9 rounded-xl bg-surface-container-high flex items-center justify-center text-slate-300 shrink-0">
+                <span class="material-symbols-outlined text-lg">laptop</span>
+              </div>
+              <div class="min-w-0">
+                <p class="text-sm font-semibold text-on-surface truncate">${escapeHtml(dev.device_name)}</p>
+                <p class="text-[10px] text-slate-500 font-mono truncate">${escapeHtml(dev.user_id.slice(0, 12))}…</p>
+              </div>
+            </div>
+          </td>
+          <td class="px-6 py-4 text-sm text-slate-300 whitespace-nowrap">${escapeHtml(formatModifiedRelative(dev.last_seen_at ?? dev.created_at))}</td>
+          <td class="px-6 py-4">${vkBadge}</td>
+          <td class="px-6 py-4"><code class="text-[11px] font-mono text-slate-400 bg-surface-container px-2 py-1 rounded">${escapeHtml(dev.fingerprint)}</code></td>
+          <td class="px-6 py-4 text-right">
+            <button class="p-2 text-slate-500 hover:text-error transition-colors rounded-lg hover:bg-error/10 md-revoke-btn"
+              data-device-id="${escapeHtml(dev.device_id)}" data-device-name="${escapeHtml(dev.device_name)}"
+              title="Odwołaj dostęp urządzenia ${escapeHtml(dev.device_name)}">
+              <span class="material-symbols-outlined text-lg">delete_forever</span>
+            </button>
+          </td>
+        </tr>`;
+      }).join('');
+
+      tbody.querySelectorAll('.md-revoke-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.deviceId;
+          const name = btn.dataset.deviceName;
+          if (!confirm(`Odwołać dostęp urządzenia „${name}"? Klucze Skarbca zostaną zrotowane.`)) return;
+          btn.disabled = true;
+          try {
+            const res = await fetch(`/api/devices/${encodeURIComponent(id)}/revoke`, {
+              method: 'POST', headers: mdAuthHeaders(),
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            await fetchMdDevices();
+          } catch (err) {
+            alert(`Błąd odwołania: ${err.message || err}`);
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+
+    function renderMdPending() {
+      const container = document.getElementById('mdPendingContainer');
+      if (!container) return;
+      if (MD_STATE.pendingStatus === 'loading') {
+        container.innerHTML = '<p class="text-center text-sm text-slate-400">Ładowanie...</p>';
+        return;
+      }
+      if (MD_STATE.pending.length === 0) {
+        container.innerHTML = '<p class="text-center text-sm text-slate-500">Brak oczekujących urządzeń.</p>';
+        return;
+      }
+      container.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-left border-collapse">
+        <thead><tr class="border-b border-white/5 bg-surface-container-high/50">
+          <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">Urządzenie</th>
+          <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 w-36">Zgłoszone</th>
+          <th class="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 text-right w-28">Akcje</th>
+        </tr></thead>
+        <tbody class="divide-y divide-white/5">
+          ${MD_STATE.pending.map(p => `<tr class="hover:bg-white/5 transition-colors">
+            <td class="px-6 py-4">
+              <div class="flex items-center gap-3">
+                <div class="w-9 h-9 rounded-xl bg-tertiary/10 flex items-center justify-center text-tertiary shrink-0">
+                  <span class="material-symbols-outlined text-lg">devices</span>
+                </div>
+                <div class="min-w-0">
+                  <p class="text-sm font-semibold text-on-surface truncate">${escapeHtml(p.device_name)}</p>
+                  <p class="text-[10px] text-slate-500 font-mono truncate">${escapeHtml(p.device_id.slice(0, 12))}…</p>
+                </div>
+              </div>
+            </td>
+            <td class="px-6 py-4 text-sm text-slate-300 whitespace-nowrap">${escapeHtml(formatModifiedRelative(p.created_at))}</td>
+            <td class="px-6 py-4 text-right">
+              <button class="px-3 py-1.5 bg-secondary/10 text-secondary border border-secondary/20 rounded-lg text-xs font-bold hover:bg-secondary/20 transition-colors md-accept-btn"
+                data-device-id="${escapeHtml(p.device_id)}"
+                title="Akceptuj urządzenie (ECDH wrap Vault Key dla tego urządzenia — wymaga odblokowanego Skarbca)">
+                Akceptuj
+              </button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+
+      container.querySelectorAll('.md-accept-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.deviceId;
+          btn.disabled = true;
+          btn.textContent = 'Akceptowanie...';
+          try {
+            const res = await fetch(`/api/vault/accept-device/${encodeURIComponent(id)}`, {
+              method: 'POST', headers: mdAuthHeaders(),
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            await Promise.all([fetchMdDevices(), fetchMdPending()]);
+          } catch (err) {
+            alert(`Błąd akceptacji: ${err.message || err}`);
+            btn.disabled = false;
+            btn.textContent = 'Akceptuj';
+          }
+        });
+      });
+    }
+
+    async function fetchMdDevices() {
+      MD_STATE.devicesStatus = 'loading';
+      renderMdDevices();
+      try {
+        const res = await fetch('/api/vault/devices', { headers: mdAuthHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        MD_STATE.devices = Array.isArray(data.devices) ? data.devices : [];
+        MD_STATE.devicesStatus = 'ok';
+      } catch (_err) {
+        MD_STATE.devicesStatus = 'error';
+      }
+      renderMdDevices();
+    }
+
+    async function fetchMdPending() {
+      MD_STATE.pendingStatus = 'loading';
+      renderMdPending();
+      try {
+        const res = await fetch('/api/vault/pending-devices', { headers: mdAuthHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        MD_STATE.pending = Array.isArray(data.pending_devices) ? data.pending_devices : [];
+        MD_STATE.pendingStatus = 'ok';
+      } catch (_err) {
+        MD_STATE.pending = [];
+        MD_STATE.pendingStatus = 'ok'; // graceful — show "Brak"
+      }
+      renderMdPending();
+    }
+
+    function setupMdInviteModal() {
+      const modal = document.getElementById('mdInviteModal');
+      const close = () => {
+        modal.classList.add('hidden');
+        document.getElementById('mdInviteIdle').classList.remove('hidden');
+        document.getElementById('mdInviteGenerated').classList.add('hidden');
+        document.getElementById('mdInviteLoading').classList.add('hidden');
+        document.getElementById('mdInviteError').classList.add('hidden');
+      };
+      document.getElementById('mdInviteClose').addEventListener('click', close);
+      modal.addEventListener('mousedown', e => { if (e.target === modal) close(); });
+
+      document.getElementById('mdInviteReset').addEventListener('click', () => {
+        document.getElementById('mdInviteIdle').classList.remove('hidden');
+        document.getElementById('mdInviteGenerated').classList.add('hidden');
+      });
+
+      document.getElementById('mdCopyCodeBtn').addEventListener('click', () => {
+        const code = document.getElementById('mdInviteCode').textContent;
+        navigator.clipboard.writeText(code).then(() => {
+          const btn = document.getElementById('mdCopyCodeBtn');
+          btn.textContent = 'check';
+          btn.classList.add('text-secondary');
+          setTimeout(() => { btn.textContent = 'content_copy'; btn.classList.remove('text-secondary'); }, 2000);
+        });
+      });
+
+      async function doGenerate() {
+        document.getElementById('mdInviteIdle').classList.add('hidden');
+        document.getElementById('mdInviteLoading').classList.remove('hidden');
+        document.getElementById('mdInviteError').classList.add('hidden');
+        try {
+          const res = await fetch('/api/vault/invite', {
+            method: 'POST',
+            headers: mdAuthHeaders(),
+            body: JSON.stringify({ role: 'member', max_uses: 1 }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data?.error?.message || data?.message || `HTTP ${res.status}`);
+          document.getElementById('mdInviteCode').textContent = data.code;
+          const expiryEl = document.getElementById('mdInviteExpiry');
+          if (data.expires_at) {
+            expiryEl.textContent = `Wygasa: ${new Date(data.expires_at * 1000).toLocaleString('pl-PL')}`;
+          } else {
+            expiryEl.textContent = 'Jednorazowe użycie · bez terminu ważności';
+          }
+          document.getElementById('mdInviteLoading').classList.add('hidden');
+          document.getElementById('mdInviteGenerated').classList.remove('hidden');
+        } catch (err) {
+          document.getElementById('mdInviteLoading').classList.add('hidden');
+          document.getElementById('mdInviteIdle').classList.remove('hidden');
+          const errEl = document.getElementById('mdInviteError');
+          errEl.textContent = err.message || 'Błąd generowania kodu.';
+          errEl.classList.remove('hidden');
+        }
+      }
+
+      document.getElementById('mdGenerateInviteBtn').addEventListener('click', doGenerate);
+    }
+
+    function activateMultiDeviceView() {
+      const view = document.getElementById('view-multi-device');
+      if (view.dataset.initialized) {
+        fetchMdDevices();
+        fetchMdPending();
+        return;
+      }
+      view.dataset.initialized = '1';
+      document.getElementById('mdOpenInviteBtn').addEventListener('click', () => {
+        document.getElementById('mdInviteModal').classList.remove('hidden');
+      });
+      document.getElementById('mdRefreshDevicesBtn').addEventListener('click', () => {
+        fetchMdDevices();
+        fetchMdPending();
+      });
+      setupMdInviteModal();
+      fetchMdDevices();
+      fetchMdPending();
     }
 
     // ── Widok „Skarbiec" (G.6) ──────────────────────────────────
@@ -1816,6 +2169,8 @@
       przeglad.classList.add('hidden');
       pliki.classList.add('hidden');
       if (skarbiec) skarbiec.classList.add('hidden');
+      const multiDevice = document.getElementById('view-multi-device');
+      if (multiDevice) multiDevice.classList.add('hidden');
       placeholder.classList.add('hidden');
       placeholder.classList.remove('flex');
 
@@ -1827,6 +2182,9 @@
       } else if (view === 'skarbiec') {
         document.getElementById('view-skarbiec').classList.remove('hidden');
         activateSkarbiecView();
+      } else if (view === 'multi-device') {
+        document.getElementById('view-multi-device').classList.remove('hidden');
+        activateMultiDeviceView();
       } else {
         placeholder.classList.remove('hidden');
         placeholder.classList.add('flex');

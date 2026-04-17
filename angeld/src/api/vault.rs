@@ -111,6 +111,8 @@ pub(crate) fn routes() -> Router<ApiState> {
             "/api/vault/members/{user_id}/remove",
             post(post_remove_member),
         )
+        // ── G.7: lista urządzeń Skarbca ──
+        .route("/api/vault/devices", get(get_vault_devices))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
@@ -781,6 +783,55 @@ async fn post_remove_member(
             "deks_enqueued": r.deks_enqueued,
         })),
     })))
+}
+
+// ── G.7: GET /api/vault/devices ─────────────────────────────────────
+#[derive(Serialize)]
+struct DeviceListItem {
+    device_id: String,
+    device_name: String,
+    user_id: String,
+    last_seen_at: Option<i64>,
+    created_at: i64,
+    revoked: bool,
+    has_vault_key: bool,
+    /// First 8 hex chars of device_id — lightweight visual fingerprint.
+    fingerprint: String,
+}
+
+async fn get_vault_devices(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let caller = acl::require_role(&state.pool, &headers, Role::Viewer).await?;
+
+    let members = db::list_vault_members(&state.pool, &caller.vault_id).await?;
+    let mut items: Vec<DeviceListItem> = Vec::new();
+    for member in &members {
+        let devices = db::list_devices_for_user(&state.pool, &member.user_id)
+            .await
+            .unwrap_or_default();
+        for dev in devices {
+            let fingerprint = dev.device_id
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(8)
+                .collect::<String>()
+                .to_uppercase();
+            items.push(DeviceListItem {
+                device_id: dev.device_id,
+                device_name: dev.device_name,
+                user_id: dev.user_id,
+                last_seen_at: dev.last_seen_at,
+                created_at: dev.created_at,
+                revoked: dev.revoked_at.is_some(),
+                has_vault_key: dev.wrapped_vault_key.is_some(),
+                fingerprint,
+            });
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "devices": items })))
 }
 
 async fn get_rewrap_status(
