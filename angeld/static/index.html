@@ -7,6 +7,7 @@
   <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+  <script src="/qrcode.min.js"></script>
   <script id="tailwind-config">
     tailwind.config = {
       darkMode: "class",
@@ -306,11 +307,10 @@
         </div>
 
         <!-- AUDIT LOG -->
-        <!-- TODO Sesja F.3: GET /api/audit?limit=5 — 5 ostatnich wpisów z ikonami per action type -->
         <div class="glass-panel rounded-3xl p-8 flex flex-col h-[400px]">
           <div class="flex items-center justify-between mb-6">
             <h2 class="text-lg font-bold text-on-surface">Logi audytowe</h2>
-            <button id="auditFullLogLink" class="text-[10px] font-bold text-primary uppercase tracking-widest cursor-not-allowed opacity-50" disabled title="Pełny widok dostępny w Sesji G">Zobacz pełny log</button>
+            <button id="auditFullLogLink" class="text-[10px] font-bold text-primary uppercase tracking-widest hover:underline">Zobacz pełny log</button>
           </div>
           <div id="auditList" class="flex-1 overflow-y-auto pr-2 space-y-4">
             <p class="text-xs text-slate-400">Ładowanie ostatnich zdarzeń...</p>
@@ -726,13 +726,10 @@
             </div>
             <p class="text-xs text-slate-500" id="mdInviteExpiry"></p>
 
-            <!-- QR placeholder -->
+            <!-- QR code (qrcodejs) -->
             <div class="flex flex-col items-center gap-3 py-2">
               <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Kod QR</p>
-              <div class="w-48 h-48 bg-white rounded-xl flex flex-col items-center justify-center border-4 border-dashed border-slate-300 gap-2">
-                <span class="material-symbols-outlined text-4xl text-slate-400">qr_code_2</span>
-                <p class="text-[10px] text-slate-400 text-center px-3">TODO: biblioteka QR<br>(np. qrcode.js)</p>
-              </div>
+              <div id="mdInviteQrContainer" class="w-48 h-48 bg-white rounded-xl flex items-center justify-center overflow-hidden"></div>
             </div>
 
             <button id="mdInviteReset" class="w-full text-xs text-slate-500 hover:text-primary transition-colors underline underline-offset-2">
@@ -1122,9 +1119,12 @@
     function attachRecoveryCta() {
       const cta = document.getElementById('recoveryAlertCta');
       if (!cta) return;
-      // TODO Sesja G.6: otworzyć modal generowania w widoku Skarbiec zamiast legacy.
       cta.addEventListener('click', () => {
-        window.open('/legacy#recoveryKeyGenerateButton', '_blank', 'noopener');
+        location.hash = 'skarbiec';
+        setTimeout(() => {
+          const genBtn = document.getElementById('vaultOpenGenerateBtn');
+          if (genBtn && !genBtn.disabled) genBtn.click();
+        }, 150);
       });
     }
 
@@ -1132,7 +1132,9 @@
       const list = document.getElementById('auditList');
       if (!list) return;
       try {
-        const res = await fetch('/api/audit?limit=5', { headers: { 'Accept': 'application/json' } });
+        const auditHdr = { 'Accept': 'application/json' };
+        if (VAULT_STATE.sessionToken) auditHdr['Authorization'] = `Bearer ${VAULT_STATE.sessionToken}`;
+        const res = await fetch('/api/audit?limit=5', { headers: auditHdr });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const events = Array.isArray(data.events) ? data.events : [];
@@ -1780,6 +1782,13 @@
           }
           document.getElementById('mdInviteLoading').classList.add('hidden');
           document.getElementById('mdInviteGenerated').classList.remove('hidden');
+          const qrContainer = document.getElementById('mdInviteQrContainer');
+          if (qrContainer) {
+            qrContainer.innerHTML = '';
+            if (typeof QRCode !== 'undefined') {
+              new QRCode(qrContainer, { text: data.code, width: 192, height: 192, correctLevel: QRCode.CorrectLevel.M });
+            }
+          }
         } catch (err) {
           document.getElementById('mdInviteLoading').classList.add('hidden');
           document.getElementById('mdInviteIdle').classList.remove('hidden');
@@ -2829,7 +2838,16 @@
           e.preventDefault();
           const view = link.dataset.view;
           if (view === 'wyloguj') {
-            // TODO: logout logic
+            const tok = VAULT_STATE.sessionToken;
+            if (tok) {
+              fetch('/api/auth/logout', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${tok}` },
+              }).catch(() => {});
+            }
+            VAULT_STATE.sessionToken = null;
+            VAULT_STATE.unlocked = null;
+            location.reload();
             return;
           }
           location.hash = view;
@@ -2861,6 +2879,10 @@
       // G.4: manual refresh (wszystkie panele naraz)
       const refreshBtn = document.getElementById('manualRefreshButton');
       if (refreshBtn) refreshBtn.addEventListener('click', refreshAll);
+
+      // H.5: audit full log link
+      const auditFullLogBtn = document.getElementById('auditFullLogLink');
+      if (auditFullLogBtn) auditFullLogBtn.addEventListener('click', () => { location.hash = 'audyt'; });
     })();
   </script>
 </body>

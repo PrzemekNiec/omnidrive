@@ -131,6 +131,7 @@ impl ApiServer {
             .route("/", get(get_index))
             .route("/legacy", get(get_legacy))
             .route("/wizard.js", get(get_wizard_js))
+            .route("/qrcode.min.js", get(get_qrcode_js))
             .merge(onboarding::routes())
             .merge(diagnostics::routes())
             .merge(maintenance::routes())
@@ -193,6 +194,16 @@ async fn get_wizard_js() -> impl IntoResponse {
             "application/javascript; charset=utf-8",
         )],
         include_str!("../../static/wizard.js"),
+    )
+}
+
+async fn get_qrcode_js() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        include_str!("../../static/qrcode.min.js"),
     )
 }
 
