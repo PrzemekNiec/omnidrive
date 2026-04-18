@@ -104,3 +104,17 @@ impl From<Box<dyn std::error::Error + Send + Sync>> for ApiError {
         }
     }
 }
+
+impl From<crate::autostart::AutostartError> for ApiError {
+    fn from(err: crate::autostart::AutostartError) -> Self {
+        match err {
+            crate::autostart::AutostartError::MissingExecutable(_) => Self::BadRequest {
+                code: "autostart_target_missing",
+                message: err.to_string(),
+            },
+            _ => Self::Internal {
+                message: err.to_string(),
+            },
+        }
+    }
+}

@@ -124,7 +124,7 @@ async fn create_session_for_local_device(
 
 /// Extract and validate a session token from the request `Authorization: Bearer <token>` header.
 /// Returns the valid session or None if missing/expired.
-async fn extract_session(
+pub(super) async fn extract_session(
     pool: &sqlx::SqlitePool,
     headers: &axum::http::HeaderMap,
 ) -> Option<db::UserSession> {

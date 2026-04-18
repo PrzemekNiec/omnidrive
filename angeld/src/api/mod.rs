@@ -36,6 +36,7 @@ struct ApiState {
     diagnostics: Arc<DaemonDiagnostics>,
     downloader: Option<Arc<Downloader>>,
     runtime_reload_tx: Option<watch::Sender<u64>>,
+    daemon_shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
 pub struct ApiServer {
@@ -117,12 +118,14 @@ impl ApiServer {
 
     pub async fn run(self) -> Result<(), ApiServerError> {
         let diagnostics = self.diagnostics.clone();
+        let (daemon_shutdown_tx, daemon_shutdown_rx) = watch::channel(false);
         let state = ApiState {
             pool: self.pool,
             vault_keys: self.vault_keys,
             diagnostics: diagnostics.clone(),
             downloader: self.downloader,
             runtime_reload_tx: self.runtime_reload_tx,
+            daemon_shutdown_tx: Arc::new(daemon_shutdown_tx),
         };
         let app = Router::new()
             .route("/", get(get_index))
@@ -134,8 +137,8 @@ impl ApiServer {
             .merge(vault::routes())
             .merge(files::routes())
             .merge(auth::routes())
-            // ── Sharing (Epic 33) ──
-            .merge(sharing::routes())
+            // ── Sharing (Epic 33) — CORS layer scoped only to share routes ──
+            .merge(sharing::routes().layer(share_cors_layer()))
             // ── Audit trail (Epic 34.5) ──
             .merge(audit::routes())
             // ── Recovery keys (Epic 34.6a) ──
@@ -144,8 +147,7 @@ impl ApiServer {
             .merge(stats::routes())
             // ── Settings (Epic 36 G.10) ──
             .merge(settings::routes())
-            .with_state(state)
-            .layer(share_cors_layer());
+            .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
             .await
@@ -153,7 +155,13 @@ impl ApiServer {
         diagnostics.set_worker_status(WorkerKind::Api, WorkerStatus::Idle);
         info!("api server listening on http://{}", self.bind_addr);
 
-        axum::serve(listener, app).await.map_err(ApiServerError::Io)
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let mut rx = daemon_shutdown_rx;
+                rx.changed().await.ok();
+            })
+            .await
+            .map_err(ApiServerError::Io)
     }
 }
 

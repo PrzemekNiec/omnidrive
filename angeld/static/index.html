@@ -822,6 +822,7 @@
                 class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-slate-400 shadow transition-transform duration-200"></span>
             </button>
           </div>
+          <p id="autostartError" class="hidden text-xs text-error mt-1"></p>
 
           <!-- Częstotliwość odświeżania -->
           <div class="flex items-center justify-between gap-6">
@@ -897,13 +898,13 @@
           <div class="flex flex-wrap gap-3 pt-1">
             <button id="openLogsBtn"
               class="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-300 border border-white/10 hover:bg-white/5 transition-colors">
-              <span class="material-symbols-outlined text-base">folder_open</span>
-              Otwórz folder logów
+              <span class="material-symbols-outlined text-base">content_copy</span>
+              <span>Skopiuj ścieżkę logów</span>
             </button>
             <button id="restartDaemonBtn"
               class="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-300 border border-white/10 hover:bg-white/5 transition-colors">
               <span class="material-symbols-outlined text-base">restart_alt</span>
-              Zrestartuj Daemona
+              <span>Zrestartuj Daemona</span>
             </button>
           </div>
 
@@ -947,7 +948,7 @@
           <button id="factoryResetConfirmBtn"
             class="px-5 py-2.5 rounded-xl text-sm font-bold text-error border border-error/40 hover:bg-error/10 transition-colors flex items-center gap-2">
             <span class="material-symbols-outlined text-base">delete_forever</span>
-            Tak, resetuj
+            <span>Tak, resetuj</span>
           </button>
         </div>
       </div>
@@ -2461,72 +2462,69 @@
     const USTAWIENIA_STATE = { initialized: false };
 
     const SHELL_CHECKS_CONFIG = [
-      { key: 'autostart_registered',   label: 'Autostart (HKCU\\Run)' },
-      { key: 'drive_present',          label: 'Wirtualny dysk O:\\' },
-      { key: 'context_menu_registered',label: 'Menu kontekstowe' },
-      { key: 'drive_icon_registered',  label: 'Ikona dysku' },
+      { key: 'autostart_registered',    label: 'Autostart (HKCU\\Run)' },
+      { key: 'drive_present',           label: 'Wirtualny dysk O:\\' },
+      { key: 'context_menu_registered', label: 'Menu kontekstowe' },
+      { key: 'drive_icon_registered',   label: 'Ikona dysku' },
     ];
 
+    // 1024-based sizes with correct IEC labels
     function humanBytesShort(bytes) {
       if (bytes == null) return '—';
       if (bytes < 1024) return `${bytes} B`;
-      if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
-      if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
-      return `${(bytes / 1073741824).toFixed(2)} GB`;
+      if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KiB`;
+      if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MiB`;
+      return `${(bytes / 1073741824).toFixed(2)} GiB`;
+    }
+
+    function setAutostartToggleVisual(toggle, thumb, on) {
+      toggle.setAttribute('aria-checked', String(on));
+      toggle.classList.toggle('bg-primary', on);
+      toggle.classList.toggle('bg-surface-variant', !on);
+      thumb.classList.toggle('translate-x-5', on);
+      thumb.classList.toggle('bg-on-primary', on);
+      thumb.classList.toggle('bg-slate-400', !on);
+    }
+
+    function showUstawieniaError(elementId, message) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      el.textContent = message;
+      el.classList.remove('hidden');
+      setTimeout(() => el.classList.add('hidden'), 4000);
     }
 
     async function loadUstawieniaShell() {
       try {
-        const res = await fetch('/api/diagnostics/shell', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/diagnostics/shell', { headers: { Accept: 'application/json' } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const snap = data;
+        const snap = await res.json();
 
-        // Autostart toggle
+        // Autostart toggle visual state (handler bound once in initUstawieniaActions)
         const toggle = document.getElementById('autostartToggle');
         const thumb  = document.getElementById('autostartThumb');
-        if (toggle && thumb) {
-          const on = !!snap.autostart_registered;
-          toggle.setAttribute('aria-checked', String(on));
-          toggle.classList.toggle('bg-primary', on);
-          toggle.classList.toggle('bg-surface-variant', !on);
-          thumb.classList.toggle('translate-x-5', on);
-          thumb.classList.toggle('bg-on-primary', on);
-          thumb.classList.toggle('bg-slate-400', !on);
+        if (toggle && thumb) setAutostartToggleVisual(toggle, thumb, !!snap.autostart_registered);
 
-          toggle.onclick = async () => {
-            const current = toggle.getAttribute('aria-checked') === 'true';
-            try {
-              const r = await fetch('/api/settings/autostart', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: !current }),
-              });
-              if (!r.ok) throw new Error(`HTTP ${r.status}`);
-              const newOn = !current;
-              toggle.setAttribute('aria-checked', String(newOn));
-              toggle.classList.toggle('bg-primary', newOn);
-              toggle.classList.toggle('bg-surface-variant', !newOn);
-              thumb.classList.toggle('translate-x-5', newOn);
-              thumb.classList.toggle('bg-on-primary', newOn);
-              thumb.classList.toggle('bg-slate-400', !newOn);
-            } catch (err) {
-              console.error('autostart toggle failed:', err);
-            }
-          };
+        // Guard restart button: disable when autostart is OFF (daemon won't restart automatically)
+        const restartBtn = document.getElementById('restartDaemonBtn');
+        if (restartBtn) {
+          const autostartOn = !!snap.autostart_registered;
+          restartBtn.disabled = !autostartOn;
+          restartBtn.title = autostartOn
+            ? 'Zrestartuj proces daemona'
+            : 'Włącz autostart, aby daemon mógł wznowić się po restarcie';
+          restartBtn.classList.toggle('opacity-40', !autostartOn);
+          restartBtn.classList.toggle('cursor-not-allowed', !autostartOn);
         }
 
         // Shell extension badge + 4-check grid
         const allOk = SHELL_CHECKS_CONFIG.every(c => !!snap[c.key]);
         const badge = document.getElementById('shellExtBadge');
         if (badge) {
-          if (allOk) {
-            badge.textContent = 'Aktywny';
-            badge.className = 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-secondary/30 text-secondary bg-secondary/10';
-          } else {
-            badge.textContent = 'Niekompletny';
-            badge.className = 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-tertiary/30 text-tertiary';
-          }
+          badge.textContent = allOk ? 'Aktywny' : 'Niekompletny';
+          badge.className = allOk
+            ? 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-secondary/30 text-secondary bg-secondary/10'
+            : 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-tertiary/30 text-tertiary';
         }
         const grid = document.getElementById('shellChecksGrid');
         if (grid) {
@@ -2547,11 +2545,11 @@
       const line  = document.getElementById('oauthStatusLine');
       const badge = document.getElementById('oauthStatusBadge');
       try {
-        const res = await fetch('/api/auth/session', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/auth/session', { headers: { Accept: 'application/json' } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const name = data.display_name || data.username || data.user_id || null;
-        if (line)  line.textContent  = name ? `Zalogowano jako ${name}` : 'Sesja lokalna (bez OAuth)';
+        if (line)  line.textContent = name ? `Zalogowano jako ${name}` : 'Sesja lokalna (bez OAuth)';
         if (badge) {
           badge.textContent = name ? 'Połączono' : 'Lokalna';
           badge.className   = name
@@ -2559,7 +2557,7 @@
             : 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400';
         }
       } catch (_) {
-        if (line)  line.textContent  = 'Niepołączono';
+        if (line)  line.textContent = 'Niepołączono';
         if (badge) {
           badge.textContent = 'Offline';
           badge.className   = 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400';
@@ -2568,30 +2566,23 @@
     }
 
     async function loadUstawieniaPathsAndCache() {
-      // Paths
-      try {
-        const res = await fetch('/api/settings/paths', { headers: { 'Accept': 'application/json' } });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const d = await res.json();
+      const [pathsResult, healthResult] = await Promise.allSettled([
+        fetch('/api/settings/paths',      { headers: { Accept: 'application/json' } }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+        fetch('/api/diagnostics/health',  { headers: { Accept: 'application/json' } }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+      ]);
+
+      if (pathsResult.status === 'fulfilled') {
+        const d = pathsResult.value;
         const spoolEl = document.getElementById('pathSpoolDir');
         const logEl   = document.getElementById('pathLogDir');
         if (spoolEl) spoolEl.textContent = d.spool_dir || '—';
         if (logEl)   logEl.textContent   = d.log_dir   || '—';
-      } catch (err) {
-        console.error('paths fetch failed:', err);
       }
-      // Cache size from diagnostics/health
-      try {
-        const res = await fetch('/api/diagnostics/health', { headers: { 'Accept': 'application/json' } });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const d = await res.json();
+
+      if (healthResult.status === 'fulfilled') {
         const cacheEl = document.getElementById('pathCacheSize');
-        if (cacheEl) {
-          const bytes = d.cache_size_bytes ?? null;
-          cacheEl.textContent = bytes !== null ? humanBytesShort(bytes) : '—';
-        }
-      } catch (err) {
-        console.error('diagnostics/health fetch failed:', err);
+        const bytes   = healthResult.value.cache_size_bytes ?? null;
+        if (cacheEl) cacheEl.textContent = bytes !== null ? humanBytesShort(bytes) : '—';
       }
     }
 
@@ -2602,74 +2593,134 @@
         const saved = localStorage.getItem('omnidrive.refreshInterval');
         if (saved && sel.querySelector(`option[value="${saved}"]`)) sel.value = saved;
         sel.addEventListener('change', () => {
+          if (!confirm('Zmiana częstotliwości wymaga przeładowania strony. Kontynuować?')) return;
           localStorage.setItem('omnidrive.refreshInterval', sel.value);
           location.reload();
         });
       }
 
-      // Open logs folder (copies path to clipboard)
-      const logsBtn = document.getElementById('openLogsBtn');
-      if (logsBtn) {
+      // Copy logs path to clipboard (button label reflects action)
+      const logsBtn     = document.getElementById('openLogsBtn');
+      const logsBtnIcon = logsBtn ? logsBtn.querySelector('.material-symbols-outlined') : null;
+      const logsBtnText = logsBtn ? logsBtn.querySelector('span:last-child') : null;
+      if (logsBtn && logsBtnText) {
         logsBtn.addEventListener('click', async () => {
           const logEl = document.getElementById('pathLogDir');
           const path  = logEl ? logEl.textContent.trim() : '';
-          if (path && path !== '—') {
-            try {
-              await navigator.clipboard.writeText(path);
-              logsBtn.textContent = '✓ Skopiowano ścieżkę';
-              setTimeout(() => {
-                logsBtn.innerHTML = '<span class="material-symbols-outlined text-base">folder_open</span> Otwórz folder logów';
-              }, 2000);
-            } catch (_) {}
+          if (!path || path === '—') return;
+          try {
+            await navigator.clipboard.writeText(path);
+            logsBtnText.textContent = 'Skopiowano!';
+            setTimeout(() => { logsBtnText.textContent = 'Skopiuj ścieżkę logów'; }, 2000);
+          } catch (_) {}
+        });
+      }
+
+      // Autostart toggle — bound once here, loadUstawieniaShell updates only visual state
+      const toggle = document.getElementById('autostartToggle');
+      const thumb  = document.getElementById('autostartThumb');
+      if (toggle && thumb) {
+        toggle.addEventListener('click', async () => {
+          const current = toggle.getAttribute('aria-checked') === 'true';
+          toggle.disabled = true;
+          try {
+            const r = await fetch('/api/settings/autostart', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enabled: !current }),
+            });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            // Re-read from registry to confirm; loadUstawieniaShell also updates restart guard
+            await loadUstawieniaShell();
+          } catch (err) {
+            console.error('autostart toggle failed:', err);
+            showUstawieniaError('autostartError', 'Nie udało się zmienić ustawienia autostartu.');
+          } finally {
+            toggle.disabled = false;
           }
         });
       }
 
       // Restart daemon
       const restartBtn = document.getElementById('restartDaemonBtn');
-      if (restartBtn) {
+      const restartIcon = restartBtn ? restartBtn.querySelector('.material-symbols-outlined') : null;
+      const restartText = restartBtn ? restartBtn.querySelector('span:last-child') : null;
+      if (restartBtn && restartText) {
         restartBtn.addEventListener('click', async () => {
+          if (restartBtn.disabled) return;
           restartBtn.disabled = true;
-          restartBtn.textContent = 'Restartowanie…';
+          restartText.textContent = 'Restartowanie…';
+          if (restartIcon) restartIcon.classList.add('animate-spin');
           try {
-            await fetch('/api/settings/restart-daemon', { method: 'POST' });
-          } catch (_) {}
-          setTimeout(() => {
-            restartBtn.disabled = false;
-            restartBtn.innerHTML = '<span class="material-symbols-outlined text-base">restart_alt</span> Zrestartuj Daemona';
-          }, 3000);
+            const r = await fetch('/api/settings/restart-daemon', { method: 'POST' });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          } catch (_) {
+            // Expected: daemon closes connection mid-response; this is normal
+          }
+          // Poll until daemon is back (max ~30s)
+          const start = Date.now();
+          const tryReconnect = async () => {
+            try {
+              const ping = await fetch('/api/diagnostics/health', { headers: { Accept: 'application/json' } });
+              if (ping.ok) { location.reload(); return; }
+            } catch (_) {}
+            if (Date.now() - start < 30000) setTimeout(tryReconnect, 1000);
+            else {
+              restartText.textContent = 'Nie udało się połączyć';
+              if (restartIcon) restartIcon.classList.remove('animate-spin');
+              restartBtn.disabled = false;
+            }
+          };
+          setTimeout(tryReconnect, 1500);
         });
       }
 
-      // Factory Reset modal
-      const modal   = document.getElementById('factoryResetModal');
-      const trigger = document.getElementById('factoryResetTriggerBtn');
-      const cancel  = document.getElementById('factoryResetCancelBtn');
-      const backdrop= document.getElementById('factoryResetModalBackdrop');
-      const confirm = document.getElementById('factoryResetConfirmBtn');
+      // Factory Reset modal with focus trap
+      const modal    = document.getElementById('factoryResetModal');
+      const trigger  = document.getElementById('factoryResetTriggerBtn');
+      const cancelBtn= document.getElementById('factoryResetCancelBtn');
+      const backdrop = document.getElementById('factoryResetModalBackdrop');
+      const confirmBtn = document.getElementById('factoryResetConfirmBtn');
       if (modal && trigger) {
-        const openModal  = () => modal.classList.remove('hidden');
-        const closeModal = () => modal.classList.add('hidden');
+        const openModal = () => {
+          modal.classList.remove('hidden');
+          cancelBtn && cancelBtn.focus();
+        };
+        const closeModal = () => {
+          modal.classList.add('hidden');
+          trigger.focus();
+        };
         trigger.addEventListener('click', openModal);
-        cancel && cancel.addEventListener('click', closeModal);
-        backdrop && backdrop.addEventListener('click', closeModal);
-        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
-        if (confirm) {
-          confirm.addEventListener('click', async () => {
-            confirm.disabled = true;
-            confirm.textContent = 'Resetowanie…';
+        cancelBtn  && cancelBtn.addEventListener('click', closeModal);
+        backdrop   && backdrop.addEventListener('click', closeModal);
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeModal(); });
+        // Focus trap: keep Tab inside modal
+        modal.addEventListener('keydown', (e) => {
+          if (e.key !== 'Tab') return;
+          const focusable = Array.from(modal.querySelectorAll('button:not([disabled])'));
+          if (!focusable.length) return;
+          const first = focusable[0], last = focusable[focusable.length - 1];
+          if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
+            e.preventDefault();
+            (e.shiftKey ? last : first).focus();
+          }
+        });
+        if (confirmBtn) {
+          const confirmIcon = confirmBtn.querySelector('.material-symbols-outlined');
+          const confirmText = confirmBtn.querySelector('span:last-child') || confirmBtn;
+          confirmBtn.addEventListener('click', async () => {
+            confirmBtn.disabled = true;
+            if (confirmText) confirmText.textContent = 'Resetowanie…';
             try {
               const res = await fetch('/api/onboarding/reset', { method: 'POST' });
-              if (res.ok) {
-                closeModal();
-                location.reload();
-              } else {
-                confirm.textContent = 'Błąd — spróbuj ponownie';
-                confirm.disabled = false;
+              if (res.ok) { closeModal(); location.reload(); }
+              else {
+                if (confirmText) confirmText.textContent = 'Błąd — spróbuj ponownie';
+                confirmBtn.disabled = false;
               }
             } catch (_) {
-              confirm.textContent = 'Błąd sieci';
-              confirm.disabled = false;
+              if (confirmText) confirmText.textContent = 'Błąd sieci';
+              confirmBtn.disabled = false;
             }
           });
         }
@@ -2681,9 +2732,11 @@
         USTAWIENIA_STATE.initialized = true;
         initUstawieniaActions();
       }
-      loadUstawieniaShell();
-      loadUstawieniaSession();
-      loadUstawieniaPathsAndCache();
+      Promise.allSettled([
+        loadUstawieniaShell(),
+        loadUstawieniaSession(),
+        loadUstawieniaPathsAndCache(),
+      ]);
     }
 
     // ── Hash router (F.7) ───────────────────────────────────────
