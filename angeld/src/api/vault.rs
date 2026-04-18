@@ -117,6 +117,9 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/api/vault/lock", post(post_vault_lock))
         // ── I.4: manual key rotation ──
         .route("/api/vault/rotate-key", post(post_rotate_key))
+        // ── M.2: safety numbers ──
+        .route("/api/vault/safety-numbers", get(get_safety_numbers))
+        .route("/api/devices/{device_id}/verify", post(post_verify_device))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
@@ -931,4 +934,65 @@ async fn post_rotate_key(
     .await;
 
     Ok(Json(serde_json::json!({ "status": "rotated" })))
+}
+
+// ── M.2: Safety Numbers ─────────────────────────────────────────────
+
+async fn get_safety_numbers(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let caller = acl::require_role(&state.pool, &headers, Role::Viewer).await?;
+
+    let numbers = state
+        .vault_keys
+        .safety_numbers(&caller.user_id)
+        .await
+        .ok_or(ApiError::Unauthorized {
+            message: "vault locked or no session".to_string(),
+        })?;
+
+    let vault = db::get_vault_params(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal { message: e.to_string() })?;
+
+    let key_generation = vault.as_ref().and_then(|v| v.vault_key_generation).unwrap_or(0);
+
+    let verified_at = db::get_device_safety_verified_at(&state.pool, &caller.device_id)
+        .await
+        .unwrap_or(None);
+
+    tracing::info!(
+        "[SAFETY_NUMBERS] generated for user={} [key_material: REDACTED]",
+        caller.user_id
+    );
+
+    Ok(Json(serde_json::json!({
+        "safety_numbers": numbers,
+        "key_generation": key_generation,
+        "verified_at": verified_at,
+        "device_id": caller.device_id,
+    })))
+}
+
+async fn post_verify_device(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(target_device_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let _caller = acl::require_role(&state.pool, &headers, Role::Viewer).await?;
+
+    db::get_device(&state.pool, &target_device_id)
+        .await
+        .map_err(|e| ApiError::Internal { message: e.to_string() })?
+        .ok_or(ApiError::NotFound {
+            resource: "device",
+            id: target_device_id.clone(),
+        })?;
+
+    db::set_device_safety_verified(&state.pool, &target_device_id)
+        .await
+        .map_err(|e| ApiError::Internal { message: e.to_string() })?;
+
+    Ok(Json(serde_json::json!({ "verified_at": db::epoch_secs() })))
 }
