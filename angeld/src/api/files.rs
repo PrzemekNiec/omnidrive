@@ -139,6 +139,8 @@ pub(super) fn routes() -> Router<ApiState> {
             post(materialize_conflict_copy),
         )
         .route("/api/quota", get(get_quota))
+        // ── I.2: filesystem runtime policies ──
+        .route("/api/filesystem/policies", get(get_filesystem_policies))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────
@@ -629,4 +631,34 @@ fn normalize_filesystem_api_path(raw_path: &str) -> Option<String> {
 
 fn sync_root_path() -> std::path::PathBuf {
     crate::runtime_paths::RuntimePaths::detect().sync_root
+}
+
+// ── I.2: GET /api/filesystem/policies ────────────────────────────────
+
+#[derive(Serialize)]
+struct FilesystemPoliciesResponse {
+    dry_run_active: bool,
+    max_cache_bytes: u64,
+    max_upload_bytes_per_sec: u64,
+    max_file_size_bytes: u64,
+    max_physical_bytes_per_provider: u64,
+    cloud_daily_write_ops_limit: u64,
+    cloud_daily_egress_bytes_limit: u64,
+}
+
+async fn get_filesystem_policies(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<FilesystemPoliciesResponse>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Viewer).await?;
+    let cfg = AppConfig::from_env();
+    Ok(Json(FilesystemPoliciesResponse {
+        dry_run_active: cfg.dry_run_active,
+        max_cache_bytes: cfg.max_cache_bytes,
+        max_upload_bytes_per_sec: cfg.max_upload_bytes_per_sec,
+        max_file_size_bytes: cfg.cloud_max_single_upload_bytes,
+        max_physical_bytes_per_provider: cfg.max_physical_bytes_per_provider,
+        cloud_daily_write_ops_limit: cfg.cloud_daily_write_ops_limit,
+        cloud_daily_egress_bytes_limit: cfg.cloud_daily_egress_bytes_limit,
+    }))
 }

@@ -199,6 +199,10 @@ impl VaultKeyStore {
         })
     }
 
+    pub async fn lock(&self) {
+        *self.inner.write().await = None;
+    }
+
     pub async fn require_key(&self) -> Result<KeyBytes, VaultError> {
         match self.inner.read().await.as_ref() {
             Some(keys) => Ok(keys.vault_key()),

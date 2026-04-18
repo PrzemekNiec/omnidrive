@@ -113,6 +113,10 @@ pub(crate) fn routes() -> Router<ApiState> {
         )
         // ── G.7: lista urządzeń Skarbca ──
         .route("/api/vault/devices", get(get_vault_devices))
+        // ── I.1: lock vault ──
+        .route("/api/vault/lock", post(post_vault_lock))
+        // ── I.4: manual key rotation ──
+        .route("/api/vault/rotate-key", post(post_rotate_key))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
@@ -854,4 +858,77 @@ async fn get_rewrap_status(
         "failed": failed,
         "complete": pending == 0 && failed == 0,
     })))
+}
+
+// ── I.1: POST /api/vault/lock ───────────────────────────────────────
+
+async fn post_vault_lock(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
+
+    if state.vault_keys.require_key().await.is_err() {
+        return Err(ApiError::Conflict {
+            message: "vault is already locked".into(),
+        });
+    }
+
+    state.vault_keys.lock().await;
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &caller.vault_id,
+        "vault_locked",
+        Some(&caller.user_id),
+        Some(&caller.device_id),
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({ "status": "locked" })))
+}
+
+// ── I.4: POST /api/vault/rotate-key ────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct RotateKeyRequest {
+    new_passphrase: String,
+}
+
+async fn post_rotate_key(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<RotateKeyRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
+
+    if req.new_passphrase.is_empty() {
+        return Err(ApiError::BadRequest {
+            code: "empty_passphrase",
+            message: "new_passphrase must not be empty".into(),
+        });
+    }
+
+    state
+        .vault_keys
+        .rotate_vault_key(&state.pool, &req.new_passphrase)
+        .await
+        .map_err(|e| ApiError::Internal { message: e.to_string() })?;
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &caller.vault_id,
+        "rotate_vk",
+        Some(&caller.user_id),
+        Some(&caller.device_id),
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({ "status": "rotated" })))
 }

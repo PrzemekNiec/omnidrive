@@ -36,6 +36,7 @@ tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+sysinfo = { version = "0.30", default-features = false }
 zerocopy = { version = "0.7", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]

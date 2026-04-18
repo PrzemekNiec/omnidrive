@@ -6,9 +6,22 @@ use axum::extract::{Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+use sysinfo::System;
+use tokio::sync::Mutex;
 
 use super::error::ApiError;
 use super::ApiState;
+
+static SYSINFO: OnceLock<Mutex<System>> = OnceLock::new();
+
+fn sysinfo() -> &'static Mutex<System> {
+    SYSINFO.get_or_init(|| {
+        let mut sys = System::new();
+        sys.refresh_cpu_usage();
+        Mutex::new(sys)
+    })
+}
 
 // ── G.1: /api/stats/overview ───────────────────────────────────────
 
@@ -91,20 +104,17 @@ async fn get_stats_system(
         100.0
     };
 
-    // CPU: not available without sysinfo crate — return safe default
-    // TODO: add sysinfo dependency for real CPU metrics
-    let cpu_percent = 0.0;
-
-    // Latency: use uptime from diagnostics as a proxy for "alive" check
-    // Real latency tracking requires instrumenting provider round-trips
-    // TODO: instrument provider request latency in uploader/downloader
-    let latency_ms = 0.0;
+    let cpu_percent = {
+        let mut sys = sysinfo().lock().await;
+        sys.refresh_cpu_usage();
+        f64::from(sys.global_cpu_info().cpu_usage())
+    };
 
     Ok(Json(StatsSystemResponse {
         nodes_count,
-        nodes_delta: 0, // TODO: track delta between polls
+        nodes_delta: 0,
         cpu_percent,
-        latency_ms,
+        latency_ms: 0.0,
         latency_delta_ms: 0.0,
         integrity_percent,
     }))

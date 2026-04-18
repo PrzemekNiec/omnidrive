@@ -425,6 +425,19 @@
         </div>
       </section>
 
+      <!-- POLITYKI FORTECA -->
+      <section id="filesPolicesPanel" class="glass-panel rounded-2xl p-5 flex flex-wrap gap-6 text-xs text-slate-400 hidden">
+        <div class="flex items-center gap-2">
+          <span class="material-symbols-outlined text-base text-primary">security</span>
+          <span class="font-bold uppercase tracking-widest text-primary text-[10px]">FORTECA</span>
+        </div>
+        <div class="flex items-center gap-1.5"><span class="font-label uppercase tracking-widest text-[10px]">Tryb suchy:</span><span id="fpDryRun" class="font-semibold text-on-surface">—</span></div>
+        <div class="flex items-center gap-1.5"><span class="font-label uppercase tracking-widest text-[10px]">Max plik:</span><span id="fpMaxFile" class="font-semibold text-on-surface">—</span></div>
+        <div class="flex items-center gap-1.5"><span class="font-label uppercase tracking-widest text-[10px]">Cache:</span><span id="fpCache" class="font-semibold text-on-surface">—</span></div>
+        <div class="flex items-center gap-1.5"><span class="font-label uppercase tracking-widest text-[10px]">Upload/s:</span><span id="fpUploadRate" class="font-semibold text-on-surface">—</span></div>
+        <div class="flex items-center gap-1.5"><span class="font-label uppercase tracking-widest text-[10px]">Limit per provider:</span><span id="fpPerProvider" class="font-semibold text-on-surface">—</span></div>
+      </section>
+
       <!-- Floating context menu (single instance, repositioned per click) -->
       <div id="fileActionsMenu" class="hidden fixed z-50 glass-panel border border-white/10 rounded-xl shadow-2xl py-2 min-w-[200px]">
         <button class="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-400 cursor-not-allowed opacity-50" disabled title="Wkrótce">
@@ -497,8 +510,7 @@
             </div>
           </div>
           <div class="flex flex-wrap gap-3">
-            <button class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-slate-400 border border-white/10 cursor-not-allowed opacity-50"
-              disabled title="Endpoint /api/lock nie jest jeszcze dostępny — zablokuj przez narzędzie angelctl lub restart serwisu">
+            <button id="vaultLockBtn" class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-slate-400 border border-white/10 hover:bg-white/5 transition-colors">
               <span class="material-symbols-outlined text-lg">lock</span>Zablokuj Skarbiec
             </button>
           </div>
@@ -516,10 +528,10 @@
             <div class="min-w-0">
               <p class="text-sm font-semibold text-on-surface">Rotacja klucza głównego</p>
               <p class="text-xs text-slate-400 mt-1 leading-relaxed">Wymuś rotację Vault Key — używane automatycznie przy unieważnianiu urządzeń.</p>
-              <button class="mt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500 border border-white/10 px-3 py-1.5 rounded-lg cursor-not-allowed opacity-50"
-                disabled title="Rotacja odbywa się automatycznie podczas odwoływania dostępu urządzeniom. Bezpośredni endpoint nie jest jeszcze dostępny.">
-                Wymuś rotację (niedostępne przez API)
+              <button id="vaultRotateKeyBtn" class="mt-3 text-[10px] font-bold uppercase tracking-widest text-slate-300 border border-white/10 px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">
+                Wymuś rotację klucza
               </button>
+              <p id="vaultRotateKeyError" class="hidden text-xs text-error mt-1"></p>
             </div>
           </div>
           <div class="bg-surface-container rounded-xl p-4 flex items-start gap-4">
@@ -2170,6 +2182,62 @@
       setupVaultRestoreModal();
       setupVaultRevokeBtn();
 
+      // Lock vault
+      const lockBtn = document.getElementById('vaultLockBtn');
+      if (lockBtn) {
+        lockBtn.addEventListener('click', async () => {
+          if (!confirm('Zablokować Skarbiec? Będziesz musiał ponownie podać hasło.')) return;
+          lockBtn.disabled = true;
+          try {
+            const res = await fetch('/api/vault/lock', { method: 'POST', headers: vaultAuthHeaders() });
+            if (!res.ok) {
+              const d = await res.json().catch(() => ({}));
+              throw new Error(d?.error?.message || `HTTP ${res.status}`);
+            }
+            VAULT_STATE.unlocked = false;
+            VAULT_STATE.sessionToken = null;
+            renderVaultStatus();
+            fetchSystemStatus();
+          } catch (err) {
+            alert('Błąd blokowania: ' + (err.message || 'Nieznany błąd'));
+          } finally {
+            lockBtn.disabled = false;
+          }
+        });
+      }
+
+      // Rotate vault key
+      const rotateBtn = document.getElementById('vaultRotateKeyBtn');
+      if (rotateBtn) {
+        rotateBtn.addEventListener('click', async () => {
+          const newPass = prompt('Podaj nowe hasło główne Skarbca (min. 8 znaków):');
+          if (!newPass) return;
+          if (newPass.length < 8) { alert('Hasło musi mieć co najmniej 8 znaków.'); return; }
+          const errEl = document.getElementById('vaultRotateKeyError');
+          rotateBtn.disabled = true;
+          if (errEl) errEl.classList.add('hidden');
+          try {
+            const res = await fetch('/api/vault/rotate-key', {
+              method: 'POST',
+              headers: vaultAuthHeaders(),
+              body: JSON.stringify({ new_passphrase: newPass }),
+            });
+            if (!res.ok) {
+              const d = await res.json().catch(() => ({}));
+              throw new Error(d?.error?.message || `HTTP ${res.status}`);
+            }
+            alert('Klucz rotowany pomyślnie. Zaloguj się ponownie nowym hasłem.');
+            VAULT_STATE.unlocked = false;
+            VAULT_STATE.sessionToken = null;
+            renderVaultStatus();
+          } catch (err) {
+            if (errEl) { errEl.textContent = err.message || 'Błąd rotacji.'; errEl.classList.remove('hidden'); }
+          } finally {
+            rotateBtn.disabled = false;
+          }
+        });
+      }
+
       // Initial data fetch
       fetchVaultStatus();
       fetchVaultRecoveryStatus();
@@ -2220,8 +2288,27 @@
     };
 
     // Mapuje pin+hydration → { label, class } dla pill statusu.
-    // Z /api/files mamy pin_state (0/1) i hydration_state (0/1); FORTECA (PARANOIA policy)
-    // nie jest exposed w tym endpointcie — TODO: dodać gdy powstanie /api/filesystem/policies.
+    async function fetchFilesystemPolicies() {
+      try {
+        const hdr = { 'Accept': 'application/json' };
+        if (VAULT_STATE.sessionToken) hdr['Authorization'] = `Bearer ${VAULT_STATE.sessionToken}`;
+        const res = await fetch('/api/filesystem/policies', { headers: hdr });
+        if (!res.ok) return;
+        const p = await res.json();
+        const panel = document.getElementById('filesPolicesPanel');
+        if (panel) panel.classList.remove('hidden');
+        const fmt = (b) => b == null ? '—' : b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GiB' : b >= 1048576 ? (b / 1048576).toFixed(0) + ' MiB' : (b / 1024).toFixed(0) + ' KiB';
+        const fmtRate = (b) => b == null ? '—' : fmt(b) + '/s';
+        const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        el('fpDryRun', p.dry_run_active ? 'TAK' : 'NIE');
+        el('fpMaxFile', fmt(p.max_file_size_bytes));
+        el('fpCache', fmt(p.max_cache_bytes));
+        el('fpUploadRate', fmtRate(p.max_upload_bytes_per_sec));
+        el('fpPerProvider', fmt(p.max_physical_bytes_per_provider));
+      } catch (_) {}
+    }
+
+    // Z /api/files mamy pin_state (0/1) i hydration_state (0/1); FORTECA (PARANOIA policy).
     function deriveFileStatus(pin, hyd) {
       const p = Number(pin);
       const h = Number(hyd);
@@ -2461,6 +2548,7 @@
           });
         }
         fetchFilesList();
+        fetchFilesystemPolicies();
       } else {
         renderFilesTable();
       }
