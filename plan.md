@@ -1,6 +1,192 @@
-# OmniDrive Roadmap v2 — Plan Implementacyjny
+# OmniDrive — Plan Implementacyjny
 
-Sekwencja: **Phase 0 → Epic 32.5 → Epic 35 → Epic 33 → Epic 34**
+> Ostatnia aktualizacja: 2026-04-18 | Aktualna wersja: **v0.2.0** (commit `55a2a6a`)
+
+## Status całego projektu
+
+| Faza | Opis | Status |
+|------|------|--------|
+| Phase 0 | Checkpoint kryptograficzny + crypto-spec.md | ✅ DONE |
+| Epic 32.5 | Envelope Encryption (KEK→VK→DEK, migracja, rotacja) | ✅ DONE |
+| Epic 35 | Ghost Shell (cfapi, ingest, hydration, shell ext, tray) | ✅ DONE |
+| Epic 33 | Zero-Knowledge Link Sharing | ✅ DONE |
+| Epic 34 Sesja A | Audit Trail (34.5a+b) | ✅ DONE |
+| Epic 34 Sesja B | Recovery Keys BIP-39 (34.6a + B.7) | ✅ DONE |
+| Epic 34 Sesja Pre-C | Fix user_id owner-{device_id} → UUID | ✅ DONE |
+| Epic 36 Sesja F | UI Shell + Przegląd (Stitch layout) | ✅ DONE |
+| Epic 36 Sesja G.1-G.11 | Stats endpoints + wszystkie widoki + v0.2.0 release | ✅ DONE |
+| **Faza H** | Dokończenie UI quick-wins (QR, logout, audit, recovery CTA) | ✅ DONE `e4ea91f` |
+| **Faza I** | Brakujące API: `/api/lock`, `/api/filesystem/policies`, sysinfo, rotation | ⬜ NEXT |
+| **Faza J** | Pre-C: Pełny refactor tożsamości UUID v4 (P0 blocker OAuth) | ⬜ TODO |
+| **Faza K** | Sesja C: Google OAuth2 Backend | ⬜ TODO |
+| **Faza L** | Sesja D: OAuth Frontend | ⬜ TODO |
+| **Faza M** | Sesja E: Safety Numbers + E2E multi-user + THREAT_MODEL | ⬜ TODO |
+| **Faza N** | Cleanup dead code + Release v0.3.0 | ⬜ TODO |
+
+**Critical path:** I → J → K → L → M → N (~8-10 dni roboczych do v0.3.0)
+
+---
+
+## Następna faza: I — Brakujące endpointy API
+
+### I.1 — `POST /api/lock`
+- **Pliki:** nowy `angeld/src/api/lock.rs`, `api/mod.rs`, `static/index.html` (line ~501)
+- **Akcja:** session guard + drop `VaultKeyStore.unlocked_keys` + audit `vault_locked`. Odblokować przycisk "Zablokuj Skarbiec".
+- **Test:** unlock → `POST /api/lock` → `GET /api/vault/status` → `locked: true`
+
+### I.2 — `GET /api/filesystem/policies`
+- **Pliki:** nowy `angeld/src/api/policies.rs` (lub w `files.rs`), `static/index.html` (line ~2215)
+- **Akcja:** zwraca polityki (`readonly_paths`, `exclude_extensions`, `max_file_size_mb`) z runtime config.
+- **Test:** widok Pliki → realny status FORTECA zamiast dummy "OK"
+
+### I.3 — Realne metryki `/api/stats/system`
+- **Pliki:** `angeld/src/api/stats.rs` (lines 95/100/105), `angeld/Cargo.toml`
+- **Akcja:** `sysinfo = "0.30"` → realne `cpu_percent`; instrumentacja latency w `uploader.rs`/`downloader.rs`; tracking `nodes_delta` między pollami.
+- **Test:** `curl localhost:8787/api/stats/system` → niezerowe CPU
+
+### I.4 — `POST /api/keys/rotate`
+- **Pliki:** nowy `angeld/src/api/rotation.rs`, `static/index.html` (line ~520)
+- **Akcja:** trigger istniejącej ścieżki rotacji + audit event. Odblokować przycisk "Wymuś rotację".
+- **Test:** rotacja → stare DEK-i nadal odszyfrowują
+
+**Commit:** `feat(api): Faza I — /api/lock, /api/filesystem/policies, /api/keys/rotate, sysinfo`
+
+---
+
+## Faza J — Pre-C: Refactor tożsamości UUID v4 (P0, ~2 dni)
+
+**Blocker OAuth + multi-user.** Problem: `owner-{device_id}` = kruchy identyfikator; po OAuth potrzebujemy `users.id UUID`.
+
+### J.1 — Migracja schematu DB
+- **Pliki:** nowa migracja w `angeld/src/db.rs`, `omnidrive-core/src/`
+- **Akcja:** tabela `users(id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)` + `devices.user_id FK`. Backfill istniejących instalacji: 1 lokalny UUID, wszystkie devices przypisane.
+- **Test:** migracja idempotentna, `PRAGMA foreign_keys = ON`, baza nie pada
+
+### J.2 — Aktualizacja modułów
+- **Pliki:** `angeld/src/onboarding.rs`, `api/sharing.rs`, `vault.rs`, `api/auth.rs`
+- **Akcja:** `device_id` jako owner → `user_id`. Session zawiera `user_id + device_id`.
+- **Test:** `cargo test --workspace`
+
+### J.3 — Dokumentacja
+- **Pliki:** `docs/crypto-spec.md` (sekcja Identity Model), `CLAUDE.md`
+- **Akcja:** opisać `user_id` vs `device_id` + flow join-existing-vault
+
+**Commit:** `refactor(identity): Faza J — user_id UUID v4 jako owner (Pre-C)`
+
+---
+
+## Faza K — Sesja C: Google OAuth2 Backend (~2 dni)
+
+### K.1 — Zależności + konfiguracja
+- `angeld/Cargo.toml`: `oauth2 = "4.4"`, `openidconnect = "3.5"`
+- `.env.example`: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OAUTH_REDIRECT_URL`
+
+### K.2 — `GET /api/auth/google/start`
+- **Plik:** nowy `angeld/src/api/oauth.rs`
+- PKCE + state + CSRF → redirect do Google. State w DB z TTL 10 min.
+
+### K.3 — `GET /api/auth/google/callback`
+- Weryfikacja state, exchange code→token, `email + sub`. Upsert `users` (`google_sub`). Session z `user_id`. Redirect `/`.
+
+### K.4 — Join flow z istniejącym kontem
+- Jeśli `google_sub` w `users` → zaloguj. Nowy vault → onboarding z OAuth identity.
+
+### K.5 — Testy integracyjne
+- **Plik:** `angeld/tests/e2e_oauth.rs`
+- mock `mockito` → happy path + CSRF mismatch + expired state
+
+**Commit:** `feat(auth): Sesja C — Google OAuth2 backend`
+
+---
+
+## Faza L — Sesja D: OAuth Frontend (~1-1.5 dnia)
+
+### L.1 — Przycisk "Zaloguj przez Google" w onboarding
+- `angeld/static/index.html`, `wizard.js` → redirect do `/api/auth/google/start`
+
+### L.2 — Profil w topbarze
+- `static/index.html` (line ~187 — TODO OAuth user wiring)
+- `GET /api/auth/session` → `{ user_id, email, picture? }` → render zamiast "Local"
+
+### L.3 — Logout po OAuth
+- Opcjonalne revoke Google refresh token przy `POST /api/auth/logout`
+
+### L.4 — Multi-device join z OAuth identity
+- Flow "Dołącz do istniejącego vault" → najpierw OAuth → potem wybór urządzenia
+
+**Commit:** `feat(ui): Sesja D — OAuth frontend + profil użytkownika`
+
+---
+
+## Faza M — Sesja E: Safety Numbers + THREAT_MODEL (~1.5-2 dni)
+
+### M.1 — Generowanie Safety Numbers
+- **Pliki:** nowy `omnidrive-core/src/safety_number.rs`, `angeld/src/api/vault.rs`
+- `SHA-256(user_id_A ‖ user_id_B ‖ vault_key_fingerprint)` → 60-digit decimal, 5 bloków × 12 cyfr (Signal-style)
+
+### M.2 — Widok weryfikacji w Multi-Device
+- Safety Number + QR. Przycisk "Oznaczono jako zweryfikowane" → audit event.
+
+### M.3 — E2E multi-user test
+- **Plik:** `angeld/tests/e2e_multi_user.rs`
+- Alice tworzy vault → share do Bob → Bob joins → Safety Number match po obu stronach
+
+### M.4 — `docs/THREAT_MODEL.md`
+- Assets / Adversaries / Trust Boundaries / Attack Trees / Mitigations
+
+**Commit:** `feat(crypto): Sesja E — Safety Numbers + THREAT_MODEL`
+
+---
+
+## Faza N — Cleanup + Release v0.3.0 (~1 dzień)
+
+### N.1 — Dead code audyt `vault.rs`
+- Usunąć realnie nieużywane. Pozostawić z `// reserved for Epic X`.
+
+### N.2 — Module-level `#![allow(dead_code)]` audyt
+- `downloader.rs`, `gc.rs`, `identity.rs`, `migrator.rs`, `onboarding.rs`, `packer.rs`, `repair.rs`, `scrubber.rs`, `uploader.rs`, `watcher.rs` → function-level `#[allow]`
+
+### N.3 — Bump wersji do 0.3.0
+- Wszystkie 6× `Cargo.toml` + `installer/omnidrive.iss` → `0.2.0 → 0.3.0` + `cargo build --release --workspace`
+
+### N.4 — Payload + instalator
+- `cp target/release/*.exe dist/installer/payload/` + `cp angeld/static/* dist/installer/payload/static/` → Inno Setup
+
+### N.5 — Smoke test + release
+- Pełny flow: unlock → share → join → verify → lock. Commit `release: v0.3.0`, push, tag.
+
+**Commit:** `release: v0.3.0`
+
+---
+
+## Krytyczne pliki (fazy I-N)
+
+| Plik | Fazy |
+|------|------|
+| `angeld/static/index.html` | I.1-I.4, L.1-L.4, M.2 |
+| `angeld/src/api/mod.rs` | I.1, I.2, I.4, K.2 |
+| `angeld/src/api/stats.rs` | I.3 |
+| `angeld/src/api/auth.rs` | J.2, K.2-K.4 |
+| `angeld/src/api/sharing.rs` | J.2, M.1 |
+| `angeld/src/vault.rs` | I.1, N.1 |
+| `angeld/src/db.rs` | J.1, J.2 |
+| `angeld/src/onboarding.rs` | J.2, K.4 |
+| `omnidrive-core/src/` | J.1, M.1 |
+| `installer/omnidrive.iss` | N.3 |
+| `docs/crypto-spec.md` | J.3 |
+| `docs/THREAT_MODEL.md` | M.4 |
+
+---
+
+*Poniżej: pełna historia implementacji (Phase 0 → Epic 36 Sesja G).*
+
+---
+
+## Phase 0 — Faza G.11: Historia implementacji (DONE)
+
+---
+
+Sekwencja: **Phase 0 → Epic 32.5 → Epic 35 → Epic 33 → Epic 34 → Epic 36**
 
 Każdy blok to 1-3 dni pracy. Bloki w ramach fazy są sekwencyjne (każdy buduje na poprzednim).
 
