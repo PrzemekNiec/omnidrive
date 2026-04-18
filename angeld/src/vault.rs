@@ -904,8 +904,9 @@ mod tests {
 
         // Setup multi-user schema: owner user + vault membership
         let vault = db::get_vault_params(&pool).await?.unwrap();
-        db::create_user(&pool, "owner-dev-owner", "Owner", None, "local", None).await?;
-        db::add_vault_member(&pool, "owner-dev-owner", &vault.vault_id, "owner", None).await?;
+        let owner_uid = db::new_user_id();
+        db::create_user(&pool, &owner_uid, "Owner", None, "local", None).await?;
+        db::add_vault_member(&pool, &owner_uid, &vault.vault_id, "owner", None).await?;
 
         // ── 3. Rotate for revocation ──
         let result = store.rotate_for_revocation(&pool).await?;

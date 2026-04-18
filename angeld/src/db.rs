@@ -5,6 +5,11 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{FromRow, Row, SqlitePool};
 use std::path::Path;
 use std::str::FromStr;
+use uuid::Uuid;
+
+pub fn new_user_id() -> String {
+    Uuid::new_v4().to_string()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PackStatus {
@@ -6843,7 +6848,7 @@ pub async fn migrate_single_to_multi_user(
     };
 
     let now = epoch_secs();
-    let owner_user_id = format!("owner-{}", &device.device_id);
+    let owner_user_id = new_user_id();
 
     // Placeholder 32-byte zero public key — replaced in Epic 34.1a with real X25519 keypair
     let placeholder_pubkey = vec![0u8; 32];
@@ -6899,6 +6904,64 @@ pub async fn migrate_single_to_multi_user(
     .await?;
 
     Ok(true)
+}
+
+/// Rewrites any legacy `owner-{device_id}` user IDs to UUID v4.
+/// Safe to call at every startup — no-op when no legacy IDs remain.
+pub async fn backfill_uuid_user_ids(pool: &SqlitePool) -> Result<u32, sqlx::Error> {
+    let old_ids: Vec<String> =
+        sqlx::query_scalar("SELECT user_id FROM users WHERE user_id LIKE 'owner-%'")
+            .fetch_all(pool)
+            .await?;
+    if old_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut conn = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *conn)
+        .await?;
+
+    let mut count = 0u32;
+    for old_id in &old_ids {
+        let new_id = new_user_id();
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             SELECT ?, display_name, email, auth_provider, auth_subject, created_at \
+             FROM users WHERE user_id = ?",
+        )
+        .bind(&new_id)
+        .bind(old_id)
+        .execute(&mut *conn)
+        .await?;
+
+        for (table, col) in &[
+            ("devices", "user_id"),
+            ("vault_members", "user_id"),
+            ("vault_members", "invited_by"),
+            ("audit_logs", "actor_user_id"),
+            ("audit_logs", "target_user_id"),
+            ("user_sessions", "user_id"),
+            ("invite_codes", "created_by"),
+        ] {
+            sqlx::query(&format!("UPDATE {table} SET {col} = ? WHERE {col} = ?"))
+                .bind(&new_id)
+                .bind(old_id)
+                .execute(&mut *conn)
+                .await?;
+        }
+
+        sqlx::query("DELETE FROM users WHERE user_id = ?")
+            .bind(old_id)
+            .execute(&mut *conn)
+            .await?;
+        count += 1;
+    }
+
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *conn)
+        .await?;
+    Ok(count)
 }
 
 // ── Epic 34.3a: User Sessions ───────────────────────────────────────
@@ -7593,22 +7656,24 @@ mod tests {
         let migrated = migrate_single_to_multi_user(&pool, "vault-42").await.unwrap();
         assert!(migrated);
 
-        // Verify owner user created
+        // Verify owner user created with UUID v4
         let users = list_users(&pool).await.unwrap();
         assert_eq!(users.len(), 1);
-        assert_eq!(users[0].user_id, "owner-dev-abc123");
+        assert_eq!(users[0].user_id.len(), 36, "user_id must be UUID v4");
+        assert!(!users[0].user_id.starts_with("owner-"), "user_id must not use legacy owner- prefix");
         assert_eq!(users[0].display_name, "TestPC");
         assert_eq!(users[0].auth_provider, "local");
+        let owner_uid = users[0].user_id.clone();
 
         // Verify device linked to owner
         let dev = get_device(&pool, "dev-abc123").await.unwrap().unwrap();
-        assert_eq!(dev.user_id, "owner-dev-abc123");
+        assert_eq!(dev.user_id, owner_uid);
         assert_eq!(dev.device_name, "TestPC");
         assert!(dev.wrapped_vault_key.is_none()); // owner uses passphrase
         assert!(dev.revoked_at.is_none());
 
         // Verify vault membership
-        let member = get_vault_member(&pool, "owner-dev-abc123", "vault-42")
+        let member = get_vault_member(&pool, &owner_uid, "vault-42")
             .await
             .unwrap()
             .unwrap();
@@ -7619,7 +7684,7 @@ mod tests {
         let logs = list_audit_logs(&pool, "vault-42", 10).await.unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].action, "migrate_single_to_multi");
-        assert_eq!(logs[0].actor_user_id.as_deref(), Some("owner-dev-abc123"));
+        assert_eq!(logs[0].actor_user_id.as_deref(), Some(owner_uid.as_str()));
     }
 
     #[tokio::test]
@@ -7648,6 +7713,44 @@ mod tests {
         assert!(!migrate_single_to_multi_user(&pool, "vault-42").await.unwrap());
         let users = list_users(&pool).await.unwrap();
         assert!(users.is_empty());
+    }
+
+    #[tokio::test]
+    async fn backfill_uuid_user_ids_renames_legacy() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        // Insert a legacy owner- user directly
+        let now = epoch_secs();
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('owner-dev-abc', 'Alice', NULL, 'local', NULL, ?)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Insert a device referencing the legacy user
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('dev-abc', 'owner-dev-abc', 'PC', x'00', ?)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let count = backfill_uuid_user_ids(&pool).await.unwrap();
+        assert_eq!(count, 1);
+
+        let users = list_users(&pool).await.unwrap();
+        assert_eq!(users.len(), 1);
+        assert!(!users[0].user_id.starts_with("owner-"));
+        assert_eq!(users[0].user_id.len(), 36);
+
+        let dev = get_device(&pool, "dev-abc").await.unwrap().unwrap();
+        assert_eq!(dev.user_id, users[0].user_id);
+
+        // Second call is no-op
+        assert_eq!(backfill_uuid_user_ids(&pool).await.unwrap(), 0);
     }
 
     // ── Epic 34.3a: Session token tests ─────────────────────────────

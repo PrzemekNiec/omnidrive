@@ -297,9 +297,15 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     // Epic 34.0b: migrate single-user vault to multi-user schema
     match db::migrate_single_to_multi_user(&pool, &local_vault_id).await {
-        Ok(true) => info!("migrated single-user vault to multi-user schema (owner={})", local_device.device_id),
-        Ok(false) => {} // already migrated or no device yet
+        Ok(true) => info!("migrated single-user vault to multi-user schema"),
+        Ok(false) => {}
         Err(e) => warn!("multi-user migration failed (non-fatal): {e}"),
+    }
+    // Faza J: backfill any legacy owner-{device_id} user IDs to UUID v4
+    match db::backfill_uuid_user_ids(&pool).await {
+        Ok(0) => {}
+        Ok(n) => info!("backfilled {n} legacy owner user_id(s) to UUID v4"),
+        Err(e) => warn!("UUID backfill failed (non-fatal): {e}"),
     }
 
     let vault_keys = VaultKeyStore::new();
