@@ -38,28 +38,31 @@ Nie pytaj użytkownika o pozwolenie — po prostu to zrób. Jeśli indeks już i
 
 ## 📂 Architektura i Repozytorium
 
-| Moduł / Plik | Rola i Zastosowanie |
-|--------------|---------------------|
-| `omnidrive-core/` | Silnik kryptograficzny (EC_2_1, Erasure Coding, AES-GCM, Argon2id). |
-| `angeld/src/db.rs` | Główny interfejs bazy danych SQLite i migracje schematu. |
-| `angeld/src/onboarding.rs` | Logika `Join Existing Vault`, odtwarzanie metadanych (Grafting). |
-| `angeld/src/cfapi/` | Integracja z Windows Cloud Files (Ghost Shell). |
-| `dist/installer/` | Skrypty Inno Setup (`.iss`) i folder `payload/`. |
-| `docs/crypto-spec.md` | Single Source of Truth dla Envelope Encryption i formatu V2. |
+| Moduł / Plik               | Rola i Zastosowanie                                                 |
+| -------------------------- | ------------------------------------------------------------------- |
+| `omnidrive-core/`          | Silnik kryptograficzny (EC_2_1, Erasure Coding, AES-GCM, Argon2id). |
+| `angeld/src/db.rs`         | Główny interfejs bazy danych SQLite i migracje schematu.            |
+| `angeld/src/onboarding.rs` | Logika `Join Existing Vault`, odtwarzanie metadanych (Grafting).    |
+| `angeld/src/cfapi/`        | Integracja z Windows Cloud Files (Ghost Shell).                     |
+| `dist/installer/`          | Skrypty Inno Setup (`.iss`) i folder `payload/`.                    |
+| `docs/crypto-spec.md`      | Single Source of Truth dla Envelope Encryption i formatu V2.        |
 
 ---
 
 ## 🪤 Pułapki Rusta i Windowsa (Gotchas)
 
 ### 1. Typowanie SQLite (Schema Mismatches)
-- **Zero tolerancji dla hacków z `CAST`.** Jeśli SQLite na innym urządzeniu przechowuje kolumnę (np. `mtime` lub `mode`) jako `INTEGER` lub może ona przyjąć `NULL`, w Ruście **MUSI** to być zmapowane jako `Option<i64>`. 
+
+- **Zero tolerancji dla hacków z `CAST`.** Jeśli SQLite na innym urządzeniu przechowuje kolumnę (np. `mtime` lub `mode`) jako `INTEGER` lub może ona przyjąć `NULL`, w Ruście **MUSI** to być zmapowane jako `Option<i64>`.
 - Używaj `Option<T>` dla każdego pola, które w schemacie nie ma `NOT NULL`. Błędy dekodowania typu blokują całą aplikację.
 
 ### 2. File Locks i Windows Defender
+
 - Operacje na plikach na dysku `C:` i `O:` są często blokowane przez Eksplorator Windows lub Antywirus.
 - **Zawsze używaj retry loop** z backoffem (`tokio::time::sleep`), np. 3-5 prób co 500ms, dla operacji takich jak: kasowanie bazy, podpinanie SyncRoot, modyfikowanie `omnidrive.db`.
 
 ### 3. Zamykanie Połączeń Bazy Danych
+
 - Przed wykonaniem komendy `ATTACH DATABASE` dla pobranego snapshotu upewnij się, że wszelkie poprzednie operacje testowe na tym pliku zamknęły uchwyt (explicite dzwoń `drop(conn)`). Zapobiega to błędom `(code: 1) database restored is locked`.
 
 ---
@@ -67,11 +70,13 @@ Nie pytaj użytkownika o pozwolenie — po prostu to zrób. Jeśli indeks już i
 ## 🖥️ UI, UX i Diagnostyka
 
 ### 1. Gramatyka Polska (Web UI)
-- **KATEGORYCZNY ZAKAZ** używania skrótów: `mies.`, `MB/s`, `sek.`. 
-- UI ma być profesjonalne. Używaj pełnych słów: "sekund", "bajtów", "miesięcy". 
+
+- **KATEGORYCZNY ZAKAZ** używania skrótów: `mies.`, `MB/s`, `sek.`.
+- UI ma być profesjonalne. Używaj pełnych słów: "sekund", "bajtów", "miesięcy".
 - Statusy mają jasne wagi: `OK` (Zdrowy), `WARN` (Ostrzeżenie/Idle), `FAILED` (Błąd krytyczny).
 
 ### 2. Statusy Architektury
+
 - `O:\` — Domniemany wirtualny dysk Skarbca.
 - `SyncRoot` — `C:\Users\{User}\AppData\Local\OmniDrive\OmniSync`.
 - Nie używamy hacków w rejestrze do podmiany ikon wirtualnego dysku (rezygnacja z mystyfikacji). Status daemona i sterowanie systemem ma odbywać się z poziomu zasobnika systemowego (**Task 35.3: System Tray Companion**).
