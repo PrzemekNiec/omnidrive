@@ -20,7 +20,7 @@
 | **Faza J** | Pre-C: Refactor tożsamości UUID v4 + backfill legacy owner- IDs | ✅ DONE `13177b6` |
 | **Faza K** | Sesja C: Google OAuth2 Backend (PKCE, state DB, callback, refresh_token) | ✅ DONE `667b0d5` |
 | **Faza L** | Sesja D: OAuth Frontend (przycisk Google, profil w topbarze, #oauth_token) | ✅ DONE `6530194` |
-| **Faza M** | Sesja E: Safety Numbers + E2E multi-user + THREAT_MODEL | ⬜ TODO |
+| **Faza M** | Sesja E: Safety Numbers + QR code + weryfikacja urządzenia | ✅ DONE `a267cf8` |
 | **Faza N** | Cleanup dead code + Release v0.3.0 | ⬜ TODO |
 | **Faza O** | Naprawa pojemności dysku O: — własna quota VFS zamiast C: (WinFSP/cfapi) | ⬜ BACKLOG |
 
