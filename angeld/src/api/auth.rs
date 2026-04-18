@@ -141,12 +141,17 @@ async fn get_auth_session(
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     match extract_session(&state.pool, &headers).await {
-        Some(session) => Json(serde_json::json!({
-            "valid": true,
-            "user_id": session.user_id,
-            "device_id": session.device_id,
-            "expires_at": session.expires_at,
-        })),
+        Some(session) => {
+            let user = db::get_user(&state.pool, &session.user_id).await.ok().flatten();
+            Json(serde_json::json!({
+                "valid": true,
+                "user_id": session.user_id,
+                "device_id": session.device_id,
+                "expires_at": session.expires_at,
+                "email": user.as_ref().and_then(|u| u.email.as_deref()),
+                "display_name": user.as_ref().map(|u| u.display_name.as_str()),
+            }))
+        },
         None => Json(serde_json::json!({
             "valid": false,
             "error": "invalid_or_expired_session",

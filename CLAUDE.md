@@ -83,6 +83,24 @@ Nie pytaj użytkownika o pozwolenie — po prostu to zrób. Jeśli indeks już i
 
 ---
 
+## 🛡️ Święta Zasada Integralności Danych (Safety First)
+
+> **Obowiązuje na każdej maszynie produkcyjnej. Naruszenie tej zasady jest błędem krytycznym.**
+
+Pracujemy na maszynie produkcyjnej (Lenovo), nie na izolowanym środowisku testowym. Każdy błąd w logice szyfrowania może doprowadzić do utraty prywatnych plików użytkownika.
+
+1. **IZOLACJA ŚCIEŻEK:** Zabrania się wykonywania jakichkolwiek operacji zapisu, szyfrowania, przesuwania lub usuwania plików poza ścieżką zdefiniowaną w zmiennej `SYNC_PATH` (dedykowany folder testowy).
+
+2. **ZAKAZ AGRESYWNEGO WATCHERA:** Podczas pracy nad UI lub API moduł `watcher.rs` oraz wszelkie procesy automatycznej synchronizacji muszą być domyślnie wyłączone lub pracować w trybie `DRY_RUN` (tylko logowanie, bez fizycznej ingerencji w pliki).
+
+3. **AUDYT OPERACJI:** Każda próba modyfikacji pliku musi być poprzedzona logiem `tracing::info!` zawierającym pełną ścieżkę i typ operacji.
+
+4. **WERYFIKACJA UUID:** Po refaktorze tożsamości (Faza J), przed każdą operacją na Vault zweryfikuj, że `user_id` i `device_id` są poprawne, aby uniknąć błędnego parowania kluczy.
+
+**Zasada nadrzędna:** Jeśli masz wątpliwość, czy dana funkcja jest bezpieczna — zatrzymaj się i poproś użytkownika o weryfikację. Rozwój funkcji nigdy nie może odbywać się kosztem ryzyka utraty danych.
+
+---
+
 ## 🔒 Roadmapa Krypto (Decyzje Architektoniczne)
 
 - **Phase 0:** Przejście na Envelope Encryption (Klucze Kopertowe).

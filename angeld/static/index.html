@@ -858,6 +858,7 @@
               </div>
             </div>
             <span id="oauthStatusBadge" class="px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400">—</span>
+            <a id="googleLoginBtn" href="/api/auth/google/start" style="display:none" class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"><span class="material-symbols-outlined text-lg">account_circle</span>&nbsp;Zaloguj przez Google</a>
           </div>
         </section>
 
@@ -977,6 +978,13 @@
     // OmniDrive — Skarbiec Console (frontend bootstrap)
     // F.3 audit log ✅; F.4 recovery alert ✅; F.5 shard status ✅; F.6 status pill ✅; F.7 router ✅; G.* stats
     // ============================================================
+
+    // ── Auth state — OAuth token (Faza L) ─────────────────────────
+    const AUTH_STATE = {
+      oauthToken: localStorage.getItem('omnidrive.oauthToken') || null,
+      expiresAt: parseInt(localStorage.getItem('omnidrive.oauthExpiresAt') || '0', 10),
+      user: null,
+    };
 
     // ── Mapa typów audytu na ikonę / polski tytuł / kolor ─────────
     const AUDIT_ACTION_MAP = {
@@ -2639,26 +2647,35 @@
     }
 
     async function loadUstawieniaSession() {
-      const line  = document.getElementById('oauthStatusLine');
-      const badge = document.getElementById('oauthStatusBadge');
+      const line     = document.getElementById('oauthStatusLine');
+      const badge    = document.getElementById('oauthStatusBadge');
+      const loginBtn = document.getElementById('googleLoginBtn');
+
+      const showLogin = () => {
+        if (badge) badge.style.display = 'none';
+        if (loginBtn) loginBtn.style.display = '';
+        if (line) line.textContent = 'Brak aktywnej sesji Google';
+      };
+      const showConnected = (email) => {
+        if (badge) {
+          badge.textContent = 'Połączono';
+          badge.className = 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-secondary/30 text-secondary';
+          badge.style.display = '';
+        }
+        if (loginBtn) loginBtn.style.display = 'none';
+        if (line) line.textContent = `Zalogowano jako ${email}`;
+      };
+
       try {
-        const res = await fetch('/api/auth/session', { headers: { Accept: 'application/json' } });
+        const headers = { Accept: 'application/json' };
+        if (AUTH_STATE.oauthToken) headers['Authorization'] = `Bearer ${AUTH_STATE.oauthToken}`;
+        const res = await fetch('/api/auth/session', { headers });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        const name = data.display_name || data.username || data.user_id || null;
-        if (line)  line.textContent = name ? `Zalogowano jako ${name}` : 'Sesja lokalna (bez OAuth)';
-        if (badge) {
-          badge.textContent = name ? 'Połączono' : 'Lokalna';
-          badge.className   = name
-            ? 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-secondary/30 text-secondary'
-            : 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400';
-        }
+        const email = data.valid ? (data.email || null) : null;
+        email ? showConnected(email) : showLogin();
       } catch (_) {
-        if (line)  line.textContent = 'Niepołączono';
-        if (badge) {
-          badge.textContent = 'Offline';
-          badge.className   = 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400';
-        }
+        showLogin();
       }
     }
 
@@ -2914,8 +2931,56 @@
       navigateTo(currentView());
     }
 
+    // ── L: OAuth token extraction from URL hash ────────────────
+    function consumeOauthTokenFromHash() {
+      const raw = location.hash.startsWith('#') ? location.hash.slice(1) : '';
+      const params = new URLSearchParams(raw);
+      const token = params.get('oauth_token');
+      if (!token) return false;
+      const expiresAt = params.get('expires_at') || '0';
+      localStorage.setItem('omnidrive.oauthToken', token);
+      localStorage.setItem('omnidrive.oauthExpiresAt', expiresAt);
+      AUTH_STATE.oauthToken = token;
+      AUTH_STATE.expiresAt = parseInt(expiresAt, 10);
+      // Remove token from URL — do not leak to browser history or referer
+      history.replaceState(null, '', '/#przeglad');
+      return true;
+    }
+
+    // ── L: Update topbar profile from /api/auth/session ───────
+    async function refreshUserProfile() {
+      const nameEl = document.getElementById('userName');
+      const roleEl = document.getElementById('userRole');
+      if (!nameEl || !roleEl || !AUTH_STATE.oauthToken) return;
+      try {
+        const res = await fetch('/api/auth/session', {
+          headers: { Accept: 'application/json', Authorization: `Bearer ${AUTH_STATE.oauthToken}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.valid) return;
+        AUTH_STATE.user = { user_id: data.user_id, email: data.email || null, display_name: data.display_name || null };
+        nameEl.textContent = data.email || data.display_name || data.user_id || 'Local';
+        roleEl.textContent = data.email ? 'Google' : 'Lokalna sesja';
+      } catch (_) {}
+    }
+
+    // ── L: Guard — redirect to /legacy if onboarding not done ─
+    async function oauthPostLoginGuard() {
+      try {
+        const res = await fetch('/api/onboarding/status', { headers: { Accept: 'application/json' } });
+        if (!res.ok) return;
+        const status = await res.json();
+        if (String(status.onboarding_state || '').toUpperCase() !== 'COMPLETED') {
+          window.location.href = '/legacy';
+        }
+      } catch (_) {}
+    }
+
     // ── Init ──────────────────────────────────────────────────────
     (function init() {
+      // L: extract OAuth token from hash if just redirected from callback
+      const _oauthJustExtracted = consumeOauthTokenFromHash();
       // G.10: apply saved refresh interval (default 30 000 ms)
       const _savedInterval = parseInt(localStorage.getItem('omnidrive.refreshInterval') || '30000', 10) || 30000;
       // F.7: hash router
@@ -2926,6 +2991,20 @@
           e.preventDefault();
           const view = link.dataset.view;
           if (view === 'wyloguj') {
+            // Logout OAuth session
+            const oauthTok = AUTH_STATE.oauthToken;
+            if (oauthTok) {
+              fetch('/api/auth/logout', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${oauthTok}` },
+              }).catch(() => {});
+            }
+            localStorage.removeItem('omnidrive.oauthToken');
+            localStorage.removeItem('omnidrive.oauthExpiresAt');
+            AUTH_STATE.oauthToken = null;
+            AUTH_STATE.expiresAt = 0;
+            AUTH_STATE.user = null;
+            // Logout vault session (unchanged)
             const tok = VAULT_STATE.sessionToken;
             if (tok) {
               fetch('/api/auth/logout', {
@@ -2943,6 +3022,9 @@
       });
       // Initial route
       onHashChange();
+      // L: populate topbar profile + guard after OAuth callback
+      refreshUserProfile();
+      if (_oauthJustExtracted) oauthPostLoginGuard();
 
       // F.6: status pill — initial fetch + polling co 10s
       fetchSystemStatus();
