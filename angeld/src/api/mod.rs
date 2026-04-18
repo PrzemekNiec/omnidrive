@@ -4,6 +4,7 @@ mod diagnostics;
 pub mod error;
 mod files;
 mod maintenance;
+mod oauth;
 mod onboarding;
 mod recovery;
 mod settings;
@@ -148,6 +149,8 @@ impl ApiServer {
             .merge(stats::routes())
             // ── Settings (Epic 36 G.10) ──
             .merge(settings::routes())
+            // ── Google OAuth2 (Sesja C) ──
+            .merge(oauth::routes())
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)

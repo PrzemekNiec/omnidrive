@@ -37,6 +37,13 @@ pub struct AppConfig {
     pub peer_stale_after_ms: u64,
     pub peer_error_backoff_ms: u64,
     pub device_name_override: Option<String>,
+    // Google OAuth2 (Sesja C)
+    pub google_client_id: Option<String>,
+    pub google_client_secret: Option<String>,
+    pub oauth_redirect_url: String,
+    pub oauth_google_auth_url: String,
+    pub oauth_google_token_url: String,
+    pub oauth_google_userinfo_url: String,
 }
 
 impl AppConfig {
@@ -119,6 +126,16 @@ impl AppConfig {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
+            google_client_id: env::var("GOOGLE_CLIENT_ID").ok().filter(|s| !s.is_empty()),
+            google_client_secret: env::var("GOOGLE_CLIENT_SECRET").ok().filter(|s| !s.is_empty()),
+            oauth_redirect_url: env::var("OAUTH_REDIRECT_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8787/api/auth/google/callback".to_string()),
+            oauth_google_auth_url: env::var("OMNIDRIVE_OAUTH_GOOGLE_AUTH_URL")
+                .unwrap_or_else(|_| "https://accounts.google.com/o/oauth2/v2/auth".to_string()),
+            oauth_google_token_url: env::var("OMNIDRIVE_OAUTH_GOOGLE_TOKEN_URL")
+                .unwrap_or_else(|_| "https://oauth2.googleapis.com/token".to_string()),
+            oauth_google_userinfo_url: env::var("OMNIDRIVE_OAUTH_GOOGLE_USERINFO_URL")
+                .unwrap_or_else(|_| "https://www.googleapis.com/oauth2/v3/userinfo".to_string()),
         }
     }
 
