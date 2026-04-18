@@ -932,6 +932,14 @@
             </div>
           </div>
         </section>
+
+        <!-- Sekcja 4: Bezpieczeństwo — Safety Numbers (M.3) -->
+        <section class="glass-panel rounded-2xl p-6 space-y-6" id="safetyNumbersSection">
+          <h2 class="text-[10px] font-bold uppercase tracking-widest text-slate-400 border-b border-white/5 pb-3">Bezpieczeństwo — Safety Numbers</h2>
+          <div id="safetyNumbersContent">
+            <p class="text-xs text-slate-400">Ładowanie…</p>
+          </div>
+        </section>
       </div>
     </div>
 
@@ -1845,6 +1853,7 @@
     const VAULT_STATE = {
       unlocked: null,          // null=unknown, true, false
       sessionToken: null,      // Bearer token z /api/unlock
+      deviceId: null,          // populated from /api/vault/safety-numbers response
       vk_generation: null,
       recovery: null,          // StatusResponse z /api/recovery/status
       loading: false,
@@ -2679,6 +2688,88 @@
       }
     }
 
+    async function loadSafetyNumbers() {
+      const container = document.getElementById('safetyNumbersContent');
+      if (!container) return;
+
+      const token = VAULT_STATE.sessionToken;
+      if (!token) {
+        container.innerHTML = '<p class="text-xs text-slate-400">Vault jest zablokowany. Odblokuj, aby zobaczyć Safety Numbers.</p>';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/vault/safety-numbers', {
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        });
+        if (!res.ok) {
+          container.innerHTML = '<p class="text-xs text-error">Nie udało się pobrać Safety Numbers.</p>';
+          return;
+        }
+        const data = await res.json();
+        const nums = data.safety_numbers || '';
+        const gen  = data.key_generation ?? 0;
+        const verifiedAt = data.verified_at;
+        if (data.device_id) VAULT_STATE.deviceId = data.device_id;
+
+        const verifiedLabel = verifiedAt
+          ? `Ostatnia weryfikacja: ${new Date(verifiedAt * 1000).toLocaleString('pl-PL')}`
+          : 'Niezweryfikowano';
+
+        const blocks = nums.split(' ');
+        const row1 = blocks.slice(0, 6).join('&nbsp;&nbsp;');
+        const row2 = blocks.slice(6, 12).join('&nbsp;&nbsp;');
+
+        container.innerHTML = `
+          <p class="text-xs text-slate-400 mb-3">Generacja klucza: <span class="font-mono text-slate-200">${gen}</span></p>
+          <div class="bg-surface-container-high/50 rounded-xl p-4 space-y-2 mb-4">
+            <p class="font-mono text-lg tracking-widest text-on-surface text-center select-all">${row1}</p>
+            <p class="font-mono text-lg tracking-widest text-on-surface text-center select-all">${row2}</p>
+          </div>
+          <div class="flex flex-col items-center gap-2 mb-4">
+            <div id="safetyQrCanvas" class="rounded-xl overflow-hidden bg-white p-2"></div>
+            <p class="text-[10px] text-slate-400">Zeskanuj, aby zweryfikować urządzenie</p>
+          </div>
+          <div class="flex items-center justify-between gap-4 border-t border-white/5 pt-4">
+            <p class="text-xs text-slate-400">${verifiedLabel}</p>
+            <button id="markVerifiedBtn"
+              class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-secondary/10 text-secondary border border-secondary/20 hover:bg-secondary/20 transition-colors">
+              <span class="material-symbols-outlined text-base">verified</span>
+              Oznacz jako zweryfikowane
+            </button>
+          </div>`;
+
+        const qrEl = document.getElementById('safetyQrCanvas');
+        if (qrEl && typeof QRCode !== 'undefined') {
+          new QRCode(qrEl, {
+            text: nums.replace(/ /g, ''),
+            width: 180,
+            height: 180,
+            colorDark: '#0f172a',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M,
+          });
+        }
+
+        const verifyBtn = document.getElementById('markVerifiedBtn');
+        if (verifyBtn) {
+          verifyBtn.addEventListener('click', async () => {
+            const deviceId = VAULT_STATE.deviceId;
+            if (!deviceId) return;
+            try {
+              const r = await fetch(`/api/devices/${deviceId}/verify`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+              });
+              if (r.ok) loadSafetyNumbers();
+            } catch (_) {}
+          });
+        }
+      } catch (err) {
+        container.innerHTML = `<p class="text-xs text-error">Błąd: ${err.message}</p>`;
+      }
+    }
+
     async function loadUstawieniaPathsAndCache() {
       const [pathsResult, healthResult] = await Promise.allSettled([
         fetch('/api/settings/paths',      { headers: { Accept: 'application/json' } }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
@@ -2850,6 +2941,7 @@
         loadUstawieniaShell(),
         loadUstawieniaSession(),
         loadUstawieniaPathsAndCache(),
+        loadSafetyNumbers(),
       ]);
     }
 
