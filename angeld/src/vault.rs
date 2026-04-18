@@ -86,6 +86,23 @@ impl UnlockedVaultKeys {
     fn previous_envelope_vault_key(&self) -> Option<KeyBytes> {
         self.previous_envelope_vault_key.as_ref().map(|k| *k.expose_secret())
     }
+
+    fn safety_numbers(&self, user_id: &str) -> Option<String> {
+        use sha2::{Digest, Sha256};
+        let evk = self.envelope_vault_key()?;
+        let mut hasher = Sha256::new();
+        hasher.update(evk);
+        hasher.update(user_id.as_bytes());
+        let hash = hasher.finalize();
+        let blocks: Vec<String> = hash[..24]
+            .chunks(2)
+            .map(|pair| {
+                let val = u16::from_be_bytes([pair[0], pair[1]]);
+                format!("{:05}", val)
+            })
+            .collect();
+        Some(blocks.join(" "))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -232,6 +249,10 @@ impl VaultKeyStore {
     #[allow(dead_code)]
     pub async fn previous_envelope_key(&self) -> Option<KeyBytes> {
         self.inner.read().await.as_ref().and_then(|k| k.previous_envelope_vault_key())
+    }
+
+    pub async fn safety_numbers(&self, user_id: &str) -> Option<String> {
+        self.inner.read().await.as_ref()?.safety_numbers(user_id)
     }
 
     /// Clear the previous envelope key once all DEKs have been re-wrapped.
@@ -949,6 +970,37 @@ mod tests {
         let (_, dek_a_relock) = store2.get_or_create_dek(&pool, 10).await?;
         assert_eq!(*dek_a_relock.expose_secret(), dek_a_bytes);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn safety_numbers_correct_format() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "test-passphrase").await?;
+
+        let nums = store.safety_numbers("user-abc").await;
+        if let Some(s) = nums {
+            assert_eq!(s.len(), 59, "expected 59 chars, got: {s}");
+            let parts: Vec<&str> = s.split(' ').collect();
+            assert_eq!(parts.len(), 12);
+            for part in &parts {
+                assert_eq!(part.len(), 5);
+                assert!(part.chars().all(|c| c.is_ascii_digit()), "non-digit: {part}");
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn safety_numbers_stable() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "test-passphrase").await?;
+
+        let a = store.safety_numbers("user-xyz").await;
+        let b = store.safety_numbers("user-xyz").await;
+        assert_eq!(a, b);
         Ok(())
     }
 }
