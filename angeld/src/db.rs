@@ -1149,6 +1149,7 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+    ensure_column_exists(&pool, "devices", "safety_numbers_verified_at", "INTEGER").await?;
 
     sqlx::query(
         r#"
@@ -6536,6 +6537,32 @@ pub async fn get_device(pool: &SqlitePool, device_id: &str) -> Result<Option<Dev
     .await
 }
 
+pub async fn set_device_safety_verified(
+    pool: &SqlitePool,
+    device_id: &str,
+) -> Result<(), sqlx::Error> {
+    let now = epoch_secs();
+    sqlx::query("UPDATE devices SET safety_numbers_verified_at = ? WHERE device_id = ?")
+        .bind(now)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_device_safety_verified_at(
+    pool: &SqlitePool,
+    device_id: &str,
+) -> Result<Option<i64>, sqlx::Error> {
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT safety_numbers_verified_at FROM devices WHERE device_id = ?",
+    )
+    .bind(device_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(ts,)| ts))
+}
+
 pub async fn list_devices_for_user(
     pool: &SqlitePool,
     user_id: &str,
@@ -7991,5 +8018,26 @@ mod tests {
         create_oauth_state(&pool, "live-1", "v3", 600).await.unwrap();
         assert_eq!(delete_expired_oauth_states(&pool).await.unwrap(), 2);
         assert_eq!(get_and_delete_oauth_state(&pool, "live-1").await.unwrap().as_deref(), Some("v3"));
+    }
+
+    #[tokio::test]
+    async fn set_and_get_safety_verified_roundtrip() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('d1', 'u1', 'test', X'0102', 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let before = get_device_safety_verified_at(&pool, "d1").await.unwrap();
+        assert!(before.is_none());
+
+        set_device_safety_verified(&pool, "d1").await.unwrap();
+
+        let after = get_device_safety_verified_at(&pool, "d1").await.unwrap();
+        assert!(after.is_some());
+        assert!(after.unwrap() > 0);
     }
 }
