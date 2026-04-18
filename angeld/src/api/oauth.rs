@@ -42,7 +42,9 @@ async fn get_google_start(
     db::create_oauth_state(&state.pool, &oauth_state, &pkce_verifier, 600).await?;
 
     let url = format!(
-        "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
+        "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}\
+         &code_challenge={}&code_challenge_method=S256\
+         &access_type=offline&prompt=consent",
         cfg.oauth_google_auth_url,
         urlencoding::encode(&client_id),
         urlencoding::encode(&cfg.oauth_redirect_url),
@@ -66,6 +68,8 @@ struct CallbackQuery {
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -160,7 +164,8 @@ async fn get_google_callback(
             ApiError::Internal { message: "userinfo_parse_failed".to_string() }
         })?;
 
-    // Upsert user (INSERT OR IGNORE, then SELECT)
+    // Upsert user: create if new, update display_name/email/refresh_token if existing.
+    // INSERT OR IGNORE would silently skip updates for returning users.
     let display_name = userinfo
         .name
         .clone()
@@ -168,14 +173,19 @@ async fn get_google_callback(
         .unwrap_or_else(|| "Google User".to_string());
 
     let _ = sqlx::query(
-        "INSERT OR IGNORE INTO users \
-         (user_id, display_name, email, auth_provider, auth_subject, created_at) \
-         VALUES (?, ?, ?, 'google', ?, ?)",
+        "INSERT INTO users \
+         (user_id, display_name, email, auth_provider, auth_subject, google_refresh_token, created_at) \
+         VALUES (?, ?, ?, 'google', ?, ?, ?) \
+         ON CONFLICT(auth_provider, auth_subject) DO UPDATE SET \
+           display_name = excluded.display_name, \
+           email        = excluded.email, \
+           google_refresh_token = COALESCE(excluded.google_refresh_token, google_refresh_token)",
     )
     .bind(db::new_user_id())
     .bind(&display_name)
     .bind(userinfo.email.as_deref())
     .bind(&userinfo.sub)
+    .bind(token.refresh_token.as_deref())
     .bind(db::epoch_secs())
     .execute(&state.pool)
     .await;

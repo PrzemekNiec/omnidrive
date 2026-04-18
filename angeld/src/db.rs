@@ -1129,6 +1129,8 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+    // Sesja C: store Google refresh_token for session auto-renewal
+    ensure_column_exists(&pool, "users", "google_refresh_token", "TEXT").await?;
 
     sqlx::query(
         r#"
