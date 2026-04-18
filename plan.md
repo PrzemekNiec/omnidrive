@@ -1,7 +1,7 @@
 # OmniDrive — Plan Implementacyjny
 
-> Ostatnia aktualizacja: 2026-04-18 | Aktualna wersja: **v0.2.0** (commit `55a2a6a`)
-> Sesja z dnia 2026-04-18: Fazy H, I, J, K ukończone — następna Faza L (OAuth Frontend)
+> Ostatnia aktualizacja: 2026-04-18 | Aktualna wersja: **v0.2.0** (commit `6530194`)
+> Sesja z dnia 2026-04-18: Fazy H, I, J, K, L ukończone — następna Faza M (Safety Numbers)
 
 ## Status całego projektu
 
@@ -19,11 +19,12 @@
 | **Faza I** | API: `/api/vault/lock`, `/api/vault/rotate-key`, `/api/filesystem/policies`, sysinfo CPU | ✅ DONE `de0ce1b` |
 | **Faza J** | Pre-C: Refactor tożsamości UUID v4 + backfill legacy owner- IDs | ✅ DONE `13177b6` |
 | **Faza K** | Sesja C: Google OAuth2 Backend (PKCE, state DB, callback, refresh_token) | ✅ DONE `667b0d5` |
-| **Faza L** | Sesja D: OAuth Frontend (przycisk Google, profil w topbarze, #oauth_token) | ⬜ NEXT |
+| **Faza L** | Sesja D: OAuth Frontend (przycisk Google, profil w topbarze, #oauth_token) | ✅ DONE `6530194` |
 | **Faza M** | Sesja E: Safety Numbers + E2E multi-user + THREAT_MODEL | ⬜ TODO |
 | **Faza N** | Cleanup dead code + Release v0.3.0 | ⬜ TODO |
+| **Faza O** | Naprawa pojemności dysku O: — własna quota VFS zamiast C: (WinFSP/cfapi) | ⬜ BACKLOG |
 
-**Critical path:** L → M → N (~3-5 dni roboczych do v0.3.0)
+**Critical path:** M → N (~2-4 dni roboczych do v0.3.0)
 **Testy:** 77/77 lib testów zielone po Fazie K
 
 ---
