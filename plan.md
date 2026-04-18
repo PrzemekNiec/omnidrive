@@ -21,7 +21,7 @@
 | **Faza K** | Sesja C: Google OAuth2 Backend (PKCE, state DB, callback, refresh_token) | ✅ DONE `667b0d5` |
 | **Faza L** | Sesja D: OAuth Frontend (przycisk Google, profil w topbarze, #oauth_token) | ✅ DONE `6530194` |
 | **Faza M** | Sesja E: Safety Numbers + QR code + weryfikacja urządzenia | ✅ DONE `a267cf8` |
-| **Faza N** | Cleanup dead code + Release v0.3.0 | ⬜ TODO |
+| **Faza N** | Cleanup dead code + Release v0.3.0 | ⬜ TODO (następna sesja) |
 | **Faza O** | Naprawa pojemności dysku O: — własna quota VFS zamiast C: (WinFSP/cfapi) | ⬜ BACKLOG |
 
 **Critical path:** M → N (~2-4 dni roboczych do v0.3.0)
