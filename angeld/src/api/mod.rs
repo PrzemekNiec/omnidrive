@@ -6,6 +6,7 @@ mod files;
 mod maintenance;
 mod onboarding;
 mod recovery;
+mod settings;
 mod sharing;
 mod stats;
 mod vault;
@@ -141,6 +142,8 @@ impl ApiServer {
             .merge(recovery::routes())
             // ── Stats (Epic 36 G-BE) ──
             .merge(stats::routes())
+            // ── Settings (Epic 36 G.10) ──
+            .merge(settings::routes())
             .with_state(state)
             .layer(share_cors_layer());
 

@@ -796,6 +796,163 @@
       </section>
     </div>
 
+    <!-- ===== Widok: Ustawienia (G.10) ===== -->
+    <div id="view-ustawienia" data-view="ustawienia" class="hidden h-full overflow-y-auto">
+      <div class="p-8 max-w-4xl mx-auto space-y-8 pb-12">
+        <div>
+          <h1 class="text-3xl font-bold tracking-tight text-on-surface mb-1">Ustawienia</h1>
+          <p class="text-slate-400 text-sm">Konfiguracja daemona OmniDrive i środowiska systemowego.</p>
+        </div>
+
+        <!-- Sekcja 1: Ogólne -->
+        <section class="glass-panel rounded-2xl p-6 space-y-6">
+          <h2 class="text-[10px] font-bold uppercase tracking-widest text-slate-400 border-b border-white/5 pb-3">Ogólne</h2>
+
+          <!-- Autostart -->
+          <div class="flex items-start justify-between gap-6">
+            <div class="min-w-0">
+              <p class="text-sm font-semibold text-on-surface">Autostart z systemem</p>
+              <p class="text-xs text-slate-400 mt-0.5">Daemon uruchamia się automatycznie przy logowaniu. Klucz rejestru: <span class="font-mono text-[10px] text-slate-300">HKCU\…\Run\OmniDriveAngeld</span></p>
+            </div>
+            <button id="autostartToggle" role="switch" aria-checked="false"
+              class="relative flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200 bg-surface-variant focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              title="Przełącz autostart">
+              <span class="sr-only">Autostart z systemem</span>
+              <span id="autostartThumb"
+                class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-slate-400 shadow transition-transform duration-200"></span>
+            </button>
+          </div>
+
+          <!-- Częstotliwość odświeżania -->
+          <div class="flex items-center justify-between gap-6">
+            <div class="min-w-0">
+              <p class="text-sm font-semibold text-on-surface">Częstotliwość odświeżania dashboardu</p>
+              <p class="text-xs text-slate-400 mt-0.5">Dotyczy paneli KPI i statusu systemu. Zmiana obowiązuje od następnego odświeżenia strony.</p>
+            </div>
+            <select id="refreshIntervalSelect"
+              class="flex-shrink-0 bg-surface-container-high border border-white/10 text-sm text-on-surface rounded-xl px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary">
+              <option value="5000">5 sekund</option>
+              <option value="30000" selected>30 sekund</option>
+              <option value="60000">1 minuta</option>
+              <option value="300000">5 minut</option>
+            </select>
+          </div>
+
+          <!-- Status OAuth / Google -->
+          <div class="flex items-center justify-between gap-4 pt-1 border-t border-white/5">
+            <div class="flex items-center gap-3">
+              <span class="material-symbols-outlined text-slate-400">account_circle</span>
+              <div>
+                <p class="text-sm font-semibold text-on-surface">Połączenie z Google</p>
+                <p class="text-xs text-slate-400 mt-0.5" id="oauthStatusLine">Sprawdzanie sesji…</p>
+              </div>
+            </div>
+            <span id="oauthStatusBadge" class="px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400">—</span>
+          </div>
+        </section>
+
+        <!-- Sekcja 2: System i Powłoka -->
+        <section class="glass-panel rounded-2xl p-6 space-y-6">
+          <h2 class="text-[10px] font-bold uppercase tracking-widest text-slate-400 border-b border-white/5 pb-3">System i Powłoka</h2>
+
+          <!-- Shell Extension status -->
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <p class="text-sm font-semibold text-on-surface">Status Shell Extension</p>
+              <span id="shellExtBadge" class="px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400">—</span>
+            </div>
+            <div class="grid grid-cols-2 gap-3" id="shellChecksGrid">
+              <!-- dynamically populated -->
+              <div class="flex items-center gap-2 text-xs text-slate-400">
+                <span class="material-symbols-outlined text-base text-slate-600">radio_button_unchecked</span>
+                <span>Ładowanie…</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Ścieżki systemu -->
+          <div class="border-t border-white/5 pt-4 space-y-3">
+            <p class="text-sm font-semibold text-on-surface mb-2">Ścieżki systemowe</p>
+            <div class="grid grid-cols-1 gap-2">
+              <div class="flex items-center justify-between gap-4 bg-surface-container-high/50 rounded-xl px-4 py-2.5">
+                <span class="text-[10px] font-bold uppercase tracking-widest text-slate-400 flex-shrink-0">Cache</span>
+                <span class="font-mono text-xs text-slate-300 truncate text-right" id="pathCacheSize">—</span>
+              </div>
+              <div class="flex items-center justify-between gap-4 bg-surface-container-high/50 rounded-xl px-4 py-2.5">
+                <span class="text-[10px] font-bold uppercase tracking-widest text-slate-400 flex-shrink-0">Spool</span>
+                <span class="font-mono text-xs text-slate-300 truncate text-right" id="pathSpoolDir">—</span>
+              </div>
+              <div class="flex items-center justify-between gap-4 bg-surface-container-high/50 rounded-xl px-4 py-2.5">
+                <span class="text-[10px] font-bold uppercase tracking-widest text-slate-400 flex-shrink-0">Logi</span>
+                <span class="font-mono text-xs text-slate-300 truncate text-right" id="pathLogDir">—</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Sekcja 3: Zaawansowane i Diagnostyka -->
+        <section class="glass-panel rounded-2xl p-6 space-y-4">
+          <h2 class="text-[10px] font-bold uppercase tracking-widest text-slate-400 border-b border-white/5 pb-3">Zaawansowane i Diagnostyka</h2>
+
+          <div class="flex flex-wrap gap-3 pt-1">
+            <button id="openLogsBtn"
+              class="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-300 border border-white/10 hover:bg-white/5 transition-colors">
+              <span class="material-symbols-outlined text-base">folder_open</span>
+              Otwórz folder logów
+            </button>
+            <button id="restartDaemonBtn"
+              class="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-300 border border-white/10 hover:bg-white/5 transition-colors">
+              <span class="material-symbols-outlined text-base">restart_alt</span>
+              Zrestartuj Daemona
+            </button>
+          </div>
+
+          <div class="border-t border-white/5 pt-4">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <p class="text-sm font-semibold text-error">Factory Reset</p>
+                <p class="text-xs text-slate-400 mt-0.5">Usuwa lokalną bazę danych, klucze szyfrowania i cały stan Skarbca. Operacja nieodwracalna.</p>
+              </div>
+              <button id="factoryResetTriggerBtn"
+                class="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-error border border-error/30 hover:bg-error/10 transition-colors">
+                <span class="material-symbols-outlined text-base">delete_forever</span>
+                Factory Reset
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- ===== Modal: Factory Reset ===== -->
+    <div id="factoryResetModal" class="hidden fixed inset-0 z-[100] flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="factoryResetModalTitle">
+      <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" id="factoryResetModalBackdrop"></div>
+      <div class="relative z-10 glass-panel rounded-3xl p-8 max-w-md w-full mx-4 border border-error/30 shadow-2xl">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="material-symbols-outlined text-error text-3xl" style="font-variation-settings:'FILL' 1;">warning</span>
+          <h3 class="text-xl font-bold text-on-surface" id="factoryResetModalTitle">Potwierdzenie Factory Reset</h3>
+        </div>
+        <p class="text-sm text-slate-300 mb-2">Czy na pewno chcesz wykonać Factory Reset?</p>
+        <ul class="text-xs text-slate-400 space-y-1 mb-6 list-none">
+          <li class="flex items-center gap-2"><span class="material-symbols-outlined text-error text-sm">close</span>Lokalna baza danych zostanie usunięta</li>
+          <li class="flex items-center gap-2"><span class="material-symbols-outlined text-error text-sm">close</span>Klucze szyfrowania Skarbca zostaną usunięte</li>
+          <li class="flex items-center gap-2"><span class="material-symbols-outlined text-error text-sm">close</span>Dane w chmurze pozostają niezmienione</li>
+        </ul>
+        <p class="text-xs font-bold text-error mb-6">Ta operacja jest nieodwracalna.</p>
+        <div class="flex gap-3 justify-end">
+          <button id="factoryResetCancelBtn"
+            class="px-5 py-2.5 rounded-xl text-sm font-semibold text-slate-300 border border-white/10 hover:bg-white/5 transition-colors">
+            Anuluj
+          </button>
+          <button id="factoryResetConfirmBtn"
+            class="px-5 py-2.5 rounded-xl text-sm font-bold text-error border border-error/40 hover:bg-error/10 transition-colors flex items-center gap-2">
+            <span class="material-symbols-outlined text-base">delete_forever</span>
+            Tak, resetuj
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- F.7 DONE: placeholder dla widoków Sesji G -->
     <div id="view-placeholder" class="hidden flex-col items-center justify-center h-[calc(100vh-64px)] text-center px-8">
       <span class="material-symbols-outlined text-6xl text-slate-600 mb-4" id="placeholderIcon">construction</span>
@@ -2299,13 +2456,242 @@
       }
     }
 
+    // ── Widok: Ustawienia (G.10) ────────────────────────────────
+
+    const USTAWIENIA_STATE = { initialized: false };
+
+    const SHELL_CHECKS_CONFIG = [
+      { key: 'autostart_registered',   label: 'Autostart (HKCU\\Run)' },
+      { key: 'drive_present',          label: 'Wirtualny dysk O:\\' },
+      { key: 'context_menu_registered',label: 'Menu kontekstowe' },
+      { key: 'drive_icon_registered',  label: 'Ikona dysku' },
+    ];
+
+    function humanBytesShort(bytes) {
+      if (bytes == null) return '—';
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+      if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
+      return `${(bytes / 1073741824).toFixed(2)} GB`;
+    }
+
+    async function loadUstawieniaShell() {
+      try {
+        const res = await fetch('/api/diagnostics/shell', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const snap = data;
+
+        // Autostart toggle
+        const toggle = document.getElementById('autostartToggle');
+        const thumb  = document.getElementById('autostartThumb');
+        if (toggle && thumb) {
+          const on = !!snap.autostart_registered;
+          toggle.setAttribute('aria-checked', String(on));
+          toggle.classList.toggle('bg-primary', on);
+          toggle.classList.toggle('bg-surface-variant', !on);
+          thumb.classList.toggle('translate-x-5', on);
+          thumb.classList.toggle('bg-on-primary', on);
+          thumb.classList.toggle('bg-slate-400', !on);
+
+          toggle.onclick = async () => {
+            const current = toggle.getAttribute('aria-checked') === 'true';
+            try {
+              const r = await fetch('/api/settings/autostart', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: !current }),
+              });
+              if (!r.ok) throw new Error(`HTTP ${r.status}`);
+              const newOn = !current;
+              toggle.setAttribute('aria-checked', String(newOn));
+              toggle.classList.toggle('bg-primary', newOn);
+              toggle.classList.toggle('bg-surface-variant', !newOn);
+              thumb.classList.toggle('translate-x-5', newOn);
+              thumb.classList.toggle('bg-on-primary', newOn);
+              thumb.classList.toggle('bg-slate-400', !newOn);
+            } catch (err) {
+              console.error('autostart toggle failed:', err);
+            }
+          };
+        }
+
+        // Shell extension badge + 4-check grid
+        const allOk = SHELL_CHECKS_CONFIG.every(c => !!snap[c.key]);
+        const badge = document.getElementById('shellExtBadge');
+        if (badge) {
+          if (allOk) {
+            badge.textContent = 'Aktywny';
+            badge.className = 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-secondary/30 text-secondary bg-secondary/10';
+          } else {
+            badge.textContent = 'Niekompletny';
+            badge.className = 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-tertiary/30 text-tertiary';
+          }
+        }
+        const grid = document.getElementById('shellChecksGrid');
+        if (grid) {
+          grid.innerHTML = SHELL_CHECKS_CONFIG.map(c => {
+            const ok = !!snap[c.key];
+            return `<div class="flex items-center gap-2 text-xs ${ok ? 'text-secondary' : 'text-slate-500'}">
+              <span class="material-symbols-outlined text-base" style="font-variation-settings:'FILL' 1;">${ok ? 'check_circle' : 'cancel'}</span>
+              <span>${escapeHtml(c.label)}</span>
+            </div>`;
+          }).join('');
+        }
+      } catch (err) {
+        console.error('shell state fetch failed:', err);
+      }
+    }
+
+    async function loadUstawieniaSession() {
+      const line  = document.getElementById('oauthStatusLine');
+      const badge = document.getElementById('oauthStatusBadge');
+      try {
+        const res = await fetch('/api/auth/session', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const name = data.display_name || data.username || data.user_id || null;
+        if (line)  line.textContent  = name ? `Zalogowano jako ${name}` : 'Sesja lokalna (bez OAuth)';
+        if (badge) {
+          badge.textContent = name ? 'Połączono' : 'Lokalna';
+          badge.className   = name
+            ? 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-secondary/30 text-secondary'
+            : 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400';
+        }
+      } catch (_) {
+        if (line)  line.textContent  = 'Niepołączono';
+        if (badge) {
+          badge.textContent = 'Offline';
+          badge.className   = 'px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400';
+        }
+      }
+    }
+
+    async function loadUstawieniaPathsAndCache() {
+      // Paths
+      try {
+        const res = await fetch('/api/settings/paths', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json();
+        const spoolEl = document.getElementById('pathSpoolDir');
+        const logEl   = document.getElementById('pathLogDir');
+        if (spoolEl) spoolEl.textContent = d.spool_dir || '—';
+        if (logEl)   logEl.textContent   = d.log_dir   || '—';
+      } catch (err) {
+        console.error('paths fetch failed:', err);
+      }
+      // Cache size from diagnostics/health
+      try {
+        const res = await fetch('/api/diagnostics/health', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json();
+        const cacheEl = document.getElementById('pathCacheSize');
+        if (cacheEl) {
+          const bytes = d.cache_size_bytes ?? null;
+          cacheEl.textContent = bytes !== null ? humanBytesShort(bytes) : '—';
+        }
+      } catch (err) {
+        console.error('diagnostics/health fetch failed:', err);
+      }
+    }
+
+    function initUstawieniaActions() {
+      // Refresh interval select
+      const sel = document.getElementById('refreshIntervalSelect');
+      if (sel) {
+        const saved = localStorage.getItem('omnidrive.refreshInterval');
+        if (saved && sel.querySelector(`option[value="${saved}"]`)) sel.value = saved;
+        sel.addEventListener('change', () => {
+          localStorage.setItem('omnidrive.refreshInterval', sel.value);
+          location.reload();
+        });
+      }
+
+      // Open logs folder (copies path to clipboard)
+      const logsBtn = document.getElementById('openLogsBtn');
+      if (logsBtn) {
+        logsBtn.addEventListener('click', async () => {
+          const logEl = document.getElementById('pathLogDir');
+          const path  = logEl ? logEl.textContent.trim() : '';
+          if (path && path !== '—') {
+            try {
+              await navigator.clipboard.writeText(path);
+              logsBtn.textContent = '✓ Skopiowano ścieżkę';
+              setTimeout(() => {
+                logsBtn.innerHTML = '<span class="material-symbols-outlined text-base">folder_open</span> Otwórz folder logów';
+              }, 2000);
+            } catch (_) {}
+          }
+        });
+      }
+
+      // Restart daemon
+      const restartBtn = document.getElementById('restartDaemonBtn');
+      if (restartBtn) {
+        restartBtn.addEventListener('click', async () => {
+          restartBtn.disabled = true;
+          restartBtn.textContent = 'Restartowanie…';
+          try {
+            await fetch('/api/settings/restart-daemon', { method: 'POST' });
+          } catch (_) {}
+          setTimeout(() => {
+            restartBtn.disabled = false;
+            restartBtn.innerHTML = '<span class="material-symbols-outlined text-base">restart_alt</span> Zrestartuj Daemona';
+          }, 3000);
+        });
+      }
+
+      // Factory Reset modal
+      const modal   = document.getElementById('factoryResetModal');
+      const trigger = document.getElementById('factoryResetTriggerBtn');
+      const cancel  = document.getElementById('factoryResetCancelBtn');
+      const backdrop= document.getElementById('factoryResetModalBackdrop');
+      const confirm = document.getElementById('factoryResetConfirmBtn');
+      if (modal && trigger) {
+        const openModal  = () => modal.classList.remove('hidden');
+        const closeModal = () => modal.classList.add('hidden');
+        trigger.addEventListener('click', openModal);
+        cancel && cancel.addEventListener('click', closeModal);
+        backdrop && backdrop.addEventListener('click', closeModal);
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+        if (confirm) {
+          confirm.addEventListener('click', async () => {
+            confirm.disabled = true;
+            confirm.textContent = 'Resetowanie…';
+            try {
+              const res = await fetch('/api/onboarding/reset', { method: 'POST' });
+              if (res.ok) {
+                closeModal();
+                location.reload();
+              } else {
+                confirm.textContent = 'Błąd — spróbuj ponownie';
+                confirm.disabled = false;
+              }
+            } catch (_) {
+              confirm.textContent = 'Błąd sieci';
+              confirm.disabled = false;
+            }
+          });
+        }
+      }
+    }
+
+    function activateUstawieniaView() {
+      if (!USTAWIENIA_STATE.initialized) {
+        USTAWIENIA_STATE.initialized = true;
+        initUstawieniaActions();
+      }
+      loadUstawieniaShell();
+      loadUstawieniaSession();
+      loadUstawieniaPathsAndCache();
+    }
+
     // ── Hash router (F.7) ───────────────────────────────────────
     const VALID_VIEWS = ['przeglad', 'pliki', 'skarbiec', 'multi-device', 'chmura', 'audyt', 'ustawienia'];
     const PLACEHOLDER_META = {
-      'multi-device': { icon: 'devices',             title: 'Multi-Device' },
-      chmura:         { icon: 'cloud',               title: 'Chmura' },
-      audyt:          { icon: 'analytics',           title: 'Audyt' },
-      ustawienia:     { icon: 'settings',            title: 'Ustawienia' },
+      'multi-device': { icon: 'devices',   title: 'Multi-Device' },
+      chmura:         { icon: 'cloud',     title: 'Chmura' },
+      audyt:          { icon: 'analytics', title: 'Audyt' },
     };
 
     function currentView() {
@@ -2326,7 +2712,7 @@
       if (skarbiec) skarbiec.classList.add('hidden');
       const multiDevice = document.getElementById('view-multi-device');
       if (multiDevice) multiDevice.classList.add('hidden');
-      ['view-chmura', 'view-audyt'].forEach(id => { const el = document.getElementById(id); if (el) el.classList.add('hidden'); });
+      ['view-chmura', 'view-audyt', 'view-ustawienia'].forEach(id => { const el = document.getElementById(id); if (el) el.classList.add('hidden'); });
       placeholder.classList.add('hidden');
       placeholder.classList.remove('flex');
 
@@ -2347,6 +2733,9 @@
       } else if (view === 'audyt') {
         document.getElementById('view-audyt').classList.remove('hidden');
         activateAudytView();
+      } else if (view === 'ustawienia') {
+        document.getElementById('view-ustawienia').classList.remove('hidden');
+        activateUstawieniaView();
       } else {
         placeholder.classList.remove('hidden');
         placeholder.classList.add('flex');
@@ -2377,6 +2766,8 @@
 
     // ── Init ──────────────────────────────────────────────────────
     (function init() {
+      // G.10: apply saved refresh interval (default 30 000 ms)
+      const _savedInterval = parseInt(localStorage.getItem('omnidrive.refreshInterval') || '30000', 10) || 30000;
       // F.7: hash router
       window.addEventListener('hashchange', onHashChange);
       // Prevent default link behavior, set hash instead
@@ -2406,12 +2797,12 @@
       attachRecoveryCta();
       fetchRecoveryStatus();
 
-      // G.4: stats — initial fetch + polling wg planu (KPI 30s, chart 60s, tiles 5s)
+      // G.4: stats — initial fetch + polling (KPI: user-configured interval, chart 60s, tiles 5s)
       fetchStatsOverview();
       fetchStatsTraffic();
       fetchStatsSystem();
-      setInterval(fetchStatsOverview, 30_000);
-      setInterval(fetchStatsTraffic,  60_000);
+      setInterval(fetchStatsOverview, _savedInterval);
+      setInterval(fetchStatsTraffic,  Math.max(_savedInterval * 2, 60_000));
       setInterval(fetchStatsSystem,    5_000);
 
       // G.4: manual refresh (wszystkie panele naraz)
