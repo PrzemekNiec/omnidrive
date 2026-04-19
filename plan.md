@@ -170,19 +170,19 @@ Cel: zamknąć architektonicznie fakt, że **daemon nie komunikuje się z public
 - 10 plików z `#![allow(dead_code)]` na poziomie modułu → dodano komentarze `// reserved for Epic X` (identity→E30, onboarding→E30, downloader/packer→E33.2, uploader→E32.5/33, gc/repair/scrubber/migrator/watcher→future epics).
 - Granularne `#[allow(dead_code)]` per-item w `db.rs`, `vault.rs` etc. — pozostawione bez zmian (już właściwe).
 
-### N.3 — Hybrid E2E tests (D2 zatwierdzone) ← NASTĘPNA SESJA
+### N.2 — Hybrid E2E tests (D2 zatwierdzone) ← NASTĘPNA SESJA
 - Unit/integration: mockito (istniejący w dev-deps) dla S3 API roundtrip
 - Manual smoke na real B2/R2 przed tagiem v0.3.0 (Lenovo): unlock → create file → observe encrypted chunk upload → lock → unlock → read back
 - **Cross-device Identicon + mnemonic test (N.3-bis, D-decision):** na Dellu `Join Existing Vault` → weryfikacja byte-identycznego SVG + identycznych 12 słów BIP-39 jak na Lenovo. Wynik → `CHANGELOG.md` v0.3.0.
 
-### N.4 — Bump wersji do 0.3.0 + payload + instalator
+### N.3 — Bump wersji do 0.3.0 + payload + instalator
 - Wszystkie `Cargo.toml` (angeld, omnidrive-core, angelctl) + `installer/omnidrive.iss` → `0.2.0 → 0.3.0`
 - `cargo build --release --workspace`
 - `cp target/release/*.exe dist/installer/payload/` + `cp angeld/static/* dist/installer/payload/static/` → Inno Setup
 - `CHANGELOG.md` wpis v0.3.0 (Faza M.5 BIP-39+Identicon, Faza M.6 Local-First lock-in, N release)
 - SHA-256 instalatora opublikowany w GitHub Releases + w `README.md`
 
-### N.5 — Release
+### N.4 — Release
 - Pełny flow smoke: unlock → share (LAN Tryb A) → join → verify (Identicon+mnemonic match) → lock
 - Commit `release: v0.3.0`, push, tag `v0.3.0`
 
@@ -201,7 +201,7 @@ Cel: zamknąć architektonicznie fakt, że **daemon nie komunikuje się z public
 | `angeld/src/vault.rs` | N.1 |
 | `angeld/src/db.rs` | M.1 (Safety Numbers fingerprint) |
 | `omnidrive-core/src/` | M.1 (safety_number.rs) |
-| `installer/omnidrive.iss` | N.3 |
+| `installer/omnidrive.iss` | N.3 (version bump) |
 | `docs/THREAT_MODEL.md` | M.4 |
 
 ---
