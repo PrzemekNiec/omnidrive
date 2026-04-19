@@ -8,6 +8,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
   <script src="/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jdenticon@3.2.0/dist/jdenticon.min.js" async></script>
   <script id="tailwind-config">
     tailwind.config = {
       darkMode: "class",
@@ -2708,6 +2709,7 @@
         }
         const data = await res.json();
         const nums = data.safety_numbers || '';
+        const mnemonic = data.mnemonic || '';
         const gen  = data.key_generation ?? 0;
         const verifiedAt = data.verified_at;
         if (data.device_id) VAULT_STATE.deviceId = data.device_id;
@@ -2716,21 +2718,52 @@
           ? `Ostatnia weryfikacja: ${new Date(verifiedAt * 1000).toLocaleString('pl-PL')}`
           : 'Niezweryfikowano';
 
+        const digits = nums.replace(/ /g, '');
         const blocks = nums.split(' ');
         const row1 = blocks.slice(0, 6).join('&nbsp;&nbsp;');
         const row2 = blocks.slice(6, 12).join('&nbsp;&nbsp;');
 
+        const words = mnemonic.split(/\s+/).filter(Boolean);
+        const wordsHtml = words.map((w, i) => `
+          <li class="flex items-center gap-2 bg-surface-container-high/40 rounded-lg px-2.5 py-1.5">
+            <span class="font-mono text-[10px] text-slate-500 w-4 text-right">${i + 1}.</span>
+            <span class="font-mono text-sm text-on-surface select-all">${escapeHtml(w)}</span>
+          </li>`).join('');
+
         container.innerHTML = `
-          <p class="text-xs text-slate-400 mb-3">Generacja klucza: <span class="font-mono text-slate-200">${gen}</span></p>
-          <div class="bg-surface-container-high/50 rounded-xl p-4 space-y-2 mb-4">
-            <p class="font-mono text-lg tracking-widest text-on-surface text-center select-all">${row1}</p>
-            <p class="font-mono text-lg tracking-widest text-on-surface text-center select-all">${row2}</p>
+          <p class="text-xs text-slate-400 mb-4">Generacja klucza: <span class="font-mono text-slate-200">${gen}</span></p>
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <!-- Lewo: Identicon -->
+            <div class="flex flex-col items-center gap-3">
+              <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Wzór wizualny</p>
+              <div class="rounded-xl bg-white p-3 shadow-inner">
+                <svg id="safetyIdenticon" width="160" height="160" data-jdenticon-value="${escapeHtml(digits)}"></svg>
+              </div>
+              <p class="text-[10px] text-slate-400 text-center max-w-[180px]">Porównaj kształt i kolory z drugim urządzeniem.</p>
+            </div>
+
+            <!-- Środek: Mnemonic -->
+            <div class="flex flex-col gap-3">
+              <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Słowa mnemoniczne (BIP-39)</p>
+              <ul class="grid grid-cols-2 gap-1.5" aria-label="12 słów mnemonicznych">${wordsHtml}</ul>
+              <p class="text-[10px] text-slate-400">Odczytaj słowa w tej samej kolejności na drugim urządzeniu.</p>
+            </div>
+
+            <!-- Prawo: Cyfry + QR -->
+            <div class="flex flex-col gap-3">
+              <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Cyfry (60) + QR</p>
+              <div class="bg-surface-container-high/50 rounded-xl p-3 space-y-1.5">
+                <p class="font-mono text-base tracking-widest text-on-surface text-center select-all">${row1}</p>
+                <p class="font-mono text-base tracking-widest text-on-surface text-center select-all">${row2}</p>
+              </div>
+              <div class="flex flex-col items-center gap-1.5">
+                <div id="safetyQrCanvas" class="rounded-lg overflow-hidden bg-white p-2"></div>
+                <p class="text-[10px] text-slate-400">QR zawiera wyłącznie surowe cyfry</p>
+              </div>
+            </div>
           </div>
-          <div class="flex flex-col items-center gap-2 mb-4">
-            <div id="safetyQrCanvas" class="rounded-xl overflow-hidden bg-white p-2"></div>
-            <p class="text-[10px] text-slate-400">Zeskanuj, aby zweryfikować urządzenie</p>
-          </div>
-          <div class="flex items-center justify-between gap-4 border-t border-white/5 pt-4">
+
+          <div class="flex items-center justify-between gap-4 border-t border-white/5 pt-4 mt-5">
             <p class="text-xs text-slate-400">${verifiedLabel}</p>
             <button id="markVerifiedBtn"
               class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-secondary/10 text-secondary border border-secondary/20 hover:bg-secondary/20 transition-colors">
@@ -2739,12 +2772,16 @@
             </button>
           </div>`;
 
+        if (typeof jdenticon !== 'undefined') {
+          jdenticon.update('#safetyIdenticon');
+        }
+
         const qrEl = document.getElementById('safetyQrCanvas');
         if (qrEl && typeof QRCode !== 'undefined') {
           new QRCode(qrEl, {
-            text: nums.replace(/ /g, ''),
-            width: 180,
-            height: 180,
+            text: digits,
+            width: 150,
+            height: 150,
             colorDark: '#0f172a',
             colorLight: '#ffffff',
             correctLevel: QRCode.CorrectLevel.M,

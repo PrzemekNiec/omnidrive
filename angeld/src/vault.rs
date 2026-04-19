@@ -1,4 +1,5 @@
 use crate::{db, identity};
+use bip39::Mnemonic;
 use hkdf::Hkdf;
 use omnidrive_core::crypto::{
     CryptoError, KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_kek, derive_root_keys,
@@ -87,13 +88,20 @@ impl UnlockedVaultKeys {
         self.previous_envelope_vault_key.as_ref().map(|k| *k.expose_secret())
     }
 
-    fn safety_numbers(&self, user_id: &str) -> Option<String> {
+    /// Deterministic 32-byte SHA-256 fingerprint of `envelope_vault_key || user_id`.
+    /// Shared source of truth for the 60-digit numbers, the 12-word mnemonic,
+    /// and the identicon — all three must stay in sync.
+    fn fingerprint(&self, user_id: &str) -> Option<[u8; 32]> {
         use sha2::{Digest, Sha256};
         let evk = self.envelope_vault_key()?;
         let mut hasher = Sha256::new();
         hasher.update(evk);
         hasher.update(user_id.as_bytes());
-        let hash = hasher.finalize();
+        Some(hasher.finalize().into())
+    }
+
+    fn safety_numbers(&self, user_id: &str) -> Option<String> {
+        let hash = self.fingerprint(user_id)?;
         let blocks: Vec<String> = hash[..24]
             .chunks(2)
             .map(|pair| {
@@ -102,6 +110,13 @@ impl UnlockedVaultKeys {
             })
             .collect();
         Some(blocks.join(" "))
+    }
+
+    fn safety_mnemonic(&self, user_id: &str) -> Option<String> {
+        let hash = self.fingerprint(user_id)?;
+        // 16 bytes = 128 bits of entropy → 12-word English BIP-39 phrase.
+        let mnemonic = Mnemonic::from_entropy(&hash[..16]).ok()?;
+        Some(mnemonic.to_string())
     }
 }
 
@@ -253,6 +268,10 @@ impl VaultKeyStore {
 
     pub async fn safety_numbers(&self, user_id: &str) -> Option<String> {
         self.inner.read().await.as_ref()?.safety_numbers(user_id)
+    }
+
+    pub async fn safety_mnemonic(&self, user_id: &str) -> Option<String> {
+        self.inner.read().await.as_ref()?.safety_mnemonic(user_id)
     }
 
     /// Clear the previous envelope key once all DEKs have been re-wrapped.
@@ -979,15 +998,14 @@ mod tests {
         let store = VaultKeyStore::new();
         store.unlock(&pool, "test-passphrase").await?;
 
-        let nums = store.safety_numbers("user-abc").await;
-        if let Some(s) = nums {
-            assert_eq!(s.len(), 59, "expected 59 chars, got: {s}");
-            let parts: Vec<&str> = s.split(' ').collect();
-            assert_eq!(parts.len(), 12);
-            for part in &parts {
-                assert_eq!(part.len(), 5);
-                assert!(part.chars().all(|c| c.is_ascii_digit()), "non-digit: {part}");
-            }
+        let s = store.safety_numbers("user-abc").await.expect("safety numbers");
+        // 12 groups × 5 digits = 60 digits, joined by 11 single-space separators → 71 chars.
+        assert_eq!(s.len(), 71, "expected 71 chars, got: {s}");
+        let parts: Vec<&str> = s.split(' ').collect();
+        assert_eq!(parts.len(), 12);
+        for part in &parts {
+            assert_eq!(part.len(), 5);
+            assert!(part.chars().all(|c| c.is_ascii_digit()), "non-digit: {part}");
         }
         Ok(())
     }
@@ -1001,6 +1019,40 @@ mod tests {
         let a = store.safety_numbers("user-xyz").await;
         let b = store.safety_numbers("user-xyz").await;
         assert_eq!(a, b);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn safety_mnemonic_is_12_english_words_and_stable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "test-passphrase").await?;
+
+        let a = store.safety_mnemonic("user-abc").await.expect("mnemonic");
+        let b = store.safety_mnemonic("user-abc").await.expect("mnemonic");
+        assert_eq!(a, b, "mnemonic must be deterministic for the same user");
+
+        let words: Vec<&str> = a.split_whitespace().collect();
+        assert_eq!(words.len(), 12, "expected 12 words, got {}: {a}", words.len());
+        for w in &words {
+            assert!(w.chars().all(|c| c.is_ascii_lowercase()), "non-lowercase: {w}");
+        }
+
+        // Must round-trip through BIP-39 parser (checksum is valid).
+        let _ = a.parse::<Mnemonic>().expect("valid BIP-39 phrase");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn safety_mnemonic_differs_per_user() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "test-passphrase").await?;
+
+        let a = store.safety_mnemonic("user-a").await;
+        let b = store.safety_mnemonic("user-b").await;
+        assert_ne!(a, b);
         Ok(())
     }
 }

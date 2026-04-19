@@ -952,6 +952,14 @@ async fn get_safety_numbers(
             message: "vault locked or no session".to_string(),
         })?;
 
+    let mnemonic = state
+        .vault_keys
+        .safety_mnemonic(&caller.user_id)
+        .await
+        .ok_or(ApiError::Unauthorized {
+            message: "vault locked or no session".to_string(),
+        })?;
+
     let vault = db::get_vault_params(&state.pool)
         .await
         .map_err(|e| ApiError::Internal { message: e.to_string() })?;
@@ -966,9 +974,11 @@ async fn get_safety_numbers(
         "[SAFETY_NUMBERS] generated for user={} [key_material: REDACTED]",
         caller.user_id
     );
+    tracing::info!("[MNEMONIC GENERATED] [REDACTED]");
 
     Ok(Json(serde_json::json!({
         "safety_numbers": numbers,
+        "mnemonic": mnemonic,
         "key_generation": key_generation,
         "verified_at": verified_at,
         "device_id": caller.device_id,
