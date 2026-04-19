@@ -1,3 +1,4 @@
+// reserved for future auto-sync epic (FS watcher; disabled in CLAUDE.md during dev)
 #![allow(dead_code)]
 
 use crate::config::AppConfig;

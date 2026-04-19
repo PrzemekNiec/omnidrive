@@ -1,3 +1,4 @@
+// reserved for Epic 30 (Join Existing Vault / Grafting flow)
 #![allow(dead_code)]
 
 use crate::cloud_guard::{self, GuardOperation};

@@ -1,3 +1,4 @@
+// reserved for future migration epic (V1→V2 on-disk format upgrade)
 #![allow(dead_code)]
 
 use crate::db;

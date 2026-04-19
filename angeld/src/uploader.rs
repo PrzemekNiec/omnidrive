@@ -1,3 +1,4 @@
+// reserved for Epic 32.5 / Epic 33 (DEK-envelope upload to B2/R2)
 #![allow(dead_code)]
 
 use crate::cloud_guard::{self, GuardOperation};

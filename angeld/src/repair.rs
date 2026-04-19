@@ -1,3 +1,4 @@
+// reserved for future repair epic (shard reconstruction after partial upload failure)
 #![allow(dead_code)]
 
 use crate::db;

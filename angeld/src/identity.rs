@@ -1,3 +1,4 @@
+// reserved for Epic 30 (device identity, Vault Key derivation per-device)
 #![allow(dead_code)]
 
 use aes_gcm::aead::{Aead, KeyInit};

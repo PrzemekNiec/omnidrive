@@ -1,3 +1,4 @@
+// reserved for future integrity-scrubbing epic (periodic hash verification of stored shards)
 #![allow(dead_code)]
 
 use crate::db;

@@ -1,3 +1,4 @@
+// reserved for Epic 33.2 (ZK share download + DEK unwrap flow)
 #![allow(dead_code)]
 
 use crate::cache::{CacheError, CacheManager};

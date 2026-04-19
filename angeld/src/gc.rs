@@ -1,3 +1,4 @@
+// reserved for future GC epic (orphaned-shard cleanup, B2/R2 cost control)
 #![allow(dead_code)]
 
 use crate::db;

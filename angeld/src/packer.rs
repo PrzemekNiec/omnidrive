@@ -1,3 +1,4 @@
+// reserved for Epic 33.2 (erasure-coded shard packing for ZK share links)
 #![allow(dead_code)]
 
 use crate::db;
