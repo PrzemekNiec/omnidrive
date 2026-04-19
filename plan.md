@@ -27,7 +27,7 @@
 | **Faza N** | Cleanup dead code + hybrid E2E + cross-device Identicon test + Release v0.3.0 | ⬜ TODO |
 | **Epic 33 Tryb A** | Dopięcie dynamic host w share-link generator (wyjście z hardkodowanego `localhost`) | ⬜ TODO (równolegle z M.6) |
 | **Faza O.1** | Quota fix — raportowanie pojemności O: z cloud quota (B2/R2) zamiast C: | ⬜ TODO (po N) |
-| **Epic 33 Tryb B** | Public shares przez GH Pages (`skarbiec.app/s/…`) + static decryptor | ⬜ BACKLOG (po v0.3.0) |
+| **Epic 33 Tryb B** | Public shares przez CF Pages (`skarbiec.app/s/…`) + static decryptor | ⬜ BACKLOG (po v0.3.0) |
 | **Faza O.2+** | Cross-platform VFS Foundation (FileSystemAdapter trait, FUSE prototyp) | ⬜ BACKLOG |
 | **Faza P→S** | Core extraction + Mobile V1 (read-only snapshot) → V2 (read-write) | ⬜ BACKLOG (po v0.4.0) |
 
@@ -125,7 +125,7 @@ Trzy reprezentacje tego samego `fingerprint` (shared helper w `vault.rs`):
 
 ## Następna: Faza M.6 — Local-First Lock-in (~1-2 dni)
 
-Cel: zamknąć architektonicznie fakt, że **daemon nie komunikuje się z publicznym internetem**. Domena `skarbiec.app` wraca **wyłącznie** jako host static content (GH Pages: decryptor Trybu B + landing) — daemon ma pozostać głuchy. Szczegóły strategiczne: `roadmap.md §1 M.6`.
+Cel: zamknąć architektonicznie fakt, że **daemon nie komunikuje się z publicznym internetem**. Domena `skarbiec.app` wraca **wyłącznie** jako host static content (CF Pages: decryptor Trybu B + landing) — daemon ma pozostać głuchy. Szczegóły strategiczne: `roadmap.md §1 M.6`.
 
 ### M.6.1 — CORS cleanup (`angeld/src/api/mod.rs:221-235`)
 - **USUNĄĆ** gałąź `origin == b"https://skarbiec.app"` z `share_cors_layer()`. Allowlist = loopback + LAN only.
@@ -150,7 +150,7 @@ Cel: zamknąć architektonicznie fakt, że **daemon nie komunikuje się z public
 - Nowy rozdział w `README.md` dla developerów/contributorów:
   - Daemon słucha tylko `127.0.0.1:8787` (opcjonalnie LAN dla Trybu A)
   - OAuth redirect wyłącznie loopback (RFC 8252)
-  - Domena `skarbiec.app` = static content delivery (GH Pages), nigdy runtime
+  - Domena `skarbiec.app` = static content delivery (CF Pages), nigdy runtime
   - Zero Cloudflare Tunnel, zero publicznego daemona
 
 ### M.6.6 — Dynamic share host (`angeld/src/api/sharing.rs:172`)
