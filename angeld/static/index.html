@@ -2720,8 +2720,15 @@
 
         const digits = nums.replace(/ /g, '');
         const blocks = nums.split(' ');
-        const row1 = blocks.slice(0, 6).join('&nbsp;&nbsp;');
-        const row2 = blocks.slice(6, 12).join('&nbsp;&nbsp;');
+        const digitRows = [
+          blocks.slice(0, 3).join(' '),
+          blocks.slice(3, 6).join(' '),
+          blocks.slice(6, 9).join(' '),
+          blocks.slice(9, 12).join(' '),
+        ];
+        const digitsHtml = digitRows.map(r =>
+          `<p class="font-mono text-sm text-on-surface text-center select-all whitespace-nowrap">${r}</p>`
+        ).join('');
 
         const words = mnemonic.split(/\s+/).filter(Boolean);
         const wordsHtml = words.map((w, i) => `
@@ -2752,10 +2759,7 @@
             <!-- Prawo: Cyfry + QR -->
             <div class="flex flex-col gap-3">
               <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Cyfry (60) + QR</p>
-              <div class="bg-surface-container-high/50 rounded-xl p-3 space-y-1.5">
-                <p class="font-mono text-base tracking-widest text-on-surface text-center select-all">${row1}</p>
-                <p class="font-mono text-base tracking-widest text-on-surface text-center select-all">${row2}</p>
-              </div>
+              <div class="bg-surface-container-high/50 rounded-xl px-3 py-2.5 space-y-1">${digitsHtml}</div>
               <div class="flex flex-col items-center gap-1.5">
                 <div id="safetyQrCanvas" class="rounded-lg overflow-hidden bg-white p-2"></div>
                 <p class="text-[10px] text-slate-400">QR zawiera wyłącznie surowe cyfry</p>
