@@ -147,6 +147,32 @@ impl AppConfig {
             _ => self.estimated_cost_per_gib_month_default,
         }
     }
+
+    /// Enforce RFC 8252 loopback for the OAuth redirect URL.
+    ///
+    /// OmniDrive is Local-First: the daemon must never register a public OAuth
+    /// redirect, because the authorization code could then be delivered to an
+    /// external host the user does not control. Accepted hosts: `127.0.0.1`,
+    /// `localhost`, `[::1]` — all over plain HTTP (browsers allow loopback
+    /// exempt from the https-only rule).
+    pub fn validate_oauth_redirect_loopback_only(&self) -> Result<(), String> {
+        const ALLOWED_PREFIXES: &[&str] = &[
+            "http://127.0.0.1:",
+            "http://localhost:",
+            "http://[::1]:",
+        ];
+        if ALLOWED_PREFIXES
+            .iter()
+            .any(|p| self.oauth_redirect_url.starts_with(p))
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "OAUTH_REDIRECT_URL must be a loopback URL (http://127.0.0.1:…, http://localhost:…, or http://[::1]:…), got {}",
+                self.oauth_redirect_url
+            ))
+        }
+    }
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -180,4 +206,45 @@ fn env_flag(key: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_with_redirect(url: &str) -> AppConfig {
+        let mut cfg = AppConfig::from_env();
+        cfg.oauth_redirect_url = url.to_string();
+        cfg
+    }
+
+    #[test]
+    fn oauth_redirect_loopback_ipv4_is_accepted() {
+        let cfg = cfg_with_redirect("http://127.0.0.1:8787/api/auth/google/callback");
+        assert!(cfg.validate_oauth_redirect_loopback_only().is_ok());
+    }
+
+    #[test]
+    fn oauth_redirect_localhost_is_accepted() {
+        let cfg = cfg_with_redirect("http://localhost:8787/api/auth/google/callback");
+        assert!(cfg.validate_oauth_redirect_loopback_only().is_ok());
+    }
+
+    #[test]
+    fn oauth_redirect_loopback_ipv6_is_accepted() {
+        let cfg = cfg_with_redirect("http://[::1]:8787/api/auth/google/callback");
+        assert!(cfg.validate_oauth_redirect_loopback_only().is_ok());
+    }
+
+    #[test]
+    fn oauth_redirect_public_https_is_rejected() {
+        let cfg = cfg_with_redirect("https://skarbiec.app/api/auth/google/callback");
+        assert!(cfg.validate_oauth_redirect_loopback_only().is_err());
+    }
+
+    #[test]
+    fn oauth_redirect_arbitrary_http_is_rejected() {
+        let cfg = cfg_with_redirect("http://example.com/oauth/callback");
+        assert!(cfg.validate_oauth_redirect_loopback_only().is_err());
+    }
 }

@@ -1,7 +1,8 @@
 # OmniDrive — Plan Implementacyjny
 
-> Ostatnia aktualizacja: 2026-04-18 | Aktualna wersja: **v0.2.0** (commit `6530194`)
-> Sesja z dnia 2026-04-18: Fazy H, I, J, K, L ukończone — następna Faza M (Safety Numbers)
+> Ostatnia aktualizacja: 2026-04-19 | Aktualna wersja: **v0.2.0** (commit `29dded3`)
+> Sesja z dnia 2026-04-19: Faza M + M.5 ukończone, roadmapa strategiczna zatwierdzona (D1/D1a/D2/D3/D4/D6) — następna **Faza M.6** (Local-First Lock-in)
+> Pełna roadmapa strategiczna do v0.3.0 → mobile: **`roadmap.md`**
 
 ## Status całego projektu
 
@@ -21,11 +22,17 @@
 | **Faza K** | Sesja C: Google OAuth2 Backend (PKCE, state DB, callback, refresh_token) | ✅ DONE `667b0d5` |
 | **Faza L** | Sesja D: OAuth Frontend (przycisk Google, profil w topbarze, #oauth_token) | ✅ DONE `6530194` |
 | **Faza M** | Sesja E: Safety Numbers + QR code + weryfikacja urządzenia | ✅ DONE `a267cf8` |
-| **Faza N** | Cleanup dead code + Release v0.3.0 | ⬜ TODO (następna sesja) |
-| **Faza O** | Naprawa pojemności dysku O: — własna quota VFS zamiast C: (WinFSP/cfapi) | ⬜ BACKLOG |
+| **Faza M.5** | Human-Friendly Verification: BIP-39 mnemonic + Identicon (jdenticon) | ✅ DONE `45a9b89` + hotfix `29dded3` |
+| **Faza M.6** | Local-First Lock-in: CORS cleanup + dynamic share host + docs purge | ⬜ TODO (następna sesja) |
+| **Faza N** | Cleanup dead code + hybrid E2E + cross-device Identicon test + Release v0.3.0 | ⬜ TODO |
+| **Epic 33 Tryb A** | Dopięcie dynamic host w share-link generator (wyjście z hardkodowanego `localhost`) | ⬜ TODO (równolegle z M.6) |
+| **Faza O.1** | Quota fix — raportowanie pojemności O: z cloud quota (B2/R2) zamiast C: | ⬜ TODO (po N) |
+| **Epic 33 Tryb B** | Public shares przez GH Pages (`skarbiec.app/s/…`) + static decryptor | ⬜ BACKLOG (po v0.3.0) |
+| **Faza O.2+** | Cross-platform VFS Foundation (FileSystemAdapter trait, FUSE prototyp) | ⬜ BACKLOG |
+| **Faza P→S** | Core extraction + Mobile V1 (read-only snapshot) → V2 (read-write) | ⬜ BACKLOG (po v0.4.0) |
 
-**Critical path:** M → N (~2-4 dni roboczych do v0.3.0)
-**Testy:** 77/77 lib testów zielone po Fazie K
+**Critical path:** M.6 (1-2 dni) → N (2-3 dni) → **v0.3.0 release**. Szczegóły: `roadmap.md`.
+**Testy:** 77/77 lib testów zielone po Fazie K; +2 testy BIP-39 mnemonic w `vault.rs` (M.5)
 
 ---
 
@@ -88,42 +95,98 @@ H.3 fetchAuditLog() z Bearer tokenem, H.4 recovery CTA → modal Skarbiec, H.5 l
 
 ---
 
-## Faza M — Sesja E: Safety Numbers + THREAT_MODEL (~1.5-2 dni)
+## ✅ Faza M — DONE `a267cf8`
 
-### M.1 — Generowanie Safety Numbers
-- **Pliki:** nowy `omnidrive-core/src/safety_number.rs`, `angeld/src/api/vault.rs`
-- `SHA-256(user_id_A ‖ user_id_B ‖ vault_key_fingerprint)` → 60-digit decimal, 5 bloków × 12 cyfr (Signal-style)
-
-### M.2 — Widok weryfikacji w Multi-Device
-- Safety Number + QR. Przycisk "Oznaczono jako zweryfikowane" → audit event.
-
-### M.3 — E2E multi-user test
-- **Plik:** `angeld/tests/e2e_multi_user.rs`
-- Alice tworzy vault → share do Bob → Bob joins → Safety Number match po obu stronach
-
-### M.4 — `docs/THREAT_MODEL.md`
-- Assets / Adversaries / Trust Boundaries / Attack Trees / Mitigations
-
-**Commit:** `feat(crypto): Sesja E — Safety Numbers + THREAT_MODEL`
+- M.1 Fingerprint + 60-digit Safety Numbers (`SHA-256(envelope_vault_key ‖ user_id)` → 12 × 5 cyfr, Signal-style)
+- M.2 `GET /api/vault/safety-numbers` + `POST /api/devices/{id}/verify` + migracja `safety_numbers_verified_at`
+- M.3 Sekcja „Bezpieczeństwo" w UI — QR (qrcode.min.js lokalnie) + przycisk „Oznacz jako zweryfikowane"
+- (M.4 THREAT_MODEL.md i M.5 e2e multi-user test pozostają w backlogu — patrz Faza N/post-v0.3.0)
 
 ---
 
-## Faza N — Cleanup + Release v0.3.0 (~1 dzień)
+## ✅ Faza M.5 — Human-Friendly Verification — DONE `45a9b89` + hotfix `29dded3`
+
+Pivot od Cloudflare Bridge (odrzucony — naruszałby Zero-Knowledge) do czysto lokalnej „humanizacji" 60-cyfrowego odcisku.
+Trzy reprezentacje tego samego `fingerprint` (shared helper w `vault.rs`):
+
+- **Cyfry** (12 × 5) — istniejące z Fazy M, układ 4 × 3 po hotfixie
+- **Mnemonic** (12 słów BIP-39 z `hash[..16]` — 128 bitów entropii) — nowe w `UnlockedVaultKeys::safety_mnemonic(user_id)`
+- **Identicon** (jdenticon 3.2.0 CDN, deterministyczny SVG z hash) — nowe w `static/index.html`
+
+**M.5.1 (Rust):** `vault.rs` refactor → `fingerprint()` jako shared helper; `safety_mnemonic()` używa `bip39::Mnemonic::from_entropy`. `api/vault.rs` dokleja pole `mnemonic` do `/api/vault/safety-numbers`. Log `[MNEMONIC GENERATED] [REDACTED]`. 2 nowe testy (`safety_mnemonic_is_12_english_words_and_stable`, `safety_mnemonic_differs_per_user`) + naprawa `safety_numbers_correct_format` (71 znaków, nie 59).
+
+**M.5.2 (UI):** `<script src="https://cdn.jsdelivr.net/npm/jdenticon@3.2.0/dist/jdenticon.min.js" async>` + 3-kolumnowy grid (Identicon | słowa | cyfry + QR). Hotfix `29dded3` przełączył cyfry z 2 × 6 na 4 × 3 żeby nie wychodziły poza box w prawej kolumnie.
+
+**Smoke:** `cargo build --release -p angeld` → jdenticon ×4, "Słowa mnemoniczne" ×1, "MNEMONIC GENERATED" ×1 zbakowane w release binary. GET `/` = 168569 B HTML, GET `/api/vault/status` = `{"unlocked":false}` OK na `127.0.0.1:8787` (isolated runtime, `OMNIDRIVE_DRY_RUN=1`).
+
+**Commity:** `45a9b89` feat(crypto): human-friendly safety numbers (BIP-39, Identicon, QR) → `29dded3` fix(ui): safety numbers 4×3 grid to prevent overflow.
+
+---
+
+## Następna: Faza M.6 — Local-First Lock-in (~1-2 dni)
+
+Cel: zamknąć architektonicznie fakt, że **daemon nie komunikuje się z publicznym internetem**. Domena `skarbiec.app` wraca **wyłącznie** jako host static content (GH Pages: decryptor Trybu B + landing) — daemon ma pozostać głuchy. Szczegóły strategiczne: `roadmap.md §1 M.6`.
+
+### M.6.1 — CORS cleanup (`angeld/src/api/mod.rs:221-235`)
+- **USUNĄĆ** gałąź `origin == b"https://skarbiec.app"` z `share_cors_layer()`. Allowlist = loopback + LAN only.
+- Zaktualizować doc comment `/// Allows cross-origin access from skarbiec.app and localhost (dev).` → `/// Allows cross-origin access from loopback (127.0.0.1) and private LAN origins only.`
+
+### M.6.2 — OAuth loopback hardening (`angeld/src/config.rs:131-132`)
+- Potwierdzić: `oauth_redirect_url` default = `http://127.0.0.1:8787/api/auth/google/callback` ✅ (już jest)
+- Dodać runtime assertion w `main.rs` (lub przy starcie `oauth::routes`): jeśli `oauth_redirect_url` nie zaczyna się od `http://127.0.0.1:` lub `http://localhost:` → WARN w logu + w release build → hard error. Env var zostaje jako escape hatch dla dev.
+
+### M.6.3 — Docs purge (`skarbiec.app` → Local-First lub static-only scope)
+- `docs/crypto-spec.md:252` — zaktualizować kontekst share URLs
+- `OmniDrive_Roadmap_v2.md:150` — usunąć lub przerobić na „static content host (post-v0.3.0)"
+- `plan.md:336` — weryfikacja, czy nie ma stale'owych referencji (ta sesja już aktualizuje nagłówek)
+- `PROJECT_STATUS.md:613` — analogicznie
+- `dist/share-site/index.html:169` — komentarz URL format
+
+### M.6.4 — Sanity grep
+- `rg -n 'skarbiec\.app'` → każde trafienie musi być albo (a) usunięte, (b) udokumentowane jako „static content only, post-v0.3.0 planning"
+- `rg -n 'public|hosted|tunnel'` → sprawdzić, czy nie ma planów na wystawienie daemona
+
+### M.6.5 — README: sekcja „Architektura sieci: 100% Local-First"
+- Nowy rozdział w `README.md` dla developerów/contributorów:
+  - Daemon słucha tylko `127.0.0.1:8787` (opcjonalnie LAN dla Trybu A)
+  - OAuth redirect wyłącznie loopback (RFC 8252)
+  - Domena `skarbiec.app` = static content delivery (GH Pages), nigdy runtime
+  - Zero Cloudflare Tunnel, zero publicznego daemona
+
+### M.6.6 — Dynamic share host (`angeld/src/api/sharing.rs:172`)
+- Zamiast hardcoded `format!("http://localhost:8787/share/{share_id}")` → wygenerować link:
+  1. Preferowany: z nagłówka `Host:` requestu (np. `192.168.1.10:8787` dla LAN, `127.0.0.1:8787` dla loopback)
+  2. Fallback: env `OMNIDRIVE_SHARE_HOST`
+  3. Default: `127.0.0.1:8787` (jak dziś)
+- Dzięki temu Epic 33 Tryb A działa LAN end-to-end (Alice generuje link z IP swojego komputera, Bob w tej samej sieci klika i pobiera przez browser).
+
+**Commit:** `refactor(net): Faza M.6 — lock daemon on loopback, document Local-First architecture`
+
+---
+
+## Następna: Faza N — Stabilizacja + Release v0.3.0 (~2-3 dni)
 
 ### N.1 — Dead code audyt `vault.rs`
 - Usunąć realnie nieużywane. Pozostawić z `// reserved for Epic X`.
 
 ### N.2 — Module-level `#![allow(dead_code)]` audyt
-- `downloader.rs`, `gc.rs`, `identity.rs`, `migrator.rs`, `onboarding.rs`, `packer.rs`, `repair.rs`, `scrubber.rs`, `uploader.rs`, `watcher.rs` → function-level `#[allow]`
+- `downloader.rs`, `gc.rs`, `identity.rs`, `migrator.rs`, `onboarding.rs`, `packer.rs`, `repair.rs`, `scrubber.rs`, `uploader.rs`, `watcher.rs` → function-level `#[allow]` z komentarzem `// reserved for Epic X`
 
-### N.3 — Bump wersji do 0.3.0
-- Wszystkie 6× `Cargo.toml` + `installer/omnidrive.iss` → `0.2.0 → 0.3.0` + `cargo build --release --workspace`
+### N.3 — Hybrid E2E tests (D2 zatwierdzone)
+- Unit/integration: mockito (istniejący w dev-deps) dla S3 API roundtrip
+- Manual smoke na real B2/R2 przed tagiem v0.3.0 (Lenovo): unlock → create file → observe encrypted chunk upload → lock → unlock → read back
+- **Cross-device Identicon + mnemonic test (N.3-bis, D-decision):** na Dellu `Join Existing Vault` → weryfikacja byte-identycznego SVG + identycznych 12 słów BIP-39 jak na Lenovo. Wynik → `CHANGELOG.md` v0.3.0.
 
-### N.4 — Payload + instalator
+### N.4 — Bump wersji do 0.3.0 + payload + instalator
+- Wszystkie `Cargo.toml` (angeld, omnidrive-core, angelctl) + `installer/omnidrive.iss` → `0.2.0 → 0.3.0`
+- `cargo build --release --workspace`
 - `cp target/release/*.exe dist/installer/payload/` + `cp angeld/static/* dist/installer/payload/static/` → Inno Setup
+- `CHANGELOG.md` wpis v0.3.0 (Faza M.5 BIP-39+Identicon, Faza M.6 Local-First lock-in, N release)
+- SHA-256 instalatora opublikowany w GitHub Releases + w `README.md`
 
-### N.5 — Smoke test + release
-- Pełny flow: unlock → share → join → verify → lock. Commit `release: v0.3.0`, push, tag.
+### N.5 — Release
+- Pełny flow smoke: unlock → share (LAN Tryb A) → join → verify (Identicon+mnemonic match) → lock
+- Commit `release: v0.3.0`, push, tag `v0.3.0`
 
 **Commit:** `release: v0.3.0`
 

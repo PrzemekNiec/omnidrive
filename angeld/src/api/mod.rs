@@ -217,21 +217,46 @@ pub(super) fn unix_timestamp_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// CORS layer for public share API endpoints.
-/// Allows cross-origin access from skarbiec.app and localhost (dev).
+/// CORS layer for share API endpoints.
+///
+/// Loopback + private-LAN origins only. Public domains (skarbiec.app, github.io)
+/// must NEVER be allowlisted — daemon stays deaf to the external internet.
+/// Rationale:
+/// - Tryb A (LAN Share): decryptor served from this same daemon → same-origin, no CORS needed
+/// - Tryb B (Public Share): decryptor on GH Pages reads directly from B2/R2, daemon not involved
+/// - Adding public origins = attack surface (XSS on GH Pages → fetch to LAN daemon with stolen session)
 fn share_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin, _| {
             let origin = origin.as_bytes();
-            origin == b"https://skarbiec.app"
-                || origin.starts_with(b"http://localhost")
+            origin.starts_with(b"http://localhost")
                 || origin.starts_with(b"http://127.0.0.1")
+                || origin.starts_with(b"http://192.168.")
+                || origin.starts_with(b"http://10.")
+                || is_private_172_origin(origin)
         }))
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([
             header::CONTENT_TYPE,
             header::HeaderName::from_static("x-share-token"),
         ])
+}
+
+/// Check if an origin falls inside the private 172.16.0.0/12 range
+/// (RFC 1918). Accepts `http://172.16.…` through `http://172.31.…`.
+fn is_private_172_origin(origin: &[u8]) -> bool {
+    let Some(rest) = origin.strip_prefix(b"http://172.") else {
+        return false;
+    };
+    let dot_idx = match rest.iter().position(|&b| b == b'.') {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let octet_bytes = &rest[..dot_idx];
+    let Ok(octet_str) = std::str::from_utf8(octet_bytes) else {
+        return false;
+    };
+    matches!(octet_str.parse::<u8>(), Ok(n) if (16..=31).contains(&n))
 }
 
 

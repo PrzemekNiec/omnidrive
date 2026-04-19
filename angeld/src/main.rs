@@ -289,6 +289,16 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     let app_config = AppConfig::from_env();
+    if let Err(err) = app_config.validate_oauth_redirect_loopback_only() {
+        if cfg!(debug_assertions) {
+            warn!("[SECURITY] {err} (allowed in debug builds only)");
+        } else {
+            return Err(format!(
+                "[SECURITY] OAuth redirect URL must be loopback in release builds: {err}"
+            )
+            .into());
+        }
+    }
     let local_device = ensure_local_device_identity(&pool, &app_config).await?;
     let local_vault_id = db::get_vault_params(&pool)
         .await?
