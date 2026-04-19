@@ -9,7 +9,7 @@ Dokument strategiczny dla faz M.6 → v0.3.0 → Epic 33 Tryb B → v0.4.0 → m
 
 ## Decyzje zatwierdzone (2026-04-19)
 
-- **D1 = TAK + D1a = GitHub Pages** — domena `skarbiec.app` wraca do użycia **wyłącznie jako host statycznej treści** (GH Pages dla share decryptora Trybu B + landing page). Daemon dalej na `127.0.0.1` only. Auto-deploy przez GitHub Actions. Nowe repo: `omnidrive/share-site` z plikiem `CNAME`.
+- **D1 = TAK + D1a = Cloudflare Pages** — domena `skarbiec.app` wraca do użycia **wyłącznie jako host statycznej treści** (CF Pages dla share decryptora Trybu B + landing page). Daemon dalej na `127.0.0.1` only. Auto-deploy przez Cloudflare Pages Git integration (push do `main` = deploy automatyczny). Nowe repo: `omnidrive/share-site` podpięte w dashboardzie Cloudflare Pages. Domena już jest w CF → zero dodatkowej konfiguracji DNS.
 - **D2 = Hybrid** — testy E2E w Fazie N: mockito/minio w CI + manual smoke test na realnym B2/R2 przed tagiem v0.3.0 (Lenovo test user).
 - **D3 = Desktop polish first** — po v0.3.0 idziemy w v0.4.0 = Epic 33 Tryb B + Faza O (quota + VFS). Mobile (P→Q→R→S) zaczyna się dopiero po v0.4.0.
 - **D4 = Opcja C (read-only snapshot)** — mobile V1 czyta snapshot `index.json.enc` wygenerowany przez daemon (daemon writes, mobile reads). Tryb write (CRDT/LWW) — osobna decyzja dopiero po V1.
@@ -27,9 +27,9 @@ Dokument strategiczny dla faz M.6 → v0.3.0 → Epic 33 Tryb B → v0.4.0 → m
 
 ---
 
-## 0. Kluczowa decyzja architektoniczna: skarbiec.app + GitHub Pages dla share-linków
+## 0. Kluczowa decyzja architektoniczna: skarbiec.app + Cloudflare Pages dla share-linków
 
-**Pytanie:** „Czy możemy wykorzystać własną domenę skarbiec.app z GitHub Pages by ładniejsze linki wysyłać do udostępnionych plików?"
+**Pytanie:** „Czy możemy wykorzystać własną domenę skarbiec.app z Cloudflare Pages by ładniejsze linki wysyłać do udostępnionych plików?"
 
 **Odpowiedź: TAK — to jest ARCHITEKTONICZNIE INNY scenariusz niż ten, który wcześniej odrzuciliśmy.**
 
@@ -38,16 +38,16 @@ Dokument strategiczny dla faz M.6 → v0.3.0 → Epic 33 Tryb B → v0.4.0 → m
 | Scenariusz | Dlaczego ryzyko | Status |
 |---|---|---|
 | **Odrzucony:** `skarbiec.app` → Cloudflare Tunnel → **`angeld` daemon** | Daemon (Rust service, unlock state, sesje, cała logika zero-knowledge) publicznie wystawiony → attack surface, CF widzi TLS, session hijack, RCE possible | ❌ Złamanie Zero-Knowledge |
-| **Zatwierdzony:** `skarbiec.app` → GitHub Pages → **tylko statyczny decryptor HTML** | Tylko static HTML+JS, brak serwera z sekretami. Fragment URL (DEK) nigdy nie leci w HTTP request. B2/R2 ma tylko szyfrowane chunki (Zero-Knowledge jak dziś) | ✅ Zgodne z Zero-Knowledge |
+| **Zatwierdzony:** `skarbiec.app` → Cloudflare Pages → **tylko statyczny decryptor HTML** | Tylko static HTML+JS, brak serwera z sekretami. Fragment URL (DEK) nigdy nie leci w HTTP request. B2/R2 ma tylko szyfrowane chunki (Zero-Knowledge jak dziś) | ✅ Zgodne z Zero-Knowledge |
 
-**Różnica fundamentalna:** wcześniej domena miała hostować **działający serwer** (daemon z tajemnicami). Teraz ma hostować **statyczną stronę bez tajemnic**. GitHub Pages jest zasadniczo CDN-em dla publicznego HTML-a — tam nie ma czego zhackować oprócz ewentualnej podmiany bundla (co można zmitygować).
+**Różnica fundamentalna:** wcześniej domena miała hostować **działający serwer** (daemon z tajemnicami). Teraz ma hostować **statyczną stronę bez tajemnic**. Cloudflare Pages jest CDN-em dla publicznego HTML-a — tam nie ma czego zhackować oprócz ewentualnej podmiany bundla (co można zmitygować). Domena jest już w Cloudflare → integracja CF Pages = jeden krok w dashboardzie.
 
 ### Zero-Knowledge check (formalny dowód)
 
 Co widzi każda warstwa:
 
-1. **DNS (rejestrator, Cloudflare DNS):** widzi tylko, że ktoś odpytuje `skarbiec.app` — nie widzi pliku, nie widzi DEK
-2. **GitHub Pages:** widzi `GET /share/{id}` — dostarcza publiczny HTML, nie widzi `#fragment` (browser go nie wysyła), nie widzi co się potem dzieje
+1. **DNS (Cloudflare DNS):** widzi tylko, że ktoś odpytuje `skarbiec.app` — nie widzi pliku, nie widzi DEK
+2. **Cloudflare Pages:** widzi `GET /share/{id}` — dostarcza publiczny HTML, nie widzi `#fragment` (browser go nie wysyła), nie widzi co się potem dzieje
 3. **B2/R2 (bucket użytkownika):** widzi żądania GET na encrypted chunki — jak dziś, już Zero-Knowledge
 4. **Browser Boba:** parsuje `#fragment` lokalnie → DEK zostaje w pamięci JS, nigdy nie wychodzi
 5. **Alice's daemon:** może być offline przez cały proces downloadu
@@ -63,12 +63,12 @@ Co widzi każda warstwa:
 - $10-15/rok — wydatek śmieszny w skali projektu
 
 **Minusy i mitygacje:**
-- **Ryzyko:** ktoś kompromituje GH Pages repo → podmienia decryptor na złośliwy → exfiltruje DEK z fragmentu
-  **Mitygacja:** a) repo protected + 2FA + signed commits, b) decryptor ma **Subresource Integrity (SRI)** dla wszystkich zewnętrznych skryptów, c) opcjonalnie: publikowany SHA-256 hash decryptora w innym miejscu (git tag, README), użytkownik techniczny może zweryfikować
-- **Ryzyko:** rejestrator skreśla domenę pod naciskiem (censorship)
-  **Mitygacja:** fallback na `omnidrive.github.io` — stary link `skarbiec.app/s/abc` można replay'ować na GH-owym URL-u, fragment zachowany
+- **Ryzyko:** ktoś kompromituje repo → podmienia decryptor na złośliwy → exfiltruje DEK z fragmentu
+  **Mitygacja:** a) repo protected + 2FA + signed commits, b) decryptor ma **Subresource Integrity (SRI)** dla wszystkich zewnętrznych skryptów, c) opcjonalnie: publikowany SHA-256 hash decryptora w `README.md` + w GitHub Releases, użytkownik techniczny może zweryfikować
+- **Ryzyko:** CF blokuje konto / domenę pod naciskiem (censorship — CF ma historię usuwania treści)
+  **Mitygacja:** fallback — repo jest publiczne na GitHub, `omnidrive.github.io/share` = alternatywny hosting; stary link `skarbiec.app/s/abc` można replay'ować ze zmienionym origin, fragment zachowany
 - **Operacyjne:** jeszcze jedna rzecz do utrzymania (DNS, renewal)
-  **Mitygacja:** Cloudflare Registrar przy cenie wholesale + DNS → „set and forget" na 10 lat
+  **Mitygacja:** Cloudflare Registrar przy cenie wholesale + DNS → „set and forget" na 10 lat; domena i Pages w tym samym dashboardzie CF
 
 ### Macierz dopuszczonych użyć domeny
 
@@ -77,10 +77,11 @@ Co widzi każda warstwa:
 | Hosting `angeld` daemona przez tunel (jak odrzucone wcześniej) | ❌ **ZABRONIONE** — złamałoby Zero-Knowledge |
 | Landing page / strona marketingowa projektu | ✅ OK |
 | Hosting statycznego decryptora share-linków | ✅ OK (Tryb B Epic 33) |
-| Redirect `skarbiec.app/s/abc` → GH Pages | ✅ OK (Wariant awaryjny) |
+| Hosting statycznego decryptora przez Cloudflare Pages | ✅ OK (zatwierdzone D1a) |
+| Fallback `omnidrive.github.io/share` gdyby CF odpadło | ✅ OK (Wariant awaryjny) |
 | Publikacja signed release'ów (download link dla instalatora) | ✅ OK |
 
-**Warunek nienaruszalny:** Pod domeną `skarbiec.app` **NIGDY nie uruchamia się żaden proces serwerowy z dostępem do danych użytkownika**. Tylko statyczne zasoby z GitHub Pages / Cloudflare Pages. Każde URL = static file. Zero runtime, zero sesji, zero tajemnic.
+**Warunek nienaruszalny:** Pod domeną `skarbiec.app` **NIGDY nie uruchamia się żaden proces serwerowy z dostępem do danych użytkownika**. Tylko statyczne zasoby z Cloudflare Pages. Każde URL = static file. Zero runtime, zero sesji, zero tajemnic.
 
 ---
 
@@ -154,7 +155,7 @@ Dwa tryby: A (LAN) + B (public).
 **Architektura:**
 
 ```
-Alice's angeld                           GitHub Pages / skarbiec.app
+Alice's angeld                           Cloudflare Pages / skarbiec.app
   ├─ genruje share_id, DEK                  └─ static decryptor (share/index.html)
   ├─ upload manifest.json do B2
   ├─ upload encrypted chunków do B2         B2/R2 (chmura Alice)
@@ -165,7 +166,7 @@ Alice's angeld                           GitHub Pages / skarbiec.app
   Bob klika link
         ↓
   Browser Boba
-     ├─ GET skarbiec.app/s/{id} → static HTML z GH Pages
+     ├─ GET skarbiec.app/s/{id} → static HTML z CF Pages
      ├─ JS parsuje #fragment → DEK + B2 URL
      ├─ GET {b2_base}/manifest.json
      ├─ GET {b2_base}/chunk-{i}.bin (x N)
@@ -183,7 +184,9 @@ Alice's angeld                           GitHub Pages / skarbiec.app
 
 **Wymagania dla `share-site` repo (osobny projekt):**
 - Struktura: `index.html` + `decryptor.js` + `style.css` (minimalne)
-- CI: GitHub Actions → deploy na `omnidrive.github.io/share` + custom domain `skarbiec.app/s`
+- CI/CD: Cloudflare Pages Git integration — push do `main` → deploy automatyczny (bez GitHub Actions, CF sam buduje)
+- Custom domain: `skarbiec.app` podpięte w CF Pages dashboard (domena już w CF → zero dodatkowej konfiguracji DNS)
+- Fallback URL: `omnidrive.github.io/share` (repo jest publiczne → GH Pages as backup)
 - Bundling: wszystko inline w jednym HTML (bez external JS) → SRI dla ewentualnych dependencies
 - Testy: headless browser test z przykładowym encrypted manifest
 
@@ -252,7 +255,7 @@ Alice's angeld                           GitHub Pages / skarbiec.app
 | **O.1** | Quota Fix (standalone) | 1 dzień | P1 |
 | **Epic 33 Tryb A** | LAN Share (dopięcie dynamic host) | 0.5 dnia | P1 |
 | **O.2+** | Cross-Platform VFS Foundation | 2-4 tyg | P2 |
-| **Epic 33 Tryb B** | Public Share + GH Pages (skarbiec.app/s) | 2-3 tyg | P2 |
+| **Epic 33 Tryb B** | Public Share + CF Pages (skarbiec.app/s) | 2-3 tyg | P2 |
 | **P** | Core Extraction (audit + selektywny move + snapshot) | 1-2 tyg | P2 |
 | **Q** | Mobile Bridge (UniFFI) | 2 tyg | P3 |
 | **R** | Mobile V1 Read-Only | 3-4 tyg | P3 |
@@ -266,35 +269,34 @@ Alice's angeld                           GitHub Pages / skarbiec.app
 
 | Opcja | Koszt/yr | Setup | Maintenance | Censorship | UX | Ocena |
 |---|---|---|---|---|---|---|
-| **GitHub Pages + custom domain** | 0 | Trywialny | Zero | Średnia (DMCA) | ✅ | ⭐ **Rekomendowane** |
-| Cloudflare Pages + custom domain | 0 | Trywialny | Zero | Niska (CF terminacje) | ✅ | Fair runner-up |
+| **Cloudflare Pages + custom domain** | 0 | Trywialny | Zero | Niska (CF terminacje historycznie rzadkie dla narzędzi) | ✅ | ⭐ **ZATWIERDZONE (D1a)** |
+| GitHub Pages + custom domain | 0 | Trywialny | Zero | Średnia (DMCA) | ✅ | Fallback jeśli CF odpadnie |
 | Self-host VPS (Hetzner/OVH) | $36-60 | Średni | Regularne OS updates | Wysoka | ✅ | Overkill |
-| Installer bundle `file://` | 0 | Trywialny | Zero | Najwyższa | ❌ (Chrome blokuje crypto.subtle) | Tylko jako fallback |
+| Installer bundle `file://` | 0 | Trywialny | Zero | Najwyższa | ❌ (Chrome blokuje crypto.subtle) | Tylko jako fallback lokalny |
 | R2 public bucket + custom domain | ~$2-5 | Średni | Zero | Niska-średnia | ✅ | Elegant jeśli i tak R2 |
 
-**Uzasadnienie GH Pages:**
+**Uzasadnienie CF Pages (D1a = ZATWIERDZONE):**
 1. Zero kosztu poza domeną
-2. Najwyższy trust ecosystem (open source, audytowalny git history)
-3. Repo chronione 2FA + signed commits + branch protection → niska podatność na podmianę
-4. Custom domain przez plik `CNAME` w repo
-5. HTTPS automatyczny (Let's Encrypt)
-6. Auto-deploy przez GitHub Actions
-7. Fallback: `omnidrive.github.io/share` działa gdyby domena odpadła
+2. Domena `skarbiec.app` już w Cloudflare → custom domain = jeden klik w dashboardzie CF Pages, zero dodatkowej konfiguracji DNS
+3. Push do `main` = auto-deploy (CF Pages Git integration, bez GitHub Actions workflow)
+4. Edge CDN globalny → szybsze ładowanie decryptora dla Boba niezależnie od lokalizacji
+5. HTTPS automatyczny (CF zarządza)
+6. Repo jest publiczne na GitHub → fallback `omnidrive.github.io/share` działa bez zmian gdyby CF odpadło
+7. Jeden dashboard (CF) dla domeny + DNS + Pages + R2 → zero vendor switching
 
 **Proponowana struktura repo `omnidrive/share-site`:**
 ```
 share-site/
 ├── index.html      # decryptor (port z dist/share-site/index.html)
-├── CNAME           # skarbiec.app
-├── .github/workflows/deploy.yml
-└── README.md       # hash decryptora dla weryfikacji
+├── README.md       # SHA-256 hash decryptora dla weryfikacji + instrukcje self-host
+└── (brak .github/workflows/ — CF Pages buduje bezpośrednio z repo)
 ```
 
 **Ryzyko podmiany decryptora → mitygacje:**
-- 2FA + signed commits na repo
+- 2FA + signed commits na repo (CF Pages deployuje tylko z chronionego brancha)
 - Branch protection (main tylko przez PR + review)
-- Opcjonalnie: SHA-256 decryptora publikowany w `README.md` + w GitHub Releases + w UI Skarbca → użytkownik techniczny może verify (`curl skarbiec.app/s/index.html | sha256sum`)
-- Każdy potencjalny user może fork'ować repo i self-host'ować swój decryptor
+- SHA-256 decryptora publikowany w `README.md` + w GitHub Releases + w UI Skarbca → użytkownik techniczny może verify (`curl skarbiec.app/index.html | sha256sum`)
+- Każdy potencjalny user może fork'ować repo i self-host'ować swój decryptor na własnym CF Pages / GH Pages
 
 ---
 
