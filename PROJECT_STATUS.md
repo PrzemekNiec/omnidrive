@@ -610,7 +610,7 @@ Goal:
 - architecture for links based on DEK in URI fragment
 
 Scope:
-- format: `https://skarbiec.app/{file_id}#{DEK_key}`
+- format: `http://127.0.0.1:8787/share/{file_id}#{DEK_key}` (Tryb A, LAN) lub `https://skarbiec.app/s/{file_id}#{DEK_key}` (Tryb B, post-v0.3.0 — statyczny decryptor na GitHub Pages, daemon nie uczestniczy)
 - URI fragment (`#`) is ignored by HTTP servers — key stays local
 - design decision: per-file DEK (one key per file regardless of EC chunk count); documented for potential future per-chunk DEK change
 - optional TTL (link lifetime) and one-time links (burn-after-read)

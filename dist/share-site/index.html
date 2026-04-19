@@ -165,10 +165,10 @@
 <script>
 'use strict';
 
-// External share link format:
-//   https://skarbiec.app/{share_id}#{dek_base64url}@{daemon_host:port}
+// Share link format (Tryb A — LAN, Tryb B — public via GitHub Pages / skarbiec.app):
+//   {origin}/share/{share_id}#{dek_base64url}@{daemon_host:port}
 // The fragment (after #) contains both the DEK and the daemon address,
-// neither of which is sent to the server.
+// neither of which is ever sent to the server (RFC fragment semantics).
 
 var shareId = window.location.pathname.replace(/^\//, '').split('/')[0];
 var fragment = window.location.hash.substring(1);

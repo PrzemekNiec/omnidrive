@@ -249,8 +249,15 @@ Jesli migracja failuje w polowie:
 ### 6.1 Share Link = DEK w URL Fragment
 
 ```
-https://skarbiec.app/{share_id}#{base64url(DEK)}
+# Tryb A (LAN): dekryptor serwowany przez daemona, same-origin
+http://{lan_ip}:8787/share/{share_id}#{base64url(DEK)}@{daemon_host:port}
+
+# Tryb B (Public, post-v0.3.0): statyczny dekryptor na GitHub Pages
+https://skarbiec.app/s/{share_id}#{base64url(DEK)}@{b2_base_url}
 ```
+
+> `skarbiec.app` = statyczny host (GitHub Pages). Daemon **nie** uczestniczy
+> w downloadzie w Trybie B — przeglądarka pobiera chunki bezpośrednio z B2/R2.
 
 - Serwer **nigdy nie widzi DEK** (fragment URI nie jest wysylany do serwera)
 - Serwer serwuje zaszyfrowane chunki

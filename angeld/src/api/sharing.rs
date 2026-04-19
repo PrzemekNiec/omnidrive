@@ -8,6 +8,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info};
 
@@ -169,7 +170,8 @@ async fn create_share_link(
     )
     .await?;
 
-    let share_url = format!("http://localhost:8787/share/{share_id}");
+    let base = share_base_url(&headers);
+    let share_url = format!("{base}/share/{share_id}");
     let full_link = format!("{share_url}#{dek_base64url}");
 
     info!("share link created for inode {inode_id}, share_id={share_id}");
@@ -464,4 +466,37 @@ async fn get_share_chunk(
         [(header::CONTENT_TYPE, "application/octet-stream")],
         encrypted.to_bytes(),
     ))
+}
+
+/// Determine the base URL for generated share links.
+///
+/// Priority:
+/// 1. `OMNIDRIVE_SHARE_HOST` env var — allows explicit override, e.g.
+///    `OMNIDRIVE_SHARE_HOST=http://192.168.1.10:8787` for LAN sharing.
+///    If the value already contains `://` it is used as-is; otherwise
+///    `http://` is prepended.
+/// 2. `Host` header of the incoming request — works naturally for both
+///    loopback (`127.0.0.1:8787`) and LAN (`192.168.x.x:8787`) clients.
+/// 3. Fallback: `http://127.0.0.1:8787`.
+fn share_base_url(headers: &HeaderMap) -> String {
+    if let Ok(override_host) = env::var("OMNIDRIVE_SHARE_HOST") {
+        let trimmed = override_host.trim().to_string();
+        if !trimmed.is_empty() {
+            return if trimmed.contains("://") {
+                trimmed
+            } else {
+                format!("http://{trimmed}")
+            };
+        }
+    }
+
+    if let Some(host) = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())
+    {
+        return format!("http://{host}");
+    }
+
+    "http://127.0.0.1:8787".to_string()
 }
