@@ -23,8 +23,8 @@
 | **Faza L** | Sesja D: OAuth Frontend (przycisk Google, profil w topbarze, #oauth_token) | ✅ DONE `6530194` |
 | **Faza M** | Sesja E: Safety Numbers + QR code + weryfikacja urządzenia | ✅ DONE `a267cf8` |
 | **Faza M.5** | Human-Friendly Verification: BIP-39 mnemonic + Identicon (jdenticon) | ✅ DONE `45a9b89` + hotfix `29dded3` |
-| **Faza M.6** | Local-First Lock-in: CORS cleanup + dynamic share host + docs purge | ⬜ TODO (następna sesja) |
-| **Faza N** | Cleanup dead code + hybrid E2E + cross-device Identicon test + Release v0.3.0 | ⬜ TODO |
+| **Faza M.6** | Local-First Lock-in: CORS cleanup + dynamic share host + docs purge | ✅ DONE `4cfca26`–`0433bbc` |
+| **Faza N** | Cleanup dead code + hybrid E2E + cross-device Identicon test + Release v0.3.0 | 🔄 W TOKU (N.1+N.2 DONE `7819811`) |
 | **Epic 33 Tryb A** | Dopięcie dynamic host w share-link generator (wyjście z hardkodowanego `localhost`) | ⬜ TODO (równolegle z M.6) |
 | **Faza O.1** | Quota fix — raportowanie pojemności O: z cloud quota (B2/R2) zamiast C: | ⬜ TODO (po N) |
 | **Epic 33 Tryb B** | Public shares przez CF Pages (`skarbiec.app/s/…`) + static decryptor | ⬜ BACKLOG (po v0.3.0) |
@@ -164,15 +164,13 @@ Cel: zamknąć architektonicznie fakt, że **daemon nie komunikuje się z public
 
 ---
 
-## Następna: Faza N — Stabilizacja + Release v0.3.0 (~2-3 dni)
+## Faza N — Stabilizacja + Release v0.3.0 (~2-3 dni)
 
-### N.1 — Dead code audyt `vault.rs`
-- Usunąć realnie nieużywane. Pozostawić z `// reserved for Epic X`.
+### ✅ N.1+N.2 — Dead code audyt (DONE `7819811`)
+- 10 plików z `#![allow(dead_code)]` na poziomie modułu → dodano komentarze `// reserved for Epic X` (identity→E30, onboarding→E30, downloader/packer→E33.2, uploader→E32.5/33, gc/repair/scrubber/migrator/watcher→future epics).
+- Granularne `#[allow(dead_code)]` per-item w `db.rs`, `vault.rs` etc. — pozostawione bez zmian (już właściwe).
 
-### N.2 — Module-level `#![allow(dead_code)]` audyt
-- `downloader.rs`, `gc.rs`, `identity.rs`, `migrator.rs`, `onboarding.rs`, `packer.rs`, `repair.rs`, `scrubber.rs`, `uploader.rs`, `watcher.rs` → function-level `#[allow]` z komentarzem `// reserved for Epic X`
-
-### N.3 — Hybrid E2E tests (D2 zatwierdzone)
+### N.3 — Hybrid E2E tests (D2 zatwierdzone) ← NASTĘPNA SESJA
 - Unit/integration: mockito (istniejący w dev-deps) dla S3 API roundtrip
 - Manual smoke na real B2/R2 przed tagiem v0.3.0 (Lenovo): unlock → create file → observe encrypted chunk upload → lock → unlock → read back
 - **Cross-device Identicon + mnemonic test (N.3-bis, D-decision):** na Dellu `Join Existing Vault` → weryfikacja byte-identycznego SVG + identycznych 12 słów BIP-39 jak na Lenovo. Wynik → `CHANGELOG.md` v0.3.0.
