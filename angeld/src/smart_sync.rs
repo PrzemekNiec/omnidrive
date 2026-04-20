@@ -321,8 +321,9 @@ mod imp {
         CF_PLACEHOLDER_CREATE_FLAGS,
         CF_PLACEHOLDER_CREATE_INFO, CF_PLACEHOLDER_MANAGEMENT_POLICY,
         CF_PLACEHOLDER_MANAGEMENT_POLICY_CREATE_UNRESTRICTED, CF_POPULATION_POLICY,
-        CF_POPULATION_POLICY_FULL, CF_POPULATION_POLICY_MODIFIER,
-        CF_POPULATION_POLICY_MODIFIER_NONE, CF_POPULATION_POLICY_PRIMARY, CF_REGISTER_FLAGS,
+        CF_POPULATION_POLICY_MODIFIER,
+        CF_POPULATION_POLICY_MODIFIER_NONE, CF_POPULATION_POLICY_PARTIAL,
+        CF_POPULATION_POLICY_PRIMARY, CF_REGISTER_FLAGS,
         CF_REGISTER_FLAG_NONE, CF_REGISTER_FLAG_UPDATE, CF_SET_PIN_FLAG_NONE, CF_SET_PIN_FLAGS, CF_SYNC_POLICIES,
         CF_SYNC_REGISTRATION, CF_SYNC_ROOT_INFO_STANDARD, CF_SYNC_ROOT_STANDARD_INFO,
         CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
@@ -616,7 +617,9 @@ mod imp {
                 // Without this flag, CF_POPULATION_POLICY_FULL never marks the directory
                 // as "populated" and blocks all file-creation operations with
                 // ERROR_CANT_RESOLVE_FILENAME (0x80070781).
-                Flags: CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS(1),
+                // DISABLE_ON_DEMAND_POPULATION = 0x2: marks directory as fully populated.
+                // STOP_ON_ERROR               = 0x1: unrelated, do not set.
+                Flags: CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS(2),
                 CompletionStatus: NTSTATUS(STATUS_SUCCESS),
                 PlaceholderTotalCount: 0,
                 PlaceholderArray: ptr::null_mut(),
@@ -1242,7 +1245,9 @@ mod imp {
                 Modifier: CF_HYDRATION_POLICY_MODIFIER(CF_HYDRATION_POLICY_MODIFIER_NONE.0),
             },
             Population: CF_POPULATION_POLICY {
-                Primary: CF_POPULATION_POLICY_PRIMARY(CF_POPULATION_POLICY_FULL.0),
+                // PARTIAL: the filter does not require full directory enumeration before
+                // allowing user-initiated file creation (drops) in the sync root.
+                Primary: CF_POPULATION_POLICY_PRIMARY(CF_POPULATION_POLICY_PARTIAL.0),
                 Modifier: CF_POPULATION_POLICY_MODIFIER(CF_POPULATION_POLICY_MODIFIER_NONE.0),
             },
             InSync: CF_INSYNC_POLICY(CF_INSYNC_POLICY_NONE.0),
@@ -1255,9 +1260,14 @@ mod imp {
         let path = PCWSTR(sync_root_wide.as_ptr());
         if inspect_existing_sync_root(sync_root_path, path, &provider_name, &provider_version, &sync_root_identity) {
             info!(
-                "smart-sync: existing sync root detected, registration skipped for {}",
+                "smart-sync: existing sync root detected, updating policies for {}",
                 sync_root_path.display()
             );
+            // Always push the latest CF_SYNC_POLICIES (e.g. after a PARTIAL→FULL change).
+            // CF_REGISTER_FLAG_UPDATE keeps existing placeholders intact.
+            unsafe {
+                let _ = CfRegisterSyncRoot(path, &registration, &policies, register_flags(true));
+            }
             return Ok(());
         }
 
