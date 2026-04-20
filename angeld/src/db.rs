@@ -8024,6 +8024,13 @@ mod tests {
     async fn set_and_get_safety_verified_roundtrip() {
         let pool = init_db("sqlite::memory:").await.unwrap();
         sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u1', 'Test User', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
             "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
              VALUES ('d1', 'u1', 'test', X'0102', 1000)",
         )
