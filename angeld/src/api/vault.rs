@@ -879,6 +879,17 @@ async fn post_vault_lock(
 
     state.vault_keys.lock().await;
 
+    // Security: dehydrate all CF placeholders so no decrypted bytes remain on disk.
+    // Vault key is already gone; spawning keeps the HTTP response snappy while the
+    // scrub runs in the background (any subsequent FETCH_DATA will fail = locked).
+    let pool = state.pool.clone();
+    tokio::spawn(async move {
+        let paths = crate::runtime_paths::RuntimePaths::detect();
+        if let Err(err) = crate::smart_sync::dehydrate_all_after_lock(&pool, &paths.sync_root).await {
+            tracing::warn!("[LOCK] post-lock dehydration failed: {err}");
+        }
+    });
+
     let _ = db::insert_audit_log(
         &state.pool,
         &caller.vault_id,

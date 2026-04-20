@@ -174,6 +174,25 @@ pub async fn reset_placeholders_after_unlock(
     }
 }
 
+/// Security: called immediately after vault lock.  Dehydrates every hydrated
+/// placeholder so no decrypted bytes remain in the Windows CF cache on disk.
+pub async fn dehydrate_all_after_lock(
+    pool: &SqlitePool,
+    sync_root_path: &Path,
+) -> Result<(), SmartSyncError> {
+    #[cfg(windows)]
+    {
+        imp::dehydrate_all_after_lock(pool, sync_root_path).await
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = pool;
+        let _ = sync_root_path;
+        Ok(())
+    }
+}
+
 pub async fn project_vault_to_sync_root(
     pool: &SqlitePool,
     sync_root_path: &Path,
@@ -827,6 +846,43 @@ mod imp {
         }
 
         info!("[UNLOCK] placeholder reset complete, {} files ready for hydration", files.len());
+        flush_smart_sync_logs();
+        Ok(())
+    }
+
+    /// Security: vault just locked — scrub every hydrated placeholder so that no
+    /// decrypted bytes remain in the Windows CF on-disk cache.  Non-fatal per
+    /// file; always attempts all files even if one fails.
+    pub async fn dehydrate_all_after_lock(
+        pool: &SqlitePool,
+        sync_root_path: &Path,
+    ) -> Result<(), SmartSyncError> {
+        let sync_root = normalize_sync_root_path(sync_root_path)?;
+        let files = db::get_active_files_for_projection(pool).await?;
+        info!("[LOCK] dehydrating {} placeholders after vault lock", files.len());
+        flush_smart_sync_logs();
+
+        let mut dehydrated = 0usize;
+        for file in &files {
+            let Ok(relative_path) = normalize_relative_placeholder_path(&file.path) else {
+                continue;
+            };
+            let target_path = sync_root.join(&relative_path);
+            if !target_path.exists() {
+                continue;
+            }
+            match dehydrate_placeholder(&target_path) {
+                Ok(()) => {
+                    dehydrated += 1;
+                    trace!("[LOCK] dehydrated {}", relative_path);
+                }
+                Err(err) => {
+                    warn!("[LOCK] dehydration failed for {}: {}", relative_path, err);
+                }
+            }
+        }
+
+        info!("[LOCK] dehydration complete: {}/{} files scrubbed", dehydrated, files.len());
         flush_smart_sync_logs();
         Ok(())
     }
