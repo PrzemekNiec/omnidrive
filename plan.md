@@ -1,8 +1,8 @@
 # OmniDrive — Plan Implementacyjny
 
-> Ostatnia aktualizacja: 2026-04-19 | Aktualna wersja: **v0.2.0** (commit `29dded3`)
-> Sesja z dnia 2026-04-19: Faza M + M.5 ukończone, roadmapa strategiczna zatwierdzona (D1/D1a/D2/D3/D4/D6) — następna **Faza M.6** (Local-First Lock-in)
-> Pełna roadmapa strategiczna do v0.3.0 → mobile: **`roadmap.md`**
+> Ostatnia aktualizacja: 2026-04-20 | Aktualna wersja: **v0.2.0** (commit `7819811`)
+> Sesja z dnia 2026-04-20: Architektoniczna Mobile — QR Pairing Spec (ECDH+SAS) + Fazy P/Q/R/S zatwierdzone — następna **N.2** (Hybrid E2E tests)
+> Pełna roadmapa strategiczna do v0.3.0 → mobile: **`roadmap.md`** | Spec mobile: **`docs/superpowers/specs/2026-04-20-mobile-qr-pairing-design.md`**
 
 ## Status całego projektu
 
@@ -29,7 +29,10 @@
 | **Faza O.1** | Quota fix — raportowanie pojemności O: z cloud quota (B2/R2) zamiast C: | ⬜ TODO (po N) |
 | **Epic 33 Tryb B** | Public shares przez CF Pages (`skarbiec.app/s/…`) + static decryptor | ⬜ BACKLOG (po v0.3.0) |
 | **Faza O.2+** | Cross-platform VFS Foundation (FileSystemAdapter trait, FUSE prototyp) | ⬜ BACKLOG |
-| **Faza P→S** | Core extraction + Mobile V1 (read-only snapshot) → V2 (read-write) | ⬜ BACKLOG (po v0.4.0) |
+| **Faza P** | Core Extraction — UniFFI, `aarch64-linux-android`, Kotlin bindingi | ⬜ BACKLOG (po v0.3.0) |
+| **Faza Q** | Mobile Bridge & Handshake — Android Skeleton + QR Pairing (ECDH+SAS) | ⬜ BACKLOG (po P) |
+| **Faza R** | Read-Only Vault Browser — BiometricPrompt, SQLite snapshot, streaming decrypt | ⬜ BACKLOG (po Q) |
+| **Faza S** | Read-Write — Inbox upload, share links (Epic 33 Tryb B) | ⬜ BACKLOG (po R) |
 
 **Critical path:** M.6 (1-2 dni) → N (2-3 dni) → **v0.3.0 release**. Szczegóły: `roadmap.md`.
 **Testy:** 77/77 lib testów zielone po Fazie K; +2 testy BIP-39 mnemonic w `vault.rs` (M.5)
@@ -187,6 +190,80 @@ Cel: zamknąć architektonicznie fakt, że **daemon nie komunikuje się z public
 - Commit `release: v0.3.0`, push, tag `v0.3.0`
 
 **Commit:** `release: v0.3.0`
+
+---
+
+---
+
+## Fazy P → Q → R → S — Mobile (Android First)
+
+> Spec: `docs/superpowers/specs/2026-04-20-mobile-qr-pairing-design.md`  
+> Wymaganie: QR Pairing Spec musi istnieć przed implementacją Fazy R. ✅ DONE (2026-04-20)
+
+### Faza P — Core Extraction (UniFFI) ⬜ BACKLOG
+
+**Cel:** Wyeksponować `omnidrive-core` jako bibliotekę Rust dla Kotlina przez UniFFI.
+
+- Konfiguracja Android NDK + toolchain `aarch64-linux-android` + `x86_64-linux-android`
+- `uniffi` dependency w `omnidrive-core/Cargo.toml`
+- UDL/proc-macro: eksport `decrypt_chunk`, `verify_vault_identity`
+- Build → `libomni_core.so`, generowanie Kotlin bindingów
+- Smoke test: wywołanie `decrypt_chunk` z Kotlina w unit teście
+
+**Czas:** ~2-3 dni
+
+---
+
+### Faza Q — Mobile Bridge & Handshake ⬜ BACKLOG
+
+**Cel:** Szkielet aplikacji Android + bezpieczne parowanie z Skarbcem przez QR (ECDH + SAS).
+
+**Q.1 — Android App Skeleton:**
+- Nowy projekt `mobile-android/` (Kotlin + Jetpack Compose, `minSdkVersion 26`)
+- NavHost: ekrany `Onboarding`, `Pairing`, `PairingConfirm`, `Home` (placeholder)
+- Podpięcie `libomni_core.so` z Fazy P
+
+**Q.2 — QR Scanning:**
+- ML Kit Barcode Scanning
+- Parsowanie `omnidrive://pair?...` + walidacja `exp`, `v`, `host`, `dpk`, `nonce`
+
+**Q.3 — ECDH + SAS Handshake:**
+- **Desktop:** `angeld/src/api/mobile_pairing.rs` — endpointy `/api/mobile/pair-start`, `pair-init`, `pair-confirm`, `pair-cancel`
+- **Desktop UI:** widok "Multi-Device" → przycisk "Sparuj telefon" → modal z QR + wyświetlenie SAS
+- **Mobile:** ECDH X25519 (Tink Android) → `session_key` → SAS = `SHA-256(session_key||nonce)[0..2]` → 4-cyfrowy kod
+- Ekran SAS: duże cyfry, "Potwierdź" / "Anuluj"
+- Protokół: patrz sekcja 3.3 w spec (7 kroków)
+
+**Q.4 — Vault Key Storage:**
+- Android Keystore AES-256 key `omnidrive_vk_<device_id>` (hardware-backed)
+- `keystore_wrapped_vk` + metadane → lokalny `omnidrive_local.db` w apce
+
+**Nowe endpointy daemona:** `POST /api/mobile/pair-{start,init,confirm,cancel}`  
+**Nowe kolumny `devices`:** `platform`, `paired_at`, `pairing_status`, `vault_key_generation`
+
+**Czas:** ~5-7 dni
+
+---
+
+### Faza R — Read-Only Vault Browser (V1) ⬜ BACKLOG
+
+**R.1:** BiometricPrompt unlock → Vault Key dostępny w pamięci (zeroize po 5 min)  
+**R.2:** `GET /api/snapshot/latest` → `vault_snapshot.db` lokalnie  
+**R.3:** Jetpack Compose file browser (katalogi, metadane, wyszukiwarka)  
+**R.4:** Streaming decrypt — chunki LAN → `decrypt_chunk` (Rust/UniFFI) → Intent do zewnętrznej apki  
+**R.5:** Offline pinning (long-press → cache deszyfrowanego pliku w internal storage) — opcjonalnie
+
+**Czas:** ~7-10 dni
+
+---
+
+### Faza S — Read-Write (V2) ⬜ BACKLOG
+
+**S.1:** Inbox Upload — ShareSheet → `POST /api/mobile/inbox/upload` → daemon szyfruje V2 + kolejkuje B2/R2  
+**S.2:** Share Links — `POST /api/sharing/create` → `skarbiec.app/s/<id>#<DEK>` (Epic 33 Tryb B)  
+**S.3:** Camera Upload (opcjonalnie) — WorkManager + `READ_MEDIA_IMAGES`
+
+**Czas:** ~5-7 dni
 
 ---
 
