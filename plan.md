@@ -173,10 +173,12 @@ Cel: zamknąć architektonicznie fakt, że **daemon nie komunikuje się z public
 - 10 plików z `#![allow(dead_code)]` na poziomie modułu → dodano komentarze `// reserved for Epic X` (identity→E30, onboarding→E30, downloader/packer→E33.2, uploader→E32.5/33, gc/repair/scrubber/migrator/watcher→future epics).
 - Granularne `#[allow(dead_code)]` per-item w `db.rs`, `vault.rs` etc. — pozostawione bez zmian (już właściwe).
 
-### N.2 — Hybrid E2E tests (D2 zatwierdzone) ← NASTĘPNA SESJA
-- Unit/integration: mockito (istniejący w dev-deps) dla S3 API roundtrip
-- Manual smoke na real B2/R2 przed tagiem v0.3.0 (Lenovo): unlock → create file → observe encrypted chunk upload → lock → unlock → read back
-- **Cross-device Identicon + mnemonic test (N.3-bis, D-decision):** na Dellu `Join Existing Vault` → weryfikacja byte-identycznego SVG + identycznych 12 słów BIP-39 jak na Lenovo. Wynik → `CHANGELOG.md` v0.3.0.
+### ✅ N.2 — Hybrid E2E tests (DONE `0f1af36`)
+- `roundtrip_pack_upload_download_restore_file` w `downloader::tests` — full cycle: pack → mock S3 (Axum, 3 providery) → restore → assert bytes == payload ✅
+- Naprawiony `set_and_get_safety_verified_roundtrip` (brakujący INSERT users, FK fail) ✅
+- Suite: **87/87 angeld** + **11/11 omnidrive-core** = **98 zielonych** ✅
+- Manual smoke na real B2/R2 ← DO ZROBIENIA przez użytkownika przed tagiem v0.3.0
+- **Cross-device Identicon + mnemonic test (N.3-bis):** na Dellu `Join Existing Vault` ← DO ZROBIENIA
 
 ### N.3 — Bump wersji do 0.3.0 + payload + instalator
 - Wszystkie `Cargo.toml` (angeld, omnidrive-core, angelctl) + `installer/omnidrive.iss` → `0.2.0 → 0.3.0`
