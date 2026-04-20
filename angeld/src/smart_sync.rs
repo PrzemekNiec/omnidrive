@@ -157,38 +157,38 @@ pub fn install_hydration_runtime(
     }
 }
 
-pub async fn reset_placeholders_after_unlock(
-    pool: &SqlitePool,
-    sync_root_path: &Path,
-) -> Result<(), SmartSyncError> {
+/// Security (P0): Full vault lock sequence —
+/// 1. Recursive dehydrate of every file in OmniSync (removes decrypted cache)
+/// 2. CfDisconnectSyncRoot (sync provider gone)
+/// 3. CfUnregisterSyncRoot (removes CF reparse tags / registry entry)
+/// 4. Unmounts the virtual drive from Explorer
+pub async fn dismount_after_lock(sync_root_path: &Path) -> Result<(), SmartSyncError> {
     #[cfg(windows)]
     {
-        imp::reset_placeholders_after_unlock(pool, sync_root_path).await
+        imp::dismount_after_lock(sync_root_path).await
     }
-
     #[cfg(not(windows))]
     {
-        let _ = pool;
         let _ = sync_root_path;
-        Err(SmartSyncError::UnsupportedPlatform)
+        Ok(())
     }
 }
 
-/// Security: called immediately after vault lock.  Dehydrates every hydrated
-/// placeholder so no decrypted bytes remain in the Windows CF cache on disk.
-pub async fn dehydrate_all_after_lock(
+/// Vault unlock sequence —
+/// 1. CfRegisterSyncRoot + CfConnectSyncRoot
+/// 2. Project all vault files as dehydrated placeholders
+/// Caller is responsible for virtual drive hide + mount afterwards.
+pub async fn mount_after_unlock(
     pool: &SqlitePool,
     sync_root_path: &Path,
 ) -> Result<(), SmartSyncError> {
     #[cfg(windows)]
     {
-        imp::dehydrate_all_after_lock(pool, sync_root_path).await
+        imp::mount_after_unlock(pool, sync_root_path).await
     }
-
     #[cfg(not(windows))]
     {
-        let _ = pool;
-        let _ = sync_root_path;
+        let _ = (pool, sync_root_path);
         Ok(())
     }
 }
@@ -310,7 +310,7 @@ mod imp {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::ptr;
-    use std::sync::{Arc, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, UNIX_EPOCH};
     use tokio::runtime::Handle;
     use tracing::{error, info, trace, warn};
@@ -361,7 +361,9 @@ mod imp {
     const PROVIDER_ID: GUID = GUID::from_u128(0xb7a42c2a_4af1_4f4a_a650_0b1308b8f019);
     const STATUS_UNSUCCESSFUL: i32 = 0xC0000001u32 as i32;
     const STATUS_SUCCESS: i32 = 0;
-    static CONNECTION_KEY: OnceLock<CF_CONNECTION_KEY> = OnceLock::new();
+    // OnceLock replaced by Mutex so the connection can be cleared on lock and
+    // re-established on unlock (lock ↔ unlock cycle support).
+    static CONNECTION_KEY: Mutex<Option<CF_CONNECTION_KEY>> = Mutex::new(None);
     static HYDRATION_CONTEXT: OnceLock<HydrationContext> = OnceLock::new();
 
     struct ExistingSyncRootInfo {
@@ -783,10 +785,12 @@ mod imp {
     }
 
     pub fn shutdown_sync_root() -> Result<(), SmartSyncError> {
-        if let Some(connection_key) = CONNECTION_KEY.get().copied() {
+        let key_opt = CONNECTION_KEY.lock().unwrap().take();
+        if let Some(connection_key) = key_opt {
             unsafe {
                 let _ = CfDisconnectSyncRoot(connection_key);
             }
+            info!("smart-sync: disconnected sync provider");
         }
         Ok(())
     }
@@ -810,79 +814,72 @@ mod imp {
         }
     }
 
-    pub async fn reset_placeholders_after_unlock(
-        pool: &SqlitePool,
-        sync_root_path: &Path,
-    ) -> Result<(), SmartSyncError> {
-        let sync_root = normalize_sync_root_path(sync_root_path)?;
-        let files = db::get_active_files_for_projection(pool).await?;
-        info!(
-            "[UNLOCK] resetting {} placeholders after vault unlock in {}",
-            files.len(),
-            sync_root.display()
-        );
-        flush_smart_sync_logs();
-
-        for file in &files {
-            let relative_path = normalize_relative_placeholder_path(&file.path)?;
-            let target_path = sync_root.join(&relative_path);
-            if target_path.exists() {
-                // Remove the stale placeholder so it can be recreated fresh.
-                // Windows cached the "vault is locked" failure on this file.
-                if let Err(err) = std::fs::remove_file(&target_path) {
-                    warn!(
-                        "[UNLOCK] failed to remove stale placeholder {}: {}",
-                        target_path.display(),
-                        err
-                    );
+    /// Recursive filesystem walk — dehydrates every CF placeholder found under `dir`.
+    /// Non-placeholder files (e.g. user-dropped regular files) produce a warning but
+    /// are skipped; we never delete user data.
+    fn dehydrate_directory_recursive(dir: &Path) {
+        let read_dir = match std::fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(err) => {
+                warn!("[LOCK] cannot read dir {}: {}", dir.display(), err);
+                return;
+            }
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dehydrate_directory_recursive(&path);
+            } else if path.is_file() {
+                if let Err(err) = dehydrate_placeholder(&path) {
+                    // Non-placeholder files (e.g. user-dropped regular files) will fail here;
+                    // that's expected — log at trace level and continue.
+                    trace!("[LOCK] dehydrate skipped {}: {}", path.display(), err);
                 }
             }
         }
+    }
 
-        // Re-create all placeholders from scratch
-        for file in &files {
-            let state = db::ensure_smart_sync_state(pool, file.inode_id, file.revision_id).await?;
-            create_projection_placeholder(&sync_root, file, state.pin_state != 0)?;
-        }
+    /// Security P0 lock sequence:
+    /// 1. Recursive dehydrate of every file under sync_root (wipes CF cache)
+    /// 2. CfDisconnectSyncRoot (callbacks stop)
+    /// 3. CfUnregisterSyncRoot (removes CF reparse state)
+    /// Virtual drive unmount is handled by the caller after this returns.
+    pub async fn dismount_after_lock(sync_root_path: &Path) -> Result<(), SmartSyncError> {
+        let sync_root = normalize_sync_root_path(sync_root_path)?;
 
-        info!("[UNLOCK] placeholder reset complete, {} files ready for hydration", files.len());
+        // 1. Recursive dehydrate — wipe every decrypted byte from the CF cache.
+        info!("[LOCK] starting recursive dehydration of {}", sync_root.display());
+        flush_smart_sync_logs();
+        dehydrate_directory_recursive(&sync_root);
+        info!("[LOCK] recursive dehydration finished");
+        flush_smart_sync_logs();
+
+        // 2. Disconnect sync provider.
+        shutdown_sync_root()?;
+
+        // 3. Unregister sync root.
+        unregister_sync_root(sync_root_path)?;
+
+        info!("[LOCK] CF sync root torn down");
         flush_smart_sync_logs();
         Ok(())
     }
 
-    /// Security: vault just locked — scrub every hydrated placeholder so that no
-    /// decrypted bytes remain in the Windows CF on-disk cache.  Non-fatal per
-    /// file; always attempts all files even if one fails.
-    pub async fn dehydrate_all_after_lock(
+    /// Vault unlock sequence:
+    /// 1. CfRegisterSyncRoot + CfConnectSyncRoot
+    /// 2. Project all vault files as dehydrated placeholders
+    /// Virtual drive hide + mount is handled by the caller after this returns.
+    pub async fn mount_after_unlock(
         pool: &SqlitePool,
         sync_root_path: &Path,
     ) -> Result<(), SmartSyncError> {
-        let sync_root = normalize_sync_root_path(sync_root_path)?;
-        let files = db::get_active_files_for_projection(pool).await?;
-        info!("[LOCK] dehydrating {} placeholders after vault lock", files.len());
-        flush_smart_sync_logs();
+        // 1. Register + connect sync root.
+        register_sync_root_public(sync_root_path).await?;
 
-        let mut dehydrated = 0usize;
-        for file in &files {
-            let Ok(relative_path) = normalize_relative_placeholder_path(&file.path) else {
-                continue;
-            };
-            let target_path = sync_root.join(&relative_path);
-            if !target_path.exists() {
-                continue;
-            }
-            match dehydrate_placeholder(&target_path) {
-                Ok(()) => {
-                    dehydrated += 1;
-                    trace!("[LOCK] dehydrated {}", relative_path);
-                }
-                Err(err) => {
-                    warn!("[LOCK] dehydration failed for {}: {}", relative_path, err);
-                }
-            }
-        }
+        // 2. Project all vault files as dehydrated placeholders.
+        project_vault_to_sync_root(pool, sync_root_path).await?;
 
-        info!("[LOCK] dehydration complete: {}/{} files scrubbed", dehydrated, files.len());
+        info!("[UNLOCK] CF sync root ready");
         flush_smart_sync_logs();
         Ok(())
     }
@@ -1567,8 +1564,11 @@ mod imp {
     }
 
     fn connect_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncError> {
-        if CONNECTION_KEY.get().is_some() {
-            return Ok(());
+        {
+            let guard = CONNECTION_KEY.lock().unwrap();
+            if guard.is_some() {
+                return Ok(());
+            }
         }
 
         let sync_root_wide = wide_path(sync_root_path)?;
@@ -1599,7 +1599,8 @@ mod imp {
                 CF_CONNECT_FLAG_NONE,
             )?
         };
-        let _ = CONNECTION_KEY.set(connection);
+        *CONNECTION_KEY.lock().unwrap() = Some(connection);
+        info!("smart-sync: connected {}", sync_root_path.display());
         Ok(())
     }
 
@@ -1630,7 +1631,7 @@ mod imp {
             path_exists,
             registered,
             registered_for_provider,
-            connected: CONNECTION_KEY.get().is_some(),
+            connected: CONNECTION_KEY.lock().unwrap().is_some(),
             provider_name: existing.as_ref().map(|info| info.provider_name.clone()),
             provider_version: existing.as_ref().map(|info| info.provider_version.clone()),
             identity: existing
@@ -1646,7 +1647,7 @@ mod imp {
         let mut actions = Vec::new();
         let state = audit_sync_root_state(sync_root_path)?;
 
-        if CONNECTION_KEY.get().is_some() {
+        if CONNECTION_KEY.lock().unwrap().is_some() {
             shutdown_sync_root()?;
             actions.push(format!(
                 "disconnected existing sync root connection for {}",

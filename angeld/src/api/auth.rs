@@ -47,15 +47,29 @@ async fn post_unlock(
             message: e.to_string(),
         })?;
 
-    // Delete stale placeholder files and re-create them so Windows
-    // issues fresh FETCH_DATA callbacks now that the vault is unlocked.
+    // Lazy mount: register CF sync root, project placeholders, hide OmniSync dir,
+    // mount virtual drive.  Happens only after a successful passphrase unlock.
     let pool = state.pool.clone();
     tokio::spawn(async move {
         let paths = RuntimePaths::detect();
-        if let Err(err) =
-            smart_sync::reset_placeholders_after_unlock(&pool, &paths.sync_root).await
-        {
-            tracing::warn!("[UNLOCK] placeholder reset failed: {err}");
+
+        // 1. CF register + connect + project placeholders.
+        if let Err(err) = smart_sync::mount_after_unlock(&pool, &paths.sync_root).await {
+            tracing::warn!("[UNLOCK] CF mount failed: {err}");
+            return;
+        }
+
+        // 2. Hide OmniSync dir and mount virtual drive.
+        let preferred = std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
+        if let Err(err) = crate::virtual_drive::hide_sync_root(&paths.sync_root) {
+            tracing::warn!("[UNLOCK] hide_sync_root failed: {err}");
+        }
+        let letter = crate::virtual_drive::select_mount_drive_letter(&preferred)
+            .unwrap_or_else(|_| preferred.clone());
+        if let Err(err) = crate::virtual_drive::mount_virtual_drive(&letter, &paths.sync_root) {
+            tracing::warn!("[UNLOCK] virtual drive mount failed: {err}");
+        } else {
+            tracing::info!("[UNLOCK] vault mounted at {letter}");
         }
     });
 

@@ -879,14 +879,19 @@ async fn post_vault_lock(
 
     state.vault_keys.lock().await;
 
-    // Security: dehydrate all CF placeholders so no decrypted bytes remain on disk.
-    // Vault key is already gone; spawning keeps the HTTP response snappy while the
-    // scrub runs in the background (any subsequent FETCH_DATA will fail = locked).
-    let pool = state.pool.clone();
+    // Security P0: full CF teardown — recursive dehydrate + disconnect + unregister + unmount.
+    // Vault key already cleared; spawn so the HTTP response returns immediately.
     tokio::spawn(async move {
         let paths = crate::runtime_paths::RuntimePaths::detect();
-        if let Err(err) = crate::smart_sync::dehydrate_all_after_lock(&pool, &paths.sync_root).await {
-            tracing::warn!("[LOCK] post-lock dehydration failed: {err}");
+
+        if let Err(err) = crate::smart_sync::dismount_after_lock(&paths.sync_root).await {
+            tracing::warn!("[LOCK] CF dismount failed: {err}");
+        }
+
+        // Unmount the virtual drive from Explorer after CF is torn down.
+        let drive_letter = std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
+        if let Err(err) = crate::virtual_drive::unmount_virtual_drive(&drive_letter) {
+            tracing::warn!("[LOCK] virtual drive unmount warning: {err}");
         }
     });
 

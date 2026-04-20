@@ -533,25 +533,11 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     if no_sync {
         warn!("starting angeld with --no-sync; skipping Smart Sync and virtual drive bootstrap");
     } else if smart_sync_enabled {
+        // Lazy mount: only install the hydration runtime here.
+        // CfRegisterSyncRoot + CfConnectSyncRoot + virtual drive mount happen
+        // lazily inside the /api/unlock handler after passphrase verification.
         smart_sync::install_hydration_runtime(pool.clone(), downloader.clone())
             .map_err(|err| io::Error::other(format!("smart sync hydration setup failed: {err}")))?;
-        smart_sync::register_sync_root(&sync_root)
-            .await
-            .map_err(|err| io::Error::other(format!("smart sync register failed: {err}")))?;
-        if just_restored {
-            info!(
-                "just-restored database detected; forcing recursive placeholder projection into {}",
-                sync_root.display()
-            );
-        }
-        project_sync_root_with_retry(&pool, &sync_root, just_restored)
-            .await
-            .map_err(|err| io::Error::other(format!("smart sync projection failed: {err}")))?;
-        virtual_drive::hide_sync_root(&sync_root).map_err(|err| {
-            io::Error::other(format!("virtual drive hide sync root failed: {err}"))
-        })?;
-        virtual_drive::mount_virtual_drive(&drive_letter, &sync_root)
-            .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
     } else {
         info!(
             "setup/local-only mode: skipping Smart Sync and mounting a plain local drive view at {}",
@@ -561,7 +547,10 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|err| io::Error::other(format!("virtual drive mount failed: {err}")))?;
     }
 
-    if !no_sync {
+    // Lazy Mount: with smart_sync_enabled the virtual drive and CF sync root are
+    // intentionally absent at startup — they are created on unlock.
+    // Shell repair (which would re-mount O:\) is therefore skipped here.
+    if !no_sync && !smart_sync_enabled {
         match shell_state::startup_recover_shell() {
             Ok(report) => {
                 if report.actions.is_empty() && report.shell_state.is_healthy() {
@@ -603,51 +592,6 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
-
-        if smart_sync_enabled {
-            match smart_sync::audit_sync_root_state(&sync_root) {
-                Ok(snapshot) if snapshot.registered_for_provider && snapshot.connected => {
-                    info!(
-                        "startup sync-root audit healthy for {} (registered={}, connected={})",
-                        snapshot.path, snapshot.registered_for_provider, snapshot.connected
-                    );
-                }
-                Ok(snapshot) => {
-                    warn!(
-                        "startup sync-root audit detected drift for {} (registered={}, registered_for_provider={}, connected={})",
-                        snapshot.path,
-                        snapshot.registered,
-                        snapshot.registered_for_provider,
-                        snapshot.connected
-                    );
-                    match smart_sync::repair_sync_root(&pool, &sync_root).await {
-                        Ok(report) => {
-                            for action in &report.actions {
-                                info!("startup sync-root recovery: {}", action);
-                            }
-                            info!(
-                                "startup sync-root recovery complete for {}",
-                                report.sync_root_state.path
-                            );
-                        }
-                        Err(err) => {
-                            warn!(
-                                "startup sync-root recovery warning for {}: {}",
-                                sync_root.display(),
-                                err
-                            );
-                        }
-                    }
-                }
-                Err(err) => {
-                    warn!(
-                        "startup sync-root audit warning for {}: {}",
-                        sync_root.display(),
-                        err
-                    );
-                }
-            }
-        }
     }
 
     let watcher = FileWatcher::from_env(pool.clone(), vault_keys.clone()).await?;
@@ -671,8 +615,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     if no_sync {
         info!("smart sync bootstrap skipped by --no-sync");
     } else if smart_sync_enabled {
-        info!("smart sync bootstrap ready at {}", sync_root.display());
-        info!("virtual drive mounted at {}", drive_letter);
+        info!("smart sync hydration runtime ready; vault drive will mount on unlock");
     } else {
         info!(
             "plain local vault drive mounted at {} -> {}",
@@ -761,18 +704,17 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
         if !no_sync {
             if smart_sync_enabled {
-                if let Err(err) = smart_sync::shutdown_sync_root() {
-                    warn!("smart sync shutdown warning: {}", err);
+                // Full teardown: dehydrate + disconnect + unregister
+                if let Err(err) = smart_sync::dismount_after_lock(&sync_root).await {
+                    warn!("smart sync dismount warning on shutdown: {}", err);
                 }
-
-                if e2e_test_mode
-                    && let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
-                        warn!(
-                            "smart sync unregister warning for {}: {}",
-                            sync_root.display(),
-                            err
-                        );
-                    }
+                if let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
+                    warn!(
+                        "smart sync unregister warning for {}: {}",
+                        sync_root.display(),
+                        err
+                    );
+                }
             }
 
             if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
