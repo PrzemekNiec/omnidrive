@@ -611,7 +611,12 @@ mod imp {
         };
         operation_parameters.Anonymous.TransferPlaceholders =
             windows::Win32::Storage::CloudFilters::CF_OPERATION_PARAMETERS_0_4 {
-                Flags: CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS(0),
+                // DISABLE_ON_DEMAND_POPULATION (= 1): tells cldflt.sys this directory is
+                // fully populated — all placeholders were pre-created at startup.
+                // Without this flag, CF_POPULATION_POLICY_FULL never marks the directory
+                // as "populated" and blocks all file-creation operations with
+                // ERROR_CANT_RESOLVE_FILENAME (0x80070781).
+                Flags: CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS(1),
                 CompletionStatus: NTSTATUS(STATUS_SUCCESS),
                 PlaceholderTotalCount: 0,
                 PlaceholderArray: ptr::null_mut(),
