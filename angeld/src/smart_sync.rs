@@ -348,7 +348,7 @@ mod imp {
         CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
     };
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_ARCHIVE, FILE_BASIC_INFO,
+        CreateFileW, FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, FILE_BASIC_INFO,
         FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
         FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
@@ -1168,7 +1168,7 @@ mod imp {
                         LastAccessTime: file_time,
                         LastWriteTime: file_time,
                         ChangeTime: file_time,
-                        FileAttributes: FILE_ATTRIBUTE_ARCHIVE.0,
+                        FileAttributes: FILE_ATTRIBUTE_ARCHIVE.0 | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED.0,
                     },
                     FileSize: file.size,
                 },

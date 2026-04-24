@@ -45,6 +45,10 @@ pub struct Downloader {
     app_config: AppConfig,
     prefetch_state: Arc<Mutex<HashMap<i64, i64>>>,
     peer_client: Arc<Mutex<Option<PeerClient>>>,
+    // Per-pack mutex: ensures only one B2 download per pack_id at a time.
+    // Concurrent FetchData callbacks for the same pack wait for the first
+    // download to finish, then return the already-written spool file.
+    pack_download_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 #[derive(Clone)]
@@ -227,6 +231,7 @@ impl Downloader {
             app_config,
             prefetch_state: Arc::new(Mutex::new(HashMap::new())),
             peer_client: Arc::new(Mutex::new(None)),
+            pack_download_locks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -821,6 +826,28 @@ impl Downloader {
             });
         }
 
+        // Deduplicate concurrent downloads of the same remote pack.
+        // Only one task downloads from B2 at a time; all other concurrent
+        // FetchData callbacks for the same pack_id wait for the lock, then
+        // short-circuit via the spool file that the first downloader wrote.
+        let local_path = self
+            .download_spool_dir
+            .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
+        let pack_lock = {
+            let mut map = self.pack_download_locks.lock().await;
+            map.entry(pack_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _pack_guard = pack_lock.lock().await;
+        if fs::try_exists(&local_path).await? {
+            return Ok(RestoredPackSource {
+                pack_id: pack_id.to_string(),
+                providers: vec!["spool-cache".to_string()],
+                local_path,
+            });
+        }
+
         let shards = db::get_pack_shards(&self.pool, pack_id).await?;
         if shards.is_empty() {
             return Err(DownloaderError::NoPackShards(pack_id.to_string()));
@@ -921,9 +948,6 @@ impl Downloader {
             StorageMode::LocalOnly => unreachable!("local-only handled above"),
         };
         let manifest_bytes = build_manifest_bytes(&pack, &ciphertext)?;
-        let local_path = self
-            .download_spool_dir
-            .join(format!("{pack_id}.{LOCAL_PACK_EXTENSION}"));
         write_ephemeral_bytes(&local_path, &manifest_bytes)
             .await
             .map_err(|err| DownloaderError::Io(std::io::Error::other(err.to_string())))?;
