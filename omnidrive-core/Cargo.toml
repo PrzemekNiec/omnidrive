@@ -3,6 +3,12 @@ name = "omnidrive-core"
 version = "0.3.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+ffi = ["dep:uniffi"]
+
 [dependencies]
 aes-gcm = "0.10"
 aes-kw = "0.2"
@@ -14,3 +20,9 @@ rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 zerocopy = { version = "0.7", features = ["derive"] }
+uniffi = { version = "0.28", features = ["cli"], optional = true }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["ffi"]
