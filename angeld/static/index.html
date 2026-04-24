@@ -122,9 +122,52 @@
       border-right: 2px solid #00daf3;
       background: rgba(255, 255, 255, 0.05);
     }
+    #lockScreen {
+      transition: opacity 0.35s ease, visibility 0.35s ease;
+    }
+    #lockScreen.ls-hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body class="antialiased overflow-hidden">
+
+  <!-- ========== LOCK SCREEN ========== -->
+  <div id="lockScreen" class="fixed inset-0 z-[9999] flex items-center justify-center bg-[#1a1a1a]">
+    <div class="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-primary/5 blur-[140px] rounded-full pointer-events-none"></div>
+    <div class="relative z-10 w-full max-w-sm mx-6">
+      <div class="text-center mb-10">
+        <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 border border-primary/20 mb-5">
+          <span class="material-symbols-outlined text-primary text-4xl" style="font-variation-settings:'FILL' 1;">lock</span>
+        </div>
+        <h1 class="text-2xl font-bold text-on-surface tracking-tight">OmniDrive</h1>
+        <p class="text-[10px] text-slate-500 uppercase tracking-[0.2em] mt-1">Skarbiec — Odblokuj dostęp</p>
+      </div>
+      <div class="bg-[#262626]/90 backdrop-blur-xl border border-white/8 rounded-3xl p-8 shadow-2xl space-y-5">
+        <div>
+          <label class="block text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Hasło Główne</label>
+          <input
+            type="password"
+            id="lockScreenPassword"
+            placeholder="••••••••••••"
+            autocomplete="current-password"
+            class="w-full bg-surface-container-lowest/60 border border-white/10 rounded-xl px-4 py-3 text-on-surface text-sm placeholder-slate-600 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-colors"
+          />
+        </div>
+        <p id="lockScreenError" class="hidden text-xs text-error"></p>
+        <button
+          id="lockScreenUnlockBtn"
+          class="w-full bg-primary text-on-primary px-6 py-3 rounded-xl font-bold text-sm hover:bg-primary-container active:scale-95 transition-all flex items-center justify-center gap-2"
+        >
+          <span class="material-symbols-outlined text-lg">lock_open</span>
+          Odblokuj Skarbiec
+        </button>
+      </div>
+      <p class="text-center text-[10px] text-slate-700 mt-6 tracking-wider">Zero-Knowledge · End-to-End Encryption</p>
+    </div>
+  </div>
 
   <!-- ========== SIDEBAR ========== -->
   <aside class="w-[240px] h-screen fixed left-0 top-0 bg-[#262626]/90 backdrop-blur-xl flex flex-col py-8 px-4 shadow-[0px_0px_40px_rgba(0,0,0,0.3)] z-50 border-r border-white/5">
@@ -2216,6 +2259,7 @@
             VAULT_STATE.sessionToken = null;
             renderVaultStatus();
             fetchSystemStatus();
+            showLockScreen();
           } catch (err) {
             alert('Błąd blokowania: ' + (err.message || 'Nieznany błąd'));
           } finally {
@@ -3110,12 +3154,73 @@
       } catch (_) {}
     }
 
+    // ── Lock Screen ──────────────────────────────────────────────
+    function showLockScreen() {
+      const ls = document.getElementById('lockScreen');
+      if (ls) ls.classList.remove('ls-hidden');
+      const inp = document.getElementById('lockScreenPassword');
+      if (inp) { inp.value = ''; setTimeout(() => inp.focus(), 50); }
+      const err = document.getElementById('lockScreenError');
+      if (err) { err.classList.add('hidden'); err.textContent = ''; }
+    }
+
+    function hideLockScreen() {
+      const ls = document.getElementById('lockScreen');
+      if (ls) ls.classList.add('ls-hidden');
+    }
+
+    async function lockScreenUnlock() {
+      const inp = document.getElementById('lockScreenPassword');
+      const btn = document.getElementById('lockScreenUnlockBtn');
+      const err = document.getElementById('lockScreenError');
+      const passphrase = inp ? inp.value.trim() : '';
+      if (!passphrase) { if (inp) inp.focus(); return; }
+      if (err) { err.classList.add('hidden'); err.textContent = ''; }
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-outlined text-lg animate-spin">progress_activity</span>Odblokowywanie...'; }
+      try {
+        const res = await fetch('/api/unlock', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ passphrase }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error?.message || data?.message || `Błąd HTTP ${res.status}`);
+        VAULT_STATE.unlocked = true;
+        VAULT_STATE.sessionToken = data.session_token || null;
+        hideLockScreen();
+        startDashboard();
+        renderVaultStatus();
+      } catch (e) {
+        if (err) { err.textContent = e.message || 'Nieprawidłowe hasło.'; err.classList.remove('hidden'); }
+        if (inp) { inp.focus(); inp.select(); }
+      } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined text-lg">lock_open</span>Odblokuj Skarbiec'; }
+      }
+    }
+
+    function startDashboard() {
+      if (window._dashboardStarted) return;
+      window._dashboardStarted = true;
+      const _iv = parseInt(localStorage.getItem('omnidrive.refreshInterval') || '30000', 10) || 30000;
+      onHashChange();
+      fetchSystemStatus();
+      setInterval(fetchSystemStatus, 10_000);
+      fetchAuditLog();
+      setInterval(fetchAuditLog, 30_000);
+      attachRecoveryCta();
+      fetchRecoveryStatus();
+      fetchStatsOverview();
+      fetchStatsTraffic();
+      fetchStatsSystem();
+      setInterval(fetchStatsOverview, _iv);
+      setInterval(fetchStatsTraffic,  Math.max(_iv * 2, 60_000));
+      setInterval(fetchStatsSystem,    5_000);
+    }
+
     // ── Init ──────────────────────────────────────────────────────
     (function init() {
       // L: extract OAuth token from hash if just redirected from callback
       const _oauthJustExtracted = consumeOauthTokenFromHash();
-      // G.10: apply saved refresh interval (default 30 000 ms)
-      const _savedInterval = parseInt(localStorage.getItem('omnidrive.refreshInterval') || '30000', 10) || 30000;
       // F.7: hash router
       window.addEventListener('hashchange', onHashChange);
       // Prevent default link behavior, set hash instead
@@ -3153,31 +3258,9 @@
           location.hash = view;
         });
       });
-      // Initial route
-      onHashChange();
       // L: populate topbar profile + guard after OAuth callback
       refreshUserProfile();
       if (_oauthJustExtracted) oauthPostLoginGuard();
-
-      // F.6: status pill — initial fetch + polling co 10s
-      fetchSystemStatus();
-      setInterval(fetchSystemStatus, 10_000);
-
-      // F.3 + G.4: audit log — initial fetch + polling co 30s
-      fetchAuditLog();
-      setInterval(fetchAuditLog, 30_000);
-
-      // F.4: recovery alert (initial fetch + CTA → legacy generate flow)
-      attachRecoveryCta();
-      fetchRecoveryStatus();
-
-      // G.4: stats — initial fetch + polling (KPI: user-configured interval, chart 60s, tiles 5s)
-      fetchStatsOverview();
-      fetchStatsTraffic();
-      fetchStatsSystem();
-      setInterval(fetchStatsOverview, _savedInterval);
-      setInterval(fetchStatsTraffic,  Math.max(_savedInterval * 2, 60_000));
-      setInterval(fetchStatsSystem,    5_000);
 
       // G.4: manual refresh (wszystkie panele naraz)
       const refreshBtn = document.getElementById('manualRefreshButton');
@@ -3186,6 +3269,31 @@
       // H.5: audit full log link
       const auditFullLogBtn = document.getElementById('auditFullLogLink');
       if (auditFullLogBtn) auditFullLogBtn.addEventListener('click', () => { location.hash = 'audyt'; });
+
+      // Lock screen handlers
+      const lsBtn = document.getElementById('lockScreenUnlockBtn');
+      const lsInp = document.getElementById('lockScreenPassword');
+      if (lsBtn) lsBtn.addEventListener('click', lockScreenUnlock);
+      if (lsInp) lsInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') lockScreenUnlock(); });
+
+      // Vault gate: check unlock state before showing dashboard or lock screen
+      fetch('/api/vault/status', { headers: { 'Accept': 'application/json' } })
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(data => {
+          if (data && data.unlocked) {
+            VAULT_STATE.unlocked = true;
+            VAULT_STATE.sessionToken = data.session_token || null;
+            hideLockScreen();
+            startDashboard();
+          } else {
+            VAULT_STATE.unlocked = false;
+            if (lsInp) setTimeout(() => lsInp.focus(), 100);
+          }
+        })
+        .catch(() => {
+          VAULT_STATE.unlocked = false;
+          if (lsInp) setTimeout(() => lsInp.focus(), 100);
+        });
     })();
   </script>
 </body>
