@@ -259,6 +259,8 @@ fn apply_sync_root_acl_with_icacls(path: &Path) -> Result<(), String> {
         current_user_sid_string().map_err(|err| err.to_string())?;
     let path_str = path.as_os_str().to_string_lossy().to_string();
 
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let output = std::process::Command::new("icacls")
         .arg(&path_str)
         .arg("/inheritance:e")
@@ -268,6 +270,7 @@ fn apply_sync_root_acl_with_icacls(path: &Path) -> Result<(), String> {
         .arg(format!("*{}:(OI)(CI)F", current_user_sid))
         .arg("*S-1-5-11:(OI)(CI)RX")
         .arg("/C")
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|err| err.to_string())?;
 

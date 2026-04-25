@@ -308,7 +308,9 @@ mod imp {
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::Component;
     use std::path::{Path, PathBuf};
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     use std::ptr;
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, UNIX_EPOCH};
@@ -1505,7 +1507,7 @@ mod imp {
             path,
             "$acl = Get-Acl -LiteralPath __PATH__; $acl.Owner",
         );
-        let acl_output = Command::new("icacls").arg(path).output();
+        let acl_output = Command::new("icacls").arg(path).creation_flags(CREATE_NO_WINDOW).output();
 
         match owner_output {
             Ok(owner) => trace!(
@@ -1550,6 +1552,7 @@ mod imp {
             .arg("-NoProfile")
             .arg("-Command")
             .arg(script)
+            .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(SmartSyncError::Io)?;
 

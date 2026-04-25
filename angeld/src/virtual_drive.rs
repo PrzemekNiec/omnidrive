@@ -150,7 +150,9 @@ mod imp {
     use std::iter;
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
         GetFileAttributesW, GetLogicalDrives, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN,
@@ -171,6 +173,7 @@ mod imp {
         let output = Command::new("subst")
             .arg(&device_name)
             .arg(&normalized)
+            .creation_flags(CREATE_NO_WINDOW)
             .output()?;
         if !output.status.success() {
             return Err(VirtualDriveError::CommandFailed(format!(
@@ -222,6 +225,7 @@ mod imp {
         let output = Command::new("subst")
             .arg(&device_name)
             .arg("/D")
+            .creation_flags(CREATE_NO_WINDOW)
             .output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -250,7 +254,7 @@ mod imp {
     }
 
     pub fn list_virtual_drives() -> Result<Vec<(String, PathBuf)>, VirtualDriveError> {
-        let output = Command::new("subst").output()?;
+        let output = Command::new("subst").creation_flags(CREATE_NO_WINDOW).output()?;
         if !output.status.success() {
             return Err(VirtualDriveError::CommandFailed(format!(
                 "subst query failed: {}",
