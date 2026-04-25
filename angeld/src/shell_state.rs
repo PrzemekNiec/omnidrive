@@ -389,39 +389,87 @@ fn normalized_string_path(path: &str) -> String {
     normalized_path(Path::new(path))
 }
 
+/// Read a REG_SZ value from HKCU using the Windows Registry API directly.
+/// `key` is the subkey path under HKCU (e.g. r"Software\...\Run").
+/// `value_name` is the value name, or None for the default value.
+/// Never spawns a child process — safe to call in a polling loop.
+#[cfg(windows)]
 fn read_registry_string(key: &str, value_name: Option<&str>) -> Option<String> {
-    let mut command = std::process::Command::new("reg");
-    command.arg("query").arg(key);
-    if let Some(value_name) = value_name {
-        command.arg("/v").arg(value_name);
-    } else {
-        command.arg("/ve");
+    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WOW64_64KEY, REG_SZ, RegCloseKey,
+        RegOpenKeyExW, RegQueryValueExW,
+    };
+    use windows::core::PCWSTR;
+
+    fn wide_null(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    let output = command.output().ok()?;
-    if !output.status.success() {
+    let subkey_w = wide_null(key);
+    let mut hkey = HKEY::default();
+    let res = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey_w.as_ptr()),
+            Some(0),
+            KEY_READ | KEY_WOW64_64KEY,
+            &mut hkey,
+        )
+    };
+    if res == ERROR_FILE_NOT_FOUND || res.0 != 0 {
         return None;
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.lines().find_map(|line| {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("HKEY_") {
-            return None;
-        }
+    let value_name_w: Vec<u16> = match value_name {
+        Some(name) => wide_null(name),
+        None => vec![0u16], // empty string = default value
+    };
 
-        if value_name.is_none() && trimmed.starts_with("(Default)") {
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            return parts.last().map(|value| value.to_string());
-        }
+    let mut data_type = REG_SZ;
+    let mut size: u32 = 0;
+    // First call: get required buffer size
+    let res = unsafe {
+        RegQueryValueExW(
+            hkey,
+            PCWSTR(value_name_w.as_ptr()),
+            None,
+            Some(&mut data_type),
+            None,
+            Some(&mut size),
+        )
+    };
+    if res.0 != 0 || size == 0 {
+        unsafe { let _ = RegCloseKey(hkey); }
+        return None;
+    }
 
-        value_name.and_then(|name| {
-            if trimmed.starts_with(name) {
-                let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                parts.last().map(|value| value.to_string())
-            } else {
-                None
-            }
-        })
-    })
+    let mut buf: Vec<u8> = vec![0u8; size as usize];
+    let res = unsafe {
+        RegQueryValueExW(
+            hkey,
+            PCWSTR(value_name_w.as_ptr()),
+            None,
+            Some(&mut data_type),
+            Some(buf.as_mut_ptr()),
+            Some(&mut size),
+        )
+    };
+    unsafe { let _ = RegCloseKey(hkey); }
+    if res.0 != 0 {
+        return None;
+    }
+
+    // REG_SZ is UTF-16LE; reinterpret buf as &[u16] and strip null terminator
+    let words: Vec<u16> = buf[..size as usize]
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    let end = words.iter().position(|&c| c == 0).unwrap_or(words.len());
+    Some(String::from_utf16_lossy(&words[..end]))
+}
+
+#[cfg(not(windows))]
+fn read_registry_string(_key: &str, _value_name: Option<&str>) -> Option<String> {
+    None
 }
