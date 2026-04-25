@@ -138,14 +138,16 @@ async fn get_vault_health(
 
 async fn get_vault_status(State(state): State<ApiState>) -> Json<serde_json::Value> {
     let unlocked = state.vault_keys.require_key().await.is_ok();
+    let initialized = db::get_vault_config(&state.pool).await.ok().flatten().is_some();
     if unlocked {
         let session = super::auth::create_session_for_local_device(&state.pool).await.ok();
         Json(serde_json::json!({
             "unlocked": true,
+            "initialized": true,
             "session_token": session.map(|s| s.token),
         }))
     } else {
-        Json(serde_json::json!({ "unlocked": false }))
+        Json(serde_json::json!({ "unlocked": false, "initialized": initialized }))
     }
 }
 

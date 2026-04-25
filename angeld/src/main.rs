@@ -1,3 +1,7 @@
+// Release builds run as a Windows GUI subsystem process — no console window.
+// Debug builds keep the console so logs are visible during development.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod acl;
 mod api;
 mod autostart;

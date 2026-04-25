@@ -188,6 +188,12 @@
           </button>
         </div>
 
+        <div class="w-full pt-2 border-t border-white/5 text-center">
+          <a href="/legacy" class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+            Nowe urządzenie? Dołącz do istniejącego Skarbca →
+          </a>
+        </div>
+
       </div>
     </main>
 
@@ -3359,6 +3365,9 @@
             VAULT_STATE.sessionToken = data.session_token || null;
             hideLockScreen();
             startDashboard();
+          } else if (data && data.initialized === false) {
+            // Fresh device — no vault configured yet, go straight to wizard
+            location.replace('/legacy');
           } else {
             VAULT_STATE.unlocked = false;
             if (lsInp) setTimeout(() => lsInp.focus(), 100);
