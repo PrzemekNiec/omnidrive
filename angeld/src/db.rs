@@ -6949,6 +6949,59 @@ pub async fn migrate_single_to_multi_user(
     Ok(true)
 }
 
+/// After grafting from a snapshot, the local device may not appear in the `devices`
+/// multi-user table (the snapshot only contains the source device's entries).
+/// This function registers the local device under the vault owner so that session
+/// creation works on the newly joined device.
+/// Safe to call at every startup — no-op when the device is already registered.
+pub async fn ensure_local_device_in_vault(
+    pool: &SqlitePool,
+    vault_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let device = match get_local_device_identity(pool).await? {
+        Some(d) => d,
+        None => return Ok(false),
+    };
+
+    // Already in multi-user devices table?
+    if get_device(pool, &device.device_id).await?.is_some() {
+        return Ok(false);
+    }
+
+    // Find the vault owner to associate this device with
+    let owner_user_id: Option<String> = sqlx::query_scalar(
+        "SELECT user_id FROM vault_members WHERE vault_id = ? AND role = 'owner' LIMIT 1",
+    )
+    .bind(vault_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let user_id = match owner_user_id {
+        Some(id) => id,
+        None => return Ok(false),
+    };
+
+    let now = epoch_secs();
+    let placeholder_pubkey = vec![0u8; 32];
+
+    sqlx::query(
+        "INSERT OR IGNORE INTO devices \
+         (device_id, user_id, device_name, public_key, wrapped_vault_key, vault_key_generation, \
+          revoked_at, last_seen_at, created_at) \
+         VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
+    )
+    .bind(&device.device_id)
+    .bind(&user_id)
+    .bind(&device.device_name)
+    .bind(&placeholder_pubkey)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    Ok(true)
+}
+
 /// Rewrites any legacy `owner-{device_id}` user IDs to UUID v4.
 /// Safe to call at every startup — no-op when no legacy IDs remain.
 pub async fn backfill_uuid_user_ids(pool: &SqlitePool) -> Result<u32, sqlx::Error> {

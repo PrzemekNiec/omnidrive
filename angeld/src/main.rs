@@ -322,6 +322,12 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         Ok(n) => info!("backfilled {n} legacy owner user_id(s) to UUID v4"),
         Err(e) => warn!("UUID backfill failed (non-fatal): {e}"),
     }
+    // After grafting from a snapshot, local device may not be in `devices` table.
+    match db::ensure_local_device_in_vault(&pool, &local_vault_id).await {
+        Ok(true) => info!("registered local device in multi-user vault table after graft"),
+        Ok(false) => {}
+        Err(e) => warn!("ensure_local_device_in_vault failed (non-fatal): {e}"),
+    }
 
     let vault_keys = VaultKeyStore::new();
     let (provider_reload_tx, provider_reload_rx) = watch::channel(0u64);
