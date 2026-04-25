@@ -179,6 +179,13 @@
             <span>Odblokuj</span>
             <span class="material-symbols-outlined text-lg">arrow_forward</span>
           </button>
+          <button
+            id="lockScreenWindowsHelloBtn"
+            class="hidden w-full py-3 rounded-full border border-white/10 text-slate-400 flex items-center justify-center gap-2 hover:border-white/20 hover:text-slate-200 transition-all active:scale-95 text-sm"
+          >
+            <span class="material-symbols-outlined text-lg">fingerprint</span>
+            <span>Odblokuj przez Windows Hello</span>
+          </button>
         </div>
 
       </div>
@@ -1203,7 +1210,7 @@
 
     async function fetchRecoveryStatus() {
       try {
-        const res = await fetch('/api/recovery/status', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/recovery/status', { headers: vaultAuthHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const status = await res.json();
         applyRecoveryStatus(classifyRecoveryStatus(status), status);
@@ -1316,7 +1323,8 @@
 
       pill.classList.remove(prev.bg, prev.border);
       pill.classList.add(next.bg, next.border);
-      dot.classList.remove(prev.dot, prev.pulse);
+      dot.classList.remove(prev.dot);
+      if (prev.pulse) dot.classList.remove(prev.pulse);
       dot.classList.add(next.dot);
       if (next.pulse) dot.classList.add(next.pulse);
       label.classList.remove(prev.label);
@@ -1621,7 +1629,9 @@
         AUDIT_STATE.offset = 0;
       }
       try {
-        const res = await fetch(`/api/audit?limit=${AUDIT_STATE.pageSize}&offset=${AUDIT_STATE.offset}`, { headers: { 'Accept': 'application/json' } });
+        const auditFullHdr = { 'Accept': 'application/json' };
+        if (VAULT_STATE.sessionToken) auditFullHdr['Authorization'] = `Bearer ${VAULT_STATE.sessionToken}`;
+        const res = await fetch(`/api/audit?limit=${AUDIT_STATE.pageSize}&offset=${AUDIT_STATE.offset}`, { headers: auditFullHdr });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const events = Array.isArray(data.events) ? data.events : [];
@@ -2008,7 +2018,7 @@
 
     async function fetchVaultRecoveryStatus() {
       try {
-        const res = await fetch('/api/recovery/status', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/recovery/status', { headers: vaultAuthHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         VAULT_STATE.recovery = await res.json();
         if (VAULT_STATE.recovery) {
@@ -2609,7 +2619,7 @@
       FILES_STATE.status = 'loading';
       renderFilesTable();
       try {
-        const res = await fetch('/api/files', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/files', { headers: vaultAuthHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         FILES_STATE.items = Array.isArray(data) ? data : [];
@@ -3223,6 +3233,30 @@
       }
     }
 
+    async function lockScreenWindowsHelloUnlock() {
+      const btn = document.getElementById('lockScreenWindowsHelloBtn');
+      const err = document.getElementById('lockScreenError');
+      if (err) { err.classList.add('hidden'); err.textContent = ''; }
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-outlined text-lg animate-spin">progress_activity</span>Weryfikacja...'; }
+      try {
+        const res = await fetch('/api/unlock/windows-hello', {
+          method: 'POST',
+          headers: { 'Accept': 'application/json' },
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error?.message || data?.message || `Błąd HTTP ${res.status}`);
+        VAULT_STATE.unlocked = true;
+        VAULT_STATE.sessionToken = data.session_token || null;
+        hideLockScreen();
+        startDashboard();
+        renderVaultStatus();
+      } catch (e) {
+        if (err) { err.textContent = e.message || 'Windows Hello nie powiodło się.'; err.classList.remove('hidden'); }
+      } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<span class="material-symbols-outlined text-lg">fingerprint</span>Odblokuj przez Windows Hello'; }
+      }
+    }
+
     function startDashboard() {
       if (window._dashboardStarted) return;
       window._dashboardStarted = true;
@@ -3250,11 +3284,11 @@
       window.addEventListener('hashchange', onHashChange);
       // Prevent default link behavior, set hash instead
       document.querySelectorAll('.nav-item[data-view]').forEach(link => {
-        link.addEventListener('click', (e) => {
+        link.addEventListener('click', async (e) => {
           e.preventDefault();
           const view = link.dataset.view;
           if (view === 'wyloguj') {
-            // Logout OAuth session
+            // Logout OAuth session (fire and forget)
             const oauthTok = AUTH_STATE.oauthToken;
             if (oauthTok) {
               fetch('/api/auth/logout', {
@@ -3267,10 +3301,15 @@
             AUTH_STATE.oauthToken = null;
             AUTH_STATE.expiresAt = 0;
             AUTH_STATE.user = null;
-            // Logout vault session (unchanged)
+            // Lock vault first (while session is still valid), then invalidate session.
+            // Order matters: /api/vault/lock requires a valid session token.
             const tok = VAULT_STATE.sessionToken;
             if (tok) {
-              fetch('/api/auth/logout', {
+              await fetch('/api/vault/lock', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${tok}` },
+              }).catch(() => {});
+              await fetch('/api/auth/logout', {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${tok}` },
               }).catch(() => {});
@@ -3300,6 +3339,16 @@
       const lsInp = document.getElementById('lockScreenPassword');
       if (lsBtn) lsBtn.addEventListener('click', lockScreenUnlock);
       if (lsInp) lsInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') lockScreenUnlock(); });
+
+      // Windows Hello button — show only if credential is already stored
+      const lsHelloBtn = document.getElementById('lockScreenWindowsHelloBtn');
+      if (lsHelloBtn) {
+        lsHelloBtn.addEventListener('click', lockScreenWindowsHelloUnlock);
+        fetch('/api/unlock/hello-available', { headers: { 'Accept': 'application/json' } })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => { if (data && data.available) lsHelloBtn.classList.remove('hidden'); })
+          .catch(() => {});
+      }
 
       // Vault gate: check unlock state before showing dashboard or lock screen
       fetch('/api/vault/status', { headers: { 'Accept': 'application/json' } })

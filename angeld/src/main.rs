@@ -34,6 +34,7 @@ mod vault;
 mod virtual_drive;
 mod watcher;
 mod win_acl;
+mod windows_hello;
 
 use crate::api::ApiServer;
 use crate::config::AppConfig;

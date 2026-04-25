@@ -343,6 +343,26 @@ impl VaultKeyStore {
             .unwrap_or(1))
     }
 
+    /// Check whether the given passphrase correctly unlocks the current wrapped vault key.
+    /// Does not modify any state. Returns `Ok(false)` for wrong passphrase.
+    pub async fn verify_passphrase(&self, pool: &SqlitePool, passphrase: &str) -> Result<bool, VaultError> {
+        if passphrase.is_empty() {
+            return Ok(false);
+        }
+        let config = db::get_vault_config(pool).await?
+            .ok_or(VaultError::InvalidConfig("no vault_config found"))?;
+        let params = to_root_kdf_params(config)?;
+        let root_keys = derive_root_keys(passphrase.as_bytes(), &params)?;
+        let vault_params = db::get_vault_params(pool).await?;
+        match vault_params.and_then(|v| v.encrypted_vault_key) {
+            Some(wrapped_bytes) if wrapped_bytes.len() == WRAPPED_KEY_LEN => {
+                let wrapped: [u8; WRAPPED_KEY_LEN] = wrapped_bytes.as_slice().try_into().unwrap();
+                Ok(unwrap_key(&root_keys.kek, &wrapped).is_ok())
+            }
+            _ => Err(VaultError::InvalidConfig("no wrapped vault key in DB")),
+        }
+    }
+
     /// Rotate the vault key to a new passphrase.
     ///
     /// 1. Derive new root keys (Argon2 → new master_key → new KEK) with a fresh salt.

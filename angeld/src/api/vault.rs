@@ -138,7 +138,15 @@ async fn get_vault_health(
 
 async fn get_vault_status(State(state): State<ApiState>) -> Json<serde_json::Value> {
     let unlocked = state.vault_keys.require_key().await.is_ok();
-    Json(serde_json::json!({ "unlocked": unlocked }))
+    if unlocked {
+        let session = super::auth::create_session_for_local_device(&state.pool).await.ok();
+        Json(serde_json::json!({
+            "unlocked": true,
+            "session_token": session.map(|s| s.token),
+        }))
+    } else {
+        Json(serde_json::json!({ "unlocked": false }))
+    }
 }
 
 // ── Epic 34.1b: Invite flow endpoints ───────────────────────────────
