@@ -69,9 +69,9 @@
     }
   </style>
 </head>
-<body class="flex min-h-screen flex-col items-center justify-center px-4 py-10">
+<body class="flex min-h-screen flex-col items-center justify-center px-4 py-10" style="opacity:0">
 
-  <!-- Guard: jeśli onboarding już ukończony → wróć do dashboardu -->
+  <!-- Guard: jeśli onboarding już ukończony → wróć do dashboardu. Body ukryte do czasu sprawdzenia. -->
   <script>
     (async function () {
       try {
@@ -79,14 +79,16 @@
         const timer = setTimeout(() => ac.abort(), 2500);
         const r = await fetch('/api/onboarding/status', { headers: { Accept: 'application/json' }, signal: ac.signal });
         clearTimeout(timer);
-        if (!r.ok) return;
+        if (!r.ok) { document.body.style.opacity = '1'; return; }
         const s = await r.json();
         if (String(s.onboarding_state || '').toUpperCase() === 'COMPLETED') {
           location.replace('/');
+          return;
         }
       } catch (e) {
         console.warn('[wizard guard] status check failed, proceeding to wizard', e);
       }
+      document.body.style.opacity = '1';
     })();
   </script>
 
