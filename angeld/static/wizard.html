@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html class="dark" lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+  <title>OmniDrive — Konfiguracja</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "primary": "#00daf3",
+            "primary-container": "#00bcd2",
+          },
+          fontFamily: {
+            "headline": ["Inter"],
+            "body": ["Inter"],
+            "label": ["Inter"]
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background: radial-gradient(ellipse at top left, #1e293b 0%, #0f172a 50%, #020617 100%);
+      min-height: 100vh;
+      color: #e2e8f0;
+    }
+    .glass-panel {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .glass-muted {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .wizard-visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .wizard-hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .wizard-progress-track {
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .wizard-progress-fill {
+      background: linear-gradient(90deg, #00daf3, #4edea3);
+    }
+    .step-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.2);
+      transition: background 0.3s;
+    }
+    .step-dot.active {
+      background: #00daf3;
+    }
+  </style>
+</head>
+<body class="flex min-h-screen flex-col items-center justify-center px-4 py-10">
+
+  <!-- Guard: jeśli onboarding już ukończony → wróć do dashboardu -->
+  <script>
+    (async function () {
+      try {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 2500);
+        const r = await fetch('/api/onboarding/status', { headers: { Accept: 'application/json' }, signal: ac.signal });
+        clearTimeout(timer);
+        if (!r.ok) return;
+        const s = await r.json();
+        if (String(s.onboarding_state || '').toUpperCase() === 'COMPLETED') {
+          location.replace('/');
+        }
+      } catch (e) {
+        console.warn('[wizard guard] status check failed, proceeding to wizard', e);
+      }
+    })();
+  </script>
+
+  <!-- Logo -->
+  <header class="mb-8 flex flex-col items-center gap-3 text-center">
+    <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-[#00daf3] to-[#4edea3]">
+      <span class="material-symbols-outlined text-[#020617] text-2xl" style="font-variation-settings:'FILL' 1,'wght' 600">lock</span>
+    </div>
+    <div>
+      <p class="text-xs uppercase tracking-[0.3em] text-slate-400">OmniDrive</p>
+      <h1 class="mt-1 text-xl font-semibold text-white">Konfiguracja Skarbca</h1>
+    </div>
+  </header>
+
+  <!-- Overlay wymagany przez wizard.js — startuje jako wizard-hidden, wizard.js go pokaże -->
+  <div
+    id="onboardingWizardOverlay"
+    class="wizard-hidden w-full"
+    aria-hidden="true"
+  >
+    <div class="mx-auto w-full max-w-xl">
+      <section id="onboardingWizardPanel" class="glass-panel w-full rounded-[32px] p-6 md:p-8">
+        <div class="flex flex-col gap-5">
+
+          <!-- Nagłówek kroku -->
+          <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div class="flex-1">
+              <p id="onboardingWizardStepKicker" class="text-xs uppercase tracking-[0.3em] text-slate-400">Konfiguracja początkowa</p>
+              <h2 id="onboardingWizardStepTitle" class="mt-2 text-2xl font-semibold text-white">Przygotowanie OmniDrive</h2>
+              <p id="onboardingWizardStepDescription" class="mt-3 text-sm leading-6 text-slate-300">
+                Ładowanie stanu pierwszego uruchomienia...
+              </p>
+            </div>
+            <div class="glass-muted shrink-0 rounded-2xl px-4 py-3 text-right">
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Postęp</p>
+              <p id="onboardingWizardStepCounter" class="mt-2 text-lg font-semibold text-white">Krok 1 / 6</p>
+            </div>
+          </div>
+
+          <!-- Pasek postępu -->
+          <div class="wizard-progress-track h-2 overflow-hidden rounded-full">
+            <div id="onboardingWizardProgressBar" class="wizard-progress-fill h-full rounded-full transition-all duration-300" style="width: 16.66%;"></div>
+          </div>
+
+          <!-- Banery stanu -->
+          <div id="onboardingWizardDraftBanner" class="hidden rounded-2xl border border-cyan-400/20 bg-cyan-500/10 px-4 py-4 text-sm text-cyan-100"></div>
+          <div id="onboardingWizardError" class="hidden rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-4 text-sm text-rose-100"></div>
+
+          <!-- Treść kroku (renderowana przez wizard.js) -->
+          <div id="onboardingWizardBody" class="min-h-[420px]"></div>
+
+          <!-- Nawigacja -->
+          <div class="flex flex-col gap-3 border-t border-white/10 pt-5 sm:flex-row sm:items-center sm:justify-between">
+            <button
+              id="onboardingWizardBackButton"
+              class="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-white/20 hover:bg-white/10"
+            >
+              Wstecz
+            </button>
+            <div class="flex flex-col gap-3 sm:flex-row">
+              <!-- hidden+inline-flex: wizard.js removes 'hidden' to show; inline-flex is the target display value -->
+              <button
+                id="onboardingWizardSecondaryButton"
+                class="hidden inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-white/20 hover:bg-white/10"
+              >
+                Akcja dodatkowa
+              </button>
+              <button
+                id="onboardingWizardNextButton"
+                class="inline-flex items-center justify-center rounded-xl bg-[#00daf3] px-5 py-2.5 text-sm font-semibold text-[#00363d] transition hover:bg-[#00bcd2]"
+              >
+                Dalej
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Indykatory kroków -->
+  <nav aria-label="Kroki" class="mt-6 flex items-center gap-2">
+    <span class="step-dot active" data-step="0" aria-label="Krok 1"></span>
+    <span class="step-dot" data-step="1" aria-label="Krok 2"></span>
+    <span class="step-dot" data-step="2" aria-label="Krok 3"></span>
+    <span class="step-dot" data-step="3" aria-label="Krok 4"></span>
+    <span class="step-dot" data-step="4" aria-label="Krok 5"></span>
+    <span class="step-dot" data-step="5" aria-label="Krok 6"></span>
+  </nav>
+
+  <!-- Sync kropek z aktualnym krokiem wizarda -->
+  <script>
+    (function () {
+      const dots = document.querySelectorAll('.step-dot');
+      function syncDots() {
+        const counter = document.getElementById('onboardingWizardStepCounter');
+        if (!counter) return;
+        const m = counter.textContent.match(/Krok\s+(\d+)/i);
+        if (!m) { console.warn('[step-dots] counter format unrecognized:', counter.textContent); return; }
+        const current = parseInt(m[1], 10) - 1;
+        dots.forEach((d, i) => d.classList.toggle('active', i === current));
+      }
+      const observer = new MutationObserver(syncDots);
+      const target = document.getElementById('onboardingWizardStepCounter');
+      if (target) observer.observe(target, { childList: true, subtree: true, characterData: true });
+      window.addEventListener('pagehide', () => observer.disconnect(), { once: true });
+    })();
+  </script>
+
+  <script src="/wizard.js"></script>
+</body>
+</html>

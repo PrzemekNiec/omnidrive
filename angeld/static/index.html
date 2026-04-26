@@ -3183,14 +3183,14 @@
       } catch (_) {}
     }
 
-    // ── L: Guard — redirect to /legacy if onboarding not done ─
+    // ── L: Guard — redirect to /wizard if onboarding not done ─
     async function oauthPostLoginGuard() {
       try {
         const res = await fetch('/api/onboarding/status', { headers: { Accept: 'application/json' } });
         if (!res.ok) return;
         const status = await res.json();
         if (String(status.onboarding_state || '').toUpperCase() !== 'COMPLETED') {
-          window.location.href = '/legacy';
+          window.location.href = '/wizard';
         }
       } catch (_) {}
     }
@@ -3367,7 +3367,7 @@
             startDashboard();
           } else if (data && data.initialized === false) {
             // Fresh device — no vault configured yet, go straight to wizard
-            location.replace('/legacy');
+            location.replace('/wizard');
           } else {
             VAULT_STATE.unlocked = false;
             if (lsInp) setTimeout(() => lsInp.focus(), 100);
