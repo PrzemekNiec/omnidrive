@@ -189,7 +189,7 @@
         </div>
 
         <div class="w-full pt-2 border-t border-white/5 text-center">
-          <a href="/legacy" class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+          <a href="/wizard" class="text-xs text-slate-500 hover:text-slate-300 transition-colors">
             Nowe urządzenie? Dołącz do istniejącego Skarbca →
           </a>
         </div>
@@ -3190,7 +3190,7 @@
         if (!res.ok) return;
         const status = await res.json();
         if (String(status.onboarding_state || '').toUpperCase() !== 'COMPLETED') {
-          window.location.href = '/wizard';
+          window.location.replace('/wizard');
         }
       } catch (_) {}
     }

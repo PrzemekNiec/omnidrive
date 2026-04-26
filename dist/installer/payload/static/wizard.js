@@ -252,7 +252,6 @@
               <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Skarbiec</p><p class="mt-3 text-lg font-semibold text-white">${escape(st.onboarding?.onboarding_state || "INITIAL")}</p></div>
               <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Tryb</p><p class="mt-3 text-lg font-semibold text-white">${escape(modeLabel(st.mode))}</p></div>
               <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Urządzenie</p><p class="mt-3 text-lg font-semibold text-white break-words">${escape(st.identity.device_name || "To urządzenie")}</p><p class="mt-2 text-sm text-slate-400">${escape(st.identity.device_id || "ID zostanie nadane po zapisaniu tożsamości")}</p></div>
-              <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Konto Google</p><a href="/api/auth/google/start" class="mt-3 flex items-center gap-2 text-sm text-primary hover:underline"><span class="material-symbols-outlined text-lg">account_circle</span>Zaloguj przez Google</a></div>
             </div>
           </article>
         </div>`;

@@ -79,16 +79,15 @@
         const timer = setTimeout(() => ac.abort(), 2500);
         const r = await fetch('/api/onboarding/status', { headers: { Accept: 'application/json' }, signal: ac.signal });
         clearTimeout(timer);
-        if (!r.ok) { document.body.style.opacity = '1'; return; }
-        const s = await r.json();
-        if (String(s.onboarding_state || '').toUpperCase() === 'COMPLETED') {
-          location.replace('/');
-          return;
+        if (r.ok) {
+          const s = await r.json();
+          if (String(s.onboarding_state || '').toUpperCase() !== 'COMPLETED') {
+            document.body.style.opacity = '1';
+            return;
+          }
         }
-      } catch (e) {
-        console.warn('[wizard guard] status check failed, proceeding to wizard', e);
-      }
-      document.body.style.opacity = '1';
+      } catch (_) {}
+      location.replace('/');
     })();
   </script>
 
@@ -184,17 +183,16 @@
   <script>
     (function () {
       const dots = document.querySelectorAll('.step-dot');
+      const target = document.getElementById('onboardingWizardStepCounter');
+      if (!target) return;
       function syncDots() {
-        const counter = document.getElementById('onboardingWizardStepCounter');
-        if (!counter) return;
-        const m = counter.textContent.match(/Krok\s+(\d+)/i);
-        if (!m) { console.warn('[step-dots] counter format unrecognized:', counter.textContent); return; }
-        const current = parseInt(m[1], 10) - 1;
+        const step = parseInt(target.dataset.currentStep, 10);
+        if (isNaN(step)) return;
+        const current = Math.max(0, Math.min(dots.length - 1, step - 1));
         dots.forEach((d, i) => d.classList.toggle('active', i === current));
       }
       const observer = new MutationObserver(syncDots);
-      const target = document.getElementById('onboardingWizardStepCounter');
-      if (target) observer.observe(target, { childList: true, subtree: true, characterData: true });
+      observer.observe(target, { childList: true });
       window.addEventListener('pagehide', () => observer.disconnect(), { once: true });
     })();
   </script>

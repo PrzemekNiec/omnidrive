@@ -15,7 +15,7 @@ mod vault;
 use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
 use crate::downloader::Downloader;
 use crate::vault::VaultKeyStore;
-use axum::http::{Method, header};
+use axum::http::{Method, header, HeaderName};
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Router;
@@ -191,16 +191,25 @@ async fn get_legacy() -> Html<&'static str> {
     Html(include_str!("../../static/legacy.html"))
 }
 
-async fn get_wizard() -> Html<&'static str> {
-    Html(include_str!("../../static/wizard.html"))
+async fn get_wizard() -> impl IntoResponse {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (HeaderName::from_static("x-frame-options"), "DENY"),
+            (HeaderName::from_static("referrer-policy"), "no-referrer"),
+            (HeaderName::from_static("content-security-policy"),
+             "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"),
+        ],
+        Html(include_str!("../../static/wizard.html")),
+    )
 }
 
 async fn get_wizard_js() -> impl IntoResponse {
     (
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
+        [
+            (header::CONTENT_TYPE, "application/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
         include_str!("../../static/wizard.js"),
     )
 }
