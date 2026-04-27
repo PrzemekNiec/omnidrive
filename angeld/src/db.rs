@@ -1765,8 +1765,13 @@ pub async fn graft_restored_metadata_snapshot(
     .await
     .unwrap_or(None);
 
-    // Done reading — close the restored pool before we touch the main DB
+    // Done reading — close the restored pool before we touch the main DB.
+    // Explicit drop after close() releases the Arc<PoolInner> reference synchronously;
+    // yield_now() then gives tokio a slot to flush any deferred cleanup (memory-mapped
+    // pages, kernel handles) before A.2's secure_delete tries to remove the file.
     restored_pool.close().await;
+    drop(restored_pool);
+    tokio::task::yield_now().await;
 
     // ── Phase 2: write into the main DB inside a single transaction ──
     let mut conn = pool.acquire().await?;
