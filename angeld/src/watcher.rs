@@ -3,6 +3,7 @@
 
 use crate::config::AppConfig;
 use crate::db;
+use crate::onboarding::{OnboardingState, SYSTEM_CONFIG_ONBOARDING_STATE};
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::vault::VaultKeyStore;
@@ -150,6 +151,30 @@ impl FileWatcher {
 
     pub async fn run(self) -> Result<(), WatcherError> {
         diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Starting);
+
+        // DRY_RUN / pre-onboarding gate: stay alive in tokio::select! but skip all file
+        // processing. On a fresh machine (Dell smoke test), the watcher must not touch files
+        // while onboarding is still in progress — CLAUDE.md Świętej Zasady Integralności.
+        let dry_run = AppConfig::from_env().dry_run_active;
+        let onboarding_complete = db::get_system_config_value(
+            &self.pool,
+            SYSTEM_CONFIG_ONBOARDING_STATE,
+        )
+        .await
+        .unwrap_or(None)
+        .is_some_and(|v| OnboardingState::from_str(&v) == OnboardingState::Completed);
+
+        if dry_run || !onboarding_complete {
+            info!(
+                "[WATCHER] passive mode (dry_run={dry_run}, onboarding_complete={onboarding_complete}) \
+                 — file processing disabled; restart daemon after onboarding completes"
+            );
+            diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Idle);
+            loop {
+                tokio::time::sleep(StdDuration::from_secs(3600)).await;
+            }
+        }
+
         let (tx, mut rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
         let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |result| {
             let _ = tx.send(result);
