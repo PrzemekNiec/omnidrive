@@ -6962,9 +6962,11 @@ pub async fn migrate_single_to_multi_user(
     sqlx::query(
         "INSERT INTO audit_logs (timestamp, actor_user_id, actor_device_id, action, \
          target_user_id, target_device_id, details, vault_id) \
-         VALUES (?, ?, ?, 'migrate_single_to_multi', NULL, NULL, 'auto-migration from single-user vault', ?)",
+         VALUES (?, ?, ?, 'migrate_single_to_multi', ?, ?, 'auto-migration from single-user vault', ?)",
     )
     .bind(now)
+    .bind(&owner_user_id)
+    .bind(&device.device_id)
     .bind(&owner_user_id)
     .bind(&device.device_id)
     .bind(vault_id)
