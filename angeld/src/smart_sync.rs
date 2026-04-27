@@ -787,7 +787,7 @@ mod imp {
     }
 
     pub fn shutdown_sync_root() -> Result<(), SmartSyncError> {
-        let key_opt = CONNECTION_KEY.lock().unwrap().take();
+        let key_opt = CONNECTION_KEY.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(connection_key) = key_opt {
             unsafe {
                 let _ = CfDisconnectSyncRoot(connection_key);
@@ -1568,7 +1568,7 @@ mod imp {
 
     fn connect_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncError> {
         {
-            let guard = CONNECTION_KEY.lock().unwrap();
+            let guard = CONNECTION_KEY.lock().unwrap_or_else(|e| e.into_inner());
             if guard.is_some() {
                 return Ok(());
             }
@@ -1602,7 +1602,7 @@ mod imp {
                 CF_CONNECT_FLAG_NONE,
             )?
         };
-        *CONNECTION_KEY.lock().unwrap() = Some(connection);
+        *CONNECTION_KEY.lock().unwrap_or_else(|e| e.into_inner()) = Some(connection);
         info!("smart-sync: connected {}", sync_root_path.display());
         Ok(())
     }
@@ -1634,7 +1634,7 @@ mod imp {
             path_exists,
             registered,
             registered_for_provider,
-            connected: CONNECTION_KEY.lock().unwrap().is_some(),
+            connected: CONNECTION_KEY.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
             provider_name: existing.as_ref().map(|info| info.provider_name.clone()),
             provider_version: existing.as_ref().map(|info| info.provider_version.clone()),
             identity: existing
@@ -1650,7 +1650,7 @@ mod imp {
         let mut actions = Vec::new();
         let state = audit_sync_root_state(sync_root_path)?;
 
-        if CONNECTION_KEY.lock().unwrap().is_some() {
+        if CONNECTION_KEY.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
             shutdown_sync_root()?;
             actions.push(format!(
                 "disconnected existing sync root connection for {}",
