@@ -20,9 +20,11 @@ use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
 use crate::virtual_drive;
 
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
+use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
@@ -446,9 +448,55 @@ async fn post_complete_onboarding(
 
 async fn post_join_existing(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(request): Json<JoinExistingRequest>,
 ) -> Result<Json<JoinExistingResponse>, ApiError> {
+    let ip = addr.ip();
+    let ua = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .chars()
+        .take(200)
+        .collect::<String>();
     let provider_id = request.provider_id.trim();
+
+    // ── State-guard ────────────────────────────────────────────────────
+    // Only allow when onboarding is not yet complete and device is not enrolled.
+    let ob_state = db::get_system_config_value(&state.pool, SYSTEM_CONFIG_ONBOARDING_STATE)
+        .await
+        .ok()
+        .flatten()
+        .map(|v| OnboardingState::from_str(&v))
+        .unwrap_or(OnboardingState::Initial);
+
+    if ob_state == OnboardingState::Completed {
+        return Err(ApiError::Forbidden {
+            message: "join-existing is not allowed after onboarding is complete".to_string(),
+        });
+    }
+
+    let device_enrolled = db::get_local_device_identity(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+
+    if device_enrolled {
+        return Err(ApiError::Forbidden {
+            message: "join-existing is not allowed when a device identity is already enrolled".to_string(),
+        });
+    }
+
+    // ── Rate-limit check ──────────────────────────────────────────────
+    if let Err(retry_after) = state.join_limiter.check(ip) {
+        return Err(ApiError::TooManyRequests {
+            retry_after_secs: retry_after,
+            message: format!("too many failed join attempts — retry after {retry_after}s"),
+        });
+    }
+
     if !KNOWN_PROVIDERS.contains(&provider_id) {
         return Err(ApiError::BadRequest {
             code: "unsupported_provider",
@@ -456,15 +504,48 @@ async fn post_join_existing(
         });
     }
 
+    // Resolve vault_id for audit logs (may not exist yet before first successful restore).
+    let audit_vault_id = db::get_vault_params(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v.vault_id)
+        .unwrap_or_else(|| provider_id.to_string());
+
     let runtime_paths = RuntimePaths::detect();
-    let restore = perform_vault_restore(
+    let restore_result = perform_vault_restore(
         &state.pool,
         &runtime_paths,
         &request.passphrase,
         provider_id,
     )
-    .await
-    .map_err(|err| {
+    .await;
+
+    if let Err(ref err) = restore_result {
+        state.join_limiter.record_failure(ip);
+        let reason = match err {
+            crate::onboarding::RestoreError::IncorrectPassphrase(_) => "incorrect_passphrase",
+            crate::onboarding::RestoreError::MetadataNotFound(_) => "metadata_not_found",
+            crate::onboarding::RestoreError::NetworkError(_) => "network_error",
+            crate::onboarding::RestoreError::MissingProviderConfig(_) => "missing_provider_config",
+            _ => "internal_error",
+        };
+        let _ = db::insert_audit_log(
+            &state.pool,
+            &audit_vault_id,
+            "join_existing_failure",
+            None,
+            None,
+            None,
+            None,
+            Some(&format!(
+                r#"{{"provider":"{provider_id}","reason":"{reason}","ip":"{ip}","ua":{ua:?}}}"#
+            )),
+        )
+        .await;
+    }
+
+    let restore = restore_result.map_err(|err| {
         let (code, message) = (provider_restore_error_kind(&err), err.to_string());
         match err {
             crate::onboarding::RestoreError::IncorrectPassphrase(_) => ApiError::BadRequest {
@@ -485,6 +566,8 @@ async fn post_join_existing(
             | crate::onboarding::RestoreError::Io(_) => ApiError::Internal { message },
         }
     })?;
+
+    state.join_limiter.record_success(ip);
 
     finalize_join_existing_runtime(&state, &runtime_paths, provider_id)
         .await

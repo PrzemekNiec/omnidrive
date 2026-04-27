@@ -80,6 +80,60 @@ impl RecoveryRateLimiter {
     }
 }
 
+// ── Join-existing rate limiter (progressive delay) ────────────────────
+
+#[derive(Default)]
+struct JoinRecord {
+    failures: Vec<Instant>,
+    last_failure_at: Option<Instant>,
+}
+
+pub(super) struct JoinRateLimiter {
+    map: DashMap<IpAddr, JoinRecord>,
+}
+
+impl JoinRateLimiter {
+    fn new() -> Self {
+        Self { map: DashMap::new() }
+    }
+
+    /// Returns `Err(retry_after_secs)` when the IP must wait.
+    /// First 3 failures in 5 min are free; subsequent ones enforce 1s → 5s → 30s delays.
+    pub(super) fn check(&self, ip: IpAddr) -> Result<(), u64> {
+        let now = Instant::now();
+        let mut rec = self.map.entry(ip).or_default();
+        rec.failures.retain(|t| now.duration_since(*t) < Duration::from_secs(300));
+
+        let fail_count = rec.failures.len();
+        if fail_count < 3 {
+            return Ok(());
+        }
+        let required = match fail_count {
+            3 => 1u64,
+            4 => 5u64,
+            _ => 30u64,
+        };
+        if let Some(last) = rec.last_failure_at {
+            let elapsed = now.duration_since(last).as_secs();
+            if elapsed < required {
+                return Err(required - elapsed);
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn record_failure(&self, ip: IpAddr) {
+        let now = Instant::now();
+        let mut rec = self.map.entry(ip).or_default();
+        rec.failures.push(now);
+        rec.last_failure_at = Some(now);
+    }
+
+    pub(super) fn record_success(&self, ip: IpAddr) {
+        self.map.remove(&ip);
+    }
+}
+
 // ── ApiState ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -91,6 +145,7 @@ struct ApiState {
     runtime_reload_tx: Option<watch::Sender<u64>>,
     daemon_shutdown_tx: Arc<watch::Sender<bool>>,
     recovery_limiter: Arc<RecoveryRateLimiter>,
+    join_limiter: Arc<JoinRateLimiter>,
 }
 
 pub struct ApiServer {
@@ -181,6 +236,7 @@ impl ApiServer {
             runtime_reload_tx: self.runtime_reload_tx,
             daemon_shutdown_tx: Arc::new(daemon_shutdown_tx),
             recovery_limiter: Arc::new(RecoveryRateLimiter::new()),
+            join_limiter: Arc::new(JoinRateLimiter::new()),
         };
         let app = Router::new()
             .route("/", get(get_index))
