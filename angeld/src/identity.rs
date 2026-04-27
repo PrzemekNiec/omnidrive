@@ -155,6 +155,20 @@ pub async fn get_device_private_key(
 
 // ── ECDH key wrapping for vault key distribution ─────────────────────
 
+/// Rejects public keys that are known to produce a zero shared secret with X25519.
+///
+/// RFC 7748 §5: implementations SHOULD abort if the result of X25519 is the all-zero value.
+/// [0u8;32] is the low-order "identity" point — X25519(scalar, [0;32]) = [0;32] for any scalar,
+/// making HKDF(shared_secret, ...) deterministic and known to anyone reading the source.
+fn validate_x25519_pubkey(pk: &[u8; 32]) -> Result<(), IdentityError> {
+    if pk == &[0u8; 32] {
+        return Err(IdentityError::Crypto(
+            "low-order X25519 public key rejected (all-zero point)".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Derives the AES-256 wrapping key from an X25519 shared secret via HKDF.
 fn derive_wrapping_key(shared_secret: &[u8; 32]) -> Result<KeyBytes, IdentityError> {
     let hkdf = Hkdf::<Sha256>::new(None, shared_secret);
@@ -174,10 +188,15 @@ pub fn wrap_vault_key_for_device(
     their_public_key: &[u8; 32],
     vault_key: &KeyBytes,
 ) -> Result<[u8; WRAPPED_KEY_LEN], IdentityError> {
+    validate_x25519_pubkey(their_public_key)?;
     let secret = x25519_dalek::StaticSecret::from(*my_private_key);
     let their_pub = x25519_dalek::PublicKey::from(*their_public_key);
     let shared = secret.diffie_hellman(&their_pub);
-
+    if shared.as_bytes() == &[0u8; 32] {
+        return Err(IdentityError::Crypto(
+            "ECDH produced all-zero shared secret: low-order point attack rejected".into(),
+        ));
+    }
     let wrapping_key = derive_wrapping_key(shared.as_bytes())?;
     wrap_key(&wrapping_key, vault_key).map_err(|e| IdentityError::Crypto(format!("AES-KW wrap: {e}")))
 }
@@ -192,10 +211,15 @@ pub fn unwrap_vault_key_from_device(
     their_public_key: &[u8; 32],
     wrapped_vault_key: &[u8; WRAPPED_KEY_LEN],
 ) -> Result<KeyBytes, IdentityError> {
+    validate_x25519_pubkey(their_public_key)?;
     let secret = x25519_dalek::StaticSecret::from(*my_private_key);
     let their_pub = x25519_dalek::PublicKey::from(*their_public_key);
     let shared = secret.diffie_hellman(&their_pub);
-
+    if shared.as_bytes() == &[0u8; 32] {
+        return Err(IdentityError::Crypto(
+            "ECDH produced all-zero shared secret: low-order point attack rejected".into(),
+        ));
+    }
     let wrapping_key = derive_wrapping_key(shared.as_bytes())?;
     unwrap_key(&wrapping_key, wrapped_vault_key)
         .map_err(|e| IdentityError::Crypto(format!("AES-KW unwrap: {e}")))

@@ -541,6 +541,7 @@ pub struct DeviceRecord {
     pub revoked_at: Option<i64>,
     pub last_seen_at: Option<i64>,
     pub created_at: i64,
+    pub enrolled_at: Option<i64>,
 }
 
 #[allow(dead_code)]
@@ -1150,6 +1151,18 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
     ensure_column_exists(&pool, "devices", "safety_numbers_verified_at", "INTEGER").await?;
+    // N.5 A.3: track when a device has set a real X25519 key (not the [0;32] placeholder).
+    // accept_device checks enrolled_at IS NOT NULL before wrapping the vault key.
+    ensure_column_exists(&pool, "devices", "enrolled_at", "INTEGER").await?;
+    // Backfill existing devices that already have a real public key.
+    sqlx::query(
+        "UPDATE devices SET enrolled_at = created_at \
+         WHERE enrolled_at IS NULL \
+         AND length(public_key) = 32 \
+         AND public_key != X'0000000000000000000000000000000000000000000000000000000000000000'",
+    )
+    .execute(&pool)
+    .await?;
 
     sqlx::query(
         r#"
@@ -6534,7 +6547,7 @@ pub async fn create_device(
 pub async fn get_device(pool: &SqlitePool, device_id: &str) -> Result<Option<DeviceRecord>, sqlx::Error> {
     sqlx::query_as::<_, DeviceRecord>(
         "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
-         vault_key_generation, revoked_at, last_seen_at, created_at \
+         vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at \
          FROM devices WHERE device_id = ?",
     )
     .bind(device_id)
@@ -6574,7 +6587,7 @@ pub async fn list_devices_for_user(
 ) -> Result<Vec<DeviceRecord>, sqlx::Error> {
     sqlx::query_as::<_, DeviceRecord>(
         "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
-         vault_key_generation, revoked_at, last_seen_at, created_at \
+         vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at \
          FROM devices WHERE user_id = ? ORDER BY created_at ASC",
     )
     .bind(user_id)
@@ -6606,7 +6619,7 @@ pub async fn get_active_devices_for_user(
 ) -> Result<Vec<DeviceRecord>, sqlx::Error> {
     sqlx::query_as::<_, DeviceRecord>(
         "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
-         vault_key_generation, revoked_at, last_seen_at, created_at \
+         vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at \
          FROM devices WHERE user_id = ? AND revoked_at IS NULL AND wrapped_vault_key IS NOT NULL \
          ORDER BY created_at ASC",
     )
@@ -6633,11 +6646,15 @@ pub async fn set_device_public_key(
     device_id: &str,
     public_key: &[u8],
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("UPDATE devices SET public_key = ? WHERE device_id = ?")
-        .bind(public_key)
-        .bind(device_id)
-        .execute(pool)
-        .await?;
+    let now = epoch_secs();
+    let result = sqlx::query(
+        "UPDATE devices SET public_key = ?, enrolled_at = ? WHERE device_id = ?",
+    )
+    .bind(public_key)
+    .bind(now)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() > 0)
 }
 

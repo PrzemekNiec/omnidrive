@@ -334,6 +334,14 @@ async fn post_accept_device(
         });
     }
 
+    if target_device.enrolled_at.is_none() {
+        return Err(ApiError::Conflict {
+            message: "device has not completed enrollment — unlock the vault on that device \
+                      first so it can register a real public key"
+                .to_string(),
+        });
+    }
+
     if target_device.public_key.len() != 32 {
         return Err(ApiError::BadRequest {
             code: "invalid_device_public_key",
@@ -342,6 +350,15 @@ async fn post_accept_device(
     }
     let mut member_pubkey = [0u8; 32];
     member_pubkey.copy_from_slice(&target_device.public_key);
+
+    if member_pubkey == [0u8; 32] {
+        return Err(ApiError::BadRequest {
+            code: "low_order_pubkey",
+            message: "device public key is a low-order X25519 point and cannot be used for key \
+                      wrapping"
+                .to_string(),
+        });
+    }
 
     let wrapped = identity::wrap_vault_key_for_device(&owner_private, &member_pubkey, &envelope_key)
         .map_err(|e| ApiError::Internal {
