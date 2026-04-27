@@ -293,8 +293,15 @@ impl fmt::Display for ApiServerError {
 
 impl std::error::Error for ApiServerError {}
 
-async fn get_index() -> Html<&'static str> {
-    Html(include_str!("../../static/index.html"))
+async fn get_index() -> impl IntoResponse {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (HeaderName::from_static("x-frame-options"), "DENY"),
+            (HeaderName::from_static("referrer-policy"), "no-referrer"),
+        ],
+        Html(include_str!("../../static/index.html")),
+    )
 }
 
 async fn get_legacy() -> Html<&'static str> {
