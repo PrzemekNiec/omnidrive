@@ -328,6 +328,16 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         Ok(false) => {}
         Err(e) => warn!("ensure_local_device_in_vault failed (non-fatal): {e}"),
     }
+    // A.9: assert vault_id ↔ user_id ↔ device_id consistency (CLAUDE.md §4).
+    if let Err(msg) = db::verify_vault_device_binding(
+        &pool,
+        &local_vault_id,
+        &local_device.device_id,
+    )
+    .await
+    {
+        panic!("[STARTUP] vault_id consistency check failed: {msg}");
+    }
 
     let vault_keys = VaultKeyStore::new();
     let (provider_reload_tx, provider_reload_rx) = watch::channel(0u64);

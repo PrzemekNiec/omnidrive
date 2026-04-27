@@ -7029,6 +7029,38 @@ pub async fn ensure_local_device_in_vault(
     Ok(true)
 }
 
+/// Asserts that `device_id` is linked (via `devices.user_id → vault_members`) to
+/// `expected_vault_id`.  Skips the check when `expected_vault_id` is `"local-vault"`
+/// (vault not yet initialised).  Returns `Err` describing the mismatch on failure —
+/// the caller should panic, as a mismatch indicates wrong key-pairing.
+pub async fn verify_vault_device_binding(
+    pool: &SqlitePool,
+    expected_vault_id: &str,
+    device_id: &str,
+) -> Result<(), String> {
+    if expected_vault_id == "local-vault" {
+        return Ok(());
+    }
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM devices d \
+         JOIN vault_members vm ON vm.user_id = d.user_id \
+         WHERE d.device_id = ? AND vm.vault_id = ?",
+    )
+    .bind(device_id)
+    .bind(expected_vault_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("vault_id consistency query failed: {e}"))?;
+
+    if count == 0 {
+        return Err(format!(
+            "device '{device_id}' is not bound to vault '{expected_vault_id}' — \
+             possible vault_id / user_id mismatch after identity refactor"
+        ));
+    }
+    Ok(())
+}
+
 /// Rewrites any legacy `owner-{device_id}` user IDs to UUID v4.
 /// Safe to call at every startup — no-op when no legacy IDs remain.
 pub async fn backfill_uuid_user_ids(pool: &SqlitePool) -> Result<u32, sqlx::Error> {
