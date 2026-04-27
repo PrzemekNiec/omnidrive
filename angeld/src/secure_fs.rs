@@ -1,7 +1,10 @@
 use std::fmt;
+use std::future::Future;
 use std::path::Path;
+use std::time::Duration;
 use tokio::fs;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::time::sleep;
 
 #[derive(Debug)]
 pub enum SecureFsError {
@@ -24,6 +27,69 @@ impl From<std::io::Error> for SecureFsError {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value)
     }
+}
+
+/// Retries an `io::Result`-returning async operation on Windows file-lock errors.
+///
+/// Defender, Explorer, and cfapi hold file handles briefly after another process
+/// closes them. `ERROR_SHARING_VIOLATION (32)` and `ERROR_LOCK_VIOLATION (33)` are
+/// transient — retrying with linear backoff is the correct response.
+///
+/// Any other error, including `NotFound`, is returned immediately without retry.
+pub async fn retry_io<F, Fut, T>(
+    op_name: &'static str,
+    path: &Path,
+    attempts: usize,
+    backoff: Duration,
+    op: F,
+) -> std::io::Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = std::io::Result<T>>,
+{
+    let mut last_err = None;
+    for attempt in 1..=attempts {
+        match op().await {
+            Ok(val) => return Ok(val),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(err),
+            Err(err) if is_lock_error(&err) => {
+                tracing::debug!(
+                    op = op_name,
+                    path = %path.display(),
+                    attempt,
+                    total = attempts,
+                    error = %err,
+                    "file locked — will retry"
+                );
+                last_err = Some(err);
+                if attempt < attempts {
+                    sleep(backoff).await;
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    let err = last_err.expect("retry loop must capture last error");
+    tracing::warn!(
+        op = op_name,
+        path = %path.display(),
+        attempts,
+        error = %err,
+        "file still locked after all retries"
+    );
+    Err(err)
+}
+
+/// Returns true for Windows error codes indicating a transient file lock held by another process.
+#[cfg(windows)]
+fn is_lock_error(err: &std::io::Error) -> bool {
+    // ERROR_SHARING_VIOLATION = 32, ERROR_LOCK_VIOLATION = 33
+    matches!(err.raw_os_error(), Some(32) | Some(33))
+}
+
+#[cfg(not(windows))]
+fn is_lock_error(_err: &std::io::Error) -> bool {
+    false
 }
 
 pub async fn secure_delete(path: impl AsRef<Path>) -> Result<(), SecureFsError> {
@@ -59,11 +125,21 @@ pub async fn secure_delete(path: impl AsRef<Path>) -> Result<(), SecureFsError> 
     file.sync_all().await?;
     drop(file);
 
-    match fs::remove_file(path).await {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(SecureFsError::Io(err)),
-    }
+    retry_io(
+        "secure_delete",
+        path,
+        5,
+        Duration::from_millis(500),
+        || fs::remove_file(path),
+    )
+    .await
+    .or_else(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(SecureFsError::Io(err))
+        }
+    })
 }
 
 pub async fn write_ephemeral_bytes(
