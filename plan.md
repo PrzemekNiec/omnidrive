@@ -25,6 +25,7 @@
 | **Faza M.5** | Human-Friendly Verification: BIP-39 mnemonic + Identicon (jdenticon) | ✅ DONE `45a9b89` + hotfix `29dded3` |
 | **Faza M.6** | Local-First Lock-in: CORS cleanup + dynamic share host + docs purge | ✅ DONE `4cfca26`–`0433bbc` |
 | **Faza N** | Cleanup dead code + hybrid E2E + cross-device Identicon test + Release v0.3.0 | 🔄 W TOKU (N.1+N.2 DONE `7819811`) |
+| **Faza N.5** | Pre-Dell Hardening — Paczki A (Graft/Sync) + B (Crypto/Auth) + C (Cleanup), 20 itemów z audytu (security-reviewer + tech-lead-reviewer 2026-04-27) | ⬜ BACKLOG (zatwierdzony plan, kod w następnej sesji) |
 | **Epic 33 Tryb A** | Dopięcie dynamic host w share-link generator (wyjście z hardkodowanego `localhost`) | ⬜ TODO (równolegle z M.6) |
 | **Faza O.1** | Quota fix — raportowanie pojemności O: z cloud quota (B2/R2) zamiast C: | ⬜ TODO (po N) |
 | **Epic 33 Tryb B** | Public shares przez CF Pages (`skarbiec.app/s/…`) + static decryptor | ⬜ BACKLOG (po v0.3.0) |
@@ -194,6 +195,350 @@ Cel: zamknąć architektonicznie fakt, że **daemon nie komunikuje się z public
 **Commit:** `release: v0.3.0`
 
 ---
+
+## Faza N.5 — Pre-Dell Hardening (Paczki A, B, C)
+
+> **Status:** ⬜ BACKLOG — plan zatwierdzony 2026-04-27 (sesja audytowa). Kod wdrażamy w następnej sesji.
+> **Geneza:** Audyt security-reviewer + tech-lead-reviewer (2026-04-27) wykrył **20 znalezisk** (7 HIGH + 7 MEDIUM + 6 LOW) przed Dell smoke testem.
+> **Cel:** Skarbiec hermetyczny przed wgraniem na drugą maszynę produkcyjną. Zero leftoverów, zero ataków na zera, zero plaintextów w logach/URL/DB.
+> **Tempo wdrożenia:** mini-batche wg rekomendowanej kolejności (np. A.0 + A.2 + A.4 razem, potem checkpoint).
+
+### Decyzje użytkownika (2026-04-27) — uwzględnione w planie
+
+- **Akceptacja całości** — wszystkie 20 itemów wchodzi do realizacji.
+- **B.2 (Recovery Endpoint Hardening):** wdrażamy **tylko rate-limit + state-guard**. Tray-confirmation IPC odłożone do **Task 35.3 (System Tray Companion)** — zbyt duże ryzyko regresji teraz.
+- **B.3 (OAuth Token w URL Fragment):** wdrażamy **tylko Krok 1** (`history.replaceState` + restrykcyjny CSP). Pełny redesign code-exchange flow (Krok 2) → POST-DELL.
+- **C.1 (Refresh Token Storage):** wybór **Wariant B (VK Sealing)** — najbardziej zgodny z architekturą Zero-Knowledge.
+- **C.3 (rustls/hyper consolidation):** **POST-DELL.** Major version bump AWS SDK = za duże ryzyko regresji przed testem cross-device.
+
+---
+
+### 📦 Paczka A — Graft / Cross-Device Integrity (10 itemów)
+
+> **Cel:** Skarbiec można bezpiecznie wgrać na drugą maszynę i z niej rozjechać dane bez wycieków, race'ów, leftoverów ani ataków na zera.
+
+#### `A.0` Wspólny retry helper w `secure_fs.rs` (FOUNDATION) ⬜
+
+- **Stan obecny:** Retry loops rozsiane po kodzie (`project_sync_root_with_retry` w `cfapi/`, `attempt_db_replace` w `main.rs:970`, ad-hoc loopy w downloaderze). CLAUDE.md prosi o 3-5 prób × 500ms backoff dla DB delete, SyncRoot connect, `omnidrive.db` — nigdzie unified API.
+- **Propozycja:** `pub async fn retry_io<F, Fut, T>(op_name: &'static str, op: F, attempts: usize, backoff: Duration) -> std::io::Result<T>` w `angeld/src/secure_fs.rs`. Backoff liniowy. Rozpoznaje `ERROR_SHARING_VIOLATION (32)` + `ERROR_LOCK_VIOLATION (33)` jako retry-worthy, inne błędy rzuca natychmiast (`NotFound` to bug, nie race).
+- **Dlaczego:** Jedno miejsce do tuningu (Defender na Dellu). Wszystkie kolejne itemy A.2, A.4 używają tego samego wzorca.
+- **Oczekiwany efekt:** Spójna obsługa file-locków w całym daemonie. ~30 linii dodanych, ~20 usuniętych.
+
+#### `A.1` Watcher DRY_RUN gate 🔴 (HIGH)
+
+- **Stan obecny:** `angeld/src/main.rs:608` tworzy `FileWatcher` bezwarunkowo. `watcher.rs:151-227` woła `notify::recommended_watcher` i co 30s `scan_existing_files` → packer → DB. Brak sprawdzenia `dry_run_active`.
+- **Propozycja:**
+  1. Gate na początku `FileWatcher::run()` — sprawdza `AppConfig::from_env().dry_run_active` + `system_config.SYSTEM_CONFIG_DRY_RUN_ACTIVE`. Jeśli aktywny → tylko `info!("[WATCHER DRY_RUN] would process: {}", path)`.
+  2. Dodatkowy gate: jeśli `system_config.onboarding_state != Completed` → watcher pasywny niezależnie od DRY_RUN.
+  3. Domyślnie `OMNIDRIVE_DRY_RUN=1` dla świeżych instalacji (instalator).
+- **Dlaczego:** Na świeżym Dellu, jeśli `OMNIDRIVE_WATCH_DIR` wskaże katalog z prywatnymi plikami, watcher zacznie szyfrować podczas trwającego graftu. Naruszenie Świętej Zasady Integralności (CLAUDE.md punkt 2).
+- **Oczekiwany efekt:** Pierwsze uruchomienie po join na Dellu = zero modyfikacji plików użytkownika.
+
+#### `A.2` Staging file: bezpieczny delete po graftcie 🔴 (HIGH)
+
+- **Stan obecny:** `onboarding.rs:696, 711, 723` — `let _ = fs::remove_file(&staging_path).await` połyka błąd. Plaintext metadata snapshot zostaje na dysku.
+- **Dlaczego Windows tu się sypie:** `sqlx::Pool::close()` → SQLite VFS `winClose` → `CloseHandle()` zmniejsza tylko refcount kernel-object. Defender otwiera plik dla AMSI po naszym close (sekundy później), Indexer reaguje na `FILE_NOTIFY_CHANGE_LAST_WRITE`, `cldflt.sys` (filtr cfapi) ma własne sondy. Plik staging w `%LOCALAPPDATA%\OmniDrive\restore-staging-*.db` jest priorytetem AMSI. `fs::remove_file` zwraca `ERROR_SHARING_VIOLATION (32)`. **Plaintext metadata** (nazwy plików, struktura, mtime, mode) zostaje na dysku — łamie zero-knowledge.
+- **Propozycja (4 warstwy obrony):**
+  1. Wszystkie trzy `let _ = fs::remove_file(...)` zamienić na `secure_fs::retry_io("remove_staging", ..., 5, 500ms)` z `warn!` na ostatecznej porażce.
+  2. **Belt:** przed delete `secure_fs::overwrite_with_zeros(&staging_path, file_size)` — nawet jeśli delete nie wyjdzie, plik jest zerową ramką, nie metadanymi.
+  3. `cleanup_stale_restore_staging` na starcie też dostaje retry.
+  4. Wymusić atrybuty `FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE` przy tworzeniu staging file.
+- **Oczekiwany efekt:** Brak rezydualnych staging files po normalnym graftcie. W pathological case (Defender + crash) plik jest zer-bytes.
+
+#### `A.3` Zero-pubkey rejection w `accept_device` 🔴 (HIGH)
+
+- **Stan obecny:** `db.rs:6985-6997` `ensure_local_device_in_vault` wstawia `placeholder_pubkey = vec![0u8; 32]`. `api/vault.rs:337-349` waliduje tylko `len() == 32`.
+- **Dlaczego to jest atak (szczegół kryptograficzny):** X25519 to Curve25519 (Montgomery, RFC 7748). Krzywa ma **8 punktów małego rzędu** (low-order points): `0`, `1`, `325606250916557431795983626356110631294008115727848805560023387167927233504`, ich neguje, `p-1`, etc. Dla `[0;32]`: `X25519(scalar, [0;32]) = [0;32]` dla każdego scalar. `HKDF([0;32], salt=vault_id, info="vault-key-wrap")` jest **deterministyczne** — atakujący zna salt (vault_id publiczny w DB) + info string (open-source) → **precomputuje wrapping_key bez znajomości żadnego sekretu**. `aes_kw_unwrap(wrapping_key, ciphertext)` daje plaintext `vault_key`. **Cały Skarbiec rozpakowany.** RFC 7748 §5 wprost rekomenduje walidację — `x25519_dalek` tego nie robi domyślnie.
+- **Propozycja (4 warstwy obrony):**
+  1. **Walidator pubkey** w `omnidrive-core/src/identity.rs::validate_x25519_pubkey(pk: &[u8; 32]) -> Result<(), CryptoError>` — reject all-zeros + 8 low-order points z RFC 7748 (lista hardcoded ≤ 250B) + non-canonical encoding.
+  2. **Każda funkcja wrap/unwrap** (`wrap_vault_key_for_device`, `unwrap_vault_key_from_device`) na **starcie** woła `validate_x25519_pubkey(...)?`.
+  3. **Schema change:** kolumna `devices.enrolled_at INTEGER NULL`. Jeśli `enrolled_at IS NULL` → API `accept_device` odpowiada `409 Conflict` z `code: "device_not_enrolled"`. Po pierwszym `set_device_public_key` z prawdziwym pubkey → `enrolled_at = now()`.
+  4. **Migracja:** `UPDATE devices SET enrolled_at = created_at WHERE public_key != x'00...00' AND enrolled_at IS NULL`.
+  5. **API check** (defense in depth): `api/vault.rs:337` dodatkowo waliduje pubkey przed zapisem do DB.
+- **Oczekiwany efekt:** Zero okna na low-order point attack. `accept_device` przed unlockiem = `400 BadRequest "low_order_pubkey"` zamiast deterministicznego wrappa.
+
+#### `A.4` `restored_pool` close-and-settle 🔴 (HIGH — wspomaga A.2)
+
+- **Stan obecny:** `db.rs:1769`: `restored_pool.close().await;` → bezpośrednio potem `fs::remove_file(staging)`. `sqlx Pool::close` nie czeka na NT-level handle release, memory mapping żyje do GC tokio runtime.
+- **Propozycja:** Po `close()` dodać `drop(restored_pool); tokio::task::yield_now().await;`. Alternatywa (czystsza): otwierać snapshot jako pojedynczy `SqliteConnection` zamiast pool — read-only ops nie potrzebują pool.
+- **Dlaczego:** Bez explicit drop mapping żyje. `yield_now` daje async runtime'owi szansę na finalize. Pojedynczy connection vs pool = 5x mniej alokacji + lepsza kontrola lifetime.
+- **Oczekiwany efekt:** A.2 ma większą szansę zadziałać bez retry. Mniej pamięci na duże snapshoty.
+
+#### `A.5` Restore state markery w `system_config` 🟡 (MEDIUM)
+
+- **Stan obecny:** Brak telemetrii crashów graftu. Użytkownik widzi tylko "operacja zakończyła się błędem".
+- **Propozycja:** Trzy klucze w `system_config`: `restore_state ∈ {idle, downloading, applying, last_failed, last_succeeded}`, `restore_last_error_at: i64`, `restore_last_error_message: String` (BEZ sekretów — tylko `op + io::Error::kind`). Endpoint `GET /api/diagnostics/restore`.
+- **Dlaczego:** Diagnostyka po crash recovery na Dellu (wifi padło w trakcie download → wiemy gdzie). UI może pokazać "Ostatnia próba: 2026-04-27 14:30, błąd: SHA256 mismatch".
+- **Oczekiwany efekt:** Czytelny stan po awariach, łatwiejszy debug Dell smoke testu.
+
+#### `A.6` `provider_configs` timestampy lokalne podczas import 🟡 (MEDIUM)
+
+- **Stan obecny:** `db.rs:1986-1998`: `INSERT OR IGNORE` z timestampami z snapshotu (czas innej maszyny, innego TZ).
+- **Propozycja:** `created_at = epoch_secs()` lokalne. Komentarz: "moment dołączenia *tego* device'a, nie historyczna data tworzenia po stronie ownera".
+- **Dlaczego:** UI pokazuje "ten provider istnieje od X" — X powinien być sensowny dla *tego* device'a.
+- **Oczekiwany efekt:** Czytelne timestampy w `/api/providers`.
+
+#### `A.7` `audit_logs` migrate target IDs 🟢 (LOW)
+
+- **Stan obecny:** `db.rs:6938-6947`: `migrate_single_to_multi_user` wstawia audit log z `target_user_id = NULL, target_device_id = NULL`.
+- **Propozycja:** `target_user_id = owner_user_id, target_device_id = device.device_id`.
+- **Dlaczego:** Audyt powinien pokazywać *kogo* dotyczy migracja.
+- **Oczekiwany efekt:** Czytelne audit logi.
+
+#### `A.8` cfapi callbacks: poison-safe locks 🟢 (LOW)
+
+- **Stan obecny:** `smart_sync.rs:790, 1571, 1605, 1637, 1653` — `CONNECTION_KEY.lock().unwrap()` w funkcjach niewchodzących w `catch_unwind`.
+- **Propozycja:** Zamiana na `lock().unwrap_or_else(|e| e.into_inner())` lub helper `safe_lock(&Mutex<T>)` w `smart_sync/util.rs`.
+- **Dlaczego:** Pojedynczy panic w callbacku → poisoned mutex → każdy kolejny `.lock().unwrap()` panic'uje → daemon się rozsypuje całkowicie zamiast graceful degradation.
+- **Oczekiwany efekt:** Daemon przeżywa pojedyncze paniki w cfapi callbackach.
+
+#### `A.9` `vault_id ↔ user_id ↔ device_id` consistency check 🟢 (LOW)
+
+- **Stan obecny:** `api/vault.rs:303-355`: `ensure_local_device_in_vault` ufa, że `vault_state.id=1` to ten vault który użytkownik chciał joinować.
+- **Propozycja:** Po graftcie i pierwszym unlocku: jawnie sprawdzić, że `vault_state.vault_id` matchuje wartość z snapshotu/onboarding-context. Jeśli nie — `panic!` na poziomie startup.
+- **Dlaczego:** CLAUDE.md punkt 4 wprost: "weryfikacja UUID przed każdą operacją na Vault, by uniknąć błędnego parowania kluczy". Defensive po refaktorze tożsamości (Phase J).
+- **Oczekiwany efekt:** Niemożliwy scenariusz "user joinuje vault A, ale device dostaje user_id z vaulta B".
+
+---
+
+### 📦 Paczka B — Crypto / Auth Hardening (7 itemów)
+
+> **Cel:** powierzchnia ataku daemona z LAN/internet jest hermetyczna, RNG zgodny z policy, recovery flow nie da się abuse'ować.
+
+#### `B.1` CORS allowlist exact-match 🟠 (HIGH)
+
+- **Stan obecny:** `api/mod.rs:242-251`: `origin.starts_with(b"http://localhost") || ... b"http://192.168."`. **`http://localhost.evil.com` matches.**
+- **Propozycja:**
+  ```
+  fn is_loopback_or_lan_origin(origin: &[u8]) -> bool {
+      let Ok(s) = std::str::from_utf8(origin) else { return false };
+      let Ok(url) = url::Url::parse(s) else { return false };
+      let host = url.host_str().unwrap_or("");
+      host == "localhost"
+          || host.parse::<Ipv4Addr>().map_or(false, |ip| ip.is_loopback() || ip.is_private())
+          || host.parse::<Ipv6Addr>().map_or(false, |ip| ip.is_loopback())
+  }
+  ```
+  Plus unit testy: `localhost.evil.com`, `127.0.0.1.attacker.com`, `192.168.evil.com` → wszystkie reject.
+- **Dlaczego:** Atakujący kontrolujący DNS dla subdomeny `localhost.*` może wykonać CORS POST do daemona z dowolnej maszyny — naruszenie policy "loopback/LAN only".
+- **Oczekiwany efekt:** Tylko prawdziwe loopback/RFC1918 origins przechodzą.
+
+#### `B.2` `recovery/restore` auth + rate-limit + state-guard 🟠 (HIGH)
+
+> **Decyzja użytkownika:** wdrażamy tylko **rate-limit + state-guard**. Tray-confirmation IPC → Task 35.3 (System Tray Companion).
+
+- **Stan obecny:** `api/recovery.rs:147-272` — bez auth, bez rate-limitu, bez state-guard. Każdy lokalny proces może wywołać.
+- **Propozycja (zatwierdzona):**
+  1. **State-guard:** handler odpowiada `403` jeśli `vault_state` jest aktywne i ostatnia próba odzysku < 24h temu (chyba że `system_config.recovery_unlocked_until > now()`).
+  2. **Rate-limit:** in-memory `dashmap::DashMap<IpAddr, Vec<Instant>>` w `ApiState`. Max 3 próby / 5 min, lockout 30s po nieudanej próbie.
+  3. **Audit log każdej próby** (sukces ORAZ porażka) — z `ip + ua` ale BEZ mnemonika.
+- **Odłożone:** Tray confirmation → Task 35.3.
+- **Dlaczego:** Mnemonik to single-factor recovery. Lokalny atakujący który zdobył backup z mnemonikiem może natychmiast przejąć VK. Rate-limit + state-guard zwalnia tempo brute-force; tray-confirmation (Task 35.3) doda warstwę fizycznej obecności.
+- **Oczekiwany efekt:** Brute-force nieopłacalny, audit pokazuje próby. Po Task 35.3 — atak wymaga fizycznej obecności.
+
+#### `B.3` OAuth: `history.replaceState` (Krok 1) 🟠 (HIGH)
+
+> **Decyzja użytkownika:** wdrażamy tylko **Krok 1**. Krok 2 (code exchange refactor) → POST-DELL.
+
+- **Stan obecny:** `api/oauth.rs:17-25`: redirect na `/#oauth_token={session_token}&expires_at=...`. Token w `window.location.hash` zostaje w historii przeglądarki, console, screencastach.
+- **Propozycja (Krok 1, zatwierdzony):**
+  1. JS po odczytaniu fragmentu **natychmiast** woła `history.replaceState(null, '', location.pathname)`.
+  2. Dodać do CSP `referrer-policy: no-referrer`.
+- **Odłożone (Krok 2, POST-DELL):** Refactor flow do code-exchange + HttpOnly cookie. Daemon redirectuje na `/?oauth_code={one_time_code}`, JS woła `POST /api/auth/oauth/exchange`, dostaje `Set-Cookie: HttpOnly; Secure; SameSite=Strict`.
+- **Dlaczego:** Krok 1 jest 5-liniową łatką która eliminuje 80% ryzyka. Krok 2 to docelowe rozwiązanie zgodne z OAuth 2.0 best practice — robimy to po Dellu.
+- **Oczekiwany efekt:** Token wycofany z URL natychmiast po odczytaniu. Brak w historii Chrome/Edge.
+
+#### `B.4` RNG hardening: `thread_rng` → `OsRng` 🟠 (HIGH)
+
+- **Stan obecny:**
+  - `db.rs:7079-7085` (`generate_session_token`): `thread_rng().fill_bytes(&mut bytes)`.
+  - `oauth.rs:231-234` (`pkce_pair`): `thread_rng()`.
+- **Propozycja:**
+  ```
+  use rand::rngs::OsRng;
+  let mut bytes = [0u8; 32];
+  OsRng.fill_bytes(&mut bytes);
+  ```
+  Plus clippy lint `disallowed_methods` w `clippy.toml` → blokada przyszłej regresji.
+- **Dlaczego:** ChaCha12 z OS-seed jest secure, ale CLAUDE.md wprost: "never `thread_rng` for keys". Lint wymusza policy by design.
+- **Oczekiwany efekt:** Wszystkie tokeny security-relevant z OsRng. Compile-time error przy próbie regresji.
+
+#### `B.5` `post_join_existing` rate-limit + state-guard 🟡 (MEDIUM)
+
+- **Stan obecny:** `api/onboarding.rs:447-487` — bez rate-limitu, bez progressive delay. Każda próba kosztuje round-trip do chmury.
+- **Propozycja:**
+  - Pozwalać tylko gdy `OnboardingState != Completed && device_id IS NULL`.
+  - Po 3 nieudanych próbach w 5 min → progressive timeout (1s → 5s → 30s).
+  - Audit log każdej nieudanej próby z `ip + provider_id` (BEZ passphrase).
+- **Dlaczego:** Bez state-guard endpoint jest furtkę do brute-force passphrase, jeśli atakujący zresetował onboarding via `/api/onboarding/reset`. Network amplification (każda próba = pobranie snapshotu z B2/R2) → ryzyko opłat/rate-limit u providera.
+- **Oczekiwany efekt:** Brute-force nieefektywny czasowo i finansowo.
+
+#### `B.6` `validate_user_session` constant-time — decyzja udokumentowana 🟢 (LOW)
+
+- **Stan obecny:** `db.rs:7117-7130` — SQL `WHERE token = ?`, brak constant-time po stronie aplikacji.
+- **Propozycja (Wybór 1, rekomendowany):** Zostawiamy jak jest. Dodajemy komentarz w kodzie + paragraf w `docs/crypto-spec.md`: "256-bitowy losowy token + sieć loopback/LAN + SQLite query overhead → timing-side-channel niewykonalny w realistycznym scenariuszu".
+- **Dlaczego:** Spójność policy. W innych miejscach używamy `ConstantTimeEq` (sharing.rs). Niech `crypto-spec.md` powie *dlaczego* tu nie.
+- **Oczekiwany efekt:** Świadoma decyzja zapisana, brak "huh, czemu tu inaczej".
+
+#### `B.7` `OMNIDRIVE_AUTO_RESTORE_PASSPHRASE` feature-gate 🟢 (LOW)
+
+- **Stan obecny:** `main.rs:1089` — env-var z passphrase, widoczny w `tasklist /v`, `procmon`, core-dumpach.
+- **Propozycja:**
+  1. Otoczyć `#[cfg(feature = "test-helpers")]` lub `#[cfg(debug_assertions)]`.
+  2. Na release-buildzie env-var jest **ignorowany** + `tracing::warn!("OMNIDRIVE_AUTO_RESTORE_PASSPHRASE ignored in release build")`.
+- **Dlaczego:** Env-var widoczny w toolach diagnostycznych = leak passphrase. Test-only flag nie powinien działać w produkcji.
+- **Oczekiwany efekt:** W release-buildzie env-var nieaktywny. Dev/CI nadal mogą używać.
+
+---
+
+### 📦 Paczka C — Cleanup / Defense in Depth (3 itemy, C.3 → POST-DELL)
+
+> **Cel:** zmniejszenie attack surface, zgodność z duchem zero-knowledge dla *wszystkich* sekretów.
+
+#### `C.1` Refresh-token Google: VK Sealing 🟡 (MEDIUM)
+
+> **Decyzja użytkownika:** Wariant B (VK Sealing) — najbardziej zgodny z architekturą Zero-Knowledge.
+
+- **Stan obecny:** `db.rs:1133`: `users.google_refresh_token TEXT` — plaintext. `api/oauth.rs:175-191`: `token.refresh_token.as_deref()` zapisany wprost.
+- **Propozycja (Wariant B, zatwierdzony):**
+  - Nowa kolumna `google_refresh_token_ciphertext BLOB`.
+  - AES-GCM z kluczem `derived_from_VK("oauth-refresh-tokens", user_id)` jako AAD.
+  - Wymaga aktywnego unlocked Vault dla każdego refresha access-tokena.
+  - Po lockzie — refresh-token niedostępny do następnego unlocku (akceptowalny trade-off za zero-knowledge).
+  - Migracja: stare plaintext tokeny → przy następnym unlock są szyfrowane → kolumna plaintext nullowana.
+- **Dlaczego:** Plaintext refresh-token w DB = atakujący z dostępem do `omnidrive.db` (backup OneDrive, screenshot supportu) ma trwały dostęp do Google użytkownika. Wariant B (VK) > Wariant A (DPAPI), bo użytkownik kontroluje, nie OS.
+- **Oczekiwany efekt:** Bez aktywnego Vaulta refresh-token bezużyteczny. Backup DB nie wystarczy do przejęcia konta Google.
+
+#### `C.2` `SecretString` migration dla passphrase 🟡 (MEDIUM)
+
+- **Stan obecny:** `api/auth.rs:15-18, 259-263`, `api/recovery.rs:135-139`, `api/onboarding.rs:109-113` — `passphrase: String` w request DTO. `secrecy = "0.10"` jest w `[workspace.dependencies]` ale używany tylko punktowo.
+- **Propozycja:**
+  1. DTO: `passphrase: secrecy::SecretString`.
+  2. Wewnątrz handlerów: `let passphrase_str = passphrase.expose_secret();` blisko `derive_root_keys`. Po użyciu `drop(passphrase)` explicite.
+  3. W `omnidrive-core/src/crypto.rs` funkcje `unlock_vault`, `derive_root_keys` przyjmują `&SecretString`.
+  4. Lint `clippy::disallowed_types` na `String` w request DTO dla pól `*passphrase*`, `*password*`, `*token*`.
+- **Dlaczego:** `String` na heapie żyje do drop-a, ale `String::push`, `String::clone` mogą zrelokować bufor. Crash-dump (Windows Error Reporting) zawiera passphrase. `SecretString` ma `Zeroize` na drop + zabronione `Clone` bez explicit `clone_secret()`.
+- **Oczekiwany efekt:** Passphrase nie wisi w pamięci dłużej niż konieczne. Crash-dump nie wystawia hasła. Lint zabezpiecza przed regresją.
+
+#### `C.3` `rustls`/`hyper` consolidation ⏸️ (POST-DELL)
+
+> **Decyzja użytkownika:** ODŁOŻONE. Major version bump AWS SDK = za duże ryzyko regresji przed Dell testem.
+
+- **Stan obecny:** `Cargo.lock`: `rustls 0.21.12 + 0.23.37`, `hyper 0.14.32 + 1.8.1`, `hyper-rustls 0.24.2 + 0.27.7`. AWS SDK ciągnie stary stos.
+- **Propozycja (do realizacji POST-DELL):**
+  1. `aws-config`/`aws-sdk-s3` → upgrade do wersji wspierającej `hyper-1`.
+  2. `sqlx` → przełączyć z `runtime-tokio-native-tls` na `runtime-tokio-rustls` + `tls-rustls`.
+  3. `cargo audit` po upgrade.
+  4. CI gate: `cargo deny check duplicates --exclude-dev`.
+- **Dlaczego:** Podwójny stos TLS = podwójny attack-surface (CVE-y). `rustls 0.21` na last-line LTS.
+- **Oczekiwany efekt:** Jedno źródło TLS. Eliminacja `native-tls`/SChannel.
+- **Ryzyko regresji:** **wysokie** — wymaga osobnego testu integracyjnego z B2/R2/Scaleway. **Dlatego POST-DELL.**
+
+---
+
+### 🔄 Rekomendowana kolejność wykonania (mini-batche)
+
+```
+═══ Batch 1: Foundation + Cross-Device Critical ═══
+1.  A.0  (foundation retry helper)
+2.  A.2  (staging delete — najważniejszy realny risk pod Dellem)
+3.  A.4  (close-and-settle, wspomaga A.2)
+─── checkpoint Batch 1 ────
+
+═══ Batch 2: Watcher + Pubkey Defense ═══
+4.  A.1  (watcher DRY_RUN)
+5.  A.3  (zero-pubkey defense)
+─── checkpoint Paczka A core ────
+
+═══ Batch 3: Crypto Quick Wins ═══
+6.  B.4  (RNG — łatwy refactor)
+7.  B.1  (CORS — krótki fix)
+─── checkpoint Batch 3 ────
+
+═══ Batch 4: Auth Surface Hardening ═══
+8.  B.2  (recovery rate-limit + state-guard)
+9.  B.5  (post_join_existing limit)
+10. B.3  (OAuth Krok 1 — replaceState)
+─── checkpoint Paczka B core ────
+
+═══ Batch 5: Polish / Diagnostyka ═══
+11. A.5  (restore state markery)
+12. A.6  (provider timestamps)
+13. A.7  (audit_logs migrate)
+14. A.8  (cfapi poison-safe)
+15. A.9  (vault_id consistency)
+16. B.6  (validate_session decyzja)
+17. B.7  (env-var feature-gate)
+─── checkpoint Paczka A polish + B polish ────
+
+═══ Batch 6: Defense in Depth ═══
+18. C.1  (refresh-token VK sealing)
+19. C.2  (SecretString migration)
+─── checkpoint Paczka C core ────
+
+═══ DELL SMOKE TEST GATE ═══
+
+═══ Batch 7 (POST-DELL): ═══
+20. C.3  (rustls/hyper consolidation)
++ B.3 Krok 2 (code exchange refactor)
++ B.2 Tray confirmation (Task 35.3)
+```
+
+### 🧪 Checkpointy testowe
+
+**Po Batch 1+2 (Paczka A core: A.0-A.4 + A.1, A.3):**
+- Pełny graft round-trip lokalnie z Defenderem ON. Sprawdź `%LOCALAPPDATA%\OmniDrive\restore-staging-*` po graftcie — pusty.
+- Daemon przez 5 min po graftcie — watcher pokazuje `[DRY_RUN]` w logach lub jest wyłączony.
+- Próba `accept_device` z `[0;32]` w body → `400 BadRequest "low_order_pubkey"`.
+
+**Po Batch 3+4 (Paczka B core: B.1, B.4, B.2, B.5, B.3 Krok 1):**
+- `curl -H "Origin: http://localhost.evil.com" http://127.0.0.1:PORT/api/files` → CORS reject.
+- Brute-force `/api/recovery/restore` 10x → po 3. próbie 429.
+- `grep -r 'thread_rng' angeld/src omnidrive-core/src` → brak wyników (oprócz dev-deps).
+- OAuth callback → DevTools Console: `window.location.hash === ""` po replaceState.
+
+**Po Batch 5 (Paczka A polish + B polish):**
+- Audit log z migracji ma `target_user_id, target_device_id`.
+- Crash daemona w trakcie graftu (`kill -9`), restart → `restore_state = last_failed`, retry działa.
+
+**Po Batch 6 (Paczka C core):**
+- `cargo audit` clean.
+- Lock vault → próba refresh OAuth tokenu → fail z czytelnym `"vault_locked"`. Unlock → refresh działa.
+- `grep -rn 'passphrase: String' angeld/src` → brak (wszystko `SecretString`).
+
+**Pre-Dell Smoke Test Gate:** A.0-A.4 + A.1 + A.3 + B.1-B.5 + B.3 Krok 1 zaczyplone i przetestowane. Reszta może być po Dellu jeśli czas nagli.
+
+### 📊 Risk Register Faza N.5
+
+| Item | Severity | Ryzyko regresji | Czy musi przed Dellem? |
+|------|----------|-----------------|------------------------|
+| A.0 retry helper | HIGH (foundation) | Niskie | TAK |
+| A.1 watcher DRY_RUN | HIGH | Niskie | **TAK — naruszenie Świętej Zasady** |
+| A.2 staging delete | HIGH | Niskie | **TAK — plaintext leak** |
+| A.3 zero-pubkey | HIGH | Średnie (schema migration) | **TAK — atak kryptograficzny** |
+| A.4 close-and-settle | HIGH | Niskie | TAK (wspomaga A.2) |
+| A.5 restore state | MEDIUM | Zerowe | Nie krytyczne, ale dobre dla diag Dell |
+| A.6 timestamps | MEDIUM | Zerowe | Nie |
+| A.7 audit_logs IDs | LOW | Zerowe | Nie |
+| A.8 poison locks | LOW | Zerowe | Nie |
+| A.9 vault_id check | LOW | Niskie | Nie (paranoia) |
+| B.1 CORS | HIGH | Średnie | TAK (jeśli LAN test) |
+| B.2 recovery limit | HIGH | Niskie (bez tray) | TAK |
+| B.3 OAuth Krok 1 | HIGH | Niskie | TAK |
+| B.4 OsRng | HIGH | Zerowe | TAK |
+| B.5 join limit | MEDIUM | Niskie | Tak (zalecane) |
+| B.6 session decyzja | LOW | Zerowe | Nie |
+| B.7 env-var gate | LOW | Zerowe | Nie |
+| C.1 refresh-token VK | MEDIUM | Średnie (migracja schema) | Zalecane |
+| C.2 SecretString | MEDIUM | Średnie (refactor 6-8 plików) | Zalecane |
+| C.3 rustls consolidation | MEDIUM | **Wysokie** | **NIE — POST-DELL** |
+| B.3 Krok 2 (OAuth) | — | Średnie | NIE — POST-DELL |
+| B.2 Tray confirmation | — | Wysokie (IPC) | NIE — Task 35.3 |
+
+---
+
+**Commit:** `feat(hardening): Faza N.5 — Pre-Dell Hardening (Paczki A+B+C)` — multi-commit (jeden per batch).
+**Geneza audytu:** session-id `a47d15de04fc9599d` (security-reviewer) + `a315d4485f94cd0f5` (tech-lead-reviewer), 2026-04-27.
 
 ---
 
