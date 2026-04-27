@@ -15,9 +15,9 @@ use tracing::warn;
 // ── PKCE helpers ──────────────────────────────────────────────────────
 
 fn pkce_pair() -> (String, String) {
-    use rand::RngCore;
+    use rand::{RngCore, rngs::OsRng};
     let mut bytes = [0u8; 96];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    OsRng.fill_bytes(&mut bytes);
     let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
     let digest = Sha256::digest(verifier.as_bytes());
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);

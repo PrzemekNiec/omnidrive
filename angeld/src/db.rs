@@ -7100,9 +7100,9 @@ pub struct UserSession {
 /// Generate a 256-bit random session token (base64url, no padding).
 pub fn generate_session_token() -> String {
     use base64::Engine;
-    use rand::RngCore;
+    use rand::{RngCore, rngs::OsRng};
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    OsRng.fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 

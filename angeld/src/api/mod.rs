@@ -242,12 +242,7 @@ pub(super) fn unix_timestamp_millis() -> i64 {
 fn share_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin, _| {
-            let origin = origin.as_bytes();
-            origin.starts_with(b"http://localhost")
-                || origin.starts_with(b"http://127.0.0.1")
-                || origin.starts_with(b"http://192.168.")
-                || origin.starts_with(b"http://10.")
-                || is_private_172_origin(origin)
+            is_allowed_origin(origin.as_bytes())
         }))
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([
@@ -256,21 +251,35 @@ fn share_cors_layer() -> CorsLayer {
         ])
 }
 
-/// Check if an origin falls inside the private 172.16.0.0/12 range
-/// (RFC 1918). Accepts `http://172.16.…` through `http://172.31.…`.
-fn is_private_172_origin(origin: &[u8]) -> bool {
-    let Some(rest) = origin.strip_prefix(b"http://172.") else {
+/// Extract the bare hostname from an `http://host` or `http://host:port` origin.
+fn host_from_http_origin(origin: &[u8]) -> Option<&[u8]> {
+    let rest = origin.strip_prefix(b"http://")?;
+    Some(match rest.iter().position(|&b| b == b':') {
+        Some(i) => &rest[..i],
+        None => rest,
+    })
+}
+
+/// True for loopback and RFC-1918 private-LAN origins only.
+/// Parses host exactly — prevents prefix-bypass attacks like `localhost.evil.com`.
+fn is_allowed_origin(origin: &[u8]) -> bool {
+    let Some(host) = host_from_http_origin(origin) else {
         return false;
     };
-    let dot_idx = match rest.iter().position(|&b| b == b'.') {
-        Some(idx) => idx,
-        None => return false,
-    };
-    let octet_bytes = &rest[..dot_idx];
-    let Ok(octet_str) = std::str::from_utf8(octet_bytes) else {
-        return false;
-    };
-    matches!(octet_str.parse::<u8>(), Ok(n) if (16..=31).contains(&n))
+    if host == b"localhost" || host == b"127.0.0.1" {
+        return true;
+    }
+    let Ok(s) = std::str::from_utf8(host) else { return false; };
+    let Ok(ip) = s.parse::<std::net::IpAddr>() else { return false; };
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 10
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+        }
+        std::net::IpAddr::V6(_) => false,
+    }
 }
 
 
