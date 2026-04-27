@@ -200,6 +200,23 @@ async fn get_google_callback(
         message: "user_lookup_failed".to_string(),
     })?;
 
+    // C.1: if a refresh token arrived, seal it with the Vault Key if the vault is
+    // unlocked; otherwise keep the plaintext temporarily — the migration in
+    // VaultKeyStore::unlock() will seal it on the next successful unlock.
+    if let Some(rt) = &token.refresh_token {
+        match state.vault_keys.seal_oauth_token(&user_id, rt).await {
+            Ok(cipher) => {
+                let _ = db::store_encrypted_refresh_token(&state.pool, &user_id, &cipher).await;
+                let _ = db::clear_plaintext_refresh_token(&state.pool, &user_id).await;
+            }
+            Err(_) => {
+                // Vault is locked — refresh token remains as plaintext in users.google_refresh_token
+                // (written by the upsert above) and will be sealed on next vault unlock.
+                tracing::info!("[OAUTH] Vault locked — refresh token stored as plaintext, will be sealed on next unlock");
+            }
+        }
+    }
+
     let session_token = db::generate_session_token();
     let session = db::create_user_session(
         &state.pool,

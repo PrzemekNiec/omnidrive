@@ -1132,6 +1132,8 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     .await?;
     // Sesja C: store Google refresh_token for session auto-renewal
     ensure_column_exists(&pool, "users", "google_refresh_token", "TEXT").await?;
+    // C.1: sealed (AES-GCM + VK-derived key) refresh token replaces plaintext column.
+    ensure_column_exists(&pool, "users", "google_refresh_token_ciphertext", "BLOB").await?;
 
     sqlx::query(
         r#"
@@ -7454,6 +7456,64 @@ pub async fn delete_expired_oauth_states(pool: &SqlitePool) -> Result<u64, sqlx:
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
+}
+
+// ── C.1: Sealed OAuth refresh-token storage ───────────────────────────
+
+/// Persist the VK-sealed refresh token ciphertext for `user_id`.
+pub async fn store_encrypted_refresh_token(
+    pool: &SqlitePool,
+    user_id: &str,
+    ciphertext: &[u8],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE users SET google_refresh_token_ciphertext = ? WHERE user_id = ?",
+    )
+    .bind(ciphertext)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Fetch the sealed refresh token blob for `user_id`, if one has been stored.
+pub async fn get_encrypted_refresh_token(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Option<Vec<u8>>, sqlx::Error> {
+    sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT google_refresh_token_ciphertext FROM users WHERE user_id = ? \
+         AND google_refresh_token_ciphertext IS NOT NULL",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Return `(user_id, google_refresh_token)` for all users that still have a
+/// plaintext refresh token and no sealed ciphertext (migration candidates).
+pub async fn users_with_plaintext_refresh_token(
+    pool: &SqlitePool,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT user_id, google_refresh_token FROM users \
+         WHERE google_refresh_token IS NOT NULL \
+         AND google_refresh_token_ciphertext IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Remove the plaintext refresh token once it has been sealed.
+pub async fn clear_plaintext_refresh_token(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET google_refresh_token = NULL WHERE user_id = ?")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]

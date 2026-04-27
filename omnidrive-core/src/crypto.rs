@@ -334,6 +334,50 @@ pub fn derive_kek(master_key: &KeyBytes) -> Result<KeyBytes, CryptoError> {
     expand_labeled_key(master_key, KEK_V2_INFO)
 }
 
+/// Derive a purpose-specific sub-key from `master` using HKDF-Expand with a caller-supplied `info`
+/// label. Use distinct labels for distinct purposes (e.g. b"omnidrive-oauth-refresh-tokens-v1").
+pub fn derive_subkey(master: &KeyBytes, info: &[u8]) -> Result<KeyBytes, CryptoError> {
+    expand_labeled_key(master, info)
+}
+
+/// Encrypt a small secret with AES-256-GCM.  Returns `nonce[12] || ciphertext || tag[16]`.
+/// `aad` is authenticated but not encrypted (use e.g. user_id to bind ciphertext to an identity).
+pub fn encrypt_secret(key: &KeyBytes, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    let mut nonce_bytes = [0u8; CHUNK_NONCE_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::Aead(aes_gcm::Error))?;
+    let mut ciphertext = plaintext.to_vec();
+    let tag = cipher
+        .encrypt_in_place_detached(Nonce::from_slice(&nonce_bytes), aad, &mut ciphertext)
+        .map_err(CryptoError::Aead)?;
+    let mut blob = Vec::with_capacity(CHUNK_NONCE_LEN + ciphertext.len() + GCM_TAG_LEN);
+    blob.extend_from_slice(&nonce_bytes);
+    blob.extend_from_slice(&ciphertext);
+    blob.extend_from_slice(tag.as_slice());
+    Ok(blob)
+}
+
+/// Decrypt a blob produced by [`encrypt_secret`].  Verifies the GCM tag.
+pub fn decrypt_secret(key: &KeyBytes, blob: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    let min_len = CHUNK_NONCE_LEN + GCM_TAG_LEN;
+    if blob.len() < min_len {
+        return Err(CryptoError::Aead(aes_gcm::Error));
+    }
+    let (nonce_bytes, rest) = blob.split_at(CHUNK_NONCE_LEN);
+    let (ciphertext, tag_bytes) = rest.split_at(rest.len() - GCM_TAG_LEN);
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::Aead(aes_gcm::Error))?;
+    let mut plaintext = ciphertext.to_vec();
+    cipher
+        .decrypt_in_place_detached(
+            Nonce::from_slice(nonce_bytes),
+            aad,
+            &mut plaintext,
+            Tag::from_slice(tag_bytes),
+        )
+        .map_err(CryptoError::Aead)?;
+    Ok(plaintext)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

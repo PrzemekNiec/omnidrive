@@ -3,6 +3,7 @@ use bip39::Mnemonic;
 use hkdf::Hkdf;
 use omnidrive_core::crypto::{
     CryptoError, KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_kek, derive_root_keys,
+    derive_subkey, decrypt_secret, encrypt_secret,
     generate_random_key, unwrap_key, wrap_key,
 };
 use secrecy::{ExposeSecret, SecretBox};
@@ -20,6 +21,7 @@ const DEFAULT_TIME_COST: u32 = 3;
 const DEFAULT_LANES: u32 = 1;
 #[allow(dead_code)]
 const LOCAL_CACHE_KEY_INFO: &[u8] = b"omnidrive-local-cache-v1";
+const OAUTH_REFRESH_TOKEN_INFO: &[u8] = b"omnidrive-oauth-refresh-tokens-v1";
 
 #[derive(Clone, Default)]
 pub struct VaultKeyStore {
@@ -225,6 +227,20 @@ impl VaultKeyStore {
 
         *self.inner.write().await = Some(unlocked);
 
+        // Migrate any plaintext Google refresh tokens to VK-sealed ciphertext.
+        if let Ok(pairs) = db::users_with_plaintext_refresh_token(pool).await {
+            for (uid, token) in pairs {
+                match self.seal_oauth_token(&uid, &token).await {
+                    Ok(cipher) => {
+                        let _ = db::store_encrypted_refresh_token(pool, &uid, &cipher).await;
+                        let _ = db::clear_plaintext_refresh_token(pool, &uid).await;
+                        info!("[OAUTH] Sealed refresh token for user [REDACTED]");
+                    }
+                    Err(e) => warn!("[OAUTH] Could not seal refresh token during unlock: {e}"),
+                }
+            }
+        }
+
         Ok(UnlockResult {
             initialized,
             unlocked: true,
@@ -280,6 +296,27 @@ impl VaultKeyStore {
         if let Some(keys) = self.inner.write().await.as_mut() {
             keys.previous_envelope_vault_key = None;
         }
+    }
+
+    /// Encrypt a Google OAuth refresh token with a key derived from the V2 envelope Vault Key.
+    /// Returns an opaque blob (nonce || ciphertext || tag). Fails with `VaultError::Locked` if
+    /// the vault is not unlocked (envelope key unavailable).
+    /// `user_id` is used as AAD — the blob can only be decrypted for the same user.
+    pub async fn seal_oauth_token(&self, user_id: &str, token: &str) -> Result<Vec<u8>, VaultError> {
+        let evk = self.require_envelope_key().await?;
+        let derived = derive_subkey(&evk, OAUTH_REFRESH_TOKEN_INFO)?;
+        let blob = encrypt_secret(&derived, token.as_bytes(), user_id.as_bytes())?;
+        Ok(blob)
+    }
+
+    /// Decrypt a blob produced by [`seal_oauth_token`] back to a refresh token string.
+    /// Fails with `VaultError::Locked` if the vault is not unlocked.
+    #[allow(dead_code)] // reserved for token-refresh endpoint (POST-DELL)
+    pub async fn unseal_oauth_token(&self, user_id: &str, blob: &[u8]) -> Result<String, VaultError> {
+        let evk = self.require_envelope_key().await?;
+        let derived = derive_subkey(&evk, OAUTH_REFRESH_TOKEN_INFO)?;
+        let plaintext = decrypt_secret(&derived, blob, user_id.as_bytes())?;
+        String::from_utf8(plaintext).map_err(|_| VaultError::InvalidConfig("sealed oauth token is not valid utf-8"))
     }
 
     #[allow(dead_code)]
@@ -1073,6 +1110,48 @@ mod tests {
         let a = store.safety_mnemonic("user-a").await;
         let b = store.safety_mnemonic("user-b").await;
         assert_ne!(a, b);
+        Ok(())
+    }
+
+    // ── C.1: OAuth refresh-token sealing ──────────────────────────────────
+
+    #[tokio::test]
+    async fn seal_unseal_oauth_token_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "passphrase").await?;
+
+        let token = "ya29.some-google-refresh-token";
+        let user_id = "user-abc123";
+
+        let blob = store.seal_oauth_token(user_id, token).await?;
+        assert!(!blob.is_empty());
+        assert_ne!(blob, token.as_bytes(), "blob must not be plaintext");
+
+        let recovered = store.unseal_oauth_token(user_id, &blob).await?;
+        assert_eq!(recovered, token);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn seal_fails_when_vault_locked() -> Result<(), Box<dyn std::error::Error>> {
+        let _pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        // vault is NOT unlocked
+        let result = store.seal_oauth_token("uid", "token").await;
+        assert!(matches!(result, Err(VaultError::Locked)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn seal_different_nonce_each_call() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "passphrase").await?;
+
+        let a = store.seal_oauth_token("user", "token").await?;
+        let b = store.seal_oauth_token("user", "token").await?;
+        assert_ne!(a, b, "each seal must use a fresh random nonce");
         Ok(())
     }
 }
