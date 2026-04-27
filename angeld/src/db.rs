@@ -2001,6 +2001,9 @@ pub async fn graft_restored_metadata_snapshot(
         // Graft provider_configs from snapshot (NOT secrets — those are DPAPI-sealed
         // per machine and cannot be transferred).  Use INSERT ... ON CONFLICT IGNORE
         // so we never overwrite a provider the joining device already configured.
+        // created_at/updated_at use local epoch so UI shows when *this* device joined,
+        // not a timestamp from the owner's machine (possibly a different TZ/clock).
+        let local_now = epoch_secs();
         for row in &r_provider_configs {
             sqlx::query(
                 "INSERT OR IGNORE INTO provider_configs (provider_name, endpoint, region, \
@@ -2011,7 +2014,7 @@ pub async fn graft_restored_metadata_snapshot(
             .bind(&row.provider_name).bind(&row.endpoint).bind(&row.region)
             .bind(&row.bucket).bind(row.force_path_style)
             .bind(&row.draft_source)
-            .bind(row.created_at).bind(row.updated_at)
+            .bind(local_now).bind(local_now)
             .execute(&mut *conn).await?;
         }
 

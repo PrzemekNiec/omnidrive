@@ -2,6 +2,10 @@ use crate::cache;
 use crate::cloud_guard;
 use crate::config::AppConfig;
 use crate::db;
+use crate::onboarding::{
+    SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT, SYSTEM_CONFIG_RESTORE_LAST_ERROR_MSG,
+    SYSTEM_CONFIG_RESTORE_STATE,
+};
 use crate::peer;
 use crate::runtime_paths::RuntimePaths;
 use crate::shell_state;
@@ -143,6 +147,7 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/diagnostics/health", get(get_diagnostics_health))
         .route("/api/diagnostics/shell", get(get_shell_state))
         .route("/api/diagnostics/sync-root", get(get_sync_root_state))
+        .route("/api/diagnostics/restore", get(get_restore_state))
         .route("/api/storage/cost", get(get_storage_cost))
         .route("/api/multidevice/status", get(get_multidevice_status))
 }
@@ -290,6 +295,36 @@ async fn get_multidevice_status(
     })?;
 
     Ok(Json(serde_json::to_value(snapshot).unwrap_or_default()))
+}
+
+// ── GET /api/diagnostics/restore ──────────────────────────────────────
+
+#[derive(Serialize)]
+struct RestoreStateResponse {
+    state: String,
+    last_error_at: Option<i64>,
+    last_error_message: Option<String>,
+}
+
+async fn get_restore_state(
+    State(state): State<ApiState>,
+) -> Result<Json<RestoreStateResponse>, ApiError> {
+    let restore_state = db::get_system_config_value(&state.pool, SYSTEM_CONFIG_RESTORE_STATE)
+        .await?
+        .unwrap_or_else(|| "idle".to_string());
+
+    let last_error_at = db::get_system_config_value(&state.pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT)
+        .await?
+        .and_then(|v| v.parse::<i64>().ok());
+
+    let last_error_message =
+        db::get_system_config_value(&state.pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_MSG).await?;
+
+    Ok(Json(RestoreStateResponse {
+        state: restore_state,
+        last_error_at,
+        last_error_message,
+    }))
 }
 
 // ── Builder functions (pub(super) so mod.rs maintenance handlers can use them) ──

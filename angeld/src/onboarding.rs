@@ -31,6 +31,9 @@ pub const SYSTEM_CONFIG_ONBOARDING_MODE: &str = "onboarding_mode";
 pub const SYSTEM_CONFIG_LAST_ONBOARDING_STEP: &str = "last_onboarding_step";
 pub const SYSTEM_CONFIG_DRAFT_ENV_DETECTED: &str = "draft_env_detected";
 pub const SYSTEM_CONFIG_CLOUD_ENABLED: &str = "cloud_enabled";
+pub const SYSTEM_CONFIG_RESTORE_STATE: &str = "restore_state";
+pub const SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT: &str = "restore_last_error_at";
+pub const SYSTEM_CONFIG_RESTORE_LAST_ERROR_MSG: &str = "restore_last_error_message";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OnboardingState {
@@ -700,6 +703,9 @@ pub async fn perform_vault_restore(
         .await
         .map_err(|err| map_restore_bootstrap_error(provider_id, err))?;
 
+    // ── Phase 1: download ──────────────────────────────────────────────
+    db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "downloading").await.ok();
+
     let restore_result = disaster_recovery::restore_metadata_from_cloud(
         &provider_manager,
         passphrase,
@@ -709,8 +715,15 @@ pub async fn perform_vault_restore(
 
     if let Err(err) = restore_result {
         secure_fs::secure_delete(&staging_path).await.ok();
+        let now = db::epoch_secs();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "last_failed").await.ok();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT, &now.to_string()).await.ok();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_MSG, "download_failed").await.ok();
         return Err(map_restore_download_error(provider_id, err));
     }
+
+    // ── Phase 2: apply ─────────────────────────────────────────────────
+    db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "applying").await.ok();
 
     let apply_result = db::graft_restored_metadata_snapshot(pool, &staging_path)
         .await
@@ -724,6 +737,14 @@ pub async fn perform_vault_restore(
     // retry_io inside secure_delete logs a warn if Defender/cfapi still holds the handle
     // after 5 attempts — cleanup_stale_restore_staging() will finish the job on next startup.
     secure_fs::secure_delete(&staging_path).await.ok();
+
+    if apply_result.is_err() {
+        let now = db::epoch_secs();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "last_failed").await.ok();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT, &now.to_string()).await.ok();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_MSG, "apply_failed").await.ok();
+    }
+
     let applied = apply_result?;
 
     info!(
@@ -739,6 +760,8 @@ pub async fn perform_vault_restore(
             applied.missing_provider_secrets
         );
     }
+
+    db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "last_succeeded").await.ok();
 
     Ok(VaultRestoreReport {
         status: "OK".to_string(),
