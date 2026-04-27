@@ -13,6 +13,7 @@ pub enum ApiError {
     Conflict { message: String },
     Gone { message: String },
     Locked { message: String },
+    TooManyRequests { retry_after_secs: u64, message: String },
     // 5xx
     Internal { message: String },
     BadGateway { message: String },
@@ -29,6 +30,7 @@ impl std::fmt::Display for ApiError {
             Self::Conflict { message } => write!(f, "conflict: {message}"),
             Self::Gone { message } => write!(f, "gone: {message}"),
             Self::Locked { message } => write!(f, "locked: {message}"),
+            Self::TooManyRequests { retry_after_secs, .. } => write!(f, "too_many_requests: retry after {retry_after_secs}s"),
             Self::Internal { message } => write!(f, "internal: {message}"),
             Self::BadGateway { message } => write!(f, "bad_gateway: {message}"),
             Self::ServiceUnavailable { message } => write!(f, "service_unavailable: {message}"),
@@ -52,6 +54,22 @@ impl IntoResponse for ApiError {
             Self::Conflict { message } => (StatusCode::CONFLICT, "conflict", message.clone()),
             Self::Gone { message } => (StatusCode::GONE, "gone", message.clone()),
             Self::Locked { message } => (StatusCode::LOCKED, "locked", message.clone()),
+            Self::TooManyRequests { retry_after_secs, message } => {
+                let mut hmap = axum::http::HeaderMap::new();
+                if let Ok(v) = retry_after_secs.to_string().parse() {
+                    hmap.insert(axum::http::header::RETRY_AFTER, v);
+                }
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    hmap,
+                    Json(serde_json::json!({
+                        "error": "rate_limited",
+                        "message": message,
+                        "retry_after_secs": retry_after_secs
+                    })),
+                )
+                    .into_response();
+            }
             Self::Internal { message } => {
                 tracing::error!("api request failed: {message}");
                 (

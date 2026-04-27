@@ -22,13 +22,65 @@ use axum::Router;
 use serde::Serialize;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use sqlx::SqlitePool;
+use dashmap::DashMap;
 use std::env;
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tracing::info;
+
+// ── Recovery rate limiter ──────────────────────────────────────────────
+
+#[derive(Default)]
+struct IpRecord {
+    failures: Vec<Instant>,
+    last_failure_at: Option<Instant>,
+}
+
+pub(super) struct RecoveryRateLimiter {
+    map: DashMap<IpAddr, IpRecord>,
+}
+
+impl RecoveryRateLimiter {
+    fn new() -> Self {
+        Self { map: DashMap::new() }
+    }
+
+    /// Returns `Err(retry_after_secs)` when the IP is rate-limited.
+    pub(super) fn check(&self, ip: IpAddr) -> Result<(), u64> {
+        let now = Instant::now();
+        let mut rec = self.map.entry(ip).or_default();
+        rec.failures.retain(|t| now.duration_since(*t) < Duration::from_secs(300));
+
+        if let Some(last) = rec.last_failure_at {
+            let elapsed = now.duration_since(last);
+            if elapsed < Duration::from_secs(30) {
+                return Err(30u64.saturating_sub(elapsed.as_secs()));
+            }
+        }
+        if rec.failures.len() >= 3 {
+            let oldest = rec.failures.first().copied().unwrap();
+            let wait = 300u64.saturating_sub(now.duration_since(oldest).as_secs());
+            return Err(wait.max(1));
+        }
+        Ok(())
+    }
+
+    pub(super) fn record_failure(&self, ip: IpAddr) {
+        let now = Instant::now();
+        let mut rec = self.map.entry(ip).or_default();
+        rec.failures.push(now);
+        rec.last_failure_at = Some(now);
+    }
+
+    pub(super) fn record_success(&self, ip: IpAddr) {
+        self.map.remove(&ip);
+    }
+}
+
+// ── ApiState ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct ApiState {
@@ -38,6 +90,7 @@ struct ApiState {
     downloader: Option<Arc<Downloader>>,
     runtime_reload_tx: Option<watch::Sender<u64>>,
     daemon_shutdown_tx: Arc<watch::Sender<bool>>,
+    recovery_limiter: Arc<RecoveryRateLimiter>,
 }
 
 pub struct ApiServer {
@@ -127,6 +180,7 @@ impl ApiServer {
             downloader: self.downloader,
             runtime_reload_tx: self.runtime_reload_tx,
             daemon_shutdown_tx: Arc::new(daemon_shutdown_tx),
+            recovery_limiter: Arc::new(RecoveryRateLimiter::new()),
         };
         let app = Router::new()
             .route("/", get(get_index))
@@ -160,7 +214,7 @@ impl ApiServer {
         diagnostics.set_worker_status(WorkerKind::Api, WorkerStatus::Idle);
         info!("api server listening on http://{}", self.bind_addr);
 
-        axum::serve(listener, app)
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(async move {
                 let mut rx = daemon_shutdown_rx;
                 rx.changed().await.ok();

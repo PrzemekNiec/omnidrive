@@ -14,12 +14,13 @@ use crate::db;
 use crate::recovery;
 use crate::vault::VaultError;
 
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use omnidrive_core::crypto::{KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_root_keys, wrap_key};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 use super::error::ApiError;
 use super::ApiState;
@@ -146,8 +147,27 @@ struct RestoreResponse {
 
 async fn restore_from_recovery_key(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(request): Json<RestoreRequest>,
 ) -> Result<Json<RestoreResponse>, ApiError> {
+    let ip = addr.ip();
+    let ua = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .chars()
+        .take(200)
+        .collect::<String>();
+
+    // ── Rate-limit check ──────────────────────────────────────────────
+    if let Err(retry_after) = state.recovery_limiter.check(ip) {
+        return Err(ApiError::TooManyRequests {
+            retry_after_secs: retry_after,
+            message: format!("too many recovery attempts — retry after {retry_after}s"),
+        });
+    }
+
     if request.new_passphrase.is_empty() {
         return Err(ApiError::BadRequest {
             code: "empty_passphrase",
@@ -155,20 +175,95 @@ async fn restore_from_recovery_key(
         });
     }
 
-    let mnemonic = recovery::parse_mnemonic(request.mnemonic.trim()).map_err(
-        |err: recovery::RecoveryError| ApiError::BadRequest {
-            code: "invalid_mnemonic",
-            message: err.to_string(),
-        },
-    )?;
-    let recovery_key = recovery::derive_recovery_key(&mnemonic);
-
     let vault = db::get_vault_params(&state.pool)
         .await?
         .ok_or(ApiError::BadRequest {
             code: "vault_not_initialized",
             message: "vault not initialized".to_string(),
         })?;
+
+    // ── State-guard ────────────────────────────────────────────────────
+    // Block if vault is active and there was a restore attempt in the last 24h,
+    // unless recovery_unlocked_until in system_config extends past now.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let unlocked_until: i64 = db::get_system_config_value(&state.pool, "recovery_unlocked_until")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+
+    if unlocked_until <= now_secs {
+        let window_secs = now_secs - 86_400;
+        let last_attempt: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(timestamp) FROM audit_logs \
+             WHERE vault_id = ? AND action IN ('recovery_key_restore', 'recovery_restore_failure') \
+             AND timestamp >= ?",
+        )
+        .bind(&vault.vault_id)
+        .bind(window_secs)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(None);
+
+        if last_attempt.is_some() {
+            let _ = db::insert_audit_log(
+                &state.pool,
+                &vault.vault_id,
+                "recovery_restore_blocked",
+                None,
+                None,
+                None,
+                None,
+                Some(&format!(r#"{{"ip":"{ip}","ua":{ua:?}}}"#)),
+            )
+            .await;
+            return Err(ApiError::Forbidden {
+                message: "recovery blocked: a restore attempt was recorded within the last 24h on this active vault".to_string(),
+            });
+        }
+    }
+
+    // ── Audit: record this attempt (no mnemonic) ───────────────────────
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &vault.vault_id,
+        "recovery_restore_attempt",
+        None,
+        None,
+        None,
+        None,
+        Some(&format!(r#"{{"ip":"{ip}","ua":{ua:?}}}"#)),
+    )
+    .await;
+
+    // ── Mnemonic validation ────────────────────────────────────────────
+    let mnemonic = match recovery::parse_mnemonic(request.mnemonic.trim()) {
+        Ok(m) => m,
+        Err(err) => {
+            state.recovery_limiter.record_failure(ip);
+            let _ = db::insert_audit_log(
+                &state.pool,
+                &vault.vault_id,
+                "recovery_restore_failure",
+                None,
+                None,
+                None,
+                None,
+                Some(&format!(r#"{{"ip":"{ip}","reason":"invalid_mnemonic","ua":{ua:?}}}"#)),
+            )
+            .await;
+            return Err(ApiError::BadRequest {
+                code: "invalid_mnemonic",
+                message: err.to_string(),
+            });
+        }
+    };
+    let recovery_key = recovery::derive_recovery_key(&mnemonic);
 
     let records = db::list_active_recovery_keys(&state.pool, &vault.vault_id).await?;
     if records.is_empty() {
@@ -180,15 +275,29 @@ async fn restore_from_recovery_key(
 
     // Try each active recovery key — AES-KW's integrity check makes a wrong
     // mnemonic immediately fail.
-    let envelope_key: KeyBytes = records
-        .iter()
-        .find_map(|r| {
-            let wrapped: [u8; WRAPPED_KEY_LEN] = r.wrapped_vault_key.as_slice().try_into().ok()?;
-            recovery::unwrap_vault_key(&recovery_key, &wrapped).ok()
-        })
-        .ok_or(ApiError::Unauthorized {
-            message: "recovery mnemonic did not match any active key".to_string(),
-        })?;
+    let envelope_key: KeyBytes = match records.iter().find_map(|r| {
+        let wrapped: [u8; WRAPPED_KEY_LEN] = r.wrapped_vault_key.as_slice().try_into().ok()?;
+        recovery::unwrap_vault_key(&recovery_key, &wrapped).ok()
+    }) {
+        Some(k) => k,
+        None => {
+            state.recovery_limiter.record_failure(ip);
+            let _ = db::insert_audit_log(
+                &state.pool,
+                &vault.vault_id,
+                "recovery_restore_failure",
+                None,
+                None,
+                None,
+                None,
+                Some(&format!(r#"{{"ip":"{ip}","reason":"mnemonic_mismatch","ua":{ua:?}}}"#)),
+            )
+            .await;
+            return Err(ApiError::Unauthorized {
+                message: "recovery mnemonic did not match any active key".to_string(),
+            });
+        }
+    };
 
     // Derive new root keys with a fresh salt, reusing the existing Argon2
     // cost parameters.
@@ -253,6 +362,7 @@ async fn restore_from_recovery_key(
     )
     .await?;
 
+    state.recovery_limiter.record_success(ip);
     let _ = db::insert_audit_log(
         &state.pool,
         &vault.vault_id,
@@ -261,7 +371,7 @@ async fn restore_from_recovery_key(
         None,
         None,
         None,
-        Some(&format!("{{\"vk_generation\":{}}}", generation)),
+        Some(&format!(r#"{{"vk_generation":{generation},"ip":"{ip}","ua":{ua:?}}}"#)),
     )
     .await;
 
