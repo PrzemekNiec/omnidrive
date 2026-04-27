@@ -1096,9 +1096,20 @@ fn virtual_drive_letter() -> String {
 }
 
 async fn maybe_auto_restore_database(db_url: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    let Some(passphrase) = env::var("OMNIDRIVE_AUTO_RESTORE_PASSPHRASE").ok() else {
+    let Ok(passphrase) = env::var("OMNIDRIVE_AUTO_RESTORE_PASSPHRASE") else {
         return Ok(false);
     };
+
+    // B.7: env-var is dev/CI-only — disabled in release builds because the passphrase
+    // is visible in process listings (tasklist /v), procmon, and core dumps.
+    if !cfg!(any(debug_assertions, feature = "test-helpers")) {
+        warn!(
+            "OMNIDRIVE_AUTO_RESTORE_PASSPHRASE ignored in release build — \
+             passphrase is visible in process listings and core dumps; \
+             recompile with debug_assertions or feature=test-helpers to enable"
+        );
+        return Ok(false);
+    }
     let Some(db_path) = sqlite_db_file_path(db_url) else {
         return Ok(false);
     };

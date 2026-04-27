@@ -7173,6 +7173,14 @@ pub async fn create_user_session(
 }
 
 /// Validate a session token. Returns the session if valid and not expired.
+///
+/// Conscious decision — no application-level constant-time comparison:
+/// tokens are 256-bit OsRng values; the comparison happens inside SQLite
+/// (`WHERE token = ?`) which has non-constant timing, but a timing
+/// side-channel is not exploitable here because (a) the daemon only listens
+/// on loopback/LAN, (b) SQLite query overhead (~µs) swamps any byte-compare
+/// difference (~ns), and (c) an attacker would need millions of same-machine
+/// measurements — see docs/crypto-spec.md §11 for full rationale.
 pub async fn validate_user_session(
     pool: &SqlitePool,
     token: &str,

@@ -329,6 +329,46 @@ Kolejnosc zadan zgodna z `plan.md`:
 
 ---
 
+## 11. Session token validation — timing side-channel decision
+
+`validate_user_session` (db.rs) uses a plain SQL `WHERE token = ?` without an
+application-level constant-time comparison. This is a **conscious, documented
+decision** — not an oversight.
+
+### Why constant-time is not required here
+
+1. **Token entropy:** session tokens are 256-bit values from `OsRng`. An attacker
+   needs ~2²⁵⁶ queries to brute-force one by chance; timing information provides
+   no shortcut at this bit-length.
+
+2. **Transport:** the daemon listens exclusively on loopback / RFC-1918 LAN (see
+   CORS policy in `api/mod.rs`). A remote attacker cannot measure response times
+   with the sub-microsecond precision required to distinguish a SQLite row lookup
+   from a miss.
+
+3. **Noise floor:** a SQLite `SELECT` with index lookup takes ~1–10 µs. The
+   difference between a hit and a miss at the byte-comparison level is ~1–5 ns —
+   three orders of magnitude below the query overhead. Even same-machine
+   measurements are dominated by OS scheduler jitter.
+
+4. **Comparison site:** the comparison occurs inside SQLite's native C code, not
+   in a Rust loop. The timing difference per byte is further masked by SQLite's
+   B-tree traversal, page cache, and WAL overhead.
+
+### Contrast with sharing.rs
+
+`validate_share_password` in `sharing.rs` uses `subtle::ConstantTimeEq` because
+share passwords are short, user-chosen strings that could be brute-forced offline
+if a hash were leaked. Session tokens have neither property.
+
+### What would change this decision
+
+If the daemon ever exposes an HTTP endpoint on a public interface (0.0.0.0 /
+non-loopback), this decision must be revisited and `subtle::ConstantTimeEq`
+applied before the SQL lookup.
+
+---
+
 ## 10. Security considerations
 
 - **Vault Key NIGDY nie opuszcza pamieci w plaintexcie** — na dysku tylko jako `encrypted_vault_key` (AES-KW wrapped)
