@@ -5,6 +5,7 @@ use crate::cloud_guard::{self, GuardOperation};
 use crate::config::AppConfig;
 use crate::disaster_recovery::{self, MetadataBackupProviderManager};
 use crate::runtime_paths::RuntimePaths;
+use crate::secure_fs;
 use crate::uploader::{KNOWN_PROVIDERS, ProviderConfig};
 use crate::{db, db::ProviderConfigRecord};
 use aws_config::Region;
@@ -692,9 +693,8 @@ pub async fn perform_vault_restore(
     if let Some(parent) = staging_path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    if fs::try_exists(&staging_path).await.unwrap_or(false) {
-        let _ = fs::remove_file(&staging_path).await;
-    }
+    // Zero-overwrite any leftover staging file from a previous attempt before starting fresh.
+    secure_fs::secure_delete(&staging_path).await.ok();
 
     let provider_manager = MetadataBackupProviderManager::from_onboarding_db(pool, provider_id)
         .await
@@ -708,7 +708,7 @@ pub async fn perform_vault_restore(
     .await;
 
     if let Err(err) = restore_result {
-        let _ = fs::remove_file(&staging_path).await;
+        secure_fs::secure_delete(&staging_path).await.ok();
         return Err(map_restore_download_error(provider_id, err));
     }
 
@@ -720,7 +720,10 @@ pub async fn perform_vault_restore(
                 staging_path.display()
             ))
         });
-    let _ = fs::remove_file(&staging_path).await;
+    // Zero-overwrite + retry delete: staging file holds plaintext metadata snapshot.
+    // retry_io inside secure_delete logs a warn if Defender/cfapi still holds the handle
+    // after 5 attempts — cleanup_stale_restore_staging() will finish the job on next startup.
+    secure_fs::secure_delete(&staging_path).await.ok();
     let applied = apply_result?;
 
     info!(
