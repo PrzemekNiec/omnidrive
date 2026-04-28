@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 
+use secrecy::{ExposeSecret, SecretString};
+
 use super::error::ApiError;
 use super::ApiState;
 
@@ -941,7 +943,7 @@ async fn post_vault_lock(
 
 #[derive(serde::Deserialize)]
 struct RotateKeyRequest {
-    new_passphrase: String,
+    new_passphrase: SecretString,
 }
 
 async fn post_rotate_key(
@@ -951,7 +953,7 @@ async fn post_rotate_key(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
-    if req.new_passphrase.is_empty() {
+    if req.new_passphrase.expose_secret().is_empty() {
         return Err(ApiError::BadRequest {
             code: "empty_passphrase",
             message: "new_passphrase must not be empty".into(),
@@ -960,7 +962,7 @@ async fn post_rotate_key(
 
     state
         .vault_keys
-        .rotate_vault_key(&state.pool, &req.new_passphrase)
+        .rotate_vault_key(&state.pool, req.new_passphrase.expose_secret())
         .await
         .map_err(|e| ApiError::Internal { message: e.to_string() })?;
 

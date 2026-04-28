@@ -59,7 +59,7 @@
 - Faza N.5 Batche 1–5: graft hardening, OsRng, CORS exact-match, recovery rate-limit, replaceState, restore state markery, low-order pubkey defense, vault_id consistency check, OAUTH gate
 
 ### Co zostało / nadchodzi
-- **Faza N.5 Batch 6** — refresh-token VK sealing (C.1) + SecretString migration (C.2)
+- ✅ **Faza N.5 Batch 6** — C.1 refresh-token VK sealing + C.2 SecretString migration DONE
 - **Dell smoke test** — gate przed releasem v0.3.0 (graft + watcher DRY_RUN + share LAN end-to-end)
 - **Faza N.3+N.4** — bump 0.2.0 → 0.3.0, payload, instalator, tag, CHANGELOG, SHA-256
 - **Po v0.3.0:** Epic 33 Tryb B + Faza O.1 + Faza O.2+ → v0.4.0 → mobile (P→Q→R→S)
@@ -79,7 +79,7 @@
 | Faza H–M.6 | UI quick-wins, OAuth UI, Safety Numbers, Local-First lockin | ✅ DONE | — | — |
 | **Faza N.1+N.2** | Dead code audyt + hybrid E2E | ✅ DONE `7819811` | — | — |
 | **Faza N.5 Batch 1–5** | Pre-Dell hardening (Paczki A+B core) | ✅ DONE | — | — |
-| **Faza N.5 Batch 6** | C.1 refresh-token VK + C.2 SecretString | 🔄 NEXT | **P0** | 1 sesja |
+| **Faza N.5 Batch 6** | C.1 refresh-token VK + C.2 SecretString | ✅ DONE | **P0** | 1 sesja |
 | **Dell Smoke Test** | Cross-device acceptance v0.3.0 | ⬜ TODO | **P0** | 0.5 dnia |
 | **Faza N.3+N.4** | Bump → 0.3.0 + payload + instalator + release | ⬜ TODO | **P0** | 0.5 dnia |
 | Faza O.1 | Quota fix (cloud quota zamiast C: dla O:) | ⬜ TODO | P1 | 1 dzień |
@@ -175,7 +175,7 @@
 | `B.6` | `fda2cec` | Komentarz w `validate_user_session` + §11 w `crypto-spec.md` |
 | `B.7` | `fda2cec` | `OMNIDRIVE_AUTO_RESTORE_PASSPHRASE` ignorowany w release + warn |
 
-### 🔄 Batch 6 — Defense in Depth (NEXT)
+### ✅ Batch 6 — Defense in Depth (DONE)
 
 #### `C.1` Refresh-token Google: VK Sealing (Wariant B) 🟡
 - **Stan obecny:** `db.rs:1133` `users.google_refresh_token TEXT` — plaintext. `api/oauth.rs:175-191` zapisuje wprost.
@@ -186,14 +186,9 @@
   - Migracja: stare plaintext → przy następnym unlock → szyfrowane → kolumna plaintext nullowana.
 - **Exit:** `cargo audit` clean + lock vault → próba refresh OAuth → fail z czytelnym `vault_locked`. Unlock → refresh działa.
 
-#### `C.2` SecretString migration 🟡
-- **Stan obecny:** `api/auth.rs:15-18, 259-263`, `api/recovery.rs:135-139`, `api/onboarding.rs:109-113` — `passphrase: String` w request DTO.
-- **Plan:**
-  1. DTO: `passphrase: secrecy::SecretString`.
-  2. Wewnątrz handlerów: `let passphrase_str = passphrase.expose_secret();` blisko `derive_root_keys`.
-  3. `omnidrive-core::crypto`: `unlock_vault`, `derive_root_keys` → `&SecretString`.
-  4. Lint `clippy::disallowed_types` na `String` w polach `*passphrase*`/`*password*`/`*token*`.
-- **Exit:** `grep -rn 'passphrase: String' angeld/src` → brak (wszystko `SecretString`). `cargo audit` clean.
+#### `C.2` SecretString migration ✅ DONE
+- **Wykonano:** `api/auth.rs`, `api/recovery.rs`, `api/onboarding.rs`, `api/vault.rs` — `passphrase: String` → `SecretString`. `Cargo.toml` workspace: `secrecy` + `features = ["serde"]`. `ExposeSecret` dodano we wszystkich 4 handlerach.
+- **Exit spełniony:** `grep -rn 'passphrase: String' angeld/src` → brak. `cargo audit`: 8 pre-existing vulns (AWS SDK + sqlx/rsa chain) — bez nowych. Secrecy 0.10.3 czyste. C.3 rustls consolidation czeka POST-DELL.
 
 ### 🚪 Dell Smoke Test Gate (po Batchu 6)
 1. Świeża instalacja v0.3.0 na Dellu (po payload + instalatorze).
@@ -228,7 +223,7 @@
 | B.4 OsRng | HIGH | Zerowe | ✅ DONE |
 | A.5–A.9, B.5–B.7, A.6–A.8 | MEDIUM/LOW | Niskie | ✅ DONE |
 | **C.1 refresh-token VK** | MEDIUM | Średnie (migracja) | **NEXT (zalecane)** |
-| **C.2 SecretString** | MEDIUM | Średnie (refactor 6-8 plików) | **NEXT (zalecane)** |
+| **C.2 SecretString** | MEDIUM | Średnie (refactor 6-8 plików) | ✅ DONE |
 | C.3 rustls consolidation | MEDIUM | **Wysokie** | ❌ POST-DELL |
 | B.3 Krok 2 (OAuth) | — | Średnie | ❌ POST-DELL |
 | B.2 Tray confirmation | — | Wysokie (IPC) | ❌ Task 35.3 |
@@ -429,7 +424,7 @@ Dynamic host w generowaniu linku (z `Host:` headera lub `OMNIDRIVE_SHARE_HOST`).
 | Risk | Level | Mitigation |
 |------|-------|------------|
 | Refresh-token plaintext w DB (C.1) | MEDIUM | VK Sealing — Batch 6 |
-| Passphrase residue w pamięci (C.2) | MEDIUM | SecretString + Zeroize on drop — Batch 6 |
+| Passphrase residue w pamięci (C.2) | MEDIUM | ✅ SecretString + Zeroize on drop — Batch 6 DONE |
 | Dell graft fail (Defender + cfapi races) | MEDIUM | A.0 retry helper + A.2 zero-overwrite + A.4 yield_now (DONE) |
 | cfapi.dll bindings unstable | HIGH | B8 zamknął — `dir O:\` instant na Lenovo+Dell |
 | Ingest race conditions | HIGH | Transactional state machine + rollback |

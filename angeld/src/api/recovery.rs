@@ -19,6 +19,7 @@ use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use omnidrive_core::crypto::{KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_root_keys, wrap_key};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -136,7 +137,7 @@ async fn generate_recovery_key(
 #[derive(Deserialize)]
 struct RestoreRequest {
     mnemonic: String,
-    new_passphrase: String,
+    new_passphrase: SecretString,
 }
 
 #[derive(Serialize)]
@@ -168,7 +169,7 @@ async fn restore_from_recovery_key(
         });
     }
 
-    if request.new_passphrase.is_empty() {
+    if request.new_passphrase.expose_secret().is_empty() {
         return Err(ApiError::BadRequest {
             code: "empty_passphrase",
             message: "new passphrase cannot be empty".to_string(),
@@ -322,7 +323,7 @@ async fn restore_from_recovery_key(
             message: "invalid lanes".to_string(),
         })?,
     );
-    let new_root_keys = derive_root_keys(request.new_passphrase.as_bytes(), &params).map_err(
+    let new_root_keys = derive_root_keys(request.new_passphrase.expose_secret().as_bytes(), &params).map_err(
         |err| ApiError::Internal {
             message: err.to_string(),
         },

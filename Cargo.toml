@@ -3,7 +3,7 @@ members = ["angeld", "angelctl", "omnidrive-cli", "omnidrive-core", "omnidrive-t
 resolver = "3"
 
 [workspace.dependencies]
-secrecy = "0.10"
+secrecy = { version = "0.10", features = ["serde"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

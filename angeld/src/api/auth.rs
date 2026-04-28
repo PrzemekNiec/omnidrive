@@ -10,11 +10,12 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use secrecy::{ExposeSecret, SecretString};
 use tracing::warn;
 
 #[derive(Deserialize)]
 struct UnlockRequest {
-    passphrase: String,
+    passphrase: SecretString,
 }
 
 #[derive(Serialize)]
@@ -44,7 +45,7 @@ async fn post_unlock(
 ) -> Result<Json<UnlockResponse>, ApiError> {
     let result = state
         .vault_keys
-        .unlock(&state.pool, &request.passphrase)
+        .unlock(&state.pool, request.passphrase.expose_secret())
         .await
         .map_err(|e| ApiError::BadRequest {
             code: "unlock_failed",
@@ -53,7 +54,7 @@ async fn post_unlock(
 
     // Silently store passphrase in Windows Credential Manager (DPAPI-encrypted) so
     // that subsequent unlocks can use Windows Hello without retyping the passphrase.
-    if let Err(err) = windows_hello::store_passphrase(&request.passphrase) {
+    if let Err(err) = windows_hello::store_passphrase(request.passphrase.expose_secret()) {
         warn!("[UNLOCK] windows_hello store failed (non-fatal): {err}");
     }
 
@@ -258,8 +259,8 @@ async fn post_auth_renew(
 
 #[derive(Deserialize)]
 struct ChangePasswordRequest {
-    old_passphrase: String,
-    new_passphrase: String,
+    old_passphrase: SecretString,
+    new_passphrase: SecretString,
 }
 
 #[derive(Serialize)]
@@ -281,7 +282,7 @@ async fn post_change_password(
         message: "valid session required to change password".to_string(),
     })?;
 
-    if request.new_passphrase.is_empty() {
+    if request.new_passphrase.expose_secret().is_empty() {
         return Err(ApiError::BadRequest {
             code: "empty_passphrase",
             message: "new passphrase must not be empty".to_string(),
@@ -290,7 +291,7 @@ async fn post_change_password(
 
     let valid = state
         .vault_keys
-        .verify_passphrase(&state.pool, &request.old_passphrase)
+        .verify_passphrase(&state.pool, request.old_passphrase.expose_secret())
         .await
         .map_err(|e| ApiError::Internal { message: e.to_string() })?;
     if !valid {
@@ -302,12 +303,12 @@ async fn post_change_password(
 
     let result = state
         .vault_keys
-        .rotate_vault_key(&state.pool, &request.new_passphrase)
+        .rotate_vault_key(&state.pool, request.new_passphrase.expose_secret())
         .await
         .map_err(|e| ApiError::Internal { message: e.to_string() })?;
 
     // Update Windows Hello credential so subsequent Hello unlocks use the new passphrase.
-    if let Err(err) = windows_hello::store_passphrase(&request.new_passphrase) {
+    if let Err(err) = windows_hello::store_passphrase(request.new_passphrase.expose_secret()) {
         warn!("[CHANGE_PASSWORD] windows_hello update failed (non-fatal): {err}");
     }
 

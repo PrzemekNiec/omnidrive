@@ -25,6 +25,7 @@ use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use std::net::SocketAddr;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
@@ -110,7 +111,7 @@ struct SetupProviderResponse {
 
 #[derive(Deserialize)]
 struct JoinExistingRequest {
-    passphrase: String,
+    passphrase: SecretString,
     provider_id: String,
 }
 
@@ -516,7 +517,7 @@ async fn post_join_existing(
     let restore_result = perform_vault_restore(
         &state.pool,
         &runtime_paths,
-        &request.passphrase,
+        request.passphrase.expose_secret(),
         provider_id,
     )
     .await;
