@@ -1,7 +1,8 @@
 # OmniDrive — Status & Plan (Single Source of Truth)
 
-> **Ostatnia aktualizacja:** 2026-04-27
-> **Aktualna wersja kodu:** `v0.2.0` (commit `7819811`) — release `v0.3.0` zablokowany do końca Fazy N.5 + Dell smoke testu
+> **Ostatnia aktualizacja:** 2026-04-28
+> **Aktualna wersja kodu:** `v0.3.6` (commit `0931683`) — instalator `OmniDrive-Setup-0.3.6.exe` gotowy (23 MB, `dist/installer/output/`)
+> **Status:** Faza N.5 Pre-Dell Hardening **ZAKOŃCZONA**. Czekamy na Dell smoke test → tag `v0.3.6`.
 > **Konsolidacja:** ten plik zastępuje `plan.md`, `PROJECT_STATUS.md`, `roadmap.md`, `ARCHITECT_STATE.md`, `spec_review.md` (zarchiwizowane w `docs/archive/`).
 > **Plan taktyczny per-batch:** sekcja [§5 Faza N.5](#5-aktualna-faza-n5--pre-dell-hardening) + memory `project_faza_n_next.md`.
 
@@ -59,10 +60,11 @@
 - Faza N.5 Batche 1–5: graft hardening, OsRng, CORS exact-match, recovery rate-limit, replaceState, restore state markery, low-order pubkey defense, vault_id consistency check, OAUTH gate
 
 ### Co zostało / nadchodzi
-- ✅ **Faza N.5 Batch 6** — C.1 refresh-token VK sealing + C.2 SecretString migration DONE
-- **Dell smoke test** — gate przed releasem v0.3.0 (graft + watcher DRY_RUN + share LAN end-to-end)
-- **Faza N.3+N.4** — bump 0.2.0 → 0.3.0, payload, instalator, tag, CHANGELOG, SHA-256
-- **Po v0.3.0:** Epic 33 Tryb B + Faza O.1 + Faza O.2+ → v0.4.0 → mobile (P→Q→R→S)
+- ✅ **Faza N.5 Pre-Dell Hardening** — ZAKOŃCZONA (Batch 1–6, wszystkie 20 znalezisk)
+- ✅ **v0.3.6 build + instalator** — `OmniDrive-Setup-0.3.6.exe` gotowy na `dist/installer/output/`
+- **Dell smoke test** — gate przed tagiem `v0.3.6` (graft + watcher DRY_RUN + share LAN end-to-end)
+- **Faza N.4** — formalny commit release, push, tag `v0.3.6`, SHA-256 w GitHub Releases
+- **Po v0.3.6:** Epic 33 Tryb B + Faza O.1 + Faza O.2+ → v0.4.0 → mobile (P→Q→R→S)
 
 ---
 
@@ -78,10 +80,10 @@
 | Epic 36 Sesja F+G | UI Redesign Stitch layout | ✅ DONE | — | — |
 | Faza H–M.6 | UI quick-wins, OAuth UI, Safety Numbers, Local-First lockin | ✅ DONE | — | — |
 | **Faza N.1+N.2** | Dead code audyt + hybrid E2E | ✅ DONE `7819811` | — | — |
-| **Faza N.5 Batch 1–5** | Pre-Dell hardening (Paczki A+B core) | ✅ DONE | — | — |
-| **Faza N.5 Batch 6** | C.1 refresh-token VK + C.2 SecretString | ✅ DONE | **P0** | 1 sesja |
-| **Dell Smoke Test** | Cross-device acceptance v0.3.0 | ⬜ TODO | **P0** | 0.5 dnia |
-| **Faza N.3+N.4** | Bump → 0.3.0 + payload + instalator + release | ⬜ TODO | **P0** | 0.5 dnia |
+| **Faza N.5 Batch 1–6** | Pre-Dell hardening (Paczki A+B+C, 20 znalezisk) | ✅ DONE | — | — |
+| **v0.3.6 build** | Version bump + `cargo build --release` + instalator | ✅ DONE `0931683` | **P0** | — |
+| **Dell Smoke Test** | Cross-device acceptance v0.3.6 | ⬜ NEXT | **P0** | 0.5 dnia |
+| **Faza N.4** | Tag `v0.3.6` + SHA-256 + GitHub Release | ⬜ TODO | **P0** | 0.5 dnia |
 | Faza O.1 | Quota fix (cloud quota zamiast C: dla O:) | ⬜ TODO | P1 | 1 dzień |
 | Epic 33 Tryb B | Public shares przez CF Pages (`skarbiec.app/s/…`) | ⬜ BACKLOG | P2 | 2-3 tyg |
 | Faza O.2+ | Cross-platform VFS (FileSystemAdapter + FUSE) | ⬜ BACKLOG | P2 | 2-4 tyg |
@@ -91,7 +93,7 @@
 | Faza R | Mobile V1 Read-Only (BiometricPrompt, snapshot, decrypt) | ⬜ BACKLOG | P3 | 7-10 dni |
 | Faza S | Mobile V2 Read-Write (Inbox, share links, camera) | ⬜ BACKLOG | P4 | 5-7 dni |
 
-**Critical path do v0.3.0:** Batch 6 → Dell smoke → N.3+N.4 release → tag.
+**Critical path do v0.3.6:** ✅ Batch 6 DONE → ✅ build + instalator DONE → **Dell smoke** → tag `v0.3.6`.
 
 ---
 
@@ -132,11 +134,11 @@
 
 ---
 
-## 5. Aktualna faza: N.5 — Pre-Dell Hardening
+## 5. ✅ Faza N.5 — Pre-Dell Hardening (ZAKOŃCZONA 2026-04-28)
 
 **Geneza:** audyt security-reviewer (`a47d15de04fc9599d`) + tech-lead-reviewer (`a315d4485f94cd0f5`) — 2026-04-27. Wykrył **20 znalezisk** (7 HIGH + 7 MEDIUM + 6 LOW) przed Dell smoke testem.
 
-**Cel:** Skarbiec hermetyczny przed wgraniem na drugą maszynę produkcyjną. Zero leftoverów, zero ataków na zera, zero plaintextów w logach/URL/DB.
+**Wynik:** Wszystkie 20 znalezisk zamknięte. Instalator `OmniDrive-Setup-0.3.6.exe` gotowy. Czekamy na Dell smoke test.
 
 ### ✅ Batch 1 — Foundation + Cross-Device Critical (DONE)
 | Item | Commit | Co zrobione |
@@ -177,14 +179,10 @@
 
 ### ✅ Batch 6 — Defense in Depth (DONE)
 
-#### `C.1` Refresh-token Google: VK Sealing (Wariant B) 🟡
-- **Stan obecny:** `db.rs:1133` `users.google_refresh_token TEXT` — plaintext. `api/oauth.rs:175-191` zapisuje wprost.
-- **Plan:**
-  - Nowa kolumna `google_refresh_token_ciphertext BLOB`.
-  - AES-GCM z kluczem `derived_from_VK("oauth-refresh-tokens", user_id)` jako AAD.
-  - Wymaga aktywnego unlocked Vault dla każdego refresha access-tokena.
-  - Migracja: stare plaintext → przy następnym unlock → szyfrowane → kolumna plaintext nullowana.
-- **Exit:** `cargo audit` clean + lock vault → próba refresh OAuth → fail z czytelnym `vault_locked`. Unlock → refresh działa.
+#### `C.1` Refresh-token Google: VK Sealing ✅ DONE (`3a8fd88`)
+- Nowa kolumna `google_refresh_token_ciphertext BLOB`. AES-GCM z kluczem `HKDF(EVK, "oauth-refresh-tokens-v1", user_id)`.
+- `vault.unlock()` auto-migruje plaintext → sealed; callback seals jeśli vault odblokowany.
+- 3 testy: roundtrip, locked-vault guard, random-nonce-per-call. Suite 102/102.
 
 #### `C.2` SecretString migration ✅ DONE
 - **Wykonano:** `api/auth.rs`, `api/recovery.rs`, `api/onboarding.rs`, `api/vault.rs` — `passphrase: String` → `SecretString`. `Cargo.toml` workspace: `secrecy` + `features = ["serde"]`. `ExposeSecret` dodano we wszystkich 4 handlerach.
@@ -222,7 +220,7 @@
 | B.3 OAuth Krok 1 | HIGH | Niskie | ✅ DONE |
 | B.4 OsRng | HIGH | Zerowe | ✅ DONE |
 | A.5–A.9, B.5–B.7, A.6–A.8 | MEDIUM/LOW | Niskie | ✅ DONE |
-| **C.1 refresh-token VK** | MEDIUM | Średnie (migracja) | **NEXT (zalecane)** |
+| **C.1 refresh-token VK** | MEDIUM | Średnie (migracja) | ✅ DONE |
 | **C.2 SecretString** | MEDIUM | Średnie (refactor 6-8 plików) | ✅ DONE |
 | C.3 rustls consolidation | MEDIUM | **Wysokie** | ❌ POST-DELL |
 | B.3 Krok 2 (OAuth) | — | Średnie | ❌ POST-DELL |
@@ -232,12 +230,10 @@
 
 ## 6. Następne fazy (po N.5)
 
-### Faza N — Release v0.3.0 (po Dell smoke)
-- **N.3:** Bump `0.2.0 → 0.3.0` we wszystkich `Cargo.toml` (angeld, omnidrive-core, angelctl) + `installer/omnidrive.iss`.
-- `cargo build --release --workspace` → `cp target/release/*.exe dist/installer/payload/` → `cp angeld/static/* dist/installer/payload/static/` → Inno Setup.
-- `CHANGELOG.md` wpis v0.3.0 (M.5 BIP-39+Identicon, M.6 Local-First lockin, N.5 hardening).
-- **N.4:** Pełny smoke flow (unlock → share LAN → join → verify Identicon+mnemonik match → lock). Commit `release: v0.3.0`, push, tag `v0.3.0`.
-- **N.5:** SHA-256 instalatora w GitHub Releases + `README.md`.
+### Faza N — Release v0.3.6 (po Dell smoke)
+- ✅ **N.3 DONE:** Bump → `0.3.6` we wszystkich `Cargo.toml` + `installer/omnidrive.iss`. `cargo build --release --workspace`. `OmniDrive-Setup-0.3.6.exe` (23 MB) skompilowany i gotowy.
+- ⬜ **N.4 (po Dell smoke):** Pełny smoke flow (unlock → share LAN → join → verify Identicon+mnemonik match → lock). Commit `release: v0.3.6`, push, tag `v0.3.6`.
+- ⬜ **N.5:** SHA-256 instalatora w GitHub Releases + `README.md`. `CHANGELOG.md` wpis v0.3.6 (N.5 Paczki A+B+C — hardening).
 
 ### Faza O.1 — Quota Fix (1 dzień, P1)
 - Raportowanie pojemności `O:\` z faktycznego cloud quota (B2/R2) zamiast z `C:`.
@@ -406,9 +402,10 @@ Dynamic host w generowaniu linku (z `Host:` headera lub `OMNIDRIVE_SHARE_HOST`).
 - M.5: BIP-39 mnemonik (12 słów z hash[..16]) + Identicon (jdenticon) + 4×3 grid — `45a9b89` + `29dded3`
 - M.6: Local-First lockin (CORS cleanup + dynamic share host + docs purge) — `4cfca26`–`0433bbc`
 
-### Faza N (IN PROGRESS)
-- N.1+N.2 dead code audit (`#[allow(dead_code)]` z komentarzami `// reserved for Epic X` w 10 plikach) — `7819811`
-- N.2 Hybrid E2E tests (`roundtrip_pack_upload_download_restore_file` w `downloader::tests`, mockito S3 3 providery) — `0f1af36`
+### Faza N (✅ DONE — `v0.3.6`, 2026-04-28)
+- N.1+N.2 dead code audit + hybrid E2E tests — `7819811`, `0f1af36`
+- N.5 Pre-Dell Hardening — Batch 1–6, 20 znalezisk zamkniętych (`bb6e596` → `0931683`)
+- Instalator `OmniDrive-Setup-0.3.6.exe` (23 MB) gotowy
 - 87/87 angeld + 11/11 omnidrive-core = **98 zielonych testów**
 
 ### Refactoring: Unified ApiError + API Module Split (DONE, 2026-04-09→04-11)
@@ -423,7 +420,7 @@ Dynamic host w generowaniu linku (z `Host:` headera lub `OMNIDRIVE_SHARE_HOST`).
 
 | Risk | Level | Mitigation |
 |------|-------|------------|
-| Refresh-token plaintext w DB (C.1) | MEDIUM | VK Sealing — Batch 6 |
+| Refresh-token plaintext w DB (C.1) | MEDIUM | ✅ VK Sealing — Batch 6 DONE |
 | Passphrase residue w pamięci (C.2) | MEDIUM | ✅ SecretString + Zeroize on drop — Batch 6 DONE |
 | Dell graft fail (Defender + cfapi races) | MEDIUM | A.0 retry helper + A.2 zero-overwrite + A.4 yield_now (DONE) |
 | cfapi.dll bindings unstable | HIGH | B8 zamknął — `dir O:\` instant na Lenovo+Dell |
