@@ -179,11 +179,39 @@
     ui.error.classList.remove("hidden");
   }
 
-  function statusClass(status) {
-    const normalized = String(status || "").toUpperCase();
-    if (normalized === "ERROR") return "status-error";
-    if (normalized === "WARN") return "status-warn";
-    return "status-ok";
+  function statusBadge(status) {
+    const s = String(status || "").toUpperCase();
+    const base = "ml-1 inline-flex rounded-full border px-1.5 py-0.5 text-[10px] font-semibold";
+    if (s === "OK")    return `<span class="${base}" style="background:rgba(16,185,129,0.12);border-color:rgba(16,185,129,0.3);color:#6ee7b7">OK</span>`;
+    if (s === "ERROR") return `<span class="${base}" style="background:rgba(239,68,68,0.12);border-color:rgba(239,68,68,0.3);color:#fca5a5">ERR</span>`;
+    return `<span class="${base}" style="background:rgba(234,179,8,0.12);border-color:rgba(234,179,8,0.3);color:#fde047">${escape(status || "—")}</span>`;
+  }
+
+  function modeDescription(mode) {
+    if (mode === "local") return "OmniDrive startuje z działającym lokalnym Skarbcem. Dostawcy chmurowi i shared-vault rozszerzają bazę zamiast ją blokować.";
+    if (mode === "cloud") return "Zweryfikuj R2, B2 lub Scaleway. OmniDrive zsynchronizuje Skarbiec z wybranymi dostawcami.";
+    if (mode === "join")  return "OmniDrive pobierze zaszyfrowaną migawkę metadanych, odszyfruje ją lokalnie i przeprowadzi grafting tożsamości zdalnego Skarbca.";
+    return "Wybierz tryb żeby zobaczyć opis.";
+  }
+
+  function providerStatusBanner(p) {
+    const status = (p.validation?.status || p.last_test_status || "").toUpperCase();
+    if (status === "OK") return `
+      <div class="rounded-xl px-4 py-3" style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);">
+        <p class="text-xs font-semibold text-emerald-300">${escape(providerHeadline(p))}</p>
+        <p class="mt-1 text-xs text-slate-400">${escape(providerDetails(p))}</p>
+        <p class="mt-1 text-[10px] text-slate-500">Ostatni test: ${formatTs(p.last_test_at)}</p>
+      </div>`;
+    if (status === "ERROR") return `
+      <div class="rounded-xl px-4 py-3" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);">
+        <p class="text-xs font-semibold text-rose-300">${escape(providerHeadline(p))}</p>
+        <p class="mt-1 text-xs text-slate-400">${escape(providerDetails(p))}</p>
+      </div>`;
+    return `
+      <div class="rounded-xl px-4 py-3" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);">
+        <p class="text-xs text-slate-400">${escape(providerDetails(p))}</p>
+        <p class="mt-1 text-[10px] text-slate-500">Ostatni test: ${formatTs(p.last_test_at)}</p>
+      </div>`;
   }
 
   function modeLabel(mode) {
@@ -240,119 +268,196 @@
   function stepBody() {
     if (st.step === 0) {
       return `
-        <div class="grid gap-5 lg:grid-cols-[1.15fr,0.85fr]">
-          <article class="glass-muted rounded-[28px] p-6">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Local-first</p>
-            <h3 class="mt-3 text-2xl font-semibold text-white">Twój Skarbiec działa jeszcze przed konfiguracją chmury.</h3>
-            <p class="mt-4 text-sm leading-7 text-slate-300">OmniDrive startuje z działającym lokalnym Skarbcem i aktywnym dashboardem. Dostawcy chmurowi i tryb shared-vault rozszerzają bazę, zamiast ją blokować.</p>
-          </article>
-          <article class="glass-muted rounded-[28px] p-6">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Aktualny stan</p>
-            <div class="mt-4 grid gap-3">
-              <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Skarbiec</p><p class="mt-3 text-lg font-semibold text-white">${escape(st.onboarding?.onboarding_state || "INITIAL")}</p></div>
-              <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Tryb</p><p class="mt-3 text-lg font-semibold text-white">${escape(modeLabel(st.mode))}</p></div>
-              <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Urządzenie</p><p class="mt-3 text-lg font-semibold text-white break-words">${escape(st.identity.device_name || "To urządzenie")}</p><p class="mt-2 text-sm text-slate-400">${escape(st.identity.device_id || "ID zostanie nadane po zapisaniu tożsamości")}</p></div>
+        <div class="flex flex-col gap-4">
+          <div class="grid grid-cols-2 gap-3">
+            <div class="glass-muted rounded-2xl p-4">
+              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Skarbiec</p>
+              <p class="mt-2 text-base font-semibold text-white">${escape(st.onboarding?.onboarding_state || "INITIAL")}</p>
             </div>
-          </article>
+            <div class="glass-muted rounded-2xl p-4">
+              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Tryb</p>
+              <p class="mt-2 text-base font-semibold text-white">${escape(modeLabel(st.mode))}</p>
+            </div>
+            <div class="glass-muted rounded-2xl p-4">
+              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Urządzenie</p>
+              <p class="mt-2 text-sm font-semibold text-white break-words">${escape(st.identity.device_name || "To urządzenie")}</p>
+              <p class="mt-1 text-xs text-slate-500">${escape(st.identity.device_id || "ID zostanie nadane po zapisaniu tożsamości")}</p>
+            </div>
+            <div class="glass-muted rounded-2xl p-4">
+              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Konto Google</p>
+              <a href="/api/auth/google/start" class="mt-2 flex items-center gap-2 text-sm text-primary hover:underline">
+                <span class="material-symbols-outlined text-base">account_circle</span>Zaloguj przez Google
+              </a>
+            </div>
+          </div>
+          <div class="glass-muted rounded-2xl px-4 py-3">
+            <p class="text-sm text-slate-300">OmniDrive startuje z działającym lokalnym Skarbcem i aktywnym dashboardem. Dostawcy chmurowi i tryb shared-vault rozszerzają bazę, zamiast ją blokować.</p>
+          </div>
         </div>`;
     }
 
     if (st.step === 1) {
-      return `<div class="grid gap-4 xl:grid-cols-3">${["local","cloud","join"].map((mode) => {
-        const title = modeLabel(mode);
-        const desc = mode === "local"
-          ? "Pozostań w local-first. Dysk O: działa od razu."
-          : mode === "cloud"
-            ? "Zweryfikuj teraz R2, B2 lub Scaleway dla synchronizacji opartej o dostawców."
-            : "Odtwórz metadane ze Skarbca cloud-backed i dołącz to urządzenie do tej samej przestrzeni nazw.";
-        const selected = st.mode === mode;
-        return `<button type="button" data-mode="${mode}" class="glass-muted ${selected ? "border-white/25 bg-white/10 ring-1 ring-white/20" : "border-white/10"} rounded-[28px] border px-6 py-6 text-left transition hover:border-white/20 hover:bg-white/10"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">${mode === "local" ? "Najszybsza ścieżka" : mode === "cloud" ? "Gotowe na chmurę" : "Wspólny Skarbiec"}</p><h3 class="mt-3 text-xl font-semibold text-white">${escape(title)}</h3><p class="mt-3 text-sm leading-7 text-slate-300">${escape(desc)}</p><p class="mt-4 text-xs uppercase tracking-[0.22em] ${selected ? "text-white" : "text-slate-500"}">${selected ? "Wybrano" : "Kliknij, aby wybrać"}</p></button>`;
-      }).join("")}</div>`;
+      const modes = [
+        { id: "local", icon: "computer",   label: "Utwórz lokalny Skarbiec",        subtitle: "Local-first · dysk O: od razu" },
+        { id: "cloud", icon: "cloud_sync",  label: "Podłącz dostawców chmurowych",   subtitle: "R2, B2, Scaleway" },
+        { id: "join",  icon: "link",        label: "Dołącz do istniejącego Skarbca", subtitle: "Restore metadanych" },
+      ];
+      return `
+        <div class="flex flex-col gap-4">
+          <div class="glass-muted rounded-[24px] p-1.5 flex flex-col gap-1">
+            ${modes.map((m) => {
+              const sel = st.mode === m.id;
+              return `<button type="button" data-mode="${m.id}" class="flex items-center gap-4 rounded-[18px] px-4 py-3 text-left transition ${sel ? "" : "hover:bg-white/5"}" ${sel ? 'style="background:rgba(0,218,243,0.1);border:1px solid rgba(0,218,243,0.35);"' : ""}>
+                <div class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2" style="${sel ? "border-color:#00daf3;background:#00daf3;" : "border-color:rgba(255,255,255,0.2);"}">
+                  ${sel ? '<div class="h-2 w-2 rounded-full bg-[#00363d]"></div>' : ""}
+                </div>
+                <div class="flex-1">
+                  <p class="text-sm font-semibold text-white">${escape(m.label)}</p>
+                  <p class="text-xs text-slate-400">${escape(m.subtitle)}</p>
+                </div>
+                <span class="material-symbols-outlined text-slate-500" style="font-size:16px;">${m.icon}</span>
+              </button>`;
+            }).join("")}
+          </div>
+          <div class="glass-muted rounded-[20px] px-5 py-4" style="border-left:3px solid #00daf3;">
+            <p class="text-[10px] uppercase tracking-[.18em] text-[#00daf3]">Wybrany tryb</p>
+            <p class="mt-1.5 text-sm font-semibold text-white">${escape(modeLabel(st.mode))}</p>
+            <p class="mt-1 text-sm leading-6 text-slate-300">${escape(modeDescription(st.mode))}</p>
+          </div>
+        </div>`;
     }
 
     if (st.step === 2) {
       return `
-        <div class="grid gap-5 xl:grid-cols-[1.1fr,0.9fr]">
-          <article class="glass-muted rounded-[28px] p-6">
-            <label class="text-xs uppercase tracking-[0.22em] text-slate-500" for="wizardDeviceNameInput">Nazwa urządzenia</label>
-            <input id="wizardDeviceNameInput" type="text" value="${escape(st.identity.device_name || "")}" class="mt-4 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-base text-white outline-none transition focus:border-white/20" placeholder="Przemek-Laptop" maxlength="80" />
-            <p class="mt-3 text-sm text-slate-400">Ta nazwa pojawia się w kartach peerów LAN, historii rewizji i kopiach konfliktowych.</p>
-          </article>
-          <article class="glass-muted rounded-[28px] p-6">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Tożsamość urządzenia</p>
-            <p class="mt-4 text-lg font-semibold text-white break-all">${escape(st.identity.device_id || "ID urządzenia zostanie nadane po zapisaniu tożsamości.")}</p>
-            <p class="mt-3 text-sm leading-7 text-slate-300">OmniDrive utrzymuje stabilną tożsamość urządzenia dla każdej instalacji.</p>
-          </article>
+        <div class="flex flex-col gap-4">
+          <label class="flex flex-col gap-2">
+            <span class="text-[10px] uppercase tracking-[.18em] text-slate-500">Nazwa urządzenia</span>
+            <input id="wizardDeviceNameInput" type="text" value="${escape(st.identity.device_name || "")}" class="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-base text-white outline-none transition focus:border-white/20" placeholder="np. Dell-Laptop" maxlength="80" />
+            <p class="text-xs text-slate-500">Widoczna w kartach peerów LAN, historii rewizji i kopiach konfliktowych.</p>
+          </label>
+          <div class="glass-muted rounded-2xl px-4 py-4">
+            <p class="text-[10px] uppercase tracking-[.18em] text-slate-500 mb-2">Device ID</p>
+            <p class="text-sm break-all ${st.identity.device_id ? "font-semibold text-white" : "text-slate-400"}">${escape(st.identity.device_id || "ID zostanie nadane po zapisaniu tożsamości.")}</p>
+            <p class="mt-2 text-xs text-slate-500">OmniDrive utrzymuje stabilną tożsamość urządzenia dla każdej instalacji.</p>
+          </div>
         </div>`;
     }
 
     if (st.step === 3) {
       const p = st.providers[st.selectedProvider];
       const s = st.secrets[st.selectedProvider];
-      const validated = ORDER.filter((name) => st.providers[name].enabled && String(st.providers[name].last_test_status || "").toUpperCase() === "OK").length;
+      const validated = ORDER.filter((n) => st.providers[n].enabled && String(st.providers[n].last_test_status || "").toUpperCase() === "OK").length;
       return `
-        <div class="grid gap-5 xl:grid-cols-[0.95fr,1.25fr]">
-          <div class="grid gap-3">
+        <div class="flex flex-col gap-4">
+          <div class="glass-muted rounded-2xl p-1 flex gap-1">
             ${ORDER.map((name) => {
-              const provider = st.providers[name];
-              return `<button type="button" data-provider="${name}" class="glass-muted ${name === st.selectedProvider ? "border-white/20 bg-white/10 ring-1 ring-white/15" : "border-white/10"} rounded-[24px] border px-4 py-4 text-left transition hover:border-white/20 hover:bg-white/10"><div class="flex items-start justify-between gap-3"><div class="flex items-center gap-3"><div class="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-sm font-semibold text-white">${PROVIDERS[name].short}</div><div><p class="text-sm font-semibold text-white">${escape(PROVIDERS[name].name)}</p><p class="mt-1 text-xs text-slate-400">${escape(provider.bucket || "Brak skonfigurowanego bucketu")}</p></div></div><span class="inline-flex rounded-full border px-3 py-1 text-[11px] font-medium ${statusClass(provider.last_test_status || "WARN")}">${escape(provider.last_test_status || "Szkic")}</span></div><p class="mt-3 text-xs text-slate-400">${escape(provider.last_test_status ? `${provider.last_test_status} · ${formatTs(provider.last_test_at)}` : provider.draft_source === ".env" ? "Wykryto szkic" : "Jeszcze nie zweryfikowano")}</p></button>`;
+              const pv = st.providers[name];
+              const active = name === st.selectedProvider;
+              return `<button type="button" data-provider="${name}" class="flex-1 rounded-xl px-3 py-2 text-sm transition ${active ? "font-semibold text-[#00daf3]" : "font-medium text-slate-400 hover:bg-white/5"}" ${active ? 'style="background:rgba(0,218,243,0.12);border:1px solid rgba(0,218,243,0.3);"' : ""}>
+                <span class="text-xs uppercase tracking-[.12em]">${PROVIDERS[name].short}</span>${statusBadge(pv.last_test_status)}
+              </button>`;
             }).join("")}
-            <article class="glass-muted rounded-2xl p-4 text-sm text-slate-300"><p class="font-medium text-white">${validated > 0 ? "Walidacja dostawcy jest gotowa." : "Żaden dostawca nie przeszedł jeszcze walidacji."}</p><p class="mt-2">${st.mode === "local" ? "W trybie local-only możesz pominąć chmurę albo zweryfikować dostawców już teraz." : "Przynajmniej jeden włączony dostawca musi przejść walidację przed przejściem dalej."}</p></article>
           </div>
-          <article class="glass-muted rounded-[28px] p-6">
-            <div class="flex items-start justify-between gap-4"><div><p class="text-xs uppercase tracking-[0.22em] text-slate-500">${escape(PROVIDERS[st.selectedProvider].name)}</p><h3 class="mt-2 text-xl font-semibold text-white">Połączenie z dostawcą</h3></div><span class="inline-flex rounded-full border px-3 py-1 text-xs font-medium ${statusClass(p.last_test_status || "WARN")}">${escape(p.last_test_status || "Szkic")}</span></div>
-            <div class="mt-5 grid gap-4 md:grid-cols-2">
-              ${field("Endpoint dostawcy","wizardProviderEndpoint",p.endpoint,"https://<account>.r2.cloudflarestorage.com")}
-              ${field("Bucket","wizardProviderBucket",p.bucket,"omnidrive-prod")}
-              ${field("Region","wizardProviderRegion",p.region,PROVIDERS[st.selectedProvider].region || "eu-west-1")}
-              ${field("Access Key","wizardProviderAccessKey",s.access_key_id,p.access_key_status === "SET" ? "Zapisany access key [SET]" : "AKIA...")}
-              <label class="block text-sm text-slate-300 md:col-span-2"><span class="text-xs uppercase tracking-[0.22em] text-slate-500">Secret Key</span><input id="wizardProviderSecretKey" type="password" value="${escape(s.secret_access_key || "")}" class="mt-3 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="${p.secret_key_status === "SET" ? "Zapisany sekret [SET]" : "Wklej secret access key"}" autocomplete="new-password" /></label>
+          <div class="glass-muted rounded-[20px] p-4 flex flex-col gap-3">
+            <div class="flex items-center justify-between">
+              <p class="text-sm font-semibold text-white">${escape(PROVIDERS[st.selectedProvider].name)}</p>
+              ${statusBadge(p.last_test_status)}
             </div>
-            <div class="mt-4 grid gap-3 md:grid-cols-2">
-              <label class="glass-panel flex items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-200"><input id="wizardProviderEnabled" type="checkbox" class="h-4 w-4 rounded border-slate-700 bg-slate-900" ${p.enabled ? "checked" : ""} />Włącz dla tego Skarbca</label>
-              <label class="glass-panel flex items-center gap-3 rounded-2xl px-4 py-3 text-sm text-slate-200"><input id="wizardProviderForcePathStyle" type="checkbox" class="h-4 w-4 rounded border-slate-700 bg-slate-900" ${p.force_path_style ? "checked" : ""} />Wymuś adresowanie path-style</label>
+            <label class="flex flex-col gap-1.5">
+              <span class="text-[10px] uppercase tracking-[.18em] text-slate-500">Endpoint dostawcy</span>
+              <input id="wizardProviderEndpoint" type="text" value="${escape(p.endpoint)}" class="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="https://&lt;account&gt;.r2.cloudflarestorage.com" autocomplete="off" />
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="flex flex-col gap-1.5">
+                <span class="text-[10px] uppercase tracking-[.18em] text-slate-500">Bucket</span>
+                <input id="wizardProviderBucket" type="text" value="${escape(p.bucket)}" class="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="omnidrive-prod" autocomplete="off" />
+              </label>
+              <label class="flex flex-col gap-1.5">
+                <span class="text-[10px] uppercase tracking-[.18em] text-slate-500">Region</span>
+                <input id="wizardProviderRegion" type="text" value="${escape(p.region)}" class="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="${escape(PROVIDERS[st.selectedProvider].region || "eu-west-1")}" autocomplete="off" />
+              </label>
             </div>
-            <div class="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><p class="text-sm text-slate-400">Sekrety nie opuszczają przeglądarki poza żądaniem walidacji, a status onboardingu nigdy nie zwraca ciphertextów.</p><button id="wizardTestProviderButton" class="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/10 px-4 py-2 text-sm font-medium text-white transition hover:border-white/20 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60" ${p.busy ? "disabled" : ""}>${p.busy ? "Testowanie połączenia..." : "Testuj połączenie"}</button></div>
-            <div class="mt-5 rounded-2xl border px-4 py-4 ${p.validation?.status === "ERROR" ? "border-rose-500/30 bg-rose-500/10 text-rose-100" : p.validation?.status === "OK" ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-100" : "border-white/10 bg-white/5 text-slate-300"}"><p class="text-sm font-medium">${escape(providerHeadline(p))}</p><p class="mt-2 text-sm">${escape(providerDetails(p))}</p><p class="mt-2 text-xs text-slate-400">Ostatni test: ${formatTs(p.last_test_at)}</p></div>
-          </article>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="flex flex-col gap-1.5">
+                <span class="text-[10px] uppercase tracking-[.18em] text-slate-500">Access Key</span>
+                <input id="wizardProviderAccessKey" type="text" value="${escape(s.access_key_id)}" class="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="${p.access_key_status === "SET" ? "Zapisany access key [SET]" : "AKIA..."}" autocomplete="off" />
+              </label>
+              <label class="flex flex-col gap-1.5">
+                <span class="text-[10px] uppercase tracking-[.18em] text-slate-500">Secret Key</span>
+                <input id="wizardProviderSecretKey" type="password" value="${escape(s.secret_access_key)}" class="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="${p.secret_key_status === "SET" ? "Zapisany sekret [SET]" : "Wklej secret..."}" autocomplete="new-password" />
+              </label>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="glass-panel flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-slate-200 cursor-pointer">
+                <input id="wizardProviderEnabled" type="checkbox" class="h-4 w-4 rounded border-slate-700 bg-slate-900" ${p.enabled ? "checked" : ""} />Włącz dla Skarbca
+              </label>
+              <label class="glass-panel flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-slate-200 cursor-pointer">
+                <input id="wizardProviderForcePathStyle" type="checkbox" class="h-4 w-4 rounded border-slate-700 bg-slate-900" ${p.force_path_style ? "checked" : ""} />Path-style
+              </label>
+            </div>
+            ${providerStatusBanner(p)}
+            <div class="flex items-center justify-between">
+              <p class="text-xs text-slate-500">${validated > 0 ? `${validated} dostawca(ów) zweryfikowanych.` : "Żaden dostawca nie przeszedł jeszcze walidacji."}</p>
+              <button id="wizardTestProviderButton" class="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/10 px-4 py-2 text-sm font-medium text-white transition hover:border-white/20 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60" ${p.busy ? "disabled" : ""}>${p.busy ? "Testowanie połączenia..." : "Testuj połączenie"}</button>
+            </div>
+          </div>
         </div>`;
     }
 
     if (st.step === 4) {
       return `
-        <div class="grid gap-5 xl:grid-cols-[1.15fr,0.85fr]">
-          <article class="glass-muted rounded-[28px] p-6">
-            <label class="block text-sm text-slate-300"><span class="text-xs uppercase tracking-[0.22em] text-slate-500">Hasło główne (Master Passphrase)</span><input id="wizardPassphrase" type="password" value="${escape(st.security.passphrase)}" class="mt-3 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="${st.mode === "local" ? "Opcjonalne na teraz" : "Wpisz hasło główne"}" autocomplete="new-password" /></label>
-            <label class="mt-4 block text-sm text-slate-300"><span class="text-xs uppercase tracking-[0.22em] text-slate-500">Potwierdź hasło</span><input id="wizardPassphraseConfirm" type="password" value="${escape(st.security.confirm)}" class="mt-3 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="Powtórz hasło" autocomplete="new-password" /></label>
-          </article>
-          <article class="glass-muted rounded-[28px] p-6">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Uwagi bezpieczeństwa</p>
-            <div class="mt-4 space-y-3 text-sm text-slate-300">
-              <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-4"><p class="font-medium text-white">${escape(st.mode === "local" ? "Opcjonalne w trybie local-only w tej wersji." : st.mode === "join" ? "Wymagane do odszyfrowania metadanych z istniejącego Skarbca." : "Wymagane przed finalizacją onboardingu cloud-backed.")}</p><p class="mt-2">Hasło pozostaje wyłącznie w pamięci przeglądarki podczas sesji kreatora i jest wysyłane tylko raz do kroku restore/finalize.</p></div>
-              <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-4"><p class="font-medium text-white">Co stanie się dalej?</p><p class="mt-2">${escape(st.mode === "join" ? "OmniDrive pobierze zaszyfrowaną migawkę metadanych, odszyfruje ją lokalnie, przeprowadzi grafting tożsamości zdalnego Skarbca i od razu zmaterializuje placeholdery na O:." : "Hasło przygotowuje zaszyfrowane kopie metadanych i przyszłe odzyskiwanie w konfiguracjach cloud-backed.")}</p></div>
-            </div>
-          </article>
+        <div class="flex flex-col gap-4">
+          <label class="flex flex-col gap-2">
+            <span class="text-[10px] uppercase tracking-[.18em] text-slate-500">Hasło główne (Master Passphrase)</span>
+            <input id="wizardPassphrase" type="password" value="${escape(st.security.passphrase)}" class="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="${st.mode === "local" ? "Opcjonalne na teraz" : "Wpisz hasło główne"}" autocomplete="new-password" />
+          </label>
+          <label class="flex flex-col gap-2">
+            <span class="text-[10px] uppercase tracking-[.18em] text-slate-500">Potwierdź hasło</span>
+            <input id="wizardPassphraseConfirm" type="password" value="${escape(st.security.confirm)}" class="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="Powtórz hasło" autocomplete="new-password" />
+          </label>
+          <div class="glass-muted rounded-2xl px-4 py-3">
+            <p class="text-sm font-medium text-white">${escape(st.mode === "local" ? "Opcjonalne w trybie local-only w tej wersji." : st.mode === "join" ? "Wymagane do odszyfrowania metadanych z istniejącego Skarbca." : "Wymagane przed finalizacją onboardingu cloud-backed.")}</p>
+            <p class="mt-2 text-xs text-slate-400">Hasło pozostaje wyłącznie w pamięci przeglądarki podczas sesji kreatora i jest wysyłane tylko raz do kroku restore/finalize.</p>
+          </div>
+          <div class="glass-muted rounded-2xl px-4 py-3">
+            <p class="text-sm font-medium text-white">Co stanie się dalej?</p>
+            <p class="mt-2 text-xs text-slate-400">${escape(st.mode === "join" ? "OmniDrive pobierze zaszyfrowaną migawkę metadanych, odszyfruje ją lokalnie, przeprowadzi grafting tożsamości zdalnego Skarbca i od razu zmaterializuje placeholdery na O:." : "Hasło przygotowuje zaszyfrowane kopie metadanych i przyszłe odzyskiwanie w konfiguracjach cloud-backed.")}</p>
+          </div>
         </div>`;
     }
 
+    // step 5 — Finalizacja
+    const verifiedProviders = ORDER.filter((n) => st.providers[n].enabled && String(st.providers[n].last_test_status || "").toUpperCase() === "OK");
+    const verifiedNames = verifiedProviders.map((n) => PROVIDERS[n].short).join(", ");
+    const isJoin = st.mode === "join";
     return `
-      <div class="grid gap-5 xl:grid-cols-[1.05fr,0.95fr]">
-        <article class="glass-muted rounded-[28px] p-6">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Podsumowanie uruchomienia</p>
-          <div class="mt-4 grid gap-3 md:grid-cols-2">
-            <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Wybrany tryb</p><p class="mt-3 text-lg font-semibold text-white">${escape(modeLabel(st.mode))}</p><p class="mt-2 text-sm text-slate-400">${st.mode === "join" ? "Restore metadanych uruchomi się teraz." : "Gotowe do uruchomienia"}</p></div>
-            <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Urządzenie</p><p class="mt-3 text-lg font-semibold text-white break-words">${escape(st.identity.device_name || "Nienazwane urządzenie")}</p><p class="mt-2 text-sm text-slate-400">${escape(st.identity.device_id || "Tożsamość nie została jeszcze zapisana")}</p></div>
-            <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Zweryfikowani dostawcy</p><p class="mt-3 text-lg font-semibold text-white">${ORDER.filter((name) => st.providers[name].enabled && String(st.providers[name].last_test_status || "").toUpperCase() === "OK").length}</p><p class="mt-2 text-sm text-slate-400">${escape(ORDER.filter((name) => st.providers[name].enabled && String(st.providers[name].last_test_status || "").toUpperCase() === "OK").map((name) => PROVIDERS[name].short).join(", ") || "Brak")}</p></div>
-            <div class="glass-panel rounded-2xl p-4"><p class="text-xs uppercase tracking-[0.22em] text-slate-500">Hasło</p><p class="mt-3 text-lg font-semibold text-white">${st.security.passphraseProvided ? "Gotowe w pamięci" : "Nie podano"}</p><p class="mt-2 text-sm text-slate-400">${st.mode === "local" ? "Opcjonalne dla local-only" : st.mode === "join" ? "Wymagane do restore metadanych" : "Wymagane dla cloud-backed flow"}</p></div>
+      <div class="flex flex-col gap-4">
+        <div class="grid grid-cols-2 gap-3">
+          <div class="glass-panel rounded-2xl p-4">
+            <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Wybrany tryb</p>
+            <p class="mt-2 text-sm font-semibold text-white">${escape(modeLabel(st.mode))}</p>
+            <p class="mt-1 text-xs text-slate-400">${isJoin ? "Restore metadanych uruchomi się teraz." : "Gotowe do uruchomienia"}</p>
           </div>
-        </article>
-        <article class="glass-muted rounded-[28px] p-6">
-          <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Kontrola końcowa</p>
-          <div class="mt-4 space-y-3 text-sm text-slate-300">
-            <div class="rounded-2xl border border-white/10 bg-white/5 px-4 py-4"><p class="font-medium text-white">Lokalny dashboard pozostaje aktywny</p><p class="mt-2">Health, logi, utrzymanie i diagnostyka są dostępne pod overlayem kreatora.</p></div>
-            <div class="rounded-2xl border ${st.mode === "join" ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-100" : "border-emerald-500/20 bg-emerald-500/10 text-emerald-100"} px-4 py-4"><p class="font-medium ${st.mode === "join" ? "text-cyan-100" : "text-emerald-100"}">${st.mode === "join" ? "Gotowe do dołączenia do istniejącego Skarbca." : "Gotowe do uruchomienia OmniDrive."}</p><p class="mt-2">${st.mode === "join" ? "OmniDrive odtworzy zaszyfrowane metadane od wybranego dostawcy, przeprowadzi grafting współdzielonej tożsamości Skarbca i przemontuje O: do odtworzonego widoku sync-root." : "Zakończenie tego kroku płynnie ukryje kreator i pozostawi dashboard uruchomiony w wybranym trybie onboardingu."}</p></div>
+          <div class="glass-panel rounded-2xl p-4">
+            <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Urządzenie</p>
+            <p class="mt-2 text-sm font-semibold text-white break-words">${escape(st.identity.device_name || "Nienazwane urządzenie")}</p>
+            <p class="mt-1 text-xs text-slate-400 break-all">${escape(st.identity.device_id || "Tożsamość nie zapisana")}</p>
           </div>
-        </article>
+          <div class="glass-panel rounded-2xl p-4">
+            <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Zweryfikowani dostawcy</p>
+            <p class="mt-2 text-2xl font-semibold text-white">${verifiedProviders.length}</p>
+            <p class="mt-1 text-xs text-slate-400">${escape(verifiedNames || "Brak")}</p>
+          </div>
+          <div class="glass-panel rounded-2xl p-4">
+            <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Hasło</p>
+            <p class="mt-2 text-sm font-semibold text-white">${st.security.passphraseProvided ? "Gotowe w pamięci" : "Nie podano"}</p>
+            <p class="mt-1 text-xs text-slate-400">${escape(st.mode === "local" ? "Opcjonalne dla local-only" : st.mode === "join" ? "Wymagane do restore" : "Wymagane dla cloud-backed")}</p>
+          </div>
+        </div>
+        <div class="rounded-2xl px-5 py-4" style="${isJoin ? "background:rgba(0,218,243,0.08);border:1px solid rgba(0,218,243,0.25);" : "background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2);"}">
+          <p class="text-sm font-semibold ${isJoin ? "text-cyan-200" : "text-emerald-300"}">${isJoin ? "Gotowe do dołączenia do istniejącego Skarbca." : "Gotowe do uruchomienia OmniDrive."}</p>
+          <p class="mt-2 text-sm text-slate-300">${escape(isJoin ? "OmniDrive odtworzy zaszyfrowane metadane od wybranego dostawcy, przeprowadzi grafting współdzielonej tożsamości Skarbca i przemontuje O: do odtworzonego widoku sync-root." : "Zakończenie tego kroku płynnie ukryje kreator i pozostawi dashboard uruchomiony w wybranym trybie onboardingu.")}</p>
+        </div>
       </div>`;
   }
 
@@ -555,10 +660,6 @@
       throw new Error(message);
     }
     return response.json();
-  }
-
-  function field(label, id, value, placeholder) {
-    return `<label class="block text-sm text-slate-300"><span class="text-xs uppercase tracking-[0.22em] text-slate-500">${escape(label)}</span><input id="${id}" type="${id === "wizardProviderSecretKey" ? "password" : "text"}" value="${escape(value || "")}" class="mt-3 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none transition focus:border-white/20" placeholder="${escape(placeholder)}" autocomplete="off" /></label>`;
   }
 
   function escape(value) {
