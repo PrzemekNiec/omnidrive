@@ -46,7 +46,7 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/onboarding/complete", post(post_complete_onboarding))
         .route("/api/onboarding/reset", post(post_reset_onboarding))
         .route(
-            "/api/onboarding/provider/:provider_name",
+            "/api/onboarding/provider/{provider_name}",
             delete(delete_provider),
         )
 }
