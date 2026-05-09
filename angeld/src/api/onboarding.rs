@@ -526,6 +526,11 @@ async fn post_join_existing(
     let passphrase = request.passphrase.expose_secret();
 
     let mut last_not_found_errors: Vec<String> = Vec::new();
+    // Critical: a provider returning IncorrectPassphrase only means *its* snapshot can't be
+    // decrypted — possibly stale (e.g. password rotated on the source but this provider's
+    // upload failed). We must keep trying other providers and only declare wrong-password
+    // when EVERY provider that had a snapshot failed to decrypt.
+    let mut last_passphrase_errors: Vec<String> = Vec::new();
     let mut restore_result: Option<Result<VaultRestoreReport, _>> = None;
     let mut winning_provider = preferred_provider.clone();
 
@@ -545,10 +550,10 @@ async fn post_join_existing(
                 restore_result = Some(result);
                 break;
             }
-            Err(crate::onboarding::RestoreError::IncorrectPassphrase(_)) => {
-                // Wrong passphrase — pointless to try other providers.
-                restore_result = Some(result);
-                break;
+            Err(crate::onboarding::RestoreError::IncorrectPassphrase(msg)) => {
+                warn!("[join-existing] provider '{provider_id}' could not decrypt with this passphrase (possibly stale snapshot): {msg}");
+                last_passphrase_errors.push(format!("{provider_id}: cannot decrypt (stale snapshot or wrong password)"));
+                // Continue — another provider might have a fresher snapshot decryptable with this passphrase.
             }
             Err(crate::onboarding::RestoreError::MetadataNotFound(msg)) => {
                 warn!("[join-existing] provider '{provider_id}' has no snapshot: {msg}");
@@ -572,14 +577,33 @@ async fn post_join_existing(
         }
     }
 
-    // All providers exhausted without success → synthesise MetadataNotFound.
+    // All providers exhausted without success. Pick the most actionable diagnosis:
+    // - If at least one provider returned IncorrectPassphrase, surface it as the primary
+    //   reason (user is more likely to fix it by checking the password) but include the
+    //   note about stale snapshots.
+    // - Otherwise, report MetadataNotFound.
     let restore_result = restore_result.unwrap_or_else(|| {
-        Err(crate::onboarding::RestoreError::MetadataNotFound(format!(
-            "Żaden skonfigurowany dostawca nie posiada snapshotu metadanych. Sprawdzone: {}. \
-             Upewnij się, że na urządzeniu źródłowym Skarbiec był odblokowany co najmniej raz \
-             po instalacji (daemon uploaduje snapshot do chmury w ciągu 1 godziny od odblokowania).",
-            last_not_found_errors.join(", ")
-        )))
+        if !last_passphrase_errors.is_empty() {
+            Err(crate::onboarding::RestoreError::IncorrectPassphrase(format!(
+                "Żaden skonfigurowany dostawca nie pozwolił odszyfrować swojego snapshotu \
+                 podanym hasłem. Albo hasło jest nieprawidłowe, albo wszystkie dostępne \
+                 snapshoty są nieaktualne (z czasów sprzed ostatniej zmiany hasła). \
+                 Sprawdzone: {}{}.",
+                last_passphrase_errors.join(", "),
+                if last_not_found_errors.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | bez snapshotu lub z błędem sieci: {}", last_not_found_errors.join(", "))
+                }
+            )))
+        } else {
+            Err(crate::onboarding::RestoreError::MetadataNotFound(format!(
+                "Żaden skonfigurowany dostawca nie posiada snapshotu metadanych. Sprawdzone: {}. \
+                 Upewnij się, że na urządzeniu źródłowym Skarbiec był odblokowany co najmniej raz \
+                 po instalacji (daemon uploaduje snapshot do chmury w ciągu 1 godziny od odblokowania).",
+                last_not_found_errors.join(", ")
+            )))
+        }
     });
 
     if let Err(ref err) = restore_result {
