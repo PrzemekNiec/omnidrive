@@ -90,11 +90,11 @@
         if (r.ok) {
           const s = await r.json();
           if (String(s.onboarding_state || '').toUpperCase() !== 'COMPLETED') {
-            document.body.style.opacity = '1';
+            // Body opacity is revealed by wizard.js after full render — not here.
             return;
           }
         }
-      } catch (_) {}
+      } catch (_) { document.body.style.opacity = '1'; return; }
       location.replace('/');
     })();
   </script>

@@ -69,13 +69,16 @@
       mergeStatus(status);
       if (String(status.onboarding_state || "").toUpperCase() === "COMPLETED") {
         hideWizard();
+        location.replace("/");
         return;
       }
       st.step = resolveInitialStep(status);
       showWizard();
       render();
+      document.body.style.opacity = "1";
     } catch (error) {
       console.error("wizard init failed", error);
+      document.body.style.opacity = "1";
     }
   }
 
@@ -147,13 +150,23 @@
   }
 
   function resolveInitialStep(status) {
-    if (st.step > 0) return st.step;
-    const step = String(status.current_step || "welcome").toLowerCase();
-    if (step === "identity") return 2;
-    if (step === "providers") return 3;
-    if (step === "security") return 4;
-    if (step === "completed") return 5;
-    return 0;
+    const apiStep = (() => {
+      const step = String(status.current_step || "welcome").toLowerCase();
+      if (step === "identity") return 2;
+      if (step === "providers") return 3;
+      if (step === "security") return 4;
+      if (step === "completed") return 5;
+      return 0;
+    })();
+    // Trust sessionStorage only if it's at most 1 step ahead of the API.
+    // A stale session (e.g. after DB wipe) could report step 5 while API says 0,
+    // which would produce a de-synced double-render.
+    if (st.step > 0 && st.step <= apiStep + 1) return st.step;
+    if (st.step > apiStep + 1) {
+      st.step = apiStep;
+      saveSession();
+    }
+    return apiStep;
   }
 
   function showWizard() {
