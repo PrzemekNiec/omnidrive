@@ -615,10 +615,10 @@
               <span class="material-symbols-outlined text-primary">autorenew</span>
             </div>
             <div class="min-w-0">
-              <p class="text-sm font-semibold text-on-surface">Rotacja klucza głównego</p>
-              <p class="text-xs text-slate-400 mt-1 leading-relaxed">Wymuś rotację Vault Key — używane automatycznie przy unieważnianiu urządzeń.</p>
+              <p class="text-sm font-semibold text-on-surface">Zmiana hasła</p>
+              <p class="text-xs text-slate-400 mt-1 leading-relaxed">Zmień hasło główne Skarbca. Nowy snapshot zostanie natychmiast wysłany do chmury.</p>
               <button id="vaultRotateKeyBtn" class="mt-3 text-[10px] font-bold uppercase tracking-widest text-slate-300 border border-white/10 px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors">
-                Wymuś rotację klucza
+                Zmień hasło
               </button>
               <p id="vaultRotateKeyError" class="hidden text-xs text-error mt-1"></p>
             </div>
@@ -2320,7 +2320,7 @@
       const rotateBtn = document.getElementById('vaultRotateKeyBtn');
       if (rotateBtn) {
         rotateBtn.addEventListener('click', async () => {
-          const newPass = prompt('Podaj nowe hasło główne Skarbca (min. 8 znaków):');
+          const newPass = prompt('Nowe hasło główne (min. 8 znaków):');
           if (!newPass) return;
           if (newPass.length < 8) { alert('Hasło musi mieć co najmniej 8 znaków.'); return; }
           const errEl = document.getElementById('vaultRotateKeyError');
