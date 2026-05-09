@@ -281,31 +281,8 @@
   function stepBody() {
     if (st.step === 0) {
       return `
-        <div class="flex flex-col gap-4">
-          <div class="grid grid-cols-2 gap-3">
-            <div class="glass-muted rounded-2xl p-4">
-              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Skarbiec</p>
-              <p class="mt-2 text-base font-semibold text-white">${escape(st.onboarding?.onboarding_state || "INITIAL")}</p>
-            </div>
-            <div class="glass-muted rounded-2xl p-4">
-              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Tryb</p>
-              <p class="mt-2 text-base font-semibold text-white">${escape(modeLabel(st.mode))}</p>
-            </div>
-            <div class="glass-muted rounded-2xl p-4">
-              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Urządzenie</p>
-              <p class="mt-2 text-sm font-semibold text-white break-words">${escape(st.identity.device_name || "To urządzenie")}</p>
-              <p class="mt-1 text-xs text-slate-500">${escape(st.identity.device_id || "ID zostanie nadane po zapisaniu tożsamości")}</p>
-            </div>
-            <div class="glass-muted rounded-2xl p-4">
-              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Konto Google</p>
-              <a href="/api/auth/google/start" class="mt-2 flex items-center gap-2 text-sm text-primary hover:underline">
-                <span class="material-symbols-outlined text-base">account_circle</span>Zaloguj przez Google
-              </a>
-            </div>
-          </div>
-          <div class="glass-muted rounded-2xl px-4 py-3">
-            <p class="text-sm text-slate-300">OmniDrive startuje z działającym lokalnym Skarbcem i aktywnym dashboardem. Dostawcy chmurowi i tryb shared-vault rozszerzają bazę, zamiast ją blokować.</p>
-          </div>
+        <div class="flex flex-col items-center gap-3 py-4 text-center">
+          <p class="text-base text-slate-300 max-w-sm leading-relaxed">Kreator przeprowadzi Cię przez kilka prostych kroków — wybór trybu pracy, tożsamość urządzenia i opcjonalne skonfigurowanie dostawców chmurowych.</p>
         </div>`;
     }
 
@@ -374,7 +351,12 @@
           <div class="glass-muted rounded-[20px] p-4 flex flex-col gap-3">
             <div class="flex items-center justify-between">
               <p class="text-sm font-semibold text-white">${escape(PROVIDERS[st.selectedProvider].name)}</p>
-              ${statusBadge(p.last_test_status)}
+              <div class="flex items-center gap-2">
+                ${statusBadge(p.last_test_status)}
+                <button type="button" id="wizardDeleteProviderButton" title="Usuń konfigurację dostawcy" class="flex items-center justify-center rounded-lg p-1 transition-colors ${p.endpoint ? "text-slate-500 hover:text-red-400 hover:bg-red-400/10 cursor-pointer" : "text-slate-700 cursor-not-allowed"}" ${p.endpoint ? "" : "disabled"}>
+                  <span class="material-symbols-outlined" style="font-size:18px;">delete</span>
+                </button>
+              </div>
             </div>
             <label class="flex flex-col gap-1.5">
               <span class="text-[10px] uppercase tracking-[.18em] text-slate-500">Endpoint dostawcy</span>
@@ -503,8 +485,29 @@
     document.getElementById("wizardProviderEnabled")?.addEventListener("change", (e) => { st.providers[st.selectedProvider].enabled = Boolean(e.target.checked); saveSession(); });
     document.getElementById("wizardProviderForcePathStyle")?.addEventListener("change", (e) => { st.providers[st.selectedProvider].force_path_style = Boolean(e.target.checked); saveSession(); });
     document.getElementById("wizardTestProviderButton")?.addEventListener("click", () => void testProvider());
+    document.getElementById("wizardDeleteProviderButton")?.addEventListener("click", () => void deleteProvider());
     bindInput("wizardPassphrase", (v) => { st.security.passphrase = v; }, false);
     bindInput("wizardPassphraseConfirm", (v) => { st.security.confirm = v; }, false);
+  }
+
+  async function deleteProvider() {
+    const name = st.selectedProvider;
+    if (!st.providers[name].endpoint) return;
+    try {
+      await api(`/api/onboarding/provider/${name}`, { method: "DELETE" });
+      st.providers[name] = {
+        provider_name: name, endpoint: "", region: PROVIDERS[name].region || "", bucket: "",
+        force_path_style: false, enabled: true, access_key_status: "MISSING",
+        secret_key_status: "MISSING", last_test_status: null, last_test_error: null,
+        last_test_at: null, validation: null, draft_source: null, busy: false,
+      };
+      st.secrets[name] = { access_key_id: "", secret_access_key: "" };
+      saveSession();
+      hideError();
+      render();
+    } catch (error) {
+      showError(error.message || "Nie udało się usunąć konfiguracji dostawcy.");
+    }
   }
 
   function bindInput(id, handler) {

@@ -2420,6 +2420,18 @@ pub async fn upsert_provider_config(
 }
 
 #[allow(dead_code)]
+pub async fn delete_provider_config(
+    pool: &SqlitePool,
+    provider_name: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM provider_configs WHERE provider_name = ?")
+        .bind(provider_name)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+#[allow(dead_code)]
 pub async fn get_provider_secret(
     pool: &SqlitePool,
     provider_name: &str,

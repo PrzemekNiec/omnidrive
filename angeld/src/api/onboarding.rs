@@ -20,9 +20,9 @@ use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
 use crate::virtual_drive;
 
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::HeaderMap;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use std::net::SocketAddr;
 use secrecy::{ExposeSecret, SecretString};
@@ -45,6 +45,10 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/onboarding/join-existing", post(post_join_existing))
         .route("/api/onboarding/complete", post(post_complete_onboarding))
         .route("/api/onboarding/reset", post(post_reset_onboarding))
+        .route(
+            "/api/onboarding/provider/:provider_name",
+            delete(delete_provider),
+        )
 }
 
 // ── Request / Response types ────────────────────────────────────────────
@@ -461,10 +465,9 @@ async fn post_join_existing(
         .chars()
         .take(200)
         .collect::<String>();
-    let provider_id = request.provider_id.trim();
+    let preferred_provider = request.provider_id.trim().to_string();
 
     // ── State-guard ────────────────────────────────────────────────────
-    // Only allow when onboarding is not yet complete and device is not enrolled.
     let ob_state = db::get_system_config_value(&state.pool, SYSTEM_CONFIG_ONBOARDING_STATE)
         .await
         .ok()
@@ -486,29 +489,98 @@ async fn post_join_existing(
         });
     }
 
-    if !KNOWN_PROVIDERS.contains(&provider_id) {
+    if !KNOWN_PROVIDERS.contains(&preferred_provider.as_str()) {
         return Err(ApiError::BadRequest {
             code: "unsupported_provider",
             message: "Wybierz jednego ze skonfigurowanych dostawców OmniDrive przed dołączeniem do istniejącego Skarbca.".to_string(),
         });
     }
 
-    // Resolve vault_id for audit logs (may not exist yet before first successful restore).
     let audit_vault_id = db::get_vault_params(&state.pool)
         .await
         .ok()
         .flatten()
         .map(|v| v.vault_id)
-        .unwrap_or_else(|| provider_id.to_string());
+        .unwrap_or_else(|| preferred_provider.clone());
+
+    // ── Build provider fallback list ──────────────────────────────────
+    // Try the preferred provider first, then fall back to all other configured
+    // providers. Succeed on the first one that returns a valid snapshot.
+    let configured_providers = db::list_provider_configs(&state.pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| r.provider_name)
+        .filter(|n| KNOWN_PROVIDERS.contains(&n.as_str()))
+        .collect::<Vec<_>>();
+
+    let mut try_order: Vec<String> = Vec::new();
+    try_order.push(preferred_provider.clone());
+    for name in &configured_providers {
+        if name != &preferred_provider {
+            try_order.push(name.clone());
+        }
+    }
 
     let runtime_paths = RuntimePaths::detect();
-    let restore_result = perform_vault_restore(
-        &state.pool,
-        &runtime_paths,
-        request.passphrase.expose_secret(),
-        provider_id,
-    )
-    .await;
+    let passphrase = request.passphrase.expose_secret();
+
+    let mut last_not_found_errors: Vec<String> = Vec::new();
+    let mut restore_result: Option<Result<VaultRestoreReport, _>> = None;
+    let mut winning_provider = preferred_provider.clone();
+
+    for provider_id in &try_order {
+        info!("[join-existing] trying provider '{provider_id}'");
+        let result = perform_vault_restore(
+            &state.pool,
+            &runtime_paths,
+            passphrase,
+            provider_id,
+        )
+        .await;
+
+        match &result {
+            Ok(_) => {
+                winning_provider = provider_id.clone();
+                restore_result = Some(result);
+                break;
+            }
+            Err(crate::onboarding::RestoreError::IncorrectPassphrase(_)) => {
+                // Wrong passphrase — pointless to try other providers.
+                restore_result = Some(result);
+                break;
+            }
+            Err(crate::onboarding::RestoreError::MetadataNotFound(msg)) => {
+                warn!("[join-existing] provider '{provider_id}' has no snapshot: {msg}");
+                last_not_found_errors.push(format!("{provider_id}: no snapshot"));
+                // Continue to next provider.
+            }
+            Err(crate::onboarding::RestoreError::NetworkError(msg)) => {
+                warn!("[join-existing] provider '{provider_id}' network error: {msg}");
+                last_not_found_errors.push(format!("{provider_id}: network error"));
+                // Continue to next provider.
+            }
+            Err(crate::onboarding::RestoreError::MissingProviderConfig(msg)) => {
+                warn!("[join-existing] provider '{provider_id}' not configured: {msg}");
+                // Continue to next provider.
+            }
+            Err(_) => {
+                // Hard error (SnapshotApply, Runtime, Io) — stop immediately.
+                restore_result = Some(result);
+                break;
+            }
+        }
+    }
+
+    // All providers exhausted without success → synthesise MetadataNotFound.
+    let restore_result = restore_result.unwrap_or_else(|| {
+        Err(crate::onboarding::RestoreError::MetadataNotFound(format!(
+            "Żaden skonfigurowany dostawca nie posiada snapshotu metadanych. Sprawdzone: {}. \
+             Upewnij się, że na urządzeniu źródłowym Skarbiec był odblokowany co najmniej raz \
+             po instalacji (daemon uploaduje snapshot do chmury w ciągu 1 godziny od odblokowania).",
+            last_not_found_errors.join(", ")
+        )))
+    });
 
     if let Err(ref err) = restore_result {
         state.join_limiter.record_failure(ip);
@@ -528,26 +600,27 @@ async fn post_join_existing(
             None,
             None,
             Some(&format!(
-                r#"{{"provider":"{provider_id}","reason":"{reason}","ip":"{ip}","ua":{ua:?}}}"#
+                r#"{{"preferred":"{preferred_provider}","tried":{tried},"reason":"{reason}","ip":"{ip}","ua":{ua:?}}}"#,
+                tried = serde_json::to_string(&try_order).unwrap_or_default(),
             )),
         )
         .await;
     }
 
     let restore = restore_result.map_err(|err| {
-        let (code, message) = (provider_restore_error_kind(&err), err.to_string());
+        let message = err.to_string();
         match err {
             crate::onboarding::RestoreError::IncorrectPassphrase(_) => ApiError::BadRequest {
-                code,
+                code: provider_restore_error_kind(&crate::onboarding::RestoreError::IncorrectPassphrase(String::new())),
                 message,
             },
-            crate::onboarding::RestoreError::MetadataNotFound(_) => ApiError::NotFound {
-                resource: "metadata",
-                id: provider_id.to_string(),
+            crate::onboarding::RestoreError::MetadataNotFound(_) => ApiError::BadRequest {
+                code: "metadata_not_found",
+                message,
             },
             crate::onboarding::RestoreError::NetworkError(_) => ApiError::BadGateway { message },
             crate::onboarding::RestoreError::MissingProviderConfig(_) => ApiError::BadRequest {
-                code,
+                code: "missing_provider_config",
                 message,
             },
             crate::onboarding::RestoreError::SnapshotApply(_)
@@ -558,7 +631,7 @@ async fn post_join_existing(
 
     state.join_limiter.record_success(ip);
 
-    finalize_join_existing_runtime(&state, &runtime_paths, provider_id)
+    finalize_join_existing_runtime(&state, &runtime_paths, &winning_provider)
         .await
         .map_err(|err| ApiError::Internal {
             message: format!(
@@ -600,7 +673,7 @@ async fn post_join_existing(
             actor_device.as_deref(),
             None,
             None,
-            Some(&format!(r#"{{"provider":"{provider_id}"}}"#)),
+            Some(&format!(r#"{{"provider":"{winning_provider}"}}"#)),
         )
         .await;
     }
@@ -610,6 +683,41 @@ async fn post_join_existing(
         onboarding_mode: OnboardingMode::JoinExisting.as_str().to_string(),
         cloud_enabled: true,
         restore,
+    }))
+}
+
+// ── DELETE /api/onboarding/provider/:provider_name ───────────────────────────
+
+#[derive(Serialize)]
+struct DeleteProviderResponse {
+    deleted: bool,
+    provider_name: String,
+}
+
+async fn delete_provider(
+    State(state): State<ApiState>,
+    Path(provider_name): Path<String>,
+) -> Result<Json<DeleteProviderResponse>, ApiError> {
+    let provider_name = provider_name.trim().to_string();
+
+    if !KNOWN_PROVIDERS.contains(&provider_name.as_str()) {
+        return Err(ApiError::BadRequest {
+            code: "unsupported_provider",
+            message: format!("Nieznany dostawca: '{provider_name}'."),
+        });
+    }
+
+    let deleted = db::delete_provider_config(&state.pool, &provider_name)
+        .await
+        .map_err(|err| ApiError::Internal {
+            message: format!("Nie udało się usunąć dostawcy '{provider_name}': {err}"),
+        })?;
+
+    info!("[provider] deleted config for '{provider_name}' (rows_affected={deleted})");
+
+    Ok(Json(DeleteProviderResponse {
+        deleted,
+        provider_name,
     }))
 }
 
