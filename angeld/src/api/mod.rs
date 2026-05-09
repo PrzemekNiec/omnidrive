@@ -244,6 +244,7 @@ impl ApiServer {
             .route("/wizard", get(get_wizard))
             .route("/wizard.js", get(get_wizard_js))
             .route("/qrcode.min.js", get(get_qrcode_js))
+            .route("/material-symbols-outlined.ttf", get(get_material_symbols_font))
             .merge(onboarding::routes())
             .merge(diagnostics::routes())
             .merge(maintenance::routes())
@@ -315,7 +316,7 @@ async fn get_wizard() -> impl IntoResponse {
             (HeaderName::from_static("x-frame-options"), "DENY"),
             (HeaderName::from_static("referrer-policy"), "no-referrer"),
             (HeaderName::from_static("content-security-policy"),
-             "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"),
+             "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"),
         ],
         Html(include_str!("../../static/wizard.html")),
     )
@@ -338,6 +339,16 @@ async fn get_qrcode_js() -> impl IntoResponse {
             "application/javascript; charset=utf-8",
         )],
         include_str!("../../static/qrcode.min.js"),
+    )
+}
+
+async fn get_material_symbols_font() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "font/ttf"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        include_bytes!("../../static/material-symbols-outlined.ttf").as_ref(),
     )
 }
 
