@@ -49,6 +49,12 @@ pub fn routes() -> Router<ApiState> {
             "/api/onboarding/provider/{provider_name}",
             delete(delete_provider),
         )
+        // Read-only validation: re-tests existing stored credentials without modifying
+        // any state. Safe to call from the dashboard at any time.
+        .route(
+            "/api/providers/{provider_name}/test",
+            post(post_test_provider),
+        )
 }
 
 // ── Request / Response types ────────────────────────────────────────────
@@ -271,20 +277,30 @@ async fn post_setup_provider(
         .await?;
     }
 
-    db::set_system_config_value(
-        &state.pool,
-        SYSTEM_CONFIG_ONBOARDING_STATE,
-        OnboardingState::InProgress.as_str(),
-    )
-    .await?;
-    db::set_system_config_value(
-        &state.pool,
-        SYSTEM_CONFIG_ONBOARDING_MODE,
-        OnboardingMode::CloudEnabled.as_str(),
-    )
-    .await?;
-    db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "security")
+    // Only advance onboarding state during the wizard flow. If onboarding is already
+    // COMPLETED, this endpoint is being used to update or re-validate provider credentials
+    // from the dashboard — DO NOT downgrade the user out of the dashboard back into the wizard.
+    let current_state = db::get_system_config_value(&state.pool, SYSTEM_CONFIG_ONBOARDING_STATE)
+        .await?
+        .unwrap_or_else(|| OnboardingState::Initial.as_str().to_string());
+    let is_completed = current_state.eq_ignore_ascii_case(OnboardingState::Completed.as_str());
+
+    if !is_completed {
+        db::set_system_config_value(
+            &state.pool,
+            SYSTEM_CONFIG_ONBOARDING_STATE,
+            OnboardingState::InProgress.as_str(),
+        )
         .await?;
+        db::set_system_config_value(
+            &state.pool,
+            SYSTEM_CONFIG_ONBOARDING_MODE,
+            OnboardingMode::CloudEnabled.as_str(),
+        )
+        .await?;
+        db::set_system_config_value(&state.pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "security")
+            .await?;
+    }
 
     let has_secret = db::get_provider_secret(&state.pool, provider_name)
         .await?
@@ -760,6 +776,48 @@ async fn post_join_existing(
 struct DeleteProviderResponse {
     deleted: bool,
     provider_name: String,
+}
+
+// ── POST /api/providers/{provider_name}/test ───────────────────────────────
+// Read-only validation of stored provider credentials. Does NOT touch onboarding
+// state, secrets, or config — purely re-runs the same connectivity checks the
+// wizard performs (endpoint reach, auth, list, put, delete) and returns the report.
+
+async fn post_test_provider(
+    State(state): State<ApiState>,
+    Path(provider_name): Path<String>,
+) -> Result<Json<ValidationReport>, ApiError> {
+    let provider_name = provider_name.trim();
+
+    if !KNOWN_PROVIDERS.contains(&provider_name) {
+        return Err(ApiError::BadRequest {
+            code: "unsupported_provider",
+            message: format!("Nieznany dostawca: '{provider_name}'."),
+        });
+    }
+
+    match validate_persisted_provider_connection(&state.pool, provider_name).await {
+        Ok(report) => Ok(Json(report)),
+        Err(err) => {
+            // Synthesize a structured failure report instead of returning 500 — the dashboard
+            // wants to render the diagnosis (endpoint reachable / authenticated / list / put / delete).
+            Ok(Json(ValidationReport {
+                status: "ERROR".to_string(),
+                message: err.to_string(),
+                last_run: unix_timestamp_millis(),
+                provider_name: provider_name.to_string(),
+                endpoint_reachable: !matches!(
+                    &err,
+                    crate::onboarding::ProviderError::EndpointUnreachable(_)
+                ),
+                authenticated: false,
+                list_objects_ok: false,
+                put_object_ok: false,
+                delete_object_ok: false,
+                error_kind: Some(provider_error_kind(&err).to_string()),
+            }))
+        }
+    }
 }
 
 async fn delete_provider(
