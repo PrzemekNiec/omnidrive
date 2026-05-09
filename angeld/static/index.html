@@ -95,6 +95,10 @@
       font-family: 'Inter', sans-serif;
     }
     .material-symbols-outlined {
+      font-family: 'Material Symbols Outlined', sans-serif;
+      font-feature-settings: 'liga';
+      -webkit-font-feature-settings: 'liga';
+      -webkit-font-smoothing: antialiased;
       font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
     }
     .glass-panel {
@@ -131,12 +135,7 @@
       background: rgba(255, 255, 255, 0.05);
     }
     #lockScreen {
-      transition: opacity 0.35s ease, visibility 0.35s ease;
-    }
-    #lockScreen.ls-hidden {
-      opacity: 0;
-      visibility: hidden;
-      pointer-events: none;
+      display: none;
     }
   </style>
 </head>
@@ -3206,7 +3205,7 @@
     // ── Lock Screen ──────────────────────────────────────────────
     function showLockScreen() {
       const ls = document.getElementById('lockScreen');
-      if (ls) ls.classList.remove('ls-hidden');
+      if (ls) ls.style.display = 'flex';
       const inp = document.getElementById('lockScreenPassword');
       if (inp) { inp.value = ''; setTimeout(() => inp.focus(), 50); }
       const err = document.getElementById('lockScreenError');
@@ -3215,7 +3214,7 @@
 
     function hideLockScreen() {
       const ls = document.getElementById('lockScreen');
-      if (ls) ls.classList.add('ls-hidden');
+      if (ls) ls.style.display = 'none';
     }
 
     async function lockScreenUnlock() {
@@ -3364,25 +3363,34 @@
           .catch(() => {});
       }
 
-      // Vault gate: check unlock state before showing dashboard or lock screen
-      fetch('/api/vault/status', { headers: { 'Accept': 'application/json' } })
+      // Gate: check onboarding state first, then vault lock state.
+      // Lock screen starts display:none — only revealed here if onboarding is COMPLETED.
+      fetch('/api/onboarding/status', { headers: { 'Accept': 'application/json' } })
         .then(r => r.ok ? r.json() : Promise.reject())
-        .then(data => {
-          if (data && data.unlocked) {
-            VAULT_STATE.unlocked = true;
-            VAULT_STATE.sessionToken = data.session_token || null;
-            hideLockScreen();
-            startDashboard();
-          } else if (data && data.initialized === false) {
-            // Fresh device — no vault configured yet, go straight to wizard
+        .then(status => {
+          if (String(status.onboarding_state || '').toUpperCase() !== 'COMPLETED') {
             location.replace('/wizard');
-          } else {
-            VAULT_STATE.unlocked = false;
-            if (lsInp) setTimeout(() => lsInp.focus(), 100);
+            return;
           }
+          // Onboarding done — check whether vault is currently unlocked.
+          return fetch('/api/vault/status', { headers: { 'Accept': 'application/json' } })
+            .then(r => r.ok ? r.json() : Promise.reject())
+            .then(data => {
+              if (data && data.unlocked) {
+                VAULT_STATE.unlocked = true;
+                VAULT_STATE.sessionToken = data.session_token || null;
+                startDashboard();
+              } else {
+                VAULT_STATE.unlocked = false;
+                showLockScreen();
+                if (lsInp) setTimeout(() => lsInp.focus(), 100);
+              }
+            });
         })
         .catch(() => {
+          // Daemon unreachable — show lock screen as safe fallback.
           VAULT_STATE.unlocked = false;
+          showLockScreen();
           if (lsInp) setTimeout(() => lsInp.focus(), 100);
         });
     })();
