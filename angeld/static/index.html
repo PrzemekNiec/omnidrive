@@ -2336,7 +2336,7 @@
               const d = await res.json().catch(() => ({}));
               throw new Error(d?.error?.message || `HTTP ${res.status}`);
             }
-            alert('Klucz rotowany pomyślnie. Zaloguj się ponownie nowym hasłem.');
+            alert('Hasło zmienione pomyślnie.\n\nNowy zaszyfrowany snapshot jest wysyłany do chmury w tle — zajmie to kilka sekund. Po zakończeniu dołączanie nowych urządzeń będzie wymagało nowego hasła.\n\nZaloguj się ponownie nowym hasłem.');
             VAULT_STATE.unlocked = false;
             VAULT_STATE.sessionToken = null;
             renderVaultStatus();

@@ -978,6 +978,13 @@ async fn post_rotate_key(
     )
     .await;
 
+    // Immediately push a new encrypted snapshot so the next join-existing uses the new key.
+    let pool_bg = state.pool.clone();
+    let vault_keys_bg = state.vault_keys.clone();
+    tokio::spawn(async move {
+        super::auth::spawn_post_rotation_backup(pool_bg, vault_keys_bg, "rotate_key").await;
+    });
+
     Ok(Json(serde_json::json!({ "status": "rotated" })))
 }
 

@@ -657,6 +657,50 @@ async fn post_join_existing(
         .await?;
     db::set_system_config_value(&state.pool, SYSTEM_CONFIG_CLOUD_ENABLED, "1").await?;
 
+    // After snapshot graft the local device exists only in `local_device_identity`.
+    // Populate the multi-user tables (users, devices, vault_members) so that
+    // create_session_for_local_device can issue tokens and vault ACL checks pass.
+    if let Ok(Some(local_dev)) = db::get_local_device_identity(&state.pool).await {
+        let local_user_id = format!("user-{}", local_dev.device_id);
+        let placeholder_pubkey = vec![0u8; 32];
+        if let Err(e) = db::create_user(
+            &state.pool,
+            &local_user_id,
+            &local_dev.device_name,
+            None,
+            "local",
+            None,
+        )
+        .await
+        {
+            warn!("[join-existing] create_user for local device: {e}");
+        }
+        if let Err(e) = db::create_device(
+            &state.pool,
+            &local_dev.device_id,
+            &local_user_id,
+            &local_dev.device_name,
+            &placeholder_pubkey,
+        )
+        .await
+        {
+            warn!("[join-existing] create_device for local device: {e}");
+        }
+        if let Err(e) = db::add_vault_member(
+            &state.pool,
+            &local_user_id,
+            &restore.vault_id,
+            "owner",
+            None,
+        )
+        .await
+        {
+            warn!("[join-existing] add_vault_member for local device: {e}");
+        }
+    } else {
+        warn!("[join-existing] no local_device_identity found — skipping multi-user membership setup");
+    }
+
     trigger_runtime_provider_reload(&state, true).await;
 
     if let Ok(Some(vault)) = db::get_vault_params(&state.pool).await {

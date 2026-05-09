@@ -596,9 +596,8 @@
         clearProviderSecrets();
         clearSecuritySecrets();
         sessionStorage.removeItem(STORAGE_KEY);
-        hideWizard();
         st.busy = false;
-        if (typeof window.loadDashboard === "function") window.loadDashboard().catch(console.error);
+        location.replace('/');
         return;
       }
       saveSession();

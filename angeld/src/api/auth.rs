@@ -1,6 +1,7 @@
 use super::error::ApiError;
 use super::ApiState;
 use crate::db;
+use crate::disaster_recovery;
 use crate::runtime_paths::RuntimePaths;
 use crate::smart_sync;
 use crate::windows_hello;
@@ -335,11 +336,44 @@ async fn post_change_password(
         .await;
     }
 
+    // Security-critical: immediately push a new encrypted snapshot so the next
+    // join-existing on any device uses the NEW passphrase — no waiting for the 1h worker tick.
+    let pool_bg = state.pool.clone();
+    let vault_keys_bg = state.vault_keys.clone();
+    tokio::spawn(async move {
+        spawn_post_rotation_backup(pool_bg, vault_keys_bg, "change_password").await;
+    });
+
     Ok(Json(ChangePasswordResponse {
         status: "ok".to_string(),
         deks_rewrapped: result.deks_rewrapped,
         new_generation: result.new_generation,
     }))
+}
+
+pub(super) async fn spawn_post_rotation_backup(
+    pool: sqlx::SqlitePool,
+    vault_keys: crate::vault::VaultKeyStore,
+    caller: &'static str,
+) {
+    let master_key = match vault_keys.require_master_key().await {
+        Ok(k) => k,
+        Err(e) => {
+            warn!("[{caller}] post-rotation backup skipped: vault locked: {e}");
+            return;
+        }
+    };
+    let pm = match disaster_recovery::MetadataBackupProviderManager::from_onboarding_db_all(&pool).await {
+        Ok(pm) => pm,
+        Err(e) => {
+            warn!("[{caller}] post-rotation backup: provider config unavailable: {e}");
+            return;
+        }
+    };
+    match disaster_recovery::run_metadata_backup_now(&pool, &pm, &master_key).await {
+        Ok(()) => tracing::info!("[{caller}] post-rotation snapshot uploaded to cloud"),
+        Err(e) => warn!("[{caller}] post-rotation backup failed: {e}"),
+    }
 }
 
 // -- Windows Hello endpoints --------------------------------------------------
