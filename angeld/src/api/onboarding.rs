@@ -478,18 +478,6 @@ async fn post_join_existing(
         });
     }
 
-    let device_enrolled = db::get_local_device_identity(&state.pool)
-        .await
-        .ok()
-        .flatten()
-        .is_some();
-
-    if device_enrolled {
-        return Err(ApiError::Forbidden {
-            message: "join-existing is not allowed when a device identity is already enrolled".to_string(),
-        });
-    }
-
     // ── Rate-limit check ──────────────────────────────────────────────
     if let Err(retry_after) = state.join_limiter.check(ip) {
         return Err(ApiError::TooManyRequests {
