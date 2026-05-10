@@ -245,6 +245,10 @@
         <span class="material-symbols-outlined">analytics</span>
         <span class="text-sm">Audyt</span>
       </a>
+      <a class="nav-item flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-slate-200 hover:bg-white/10 transition-colors duration-200" href="#" data-view="diagnostyka">
+        <span class="material-symbols-outlined">monitor_heart</span>
+        <span class="text-sm">Diagnostyka</span>
+      </a>
     </nav>
     <div class="mt-auto pt-8 border-t border-white/10 space-y-2">
       <a class="nav-item flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-slate-200 hover:bg-white/10 transition-colors duration-200" href="#" data-view="ustawienia">
@@ -905,6 +909,150 @@
         <div class="px-6 py-4 border-t border-white/5 flex items-center justify-between">
           <span class="text-xs text-slate-500" id="auditCountLabel"></span>
           <button id="auditLoadMoreBtn" class="hidden text-xs font-bold text-primary border border-primary/20 px-3 py-1.5 rounded-lg hover:bg-primary/10 transition-colors">Załaduj więcej</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===== Widok: Diagnostyka (v0.3.20) ===== -->
+    <div id="view-diagnostyka" data-view="diagnostyka" class="hidden p-8 max-w-6xl mx-auto space-y-6 pb-16">
+      <div class="flex items-end justify-between gap-4">
+        <div>
+          <h1 class="text-3xl font-bold tracking-tight text-on-surface mb-1">Diagnostyka i serwis</h1>
+          <p class="text-slate-400 text-sm">Stan daemona, monitoring chmury i akcje serwisowe (Admin).</p>
+        </div>
+        <button id="diagRefreshBtn" class="flex items-center gap-2 text-slate-400 border border-white/10 px-4 py-2 rounded-xl text-sm font-bold hover:bg-white/5 transition-colors">
+          <span class="material-symbols-outlined text-lg">refresh</span>Odśwież
+        </button>
+      </div>
+
+      <!-- ── Live status (auto-refresh co 10s) ── -->
+      <section class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="glass-panel rounded-2xl p-6">
+          <div class="flex items-center justify-between mb-3">
+            <p class="text-[10px] font-label text-slate-400 uppercase tracking-widest">Stan daemona</p>
+            <span id="diagHealthBadge" class="px-2 py-0.5 rounded-full text-[10px] font-bold tracking-widest uppercase border border-slate-500/30 text-slate-400">—</span>
+          </div>
+          <p id="diagHealthMessage" class="text-sm text-on-surface mb-3">Ładowanie...</p>
+          <div class="space-y-1 text-xs text-slate-400">
+            <p>Uptime: <span id="diagUptime" class="text-on-surface">—</span></p>
+            <p>Kolejka uploadu: <span id="diagQueueSize" class="text-on-surface">—</span></p>
+            <p>Ostatni błąd: <span id="diagLastError" class="text-on-surface text-[11px] break-all">—</span></p>
+          </div>
+        </div>
+        <div class="glass-panel rounded-2xl p-6">
+          <div class="flex items-center justify-between mb-3">
+            <p class="text-[10px] font-label text-slate-400 uppercase tracking-widest">Limity dzienne (cloud guard)</p>
+            <span id="diagGuardBadge" class="px-2 py-0.5 rounded-full text-[10px] font-bold tracking-widest uppercase border border-slate-500/30 text-slate-400">—</span>
+          </div>
+          <div class="space-y-2 text-xs">
+            <div>
+              <div class="flex justify-between text-slate-400"><span>Egress (pobrania)</span><span id="diagEgressBytes" class="text-on-surface">—</span></div>
+              <div class="w-full bg-white/5 h-1.5 rounded-full mt-1 overflow-hidden"><div id="diagEgressBar" class="h-full bg-primary" style="width:0%"></div></div>
+            </div>
+            <div>
+              <div class="flex justify-between text-slate-400"><span>Read ops</span><span id="diagReadOps" class="text-on-surface">—</span></div>
+              <div class="w-full bg-white/5 h-1.5 rounded-full mt-1 overflow-hidden"><div id="diagReadBar" class="h-full bg-secondary" style="width:0%"></div></div>
+            </div>
+            <div>
+              <div class="flex justify-between text-slate-400"><span>Write ops</span><span id="diagWriteOps" class="text-on-surface">—</span></div>
+              <div class="w-full bg-white/5 h-1.5 rounded-full mt-1 overflow-hidden"><div id="diagWriteBar" class="h-full bg-tertiary" style="width:0%"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="glass-panel rounded-2xl p-6">
+          <div class="flex items-center justify-between mb-3">
+            <p class="text-[10px] font-label text-slate-400 uppercase tracking-widest">Pętle retry</p>
+            <span id="diagStormBadge" class="px-2 py-0.5 rounded-full text-[10px] font-bold tracking-widest uppercase border border-slate-500/30 text-slate-400">—</span>
+          </div>
+          <p class="text-2xl font-bold text-on-surface" id="diagStormMaxAttempts">—</p>
+          <p class="text-xs text-slate-400">prób na najgorszym targecie</p>
+          <p class="text-xs text-slate-400 mt-2">Targety w pętli: <span id="diagStormCount" class="text-on-surface">—</span></p>
+          <p class="text-[10px] text-slate-500 mt-3">Próg plateau 1h: <span id="diagStormThreshold">100</span> · permanent fail: <span id="diagStormPermThreshold">1000</span></p>
+        </div>
+      </section>
+
+      <!-- ── Workers status ── -->
+      <section class="glass-panel rounded-2xl p-6">
+        <h2 class="text-sm font-bold text-on-surface uppercase tracking-widest mb-4">Procesy (workers)</h2>
+        <div id="diagWorkers" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 text-xs"></div>
+      </section>
+
+      <!-- ── Akcje serwisowe ── -->
+      <section class="glass-panel rounded-2xl p-6">
+        <h2 class="text-sm font-bold text-on-surface uppercase tracking-widest mb-1">Akcje serwisowe</h2>
+        <p class="text-xs text-slate-400 mb-5">Wymagają odblokowanego skarbca (rola Admin).</p>
+        <div id="diagActionResult" class="hidden mb-4 p-3 rounded-xl text-xs"></div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <button data-diag-action="sync-upload-targets" class="diag-action-btn flex items-start gap-3 p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-left">
+            <span class="material-symbols-outlined text-secondary mt-0.5">sync</span>
+            <span>
+              <span class="block text-sm font-bold text-on-surface">Zsynchronizuj statusy uploadu</span>
+              <span class="block text-[11px] text-slate-400 mt-0.5">Naprawia rozjazdy upload_job_targets ↔ pack_shards. Bezpieczne, idempotentne.</span>
+            </span>
+          </button>
+          <button data-diag-action="gc-orphans" data-confirm="Usunąć osierocone packi (bez referencji)? Operacja nieodwracalna." class="diag-action-btn flex items-start gap-3 p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-left">
+            <span class="material-symbols-outlined text-tertiary mt-0.5">delete_sweep</span>
+            <span>
+              <span class="block text-sm font-bold text-on-surface">Wyczyść osierocone packi</span>
+              <span class="block text-[11px] text-slate-400 mt-0.5">Kasuje packi bez referencji w plikach. Wymaga potwierdzenia.</span>
+            </span>
+          </button>
+          <button data-diag-action="repair-now" class="diag-action-btn flex items-start gap-3 p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-left">
+            <span class="material-symbols-outlined text-secondary mt-0.5">healing</span>
+            <span>
+              <span class="block text-sm font-bold text-on-surface">Uruchom naprawę teraz</span>
+              <span class="block text-[11px] text-slate-400 mt-0.5">Repair worker przeszuka zdegradowane packi i odbuduje brakujące shardy.</span>
+            </span>
+          </button>
+          <button data-diag-action="scrub-now" class="diag-action-btn flex items-start gap-3 p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-left">
+            <span class="material-symbols-outlined text-secondary mt-0.5">verified</span>
+            <span>
+              <span class="block text-sm font-bold text-on-surface">Uruchom weryfikację teraz</span>
+              <span class="block text-[11px] text-slate-400 mt-0.5">Scrubber sprawdzi integralność shardów u dostawców (HEAD + opcjonalnie GET).</span>
+            </span>
+          </button>
+          <button data-diag-action="reconcile-now" class="diag-action-btn flex items-start gap-3 p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-left">
+            <span class="material-symbols-outlined text-secondary mt-0.5">balance</span>
+            <span>
+              <span class="block text-sm font-bold text-on-surface">Uzgodnij polityki magazynowania</span>
+              <span class="block text-[11px] text-slate-400 mt-0.5">Domigruje packi do aktualnego trybu (EC_2_1 / SingleReplica / LocalOnly).</span>
+            </span>
+          </button>
+          <button data-diag-action="metadata-backup/backup-now" class="diag-action-btn flex items-start gap-3 p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-left">
+            <span class="material-symbols-outlined text-secondary mt-0.5">cloud_upload</span>
+            <span>
+              <span class="block text-sm font-bold text-on-surface">Wykonaj backup metadanych</span>
+              <span class="block text-[11px] text-slate-400 mt-0.5">Zaszyfrowany snapshot SQLite trafia na wszystkich aktywnych providerów.</span>
+            </span>
+          </button>
+          <button data-diag-action="repair-shell" class="diag-action-btn flex items-start gap-3 p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-left">
+            <span class="material-symbols-outlined text-secondary mt-0.5">build</span>
+            <span>
+              <span class="block text-sm font-bold text-on-surface">Napraw integrację z eksploratorem</span>
+              <span class="block text-[11px] text-slate-400 mt-0.5">Resetuje rejestr shell extension + ikony nakładek (Windows Explorer).</span>
+            </span>
+          </button>
+          <button data-diag-action="repair-sync-root" class="diag-action-btn flex items-start gap-3 p-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-left">
+            <span class="material-symbols-outlined text-secondary mt-0.5">folder_managed</span>
+            <span>
+              <span class="block text-sm font-bold text-on-surface">Napraw SyncRoot</span>
+              <span class="block text-[11px] text-slate-400 mt-0.5">Re-rejestruje katalog OmniSync w Cloud Files API i odbudowuje placeholdery.</span>
+            </span>
+          </button>
+        </div>
+      </section>
+
+      <!-- ── Surowe dane (dla zaawansowanych) ── -->
+      <section class="glass-panel rounded-2xl p-6">
+        <h2 class="text-sm font-bold text-on-surface uppercase tracking-widest mb-1">Surowe dane (JSON)</h2>
+        <p class="text-xs text-slate-400 mb-4">Pełne odpowiedzi API w nowej karcie — przydatne gdy coś zgłaszasz.</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
+          <a href="/api/diagnostics/health" target="_blank" class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 text-slate-300 hover:text-on-surface transition-colors">/api/diagnostics/health</a>
+          <a href="/api/maintenance/retry-storms" target="_blank" class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 text-slate-300 hover:text-on-surface transition-colors">/api/maintenance/retry-storms</a>
+          <a href="/api/maintenance/scrub-status" target="_blank" class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 text-slate-300 hover:text-on-surface transition-colors">/api/maintenance/scrub-status</a>
+          <a href="/api/maintenance/scrub-errors" target="_blank" class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 text-slate-300 hover:text-on-surface transition-colors">/api/maintenance/scrub-errors</a>
+          <a href="/api/metadata-backup/status" target="_blank" class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 text-slate-300 hover:text-on-surface transition-colors">/api/metadata-backup/status</a>
+          <a href="/api/cache/status" target="_blank" class="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/5 text-slate-300 hover:text-on-surface transition-colors">/api/cache/status</a>
         </div>
       </section>
     </div>
@@ -3178,7 +3326,7 @@
       if (skarbiec) skarbiec.classList.add('hidden');
       const multiDevice = document.getElementById('view-multi-device');
       if (multiDevice) multiDevice.classList.add('hidden');
-      ['view-chmura', 'view-audyt', 'view-ustawienia'].forEach(id => { const el = document.getElementById(id); if (el) el.classList.add('hidden'); });
+      ['view-chmura', 'view-audyt', 'view-ustawienia', 'view-diagnostyka'].forEach(id => { const el = document.getElementById(id); if (el) el.classList.add('hidden'); });
       placeholder.classList.add('hidden');
       placeholder.classList.remove('flex');
 
@@ -3202,6 +3350,9 @@
       } else if (view === 'ustawienia') {
         document.getElementById('view-ustawienia').classList.remove('hidden');
         activateUstawieniaView();
+      } else if (view === 'diagnostyka') {
+        document.getElementById('view-diagnostyka').classList.remove('hidden');
+        activateDiagnostykaView();
       } else {
         placeholder.classList.remove('hidden');
         placeholder.classList.add('flex');
@@ -3363,6 +3514,170 @@
       setInterval(fetchStatsOverview, _iv);
       setInterval(fetchStatsTraffic,  Math.max(_iv * 2, 60_000));
       setInterval(fetchStatsSystem,    5_000);
+    }
+
+    // ── Diagnostyka view (v0.3.20) ──────────────────────────────
+    let DIAG_REFRESH_TIMER = null;
+
+    function formatBytes(n) {
+      if (n == null || isNaN(n)) return '—';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0; let v = Number(n);
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return `${v.toFixed(v < 10 ? 2 : 1)} ${units[i]}`;
+    }
+
+    function formatUptime(secs) {
+      if (secs == null || isNaN(secs)) return '—';
+      const s = Math.floor(secs);
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m ${s % 60}s`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h ${m % 60}m`;
+      return `${Math.floor(h / 24)}d ${h % 24}h`;
+    }
+
+    function setDiagBadge(el, status) {
+      if (!el) return;
+      const palette = {
+        OK:    'border-secondary/30 text-secondary',
+        WARN:  'border-tertiary/30 text-tertiary',
+        ERROR: 'border-error/30 text-error',
+      };
+      el.textContent = status || '—';
+      el.className = `px-2 py-0.5 rounded-full text-[10px] font-bold tracking-widest uppercase border ${palette[status] || 'border-slate-500/30 text-slate-400'}`;
+    }
+
+    async function refreshDiagnostykaPanels() {
+      // Health summary
+      try {
+        const h = await fetch('/api/diagnostics/health').then(r => r.json());
+        setDiagBadge(document.getElementById('diagHealthBadge'), h.status);
+        document.getElementById('diagHealthMessage').textContent = h.message || '—';
+        document.getElementById('diagUptime').textContent = formatUptime(h.uptime_seconds);
+        document.getElementById('diagQueueSize').textContent = h.pending_uploads_queue_size ?? '—';
+        document.getElementById('diagLastError').textContent = h.last_upload_error
+          ? (h.last_upload_error.length > 200 ? h.last_upload_error.slice(0, 200) + '…' : h.last_upload_error)
+          : '(brak)';
+
+        // Workers grid
+        const wEl = document.getElementById('diagWorkers');
+        const ws = h.worker_statuses || {};
+        const wPalette = { active: 'text-secondary', idle: 'text-slate-400', starting: 'text-tertiary' };
+        wEl.innerHTML = Object.entries(ws).map(([name, st]) => `
+          <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5">
+            <span class="w-2 h-2 rounded-full ${st === 'active' ? 'bg-secondary' : st === 'idle' ? 'bg-slate-500' : 'bg-tertiary'}"></span>
+            <span class="text-on-surface font-mono text-[11px] flex-1">${name}</span>
+            <span class="${wPalette[st] || 'text-slate-400'} text-[10px] uppercase tracking-widest">${st}</span>
+          </div>
+        `).join('');
+      } catch (_) {
+        setDiagBadge(document.getElementById('diagHealthBadge'), 'ERROR');
+        document.getElementById('diagHealthMessage').textContent = 'Brak połączenia z daemonem.';
+      }
+
+      // Cloud guard limits
+      try {
+        const d = await fetch('/api/diagnostics').then(r => r.json());
+        setDiagBadge(document.getElementById('diagGuardBadge'), d.cloud_guard_status);
+        const eb = d.daily_egress_bytes ?? 0;
+        const el = d.daily_egress_bytes_limit ?? 0;
+        const ep = d.egress_quota_percent ?? 0;
+        document.getElementById('diagEgressBytes').textContent = `${formatBytes(eb)} / ${formatBytes(el)}`;
+        document.getElementById('diagEgressBar').style.width = `${Math.min(100, ep).toFixed(0)}%`;
+        const ro = d.daily_read_ops ?? 0; const rl = d.daily_read_ops_limit ?? 0; const rp = d.read_quota_percent ?? 0;
+        document.getElementById('diagReadOps').textContent = `${ro.toLocaleString('pl-PL')} / ${rl.toLocaleString('pl-PL')}`;
+        document.getElementById('diagReadBar').style.width = `${Math.min(100, rp).toFixed(0)}%`;
+        const wo = d.daily_write_ops ?? 0; const wl = d.daily_write_ops_limit ?? 0; const wp = d.write_quota_percent ?? 0;
+        document.getElementById('diagWriteOps').textContent = `${wo.toLocaleString('pl-PL')} / ${wl.toLocaleString('pl-PL')}`;
+        document.getElementById('diagWriteBar').style.width = `${Math.min(100, wp).toFixed(0)}%`;
+      } catch (_) {
+        setDiagBadge(document.getElementById('diagGuardBadge'), 'ERROR');
+      }
+
+      // Retry storms
+      try {
+        const s = await fetch('/api/maintenance/retry-storms').then(r => r.json());
+        const max = s.max_attempts || 0;
+        const count = (s.targets || []).length;
+        document.getElementById('diagStormMaxAttempts').textContent = max.toLocaleString('pl-PL');
+        document.getElementById('diagStormCount').textContent = count;
+        document.getElementById('diagStormThreshold').textContent = s.plateau_threshold || 100;
+        document.getElementById('diagStormPermThreshold').textContent = s.permanent_failure_threshold || 1000;
+        const sBadge = count === 0 ? 'OK' : (max >= (s.permanent_failure_threshold || 1000) ? 'ERROR' : 'WARN');
+        setDiagBadge(document.getElementById('diagStormBadge'), sBadge);
+      } catch (_) {
+        setDiagBadge(document.getElementById('diagStormBadge'), 'ERROR');
+      }
+    }
+
+    function showDiagActionResult(level, text) {
+      const el = document.getElementById('diagActionResult');
+      if (!el) return;
+      const palette = {
+        ok:    'bg-secondary/10 border border-secondary/20 text-secondary',
+        warn:  'bg-tertiary/10 border border-tertiary/20 text-tertiary',
+        error: 'bg-error/10 border border-error/20 text-error',
+      };
+      el.className = `mb-4 p-3 rounded-xl text-xs ${palette[level] || palette.ok}`;
+      el.textContent = text;
+      el.classList.remove('hidden');
+    }
+
+    async function runDiagAction(action, button) {
+      const token = VAULT_STATE.sessionToken;
+      if (!token) {
+        showDiagActionResult('error', 'Skarbiec jest zablokowany. Odblokuj go zanim wykonasz akcję serwisową.');
+        return;
+      }
+      const confirmMsg = button.dataset.confirm;
+      if (confirmMsg && !window.confirm(confirmMsg)) return;
+      const originalLabel = button.querySelector('.text-sm').textContent;
+      button.disabled = true;
+      button.querySelector('.text-sm').textContent = 'Trwa…';
+
+      try {
+        const res = await fetch(`/api/maintenance/${action}`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        });
+        const text = await res.text();
+        let pretty;
+        try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (_) { pretty = text; }
+        if (res.ok) {
+          showDiagActionResult('ok', `✓ ${action} OK\n\n${pretty}`);
+        } else {
+          showDiagActionResult('error', `✗ ${action} HTTP ${res.status}\n\n${pretty}`);
+        }
+      } catch (err) {
+        showDiagActionResult('error', `✗ ${action} — błąd sieci: ${err.message || err}`);
+      } finally {
+        button.disabled = false;
+        button.querySelector('.text-sm').textContent = originalLabel;
+        refreshDiagnostykaPanels();
+      }
+    }
+
+    function activateDiagnostykaView() {
+      refreshDiagnostykaPanels();
+      if (DIAG_REFRESH_TIMER) clearInterval(DIAG_REFRESH_TIMER);
+      DIAG_REFRESH_TIMER = setInterval(refreshDiagnostykaPanels, 10_000);
+
+      const btnRefresh = document.getElementById('diagRefreshBtn');
+      if (btnRefresh && !btnRefresh.dataset.bound) {
+        btnRefresh.addEventListener('click', refreshDiagnostykaPanels);
+        btnRefresh.dataset.bound = '1';
+      }
+      document.querySelectorAll('.diag-action-btn').forEach(btn => {
+        if (btn.dataset.bound) return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', () => runDiagAction(btn.dataset.diagAction, btn));
+      });
     }
 
     // ── Init ──────────────────────────────────────────────────────
