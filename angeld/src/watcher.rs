@@ -8,6 +8,7 @@ use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::vault::VaultKeyStore;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::env;
@@ -33,6 +34,10 @@ struct TrackedFileState {
     size: u64,
     mtime: Option<i64>,
     base_revision_id: Option<i64>,
+    /// SHA-256 of file content at the time it was last packed.
+    /// Used for content-based dedup: if a file system event fires (Defender scan,
+    /// metadata touch, etc.) but bytes are unchanged, skip re-packing.
+    content_hash: Option<[u8; 32]>,
 }
 
 #[derive(Debug)]
@@ -379,19 +384,37 @@ impl FileWatcher {
         let inode_id =
             ensure_inode_path_from_db_path(&self.pool, &policy_path, size, mtime).await?;
         let current_revision = db::get_current_file_revision(&self.pool, inode_id).await?;
-        let tracked_state = TrackedFileState {
-            size: metadata.len(),
-            mtime,
-            base_revision_id: current_revision
-                .as_ref()
-                .map(|revision| revision.revision_id),
-        };
+        let previous_state = processed_files.get(&file_path).cloned();
 
-        if processed_files
-            .get(&file_path)
-            .is_some_and(|previous| previous == &tracked_state)
-        {
+        // Fast path: identical size + mtime + base_revision_id → no FS change since last pack.
+        let metadata_unchanged = previous_state.as_ref().is_some_and(|prev| {
+            prev.size == metadata.len()
+                && prev.mtime == mtime
+                && prev.base_revision_id
+                    == current_revision.as_ref().map(|r| r.revision_id)
+        });
+        if metadata_unchanged {
             return Ok(());
+        }
+
+        // Content-hash dedup: an FS event fired (Defender scan, mtime touch, atime
+        // bump, etc.) but file bytes may be unchanged. Hash before invoking the
+        // packer so we don't waste CPU + I/O + create a redundant revision row.
+        let content_hash = compute_content_hash(&file_path).await?;
+        if let Some(prev) = previous_state.as_ref() {
+            if prev.content_hash == Some(content_hash) {
+                // Bytes unchanged — refresh metadata in tracker without packing.
+                processed_files.insert(
+                    file_path.clone(),
+                    TrackedFileState {
+                        size: metadata.len(),
+                        mtime,
+                        base_revision_id: prev.base_revision_id,
+                        content_hash: Some(content_hash),
+                    },
+                );
+                return Ok(());
+            }
         }
 
         if policy.enable_versioning == 0 && current_revision.is_some() {
@@ -403,8 +426,8 @@ impl FileWatcher {
             .pack_file_with_expected_parent(
                 inode_id,
                 &file_path,
-                processed_files
-                    .get(&file_path)
+                previous_state
+                    .as_ref()
                     .and_then(|state| state.base_revision_id)
                     .or_else(|| {
                         current_revision
@@ -419,6 +442,7 @@ impl FileWatcher {
                 size: metadata.len(),
                 mtime,
                 base_revision_id: pack_result.revision_id,
+                content_hash: Some(content_hash),
             },
         );
         if let Some(pack_id) = pack_result.pack_id {
@@ -510,6 +534,24 @@ async fn ensure_inode_path_from_db_path(
     }
 
     parent_id.ok_or(WatcherError::InvalidEnv("db_path"))
+}
+
+async fn compute_content_hash(path: &Path) -> Result<[u8; 32], WatcherError> {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1024 * 1024]; // 1 MiB chunks; SHA-256 ~600 MB/s on modern x64.
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    Ok(out)
 }
 
 async fn collect_files_recursively(root: PathBuf) -> Result<Vec<PathBuf>, WatcherError> {
