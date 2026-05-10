@@ -141,15 +141,33 @@ async fn get_vault_health(
 async fn get_vault_status(State(state): State<ApiState>) -> Json<serde_json::Value> {
     let unlocked = state.vault_keys.require_key().await.is_ok();
     let initialized = db::get_vault_config(&state.pool).await.ok().flatten().is_some();
+
+    // v0.3.19: expose vault membership count so UI can hide the Google login
+    // button for solo vaults. `members_count` is source of truth; `multi_user`
+    // is a convenience flag (count > 1).
+    let members_count = match db::get_vault_params(&state.pool).await {
+        Ok(Some(vault)) => db::count_vault_members(&state.pool, &vault.vault_id)
+            .await
+            .unwrap_or(0),
+        _ => 0,
+    };
+
     if unlocked {
         let session = super::auth::create_session_for_local_device(&state.pool).await.ok();
         Json(serde_json::json!({
             "unlocked": true,
             "initialized": true,
             "session_token": session.map(|s| s.token),
+            "members_count": members_count,
+            "multi_user": members_count > 1,
         }))
     } else {
-        Json(serde_json::json!({ "unlocked": false, "initialized": initialized }))
+        Json(serde_json::json!({
+            "unlocked": false,
+            "initialized": initialized,
+            "members_count": members_count,
+            "multi_user": members_count > 1,
+        }))
     }
 }
 

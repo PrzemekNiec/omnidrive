@@ -2811,10 +2811,26 @@
       const badge    = document.getElementById('oauthStatusBadge');
       const loginBtn = document.getElementById('googleLoginBtn');
 
+      // v0.3.19 adaptive UI gradient: hide Google login button for solo vaults.
+      // Solo user (members_count === 1) doesn't benefit from Google identity —
+      // surface it only once Family Cloud kicks in (>= 2 members).
+      let multiUser = false;
+      try {
+        const statusRes = await fetch('/api/vault/status', { headers: { Accept: 'application/json' } });
+        if (statusRes.ok) {
+          const status = await statusRes.json();
+          multiUser = !!status.multi_user;
+        }
+      } catch (_) { /* fall through with multiUser=false */ }
+
       const showLogin = () => {
         if (badge) badge.style.display = 'none';
-        if (loginBtn) loginBtn.style.display = '';
-        if (line) line.textContent = 'Brak aktywnej sesji Google';
+        if (loginBtn) loginBtn.style.display = multiUser ? '' : 'none';
+        if (line) {
+          line.textContent = multiUser
+            ? 'Brak aktywnej sesji Google'
+            : 'Logowanie Google dostępne po zaproszeniu kolejnego członka skarbca.';
+        }
       };
       const showConnected = (email) => {
         if (badge) {

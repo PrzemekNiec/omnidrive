@@ -6979,6 +6979,19 @@ pub async fn get_vault_member(
     .await
 }
 
+/// Count members in a vault. v0.3.19: used by `/api/vault/status` to drive
+/// adaptive UI — Google login button stays hidden when count == 1 (solo user).
+#[allow(dead_code)]
+pub async fn count_vault_members(
+    pool: &SqlitePool,
+    vault_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vault_members WHERE vault_id = ?")
+        .bind(vault_id)
+        .fetch_one(pool)
+        .await
+}
+
 pub async fn list_vault_members(
     pool: &SqlitePool,
     vault_id: &str,
