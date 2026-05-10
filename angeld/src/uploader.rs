@@ -32,6 +32,16 @@ use tracing::{error, info, warn};
 
 pub const KNOWN_PROVIDERS: [&str; 3] = ["cloudflare-r2", "backblaze-b2", "scaleway"];
 
+/// After this many failed attempts on the same upload target, the worker stops
+/// retrying every 60s and instead waits 1h between attempts. Prevents retry
+/// storms against persistently broken providers (e.g., revoked credentials).
+const UPLOAD_RETRY_PLATEAU_AT: i64 = 100;
+const UPLOAD_RETRY_PLATEAU_DELAY: Duration = Duration::from_secs(3600);
+
+/// After this many failed attempts the target is marked PERMANENTLY_FAILED
+/// and excluded from future retry cycles. Manual intervention required.
+const UPLOAD_PERMANENT_FAILURE_AT: i64 = 1000;
+
 pub struct Uploader {
     provider_name: &'static str,
     client: Client,
@@ -555,7 +565,18 @@ impl UploadWorker {
                     &message,
                 )
                 .await?;
-                db::requeue_upload_target(&self.pool, job.id, &shard.provider, &message).await?;
+                let target_attempts =
+                    db::requeue_upload_target(&self.pool, job.id, &shard.provider, &message)
+                        .await?;
+                self.escalate_target_if_permanent(
+                    job.id,
+                    &job.pack_id,
+                    shard.shard_index,
+                    &shard.provider,
+                    target_attempts,
+                    &message,
+                )
+                .await?;
                 max_attempts = max_attempts.max(attempts);
                 failed_shards.push(format!(
                     "{} shard {}: {}",
@@ -699,10 +720,19 @@ impl UploadWorker {
                             &err.to_string(),
                         )
                         .await?;
-                        db::requeue_upload_target(
+                        let target_attempts = db::requeue_upload_target(
                             &self.pool,
                             job.id,
                             &shard.provider,
+                            &err.to_string(),
+                        )
+                        .await?;
+                        self.escalate_target_if_permanent(
+                            job.id,
+                            &job.pack_id,
+                            shard.shard_index,
+                            &shard.provider,
+                            target_attempts,
                             &err.to_string(),
                         )
                         .await?;
@@ -744,10 +774,19 @@ impl UploadWorker {
                         &timeout_error.to_string(),
                     )
                     .await?;
-                    db::requeue_upload_target(
+                    let target_attempts = db::requeue_upload_target(
                         &self.pool,
                         job.id,
                         &shard.provider,
+                        &timeout_error.to_string(),
+                    )
+                    .await?;
+                    self.escalate_target_if_permanent(
+                        job.id,
+                        &job.pack_id,
+                        shard.shard_index,
+                        &shard.provider,
+                        target_attempts,
                         &timeout_error.to_string(),
                     )
                     .await?;
@@ -781,6 +820,9 @@ impl UploadWorker {
     }
 
     fn retry_delay(&self, attempts: i64) -> Duration {
+        if attempts >= UPLOAD_RETRY_PLATEAU_AT {
+            return UPLOAD_RETRY_PLATEAU_DELAY;
+        }
         let exponent = attempts.saturating_sub(1).clamp(0, 10) as u32;
         let multiplier = 2u32.saturating_pow(exponent);
         let delay = self
@@ -789,6 +831,32 @@ impl UploadWorker {
             .unwrap_or(self.retry_max_delay);
 
         delay.min(self.retry_max_delay)
+    }
+
+    async fn escalate_target_if_permanent(
+        &self,
+        job_id: i64,
+        pack_id: &str,
+        shard_index: i64,
+        provider: &str,
+        target_attempts: i64,
+        last_error: &str,
+    ) -> Result<(), UploaderError> {
+        if target_attempts < UPLOAD_PERMANENT_FAILURE_AT {
+            return Ok(());
+        }
+        warn!(
+            "upload target permanently failed pack={} shard={} provider={} attempts={} last_error={}",
+            pack_id, shard_index, provider, target_attempts, last_error
+        );
+        db::mark_upload_target_permanently_failed(&self.pool, job_id, provider, last_error)
+            .await?;
+        db::mark_pack_shard_permanently_failed(&self.pool, pack_id, shard_index, last_error)
+            .await?;
+        diagnostics::record_upload_error(format!(
+            "target {provider} for pack {pack_id} shard {shard_index} marked PERMANENTLY_FAILED after {target_attempts} attempts; manual action required"
+        ));
+        Ok(())
     }
 
     async fn cleanup_remote_backed_pack_spool(&self, pack_id: &str) {

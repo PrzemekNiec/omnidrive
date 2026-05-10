@@ -4425,7 +4425,7 @@ pub async fn get_incomplete_pack_shards(
             COALESCE(verification_failures, 0) AS verification_failures
         FROM pack_shards
         WHERE pack_id = ?
-          AND status != 'COMPLETED'
+          AND status NOT IN ('COMPLETED', 'PERMANENTLY_FAILED')
         ORDER BY shard_index ASC
         "#,
     )
@@ -4531,6 +4531,31 @@ pub async fn mark_pack_shard_failed(
         UPDATE pack_shards
         SET status = 'FAILED',
             attempts = COALESCE(attempts, 0) + 1,
+            last_error = ?
+        WHERE pack_id = ?
+          AND shard_index = ?
+        "#,
+    )
+    .bind(error_message)
+    .bind(pack_id)
+    .bind(shard_index)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn mark_pack_shard_permanently_failed(
+    pool: &SqlitePool,
+    pack_id: &str,
+    shard_index: i64,
+    error_message: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE pack_shards
+        SET status = 'PERMANENTLY_FAILED',
             last_error = ?
         WHERE pack_id = ?
           AND shard_index = ?
@@ -5510,6 +5535,34 @@ pub async fn mark_upload_target_failed(
         UPDATE upload_job_targets
         SET status = 'FAILED',
             attempts = COALESCE(attempts, 0) + 1,
+            last_error = ?,
+            last_attempt_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+            completed_at = NULL
+        WHERE job_id = ?
+          AND provider = ?
+        "#,
+    )
+    .bind(error_message)
+    .bind(job_id)
+    .bind(provider)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn mark_upload_target_permanently_failed(
+    pool: &SqlitePool,
+    job_id: i64,
+    provider: &str,
+    error_message: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE upload_job_targets
+        SET status = 'PERMANENTLY_FAILED',
             last_error = ?,
             last_attempt_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
             updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
