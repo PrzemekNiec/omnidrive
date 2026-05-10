@@ -1,0 +1,291 @@
+<!--
+  Źródło: Google Stitch (mockup wygenerowany 2026-04-25)
+  Ekran: Urządzenia — Multi-Device + QR Pairing Bottom Sheet
+  NIE EDYTOWAĆ — to snapshot designu, nie plik produkcyjny.
+  Implementacja: Jetpack Compose (Faza Q).
+
+  Do zrobienia przy integracji:
+    - usunąć duplikat <link> do Material Symbols
+    - lista urządzeń → GET /api/devices lub z snapshot tabeli `devices` (platform, paired_at, last_seen)
+    - "To urządzenie" → WHERE device_id = local_device_id
+    - status dot: zielony = last_seen < 5 min; szary = offline
+    - "3 online / 5 max" → COUNT(*) + limit z config
+    - QR Scanner sheet → ML Kit Barcode Scanner (CameraX)
+    - QR payload: "omnidrive://pair?vault_id&host&dpk&nonce&exp&v=1"
+    - SAS "Kod: 3847" → SHA-256(session_key||nonce)[0..2] jako 4 cyfry dziesiętne
+    - "Zatwierdź" → POST /api/mobile/pair-confirm + zapis klucza do Android Keystore
+    - "Anuluj" → POST /api/mobile/pair-cancel
+    - camera placeholder img → zastąpić CameraX PreviewView
+    - expiry QR: po 5 minutach kod wygasa → pokazać komunikat "Kod wygasł, wygeneruj nowy"
+    - "more_vert" na karcie urządzenia → sheet: Szczegóły / Usuń urządzenie
+-->
+<!DOCTYPE html>
+
+<html class="dark" lang="pl"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>OmniDrive - Urządzenia</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "secondary-container": "#00b47d",
+                    "inverse-on-surface": "#2a3233",
+                    "surface-container-lowest": "#080f11",
+                    "primary-fixed": "#9cefff",
+                    "on-error": "#690005",
+                    "on-surface": "#dce4e5",
+                    "outline-variant": "#3b494c",
+                    "inverse-surface": "#dce4e5",
+                    "surface-container-high": "#242b2d",
+                    "inverse-primary": "#006875",
+                    "on-primary": "#00363d",
+                    "surface-variant": "#2f3637",
+                    "on-secondary": "#003824",
+                    "secondary-fixed": "#6ffbbe",
+                    "surface-container-highest": "#2f3637",
+                    "on-secondary-container": "#003e28",
+                    "error-container": "#93000a",
+                    "on-tertiary-container": "#754900",
+                    "on-tertiary-fixed": "#2a1700",
+                    "surface-tint": "#01daf3",
+                    "outline": "#859396",
+                    "on-secondary-fixed": "#002114",
+                    "error": "#ffb4ab",
+                    "on-tertiary": "#472a00",
+                    "tertiary-fixed-dim": "#ffb95f",
+                    "tertiary": "#ffddb8",
+                    "on-surface-variant": "#bac9cc",
+                    "primary-fixed-dim": "#01daf3",
+                    "tertiary-container": "#ffb95f",
+                    "on-secondary-fixed-variant": "#005236",
+                    "surface-container": "#1a2122",
+                    "on-error-container": "#ffdad6",
+                    "on-tertiary-fixed-variant": "#653e00",
+                    "surface-bright": "#333a3c",
+                    "tertiary-fixed": "#ffddb8",
+                    "on-primary-container": "#005b67",
+                    "on-background": "#dce4e5",
+                    "on-primary-fixed": "#001f24",
+                    "secondary-fixed-dim": "#4edea3",
+                    "on-primary-fixed-variant": "#004f58",
+                    "background": "#0d1516",
+                    "secondary": "#4edea3",
+                    "primary": "#9cefff",
+                    "primary-container": "#00daf3",
+                    "surface-container-low": "#161d1e",
+                    "surface-dim": "#0d1516",
+                    "surface": "#0d1516"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "lg": "24px",
+                    "xl": "32px",
+                    "xs": "4px",
+                    "md": "16px",
+                    "container-margin": "20px",
+                    "base": "4px",
+                    "sm": "8px",
+                    "gutter": "12px"
+            },
+            "fontFamily": {
+                    "display-lg": ["Inter"],
+                    "data-mono": ["monospace"],
+                    "label-sm": ["Inter"],
+                    "body-md": ["Inter"],
+                    "headline-md": ["Inter"],
+                    "title-sm": ["Inter"]
+            },
+            "fontSize": {
+                    "display-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "data-mono": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                    "label-sm": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "500"}],
+                    "body-md": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                    "title-sm": ["18px", {"lineHeight": "24px", "fontWeight": "600"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+        .scan-line {
+            height: 2px;
+            background: #01daf3;
+            box-shadow: 0 0 10px #01daf3;
+            position: absolute;
+            width: 100%;
+            top: 50%;
+        }
+        body { background-color: #0d1516; color: #dce4e5; }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="font-body-md antialiased min-h-screen pb-24">
+<!-- TopAppBar -->
+<header class="bg-zinc-950 border-b border-zinc-800 flex justify-between items-center w-full px-5 py-3 h-16 sticky z-40">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-cyan-400">cloud_done</span>
+<h1 class="text-xl font-mono font-black tracking-tighter text-cyan-400">OmniDrive</h1>
+</div>
+<div class="flex items-center gap-4">
+<button class="active:scale-95 transition-transform">
+<span class="material-symbols-outlined text-cyan-400">account_circle</span>
+</button>
+</div>
+</header>
+<main class="px-container-margin pt-md">
+<div class="mb-lg">
+<h2 class="font-headline-md text-headline-md text-on-surface">Zarządzaj urządzeniami</h2>
+<p class="text-on-surface-variant text-label-sm mt-xs">Aktywne sesje i autoryzowane systemy</p>
+</div>
+<!-- Device Cards -->
+<div class="grid grid-cols-1 gap-md">
+<!-- This Device -->
+<div class="bg-[#2C2C2C] border-2 border-primary-container rounded-[1.5rem] p-md relative overflow-hidden">
+<div class="absolute top-md right-md font-data-mono text-[10px] text-primary-container bg-primary-container/10 px-2 py-0.5 rounded border border-primary-container/20">ID: OD-7721</div>
+<div class="flex gap-md items-start">
+<div class="w-12 h-12 bg-primary-container/10 border border-primary-container/20 rounded-xl flex items-center justify-center text-primary-container">
+<span class="material-symbols-outlined">smartphone</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h3 class="font-title-sm text-title-sm text-on-surface">Pixel 8 Pro</h3>
+<span class="w-2 h-2 rounded-full bg-secondary"></span>
+</div>
+<p class="text-on-surface-variant text-label-sm">Android 14 • <span class="text-primary-container font-semibold text-[10px] uppercase">To urządzenie</span></p>
+<p class="text-on-surface-variant font-data-mono text-[11px] mt-sm">Ostatnio widoczne: Teraz</p>
+</div>
+</div>
+</div>
+<!-- Laptop -->
+<div class="bg-[#2C2C2C] border border-white/12 rounded-[1.5rem] p-md relative overflow-hidden">
+<div class="absolute top-md right-md font-data-mono text-[10px] text-on-surface-variant bg-surface-variant px-2 py-0.5 rounded border border-outline-variant">ID: OD-8832</div>
+<div class="flex gap-md items-start">
+<div class="w-12 h-12 bg-surface-variant border border-outline-variant rounded-xl flex items-center justify-center text-on-surface-variant">
+<span class="material-symbols-outlined">laptop</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h3 class="font-title-sm text-title-sm text-on-surface">Workstation-X</h3>
+<span class="w-2 h-2 rounded-full bg-secondary"></span>
+</div>
+<p class="text-on-surface-variant text-label-sm">Windows 11 Professional</p>
+<p class="text-on-surface-variant font-data-mono text-[11px] mt-sm">Ostatnio widoczne: 12 min temu</p>
+</div>
+</div>
+</div>
+<!-- Tablet (offline) -->
+<div class="bg-[#2C2C2C] border border-white/12 rounded-[1.5rem] p-md relative overflow-hidden opacity-80">
+<div class="absolute top-md right-md font-data-mono text-[10px] text-on-surface-variant bg-surface-variant px-2 py-0.5 rounded border border-outline-variant">ID: OD-1209</div>
+<div class="flex gap-md items-start">
+<div class="w-12 h-12 bg-surface-variant border border-outline-variant rounded-xl flex items-center justify-center text-on-surface-variant">
+<span class="material-symbols-outlined">tablet_android</span>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h3 class="font-title-sm text-title-sm text-on-surface">Home Tablet</h3>
+<span class="w-2 h-2 rounded-full bg-outline-variant"></span>
+</div>
+<p class="text-on-surface-variant text-label-sm">iPadOS 17.4</p>
+<p class="text-on-surface-variant font-data-mono text-[11px] mt-sm">Ostatnio widoczne: 3 dni temu</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Stats -->
+<div class="mt-xl grid grid-cols-2 gap-md">
+<div class="bg-surface-container rounded-xl p-md border border-outline-variant">
+<p class="text-label-sm font-label-sm text-secondary mb-xs">STATUS</p>
+<div class="flex items-baseline gap-1">
+<span class="text-headline-md font-headline-md">3</span>
+<span class="text-label-sm text-on-surface-variant">online</span>
+</div>
+</div>
+<div class="bg-surface-container rounded-xl p-md border border-outline-variant">
+<p class="text-label-sm font-label-sm text-primary mb-xs">LIMIT</p>
+<div class="flex items-baseline gap-1">
+<span class="text-headline-md font-headline-md">5</span>
+<span class="text-label-sm text-on-surface-variant">max</span>
+</div>
+</div>
+</div>
+</main>
+<!-- FAB -->
+<div class="fixed right-container-margin bottom-32 z-40">
+<button class="w-14 h-14 bg-primary-container text-on-primary rounded-2xl flex items-center justify-center shadow-lg active:scale-95 transition-transform">
+<span class="material-symbols-outlined text-2xl" style="font-variation-settings: 'wght' 600;">add</span>
+</button>
+</div>
+<!-- QR Scanner Bottom Sheet -->
+<div class="fixed inset-0 bg-black/60 z-50 flex items-end justify-center backdrop-blur-sm">
+<div class="bg-[#4a4a4a] w-full rounded-t-[2.5rem] border-t border-white/10 max-w-lg pb-10 px-container-margin">
+<div class="flex justify-center py-4">
+<div class="w-12 h-1 bg-outline-variant rounded-full"></div>
+</div>
+<div class="text-center mb-lg">
+<h2 class="font-headline-md text-headline-md text-on-surface">Zeskanuj kod QR</h2>
+<p class="text-on-surface-variant text-label-sm">Dodaj nowe urządzenie do swojego konta</p>
+</div>
+<!-- QR Viewport -->
+<div class="relative w-64 h-64 mx-auto mb-lg">
+<div class="absolute inset-0 rounded-[2rem] border-2 border-white/20 overflow-hidden bg-black">
+<div class="absolute inset-0 bg-zinc-900 flex items-center justify-center">
+<span class="material-symbols-outlined text-6xl text-zinc-700">qr_code_scanner</span>
+</div>
+<!-- Crosshair corners -->
+<div class="absolute top-6 left-6 w-8 h-8 border-t-4 border-l-4 border-cyan-400 rounded-tl-lg"></div>
+<div class="absolute top-6 right-6 w-8 h-8 border-t-4 border-r-4 border-cyan-400 rounded-tr-lg"></div>
+<div class="absolute bottom-6 left-6 w-8 h-8 border-b-4 border-l-4 border-cyan-400 rounded-bl-lg"></div>
+<div class="absolute bottom-6 right-6 w-8 h-8 border-b-4 border-r-4 border-cyan-400 rounded-br-lg"></div>
+<div class="scan-line"></div>
+</div>
+</div>
+<!-- SAS Verification -->
+<div class="bg-zinc-900 border border-outline-variant rounded-xl p-md flex items-center justify-between">
+<div>
+<p class="text-label-sm text-on-surface-variant uppercase tracking-widest">Weryfikacja SAS</p>
+<p class="font-data-mono text-xl text-primary-container font-bold">Kod: 3847</p>
+</div>
+<div class="flex gap-sm">
+<button class="px-4 py-2 bg-surface-variant text-on-surface border border-outline-variant rounded-lg text-label-sm font-semibold hover:bg-zinc-800 transition-colors">Anuluj</button>
+<button class="px-4 py-2 bg-secondary-fixed text-on-secondary-fixed rounded-lg text-label-sm font-semibold active:opacity-80 transition-opacity">Zatwierdź</button>
+</div>
+</div>
+</div>
+</div>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center h-20 px-2 bg-zinc-950 border-t border-zinc-800">
+<a class="flex flex-col items-center justify-center text-zinc-500 pt-2 pb-safe hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined">folder_open</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest mt-1">Pliki</span>
+</a>
+<a class="flex flex-col items-center justify-center text-zinc-500 pt-2 pb-safe hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined">enhanced_encryption</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest mt-1">Skarbiec</span>
+</a>
+<a class="flex flex-col items-center justify-center text-cyan-400 border-t-2 border-cyan-400 pt-2 pb-safe" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">devices</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest mt-1">Urządzenia</span>
+</a>
+<a class="flex flex-col items-center justify-center text-zinc-500 pt-2 pb-safe hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest mt-1">Ustawienia</span>
+</a>
+</nav>
+</body></html>

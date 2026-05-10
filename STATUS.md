@@ -1,8 +1,8 @@
 # OmniDrive — Kronika projektu & Roadmapa (Single Source of Truth)
 
-> **Ostatnia aktualizacja:** 2026-04-28
-> **Aktualna wersja:** `v0.3.6` — commit `0931683` — instalator `OmniDrive-Setup-0.3.6.exe` gotowy (23 MB)
-> **Status:** Faza N.5 Pre-Dell Hardening **ZAKOŃCZONA**. Czekamy na Dell smoke test → tag `v0.3.6`.
+> **Ostatnia aktualizacja:** 2026-05-10
+> **Aktualna wersja:** `v0.3.18` — commit `d5f71e3` (lokalny, niepushed) — instalator `OmniDrive-Setup-0.3.18.exe` gotowy
+> **Status:** Bleeding B2 + retry storm fixes (5 commitów). Sesja 2026-05-10 wydała 11 wersji (v0.3.8–v0.3.18). Czekamy na push + Dell smoke test z v0.3.18.
 > **Zasada:** ten plik to jedyne źródło prawdy. Stare pliki planowania w `docs/archive/`.
 
 ---
@@ -439,33 +439,85 @@
 | `cp target/release/*.exe dist/installer/payload/` | Payload aktualny |
 | Inno Setup → `OmniDrive-Setup-0.3.6.exe` (23 MB) | Instalator gotowy do Dell smoke testu |
 
+### ✅ v0.3.7 — Wizard single-column redesign + tray icons fix
+
+| Co zrobiono | Wynik |
+|-------------|-------|
+| Wizard onboarding przemodelowany na single-column layout | Czytelniejszy flow, mniej nawigacji bocznej |
+| Tray icons fix — poprawione warianty BASE/SYNCING/SYNCED/ERROR/LOCKED | Status w zasobniku zgodny ze stanem daemona |
+| `OmniDrive-Setup-0.3.7.exe` zbudowany | Gotowy do Dell smoke testu (zaakceptowany jako poprzednia bazówka v0.3.x) |
+
+### ✅ v0.3.8–v0.3.17 — Sesja stabilizacji onboarding+vault (2026-05-10)
+
+> **Geneza:** seria 11 wersji wydana w jednej sesji 2026-05-10 — fixy sequencyjne wykryte podczas Lenovo+Dell testów, każdy bez większego rozgrzebywania architektury.
+
+| Wersja | Commit | Co zrobiono |
+|--------|--------|-------------|
+| v0.3.14 | `ce9ff10` | **Post-join membership fix:** po `join-existing` graft tworzymy `user+device+vault_member(owner)` dla lokalnego urządzenia → `create_session_for_local_device` przestaje failować, vault unlock zwraca `session_token`, `lock` przestaje wracać 403. Wizard kończy się przez `location.replace('/')` zamiast `loadDashboard()`. |
+| v0.3.15 | `ce9ff10` | **Split-brain change-password fix:** `post_rotate_key` i `post_change_password` natychmiast wywołują `spawn_post_rotation_backup()` → upload `latest.db.enc` na wszystkich providerów bez czekania na 1h tick metadata-backup workera. |
+| v0.3.16 | `8c33d19` | **`IncorrectPassphrase` fallback fix:** błąd od jednego providera (np. tylko Scaleway ma stary klucz) nie przerywa fallbacka — daemon próbuje dalszych providerów, finalny `IncorrectPassphrase` zwraca tylko gdy WSZYSCY odrzucili. Klucz dla Dell join-existing kiedy Scaleway krzywo. |
+| v0.3.17 | `c08e164` | **Provider state guard + read-only test endpoint:** `post_setup_provider` nie cofa już `COMPLETED → IN_PROGRESS` (regresja). Dodany `POST /api/providers/{name}/test` — sprawdza stored credentials bez aktualizacji onboarding state. |
+
+### ✅ v0.3.18 — Bleeding B2 + retry storm fixes (NEW — 2026-05-10)
+
+> **Geneza:** Backblaze B2 zaalarmował 2026-05-10 wieczorem o 75% daily download cap mimo „tylko logowania". Diagnoza wykazała: orphaned pack `5962635a87...` z `attempts: 3158` na Scaleway od kwietnia + scrubber co 5 min robi GET deep verify na małym vaulcie + cloud_guard `daily_egress_bytes` raportuje 0 (BUG — accounting nie liczy egressu workerów). Daemon zatrzymany na noc; v0.3.18 = naprawienie wszystkich 4 wektorów.
+
+| Krok | Commit | Co zrobiono |
+|------|--------|-------------|
+| **Fix #1** Cloud guard egress accounting | `6ee434c` | `cloud_guard::try_authorize_read()` + `reconcile_read_bytes()`. Hooki w `scrubber` (HEAD + GET deep verify), `repair::download_shard` (+`estimated_size` arg w 3 callsitach), `disaster_recovery::download_bytes`/`list_snapshot_keys` (+`Option<&SqlitePool>`), `downloader` (+post-GET reconcile). Wszystkie GET-y storage zliczają realny `content_length()` do `daily_egress_bytes`. |
+| **Fix #2** Backoff plateau + PERMANENTLY_FAILED | `da5a113` | `UPLOAD_RETRY_PLATEAU_AT=100` → `retry_delay()` zwraca 1h plateau zamiast 60s. `UPLOAD_PERMANENT_FAILURE_AT=1000` → target dostaje status `PERMANENTLY_FAILED`, jest wykluczony z `get_incomplete_pack_shards`. Pack z PERMANENTLY_FAILED targetami eventualnie dostaje `mark_upload_job_failed` → retry storm zamyka się naturalnie. Helper `escalate_target_if_permanent` w 3 retry callsitach uploaderze. |
+| **Fix #3** Dashboard retry-storm alert | `aa4aaa7` | `db::list_retry_storm_targets(threshold)` + `RetryStormTargetRecord` (join `upload_jobs`). `GET /api/maintenance/retry-storms` zwraca thresholds + max_attempts + targets. UI: nowy `retryStormAlertSection` (hidden by default) w sekcji Przegląd; `fetchRetryStorms` polluje co 60s, pokazuje worst pack z liczbą prób + lista 6 targetów. |
+| **Fix #4** GC orphan packs endpoint | `b158514` | `db::gc_orphan_packs()` znajduje packs gdzie żaden `pack_locations.chunk_id` nie ma referencji w `chunk_refs`, w jednym TX kasuje: `upload_job_targets` → `upload_jobs` → `pack_locations` → `packs` (cascade `pack_shards`). `POST /api/maintenance/gc-orphans` (Role::Admin) zwraca `GcOrphanReport` (counts per tabela + lista pack_id). |
+| **Fix #5** Adaptive scrubber poll/modulus | `91fa8f5` | `db::count_all_packs(pool)`. Dla `pack_count < 100`: `effective_poll_interval` ≥ 1h (zamiast 5 min default), `effective_deep_verify_modulus` ≥ 100 (zamiast 20). 5× mniej deep GET-ów na małym vault → eliminuje 215 MB B2 egress/dzień. |
+| **Release** v0.3.18 bump + build | `d5f71e3` | Bump 0.3.17 → 0.3.18 we wszystkich 6 `Cargo.toml` + `installer/omnidrive.iss`. `cargo build --release --workspace` (1m 09s). Binarki skopiowane do `dist/installer/payload/`. `OmniDrive-Setup-0.3.18.exe` (24 MB) wygenerowany przez Inno Setup. |
+
+**Testy:** 200+ unit testów PASS (90 + 102 + 11 + e2e_sync). 1 e2e_recovery FAIL (`disaster_recovery_rebuilds_local_db_inventory_after_total_db_loss`) — pre-existing, fail też na v0.3.17 baseline; wymaga `--features test-helpers` (security gate na `OMNIDRIVE_AUTO_RESTORE_PASSPHRASE` w release builds). Patrz `feedback_e2e_recovery_test.md` w memory.
+
 ---
 
 ## 12. Co przed nami
 
-### 🔜 Dell Smoke Test Gate (NEXT — P0)
+### 🔜 Push v0.3.18 commitów na origin (NEXT — P0)
 
-> Gate przed tagiem `v0.3.6`. Świeża instalacja na Dellu.
+> Sześć commitów lokalnych (`6ee434c`, `da5a113`, `aa4aaa7`, `b158514`, `91fa8f5`, `d5f71e3`) niepushed na origin. `git push origin main` jako pierwszy krok następnej sesji.
 
-| Assert | Co weryfikuje |
-|--------|---------------|
-| `Join Existing Vault` z passphrase + B2/R2 | Graft metadanych + unlock end-to-end |
-| `%LOCALAPPDATA%\OmniDrive\restore-staging-*` pusty po graftcie | A.0+A.2+A.4 działają na Dellu (Defender) |
-| Watcher w logach pokazuje `[DRY_RUN]` | A.1 gate aktywny przed Completed onboarding |
-| `accept_device` z `[0;32]` → `400 low_order_pubkey` | A.3 działa |
-| `curl -H "Origin: http://localhost.evil.com"` → CORS reject | B.1 działa |
-| Brute-force `/api/recovery/restore` 10× → 429 po 3. próbie | B.2 działa |
-| OAuth callback → `window.location.hash === ""` | B.3 Krok 1 działa |
-| Cross-device Identicon + mnemonik (Lenovo ↔ Dell) | M.5 deterministyczny SVG + te same słowa BIP-39 |
-| Crash daemona (`kill -9`) podczas graftu → restart → retry | Resilience po crash |
+### 🔜 Lenovo install v0.3.18 + GC orphans (P0)
 
-### 🔜 Tag v0.3.6 Release (po Dell smoke — P0)
+| Krok | Cel |
+|------|-----|
+| Zainstaluj `OmniDrive-Setup-0.3.18.exe` na Lenovo | Daemon na fixach v0.3.18 (zatrzymany od 2026-05-10 wieczorem) |
+| Unlock vault + wyciągnij `session_token` z `/api/vault/status` | Auth dla maintenance endpointów |
+| `POST /api/maintenance/gc-orphans` z Bearer token | Sprząta orphan pack `5962635a87...` (3158 prób Scaleway) i jego `upload_jobs`/`targets` |
+| Sprawdź `/api/diagnostics/health` → `daily_egress_bytes` rośnie podczas operacji | Dowód że Fix #1 działa (wcześniej raportował 0) |
+| Sprawdź `/api/maintenance/retry-storms` → `targets: []` po GC | Dowód że Fix #4 wyczyścił orphan |
+
+### 🔜 Dell Smoke Test Gate z v0.3.18 (P0)
+
+> Gate przed tagiem `v0.3.18`. Świeża instalacja na Dellu, weryfikacja v0.3.14–v0.3.18 fixów end-to-end.
+
+| Assert | Co weryfikuje | Wersja źródłowa |
+|--------|---------------|-----------------|
+| `Join Existing Vault` z passphrase + B2/R2/Scaleway | Graft metadanych + unlock end-to-end | v0.3.6 + v0.3.14 |
+| Po join-existing: vault się odblokowuje, `lock` zwraca 200 | session_token zapisany przez post-graft membership creation | v0.3.14 |
+| Zmiana hasła → natychmiast widoczna na drugim urządzeniu (po refresh) | `spawn_post_rotation_backup` upload bez 1h tick | v0.3.15 |
+| Join-existing z fragmentem zepsutych providerów (np. Scaleway) → przechodzi | `IncorrectPassphrase` fallback nie blokuje | v0.3.16 |
+| Wielokrotne `setup-provider` updates nie cofają stanu COMPLETED | Provider state guard | v0.3.17 |
+| `POST /api/providers/{name}/test` zwraca read-only walidację | Read-only test endpoint | v0.3.17 |
+| `POST /api/maintenance/gc-orphans` (admin) usuwa orphan packs | Fix #4 | v0.3.18 |
+| Dashboard retry-storm card hidden gdy max_attempts < 100 | Fix #3 | v0.3.18 |
+| Po 24h pracy: `daily_egress_bytes` > 0, scrubber poll faktycznie 1h dla małego vault | Fix #1 + #5 | v0.3.18 |
+| `%LOCALAPPDATA%\OmniDrive\restore-staging-*` pusty po graftcie | A.0+A.2+A.4 (N.5) na Dellu | v0.3.6 |
+| `accept_device` z `[0;32]` → `400 low_order_pubkey` | A.3 działa | v0.3.6 |
+| Brute-force `/api/recovery/restore` 10× → 429 po 3. próbie | B.2 działa | v0.3.6 |
+| Cross-device Identicon + mnemonik (Lenovo ↔ Dell) | M.5 deterministic | v0.3.5 |
+
+### 🔜 Tag v0.3.18 Release (po Dell smoke — P0)
 
 | Krok | Co zrobiono |
 |------|-------------|
-| N.4 | Commit `release: v0.3.6`, push, tag `v0.3.6` |
-| N.5 | SHA-256 instalatora w GitHub Releases + `README.md` |
-| CHANGELOG | Wpis v0.3.6: N.5 Paczki A+B+C — 20 znalezisk hardening |
+| — | `git tag v0.3.18` + push tag |
+| — | SHA-256 instalatora w GitHub Releases + `README.md` |
+| CHANGELOG | Wpis v0.3.18: bleeding B2 + retry storm fixes (5 fixów) |
 
 ### ⬜ Batch 7 — POST-DELL (P2 — Backlog)
 
@@ -546,7 +598,7 @@ Trait `FileSystemAdapter`, refactor `cfapi` → implementacja traitu, prototyp F
 | **D1** | `skarbiec.app` = static content ONLY (CF Pages) | Cloudflare Tunnel → daemon = attack surface (session hijack, RCE). Static HTML = brak tajemnic do hackowania. |
 | **D1a** | Cloudflare Pages dla decryptora (nie GH Pages) | Zero kosztu. Domena już w CF → jeden klik. Edge CDN. Fallback: `omnidrive.github.io/share`. |
 | **D2** | Hybrid E2E: mockito CI + manual smoke na real B2 | Real B2 smoke = prawdziwy test; mockito = szybkie CI bez kosztów egress. |
-| **D3** | Desktop polish first → mobile dopiero po v0.4.0 | Cryptomator latami desktop-only. Mobile zbyt wcześnie = rozproszenie. |
+| **D3** | Desktop 100% ready (v0.4.0) → dopiero mobile | Kolejność: Dell smoke → O.1 → Batch 7 → Epic 33 Tryb B → O.2+ → v0.4.0 → Faza P. Cryptomator latami desktop-only. Mobile zbyt wcześnie = rozproszenie. |
 | **D4** | Mobile V1 = read-only SQLite snapshot (Opcja C) | Daemon writes / mobile reads = zero konfliktu. Write (CRDT) = osobna decyzja po V1. |
 | **D5** | UniFFI (rekomendacja) — decyzja przed Fazą P | Native quality dla security app. Flutter = ciężki runtime Dart. |
 | **D6** | Landing page `skarbiec.app` (post v0.3.0) | What is it / Screenshots / Download / GitHub. Proste. |

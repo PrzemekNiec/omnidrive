@@ -1,0 +1,257 @@
+<!--
+  Źródło: Google Stitch (mockup wygenerowany 2026-04-25)
+  Ekran: Skarbiec — Vault Info
+  NIE EDYTOWAĆ — to snapshot designu, nie plik produkcyjny.
+  Implementacja: Jetpack Compose (Faza R).
+
+  Do zrobienia przy integracji:
+    - usunąć duplikat <link> do Material Symbols
+    - Vault ID → z SharedPreferences / Keystore metadata
+    - "Parowanie: Aktywne ✓" → sprawdzić pairing_status w devices table (snapshot)
+    - "Pokaż 12 słów odzyskiwania" → wymaga osobnego ekranu z biometrycznym potwierdzeniem
+    - "2023-11-24" rotacja klucza → z vault metadata w snapshot
+    - "2024-11-24" wygaśnięcie → vault_key_generation expiry
+    - "Wyloguj" → wyczyść Keystore + SharedPreferences, wróć do Lock Screen
+    - "Cofnij parowanie" → DELETE FROM devices WHERE id=this_device + revoke Keystore key
+    - ostrzeżenie "Cofnięcie parowania" → dialog potwierdzający z 12-word seed reminder
+-->
+<!DOCTYPE html>
+
+<html class="dark" lang="pl"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "secondary-container": "#00b47d",
+                      "inverse-on-surface": "#2a3233",
+                      "surface-container-lowest": "#080f11",
+                      "primary-fixed": "#9cefff",
+                      "on-error": "#690005",
+                      "on-surface": "#dce4e5",
+                      "outline-variant": "#3b494c",
+                      "inverse-surface": "#dce4e5",
+                      "surface-container-high": "#242b2d",
+                      "inverse-primary": "#006875",
+                      "on-primary": "#00363d",
+                      "surface-variant": "#2f3637",
+                      "on-secondary": "#003824",
+                      "secondary-fixed": "#6ffbbe",
+                      "surface-container-highest": "#2f3637",
+                      "on-secondary-container": "#003e28",
+                      "error-container": "#93000a",
+                      "on-tertiary-container": "#754900",
+                      "on-tertiary-fixed": "#2a1700",
+                      "surface-tint": "#01daf3",
+                      "outline": "#859396",
+                      "on-secondary-fixed": "#002114",
+                      "error": "#ffb4ab",
+                      "on-tertiary": "#472a00",
+                      "tertiary-fixed-dim": "#ffb95f",
+                      "tertiary": "#ffddb8",
+                      "on-surface-variant": "#bac9cc",
+                      "primary-fixed-dim": "#01daf3",
+                      "tertiary-container": "#ffb95f",
+                      "on-secondary-fixed-variant": "#005236",
+                      "surface-container": "#1a2122",
+                      "on-error-container": "#ffdad6",
+                      "on-tertiary-fixed-variant": "#653e00",
+                      "surface-bright": "#333a3c",
+                      "tertiary-fixed": "#ffddb8",
+                      "on-primary-container": "#005b67",
+                      "on-background": "#dce4e5",
+                      "on-primary-fixed": "#001f24",
+                      "secondary-fixed-dim": "#4edea3",
+                      "on-primary-fixed-variant": "#004f58",
+                      "background": "#0d1516",
+                      "secondary": "#4edea3",
+                      "primary": "#9cefff",
+                      "primary-container": "#00daf3",
+                      "surface-container-low": "#161d1e",
+                      "surface-dim": "#0d1516",
+                      "surface": "#0d1516"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.25rem",
+                      "lg": "0.5rem",
+                      "xl": "0.75rem",
+                      "full": "9999px"
+              },
+              "spacing": {
+                      "lg": "24px",
+                      "xl": "32px",
+                      "xs": "4px",
+                      "md": "16px",
+                      "container-margin": "20px",
+                      "base": "4px",
+                      "sm": "8px",
+                      "gutter": "12px"
+              },
+              "fontFamily": {
+                      "display-lg": ["Inter"],
+                      "data-mono": ["monospace"],
+                      "label-sm": ["Inter"],
+                      "body-md": ["Inter"],
+                      "headline-md": ["Inter"],
+                      "title-sm": ["Inter"]
+              },
+              "fontSize": {
+                      "display-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                      "data-mono": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                      "label-sm": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "500"}],
+                      "body-md": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                      "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                      "title-sm": ["18px", {"lineHeight": "24px", "fontWeight": "600"}]
+              }
+            },
+          },
+        }
+    </script>
+<style>
+        body { background-color: #0d1516; color: #dce4e5; -webkit-font-smoothing: antialiased; }
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+        .technical-card { background: #2C2C2C; border: 1px solid rgba(255, 255, 255, 0.12); }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="font-body-md selection:bg-primary-container selection:text-on-primary">
+<!-- TopAppBar -->
+<header class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-5 py-3 h-16 bg-zinc-950 border-b border-zinc-800">
+<div class="flex items-center gap-3 active:scale-95 transition-transform cursor-pointer">
+<span class="material-symbols-outlined text-cyan-400">cloud_done</span>
+<h1 class="text-xl font-mono font-black tracking-tighter text-cyan-400 uppercase">OmniDrive</h1>
+</div>
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-zinc-400 hover:bg-zinc-900 p-2 rounded-full transition-colors">account_circle</span>
+</div>
+</header>
+<main class="pt-20 pb-24 px-container-margin min-h-screen max-w-xl mx-auto space-y-md">
+<!-- Hero Vault Status Card -->
+<section class="technical-card rounded-xl p-lg relative overflow-hidden">
+<div class="absolute top-4 right-4 text-[10px] font-data-mono text-zinc-500 uppercase tracking-widest">Vault_Main_01</div>
+<div class="space-y-sm">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-secondary">verified_user</span>
+<span class="text-secondary font-bold font-title-sm">Skarbiec Aktywny</span>
+</div>
+<div class="space-y-xs">
+<p class="text-zinc-500 text-label-sm uppercase">Vault ID</p>
+<p class="font-data-mono text-primary text-sm break-all tracking-tight bg-zinc-900/50 p-2 rounded border border-white/5">a3f9d4e2-8b1c-4f7a-92d1-0c5e7b39c72b</p>
+</div>
+</div>
+<div class="mt-lg flex items-center justify-between">
+<div class="flex flex-col">
+<span class="text-xs text-zinc-500 font-medium uppercase tracking-tighter">Parowanie</span>
+<span class="text-secondary-container font-semibold">Aktywne ✓</span>
+</div>
+<div class="h-10 w-10 rounded-full border border-outline-variant flex items-center justify-center bg-surface-container">
+<span class="material-symbols-outlined text-cyan-400" style="font-variation-settings: 'wght' 700;">sync</span>
+</div>
+</div>
+<button class="w-full mt-lg py-3 bg-zinc-900 border border-outline-variant rounded-lg flex items-center justify-center gap-2 active:scale-95 transition-all text-on-surface hover:bg-zinc-800">
+<span class="material-symbols-outlined text-sm">lock_open</span>
+<span class="text-sm font-semibold tracking-wide">Pokaż 12 słów odzyskiwania</span>
+</button>
+</section>
+<!-- Technical Specs -->
+<div class="pt-sm">
+<h2 class="text-zinc-500 font-bold text-label-sm uppercase tracking-[0.2em] mb-sm px-1">Parametry Systemowe</h2>
+<div class="grid grid-cols-1 gap-2">
+<div class="technical-card rounded-xl p-md flex items-start gap-md">
+<div class="p-2 bg-surface-container rounded-lg">
+<span class="material-symbols-outlined text-primary">enhanced_encryption</span>
+</div>
+<div class="flex-1">
+<div class="flex justify-between items-start">
+<h3 class="text-on-surface font-title-sm text-sm">Szyfrowanie</h3>
+<span class="text-[10px] font-data-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded border border-primary/20">AES-256-GCM</span>
+</div>
+<p class="text-xs text-zinc-500 mt-1">Algorytm klasy wojskowej z kluczem dynamicznym.</p>
+</div>
+</div>
+<div class="technical-card rounded-xl p-md flex items-start gap-md">
+<div class="p-2 bg-surface-container rounded-lg">
+<span class="material-symbols-outlined text-secondary">security</span>
+</div>
+<div class="flex-1">
+<h3 class="text-on-surface font-title-sm text-sm">Klucz Skarbca</h3>
+<div class="mt-2 space-y-1">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[14px] text-zinc-500">phone_android</span>
+<span class="text-xs font-data-mono text-zinc-400">Android Keystore System</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[14px] text-zinc-500">fingerprint</span>
+<span class="text-xs font-data-mono text-zinc-400">Wymagana Biometria: TAK</span>
+</div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-2">
+<div class="technical-card rounded-xl p-md">
+<p class="text-[10px] text-zinc-500 font-bold uppercase tracking-tighter">Ostatnia rotacja</p>
+<p class="mt-2 font-data-mono text-sm text-on-surface">2023-11-24</p>
+<p class="text-[10px] text-zinc-600 font-data-mono">14:22:10 UTC</p>
+</div>
+<div class="technical-card rounded-xl p-md">
+<p class="text-[10px] text-zinc-500 font-bold uppercase tracking-tighter">Wygaśnięcie</p>
+<p class="mt-2 font-data-mono text-sm text-on-surface">2024-11-24</p>
+<div class="flex items-center gap-1 mt-1">
+<div class="w-1 h-1 rounded-full bg-secondary"></div>
+<span class="text-[10px] text-secondary font-bold uppercase">Ważny</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Danger Zone -->
+<div class="pt-lg space-y-md">
+<h2 class="text-error font-bold text-label-sm uppercase tracking-[0.2em] px-1">Strefa Zagrożenia</h2>
+<div class="flex flex-col gap-3">
+<button class="w-full h-14 rounded-xl border border-error/30 flex items-center justify-between px-md active:scale-[0.98] transition-all group hover:bg-error/5">
+<div class="flex items-center gap-md">
+<span class="material-symbols-outlined text-error">logout</span>
+<span class="font-semibold text-error">Wyloguj</span>
+</div>
+<span class="material-symbols-outlined text-zinc-600 group-hover:translate-x-1 transition-transform">chevron_right</span>
+</button>
+<button class="w-full h-14 rounded-xl border border-error flex items-center justify-center gap-md bg-error/10 active:scale-[0.98] transition-all hover:bg-error/20">
+<span class="material-symbols-outlined text-error" style="font-variation-settings: 'FILL' 1;">link_off</span>
+<span class="font-bold text-error uppercase tracking-wider text-sm">Cofnij parowanie</span>
+</button>
+<p class="text-[11px] text-zinc-600 text-center px-lg leading-relaxed">
+                    Cofnięcie parowania spowoduje nieodwracalne usunięcie lokalnych kluczy dostępu. Upewnij się, że posiadasz słowa odzyskiwania.
+                </p>
+</div>
+</div>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center h-20 px-2 bg-zinc-950 border-t border-zinc-800">
+<a class="flex flex-col items-center justify-center text-zinc-500 pt-2 pb-safe hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined mb-1">folder_open</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest">Pliki</span>
+</a>
+<a class="flex flex-col items-center justify-center text-cyan-400 border-t-2 border-cyan-400 pt-2 pb-safe" href="#">
+<span class="material-symbols-outlined mb-1" style="font-variation-settings: 'FILL' 1;">enhanced_encryption</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest">Skarbiec</span>
+</a>
+<a class="flex flex-col items-center justify-center text-zinc-500 pt-2 pb-safe hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined mb-1">devices</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest">Urządzenia</span>
+</a>
+<a class="flex flex-col items-center justify-center text-zinc-500 pt-2 pb-safe hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined mb-1">settings</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest">Ustawienia</span>
+</a>
+</nav>
+</body></html>

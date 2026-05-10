@@ -1,0 +1,263 @@
+<!--
+  Źródło: Google Stitch (mockup wygenerowany 2026-04-25)
+  Ekran: Ustawienia
+  NIE EDYTOWAĆ — to snapshot designu, nie plik produkcyjny.
+  Implementacja: Jetpack Compose (Faza R/S).
+
+  Do zrobienia przy integracji:
+    - usunąć duplikat <link> do Material Symbols
+    - avatar img (lh3.googleusercontent) → zastąpić account_circle lub inicjały z nazwy użytkownika
+    - email "przemek@ik.me" → z danych parowania / vault metadata
+    - "Vault Verified" → status parowania z SharedPreferences
+    - toggle biometryczne → BiometricManager.canAuthenticate() + SharedPreferences
+    - "Po 5 minutach" → edytowalny bottom sheet z opcjami: 1 min / 5 min / 15 min / Nigdy
+    - "Zużycie Cache 1.42 GB / 5.0 GB" → File.listFiles() w cache dir + obliczony rozmiar
+    - "Wyczyść cache" → deleteRecursively() na offline pins cache dir
+    - "192.168.1.104" / "12ms" → z SharedPreferences + ping do daemona
+    - "v4.8.2-PRO" → BuildConfig.VERSION_NAME (powinno być spójne z Cargo.toml, np. 0.3.0)
+    - "Wyloguj ze Skarbca" → clearKeystore() + clearPreferences() → Lock Screen
+    - brak "Zmień hasło" na mobile — to operacja desktop-only (zgodnie z anty-funkcjami Fazy P)
+-->
+<!DOCTYPE html>
+
+<html class="dark" lang="pl"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "secondary-container": "#00b47d",
+                    "inverse-on-surface": "#2a3233",
+                    "surface-container-lowest": "#080f11",
+                    "primary-fixed": "#9cefff",
+                    "on-error": "#690005",
+                    "on-surface": "#dce4e5",
+                    "outline-variant": "#3b494c",
+                    "inverse-surface": "#dce4e5",
+                    "surface-container-high": "#242b2d",
+                    "inverse-primary": "#006875",
+                    "on-primary": "#00363d",
+                    "surface-variant": "#2f3637",
+                    "on-secondary": "#003824",
+                    "secondary-fixed": "#6ffbbe",
+                    "surface-container-highest": "#2f3637",
+                    "on-secondary-container": "#003e28",
+                    "error-container": "#93000a",
+                    "on-tertiary-container": "#754900",
+                    "on-tertiary-fixed": "#2a1700",
+                    "surface-tint": "#01daf3",
+                    "outline": "#859396",
+                    "on-secondary-fixed": "#002114",
+                    "error": "#ffb4ab",
+                    "on-tertiary": "#472a00",
+                    "tertiary-fixed-dim": "#ffb95f",
+                    "tertiary": "#ffddb8",
+                    "on-surface-variant": "#bac9cc",
+                    "primary-fixed-dim": "#01daf3",
+                    "tertiary-container": "#ffb95f",
+                    "on-secondary-fixed-variant": "#005236",
+                    "surface-container": "#1a2122",
+                    "on-error-container": "#ffdad6",
+                    "on-tertiary-fixed-variant": "#653e00",
+                    "surface-bright": "#333a3c",
+                    "tertiary-fixed": "#ffddb8",
+                    "on-primary-container": "#005b67",
+                    "on-background": "#dce4e5",
+                    "on-primary-fixed": "#001f24",
+                    "secondary-fixed-dim": "#4edea3",
+                    "on-primary-fixed-variant": "#004f58",
+                    "background": "#0d1516",
+                    "secondary": "#4edea3",
+                    "primary": "#9cefff",
+                    "primary-container": "#00daf3",
+                    "surface-container-low": "#161d1e",
+                    "surface-dim": "#0d1516",
+                    "surface": "#0d1516"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "lg": "24px",
+                    "xl": "32px",
+                    "xs": "4px",
+                    "md": "16px",
+                    "container-margin": "20px",
+                    "base": "4px",
+                    "sm": "8px",
+                    "gutter": "12px"
+            },
+            "fontFamily": {
+                    "display-lg": ["Inter"],
+                    "data-mono": ["monospace"],
+                    "label-sm": ["Inter"],
+                    "body-md": ["Inter"],
+                    "headline-md": ["Inter"],
+                    "title-sm": ["Inter"]
+            },
+            "fontSize": {
+                    "display-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "data-mono": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                    "label-sm": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "500"}],
+                    "body-md": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                    "title-sm": ["18px", {"lineHeight": "24px", "fontWeight": "600"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+        body { background-color: #0d1516; color: #dce4e5; -webkit-font-smoothing: antialiased; }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="font-body-md text-body-md">
+<!-- TopAppBar -->
+<header class="bg-zinc-950 border-b border-zinc-800 flex justify-between items-center w-full px-5 py-3 h-16 sticky z-50">
+<div class="flex items-center gap-3 active:scale-95 transition-transform">
+<span class="material-symbols-outlined text-cyan-400">cloud_done</span>
+<h1 class="text-xl font-mono font-black tracking-tighter text-cyan-400">OmniDrive</h1>
+</div>
+<div class="flex items-center gap-4">
+<button class="hover:bg-zinc-900 transition-colors duration-200 p-2 rounded-full active:scale-95 transition-transform">
+<span class="material-symbols-outlined text-cyan-400">account_circle</span>
+</button>
+</div>
+</header>
+<main class="pb-32 pt-6 px-container-margin max-w-md mx-auto">
+<!-- Profile Section -->
+<section class="mb-lg">
+<div class="bg-[#2C2C2C] border border-white/10 rounded-[1.5rem] p-md relative overflow-hidden">
+<div class="absolute top-4 right-4 font-data-mono text-[10px] text-outline uppercase tracking-tighter">ID: OM-8842-X</div>
+<div class="flex items-center gap-md">
+<div class="w-16 h-16 rounded-full border border-primary-container overflow-hidden bg-surface-container flex items-center justify-center">
+<span class="material-symbols-outlined text-4xl text-on-surface-variant">account_circle</span>
+</div>
+<div class="flex flex-col">
+<h2 class="font-title-sm text-title-sm text-on-surface">Przemek</h2>
+<p class="text-on-surface-variant text-label-sm font-label-sm">przemek@ik.me</p>
+<div class="mt-xs inline-flex items-center gap-xs">
+<span class="material-symbols-outlined text-[14px] text-secondary">verified_user</span>
+<span class="font-data-mono text-[11px] text-secondary uppercase tracking-widest">Vault Verified</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Bezpieczeństwo -->
+<section class="mb-lg">
+<h3 class="text-label-sm font-label-sm text-outline uppercase tracking-widest mb-sm ml-xs">Bezpieczeństwo</h3>
+<div class="bg-surface-container rounded-xl border border-outline-variant divide-y divide-outline-variant/50">
+<div class="p-md flex items-center justify-between">
+<div class="flex items-center gap-md">
+<span class="material-symbols-outlined text-on-surface-variant">fingerprint</span>
+<div>
+<p class="text-on-surface font-medium">Logowanie biometryczne</p>
+<p class="text-on-surface-variant text-[12px]">Użyj FaceID lub odcisku palca</p>
+</div>
+</div>
+<div class="w-12 h-6 bg-secondary-container rounded-full relative cursor-pointer flex items-center px-1">
+<div class="w-4 h-4 bg-on-secondary rounded-full ml-auto"></div>
+</div>
+</div>
+<div class="p-md flex items-center justify-between active:bg-surface-container-high transition-colors">
+<div class="flex items-center gap-md">
+<span class="material-symbols-outlined text-on-surface-variant">timer</span>
+<p class="text-on-surface font-medium">Auto-blokada</p>
+</div>
+<div class="flex items-center gap-xs text-secondary font-data-mono text-[12px]">
+<span>Po 5 minutach</span>
+<span class="material-symbols-outlined text-[18px]">chevron_right</span>
+</div>
+</div>
+</div>
+</section>
+<!-- Tryb Offline -->
+<section class="mb-lg">
+<h3 class="text-label-sm font-label-sm text-outline uppercase tracking-widest mb-sm ml-xs">Tryb offline</h3>
+<div class="bg-surface-container rounded-xl border border-outline-variant p-md">
+<div class="flex items-center justify-between mb-md">
+<div class="flex items-center gap-md">
+<span class="material-symbols-outlined text-on-surface-variant">database</span>
+<p class="text-on-surface font-medium">Zużycie pamięci podręcznej</p>
+</div>
+<span class="bg-surface-variant border border-outline-variant text-on-surface-variant font-data-mono text-[11px] px-2 py-0.5 rounded">1.42 GB / 5.0 GB</span>
+</div>
+<button class="w-full py-3 rounded-lg border border-secondary text-secondary font-label-sm uppercase tracking-widest hover:bg-secondary/10 transition-colors flex items-center justify-center gap-sm">
+<span class="material-symbols-outlined text-[18px]">delete_sweep</span>
+                    Wyczyść pamięć podręczną
+                </button>
+</div>
+</section>
+<!-- Połączenie -->
+<section class="mb-lg">
+<h3 class="text-label-sm font-label-sm text-outline uppercase tracking-widest mb-sm ml-xs">Połączenie</h3>
+<div class="bg-surface-container rounded-xl border border-outline-variant divide-y divide-outline-variant/50">
+<div class="p-md flex items-center justify-between">
+<div class="flex flex-col">
+<p class="text-on-surface-variant text-[11px] uppercase tracking-tighter">Adres daemona</p>
+<p class="text-on-surface font-data-mono">192.168.1.104</p>
+</div>
+<div class="flex flex-col items-end">
+<p class="text-on-surface-variant text-[11px] uppercase tracking-tighter">Opóźnienie</p>
+<p class="text-secondary font-data-mono">12 ms</p>
+</div>
+</div>
+</div>
+</section>
+<!-- Aplikacja -->
+<section class="mb-lg">
+<h3 class="text-label-sm font-label-sm text-outline uppercase tracking-widest mb-sm ml-xs">Aplikacja</h3>
+<div class="bg-surface-container rounded-xl border border-outline-variant divide-y divide-outline-variant/50">
+<div class="p-md flex items-center justify-between">
+<div class="flex items-center gap-md">
+<span class="material-symbols-outlined text-on-surface-variant">info</span>
+<p class="text-on-surface font-medium">Wersja</p>
+</div>
+<p class="text-on-surface-variant font-data-mono text-sm">v0.3.0</p>
+</div>
+</div>
+</section>
+<!-- Danger Zone -->
+<section>
+<button class="w-full py-4 rounded-xl border border-error/30 text-error bg-error-container/10 flex items-center justify-center gap-md active:scale-[0.98] transition-all">
+<span class="material-symbols-outlined">logout</span>
+<span class="font-semibold">Wyloguj ze Skarbca</span>
+</button>
+</section>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center h-20 px-2 bg-zinc-950 border-t border-zinc-800">
+<a class="flex flex-col items-center justify-center text-zinc-500 pt-2 pb-safe hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined mb-1">folder_open</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest">Pliki</span>
+</a>
+<a class="flex flex-col items-center justify-center text-zinc-500 pt-2 pb-safe hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined mb-1">enhanced_encryption</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest">Skarbiec</span>
+</a>
+<a class="flex flex-col items-center justify-center text-zinc-500 pt-2 pb-safe hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined mb-1">devices</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest">Urządzenia</span>
+</a>
+<a class="flex flex-col items-center justify-center text-cyan-400 border-t-2 border-cyan-400 pt-2 pb-safe" href="#">
+<span class="material-symbols-outlined mb-1">settings</span>
+<span class="font-sans text-[10px] font-medium uppercase tracking-widest">Ustawienia</span>
+</a>
+</nav>
+</body></html>

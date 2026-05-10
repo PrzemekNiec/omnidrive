@@ -1,0 +1,209 @@
+<!--
+  Źródło: Google Stitch (mockup wygenerowany 2026-04-25)
+  Ekran: Lock Screen / Odblokuj Skarbiec
+  NIE EDYTOWAĆ — to snapshot designu, nie plik produkcyjny.
+  Implementacja: Jetpack Compose (Faza Q/R).
+
+  Do zrobienia przy integracji:
+    - usunąć duplikat <link> do Material Symbols
+    - tło radial-gradient z primary/10 → zachować jako atmospheric layer
+    - zewnętrzny img (lh3.googleusercontent) → zastąpić lokalnym zasobem lub usunąć
+    - "192.168.1.X:7070" → bindować do aktualnego adresu daemona z SharedPreferences
+    - "Rozłącz urządzenie" → trigger revoke pairing flow
+    - pole hasła: onSubmit → wywołanie ffi_unwrap_key + ffi_decrypt_chunk_v2
+    - biometria: BiometricPrompt.authenticate() → Keystore unlock
+    - loading state (spinner na przycisku) przy oczekiwaniu na daemon
+    - error state: czerwona ramka pola + komunikat "Nieprawidłowe hasło"
+-->
+<!DOCTYPE html>
+
+<html class="dark" lang="pl"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-container": "#00b47d",
+                        "inverse-on-surface": "#2a3233",
+                        "surface-container-lowest": "#080f11",
+                        "primary-fixed": "#9cefff",
+                        "on-error": "#690005",
+                        "on-surface": "#dce4e5",
+                        "outline-variant": "#3b494c",
+                        "inverse-surface": "#dce4e5",
+                        "surface-container-high": "#242b2d",
+                        "inverse-primary": "#006875",
+                        "on-primary": "#00363d",
+                        "surface-variant": "#2f3637",
+                        "on-secondary": "#003824",
+                        "secondary-fixed": "#6ffbbe",
+                        "surface-container-highest": "#2f3637",
+                        "on-secondary-container": "#003e28",
+                        "error-container": "#93000a",
+                        "on-tertiary-container": "#754900",
+                        "on-tertiary-fixed": "#2a1700",
+                        "surface-tint": "#01daf3",
+                        "outline": "#859396",
+                        "on-secondary-fixed": "#002114",
+                        "error": "#ffb4ab",
+                        "on-tertiary": "#472a00",
+                        "tertiary-fixed-dim": "#ffb95f",
+                        "tertiary": "#ffddb8",
+                        "on-surface-variant": "#bac9cc",
+                        "primary-fixed-dim": "#01daf3",
+                        "tertiary-container": "#ffb95f",
+                        "on-secondary-fixed-variant": "#005236",
+                        "surface-container": "#1a2122",
+                        "on-error-container": "#ffdad6",
+                        "on-tertiary-fixed-variant": "#653e00",
+                        "surface-bright": "#333a3c",
+                        "tertiary-fixed": "#ffddb8",
+                        "on-primary-container": "#005b67",
+                        "on-background": "#dce4e5",
+                        "on-primary-fixed": "#001f24",
+                        "secondary-fixed-dim": "#4edea3",
+                        "on-primary-fixed-variant": "#004f58",
+                        "background": "#0d1516",
+                        "secondary": "#4edea3",
+                        "primary": "#9cefff",
+                        "primary-container": "#00daf3",
+                        "surface-container-low": "#161d1e",
+                        "surface-dim": "#0d1516",
+                        "surface": "#0d1516"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "lg": "24px",
+                        "xl": "32px",
+                        "xs": "4px",
+                        "md": "16px",
+                        "container-margin": "20px",
+                        "base": "4px",
+                        "sm": "8px",
+                        "gutter": "12px"
+                    },
+                    "fontFamily": {
+                        "display-lg": ["Inter"],
+                        "data-mono": ["monospace"],
+                        "label-sm": ["Inter"],
+                        "body-md": ["Inter"],
+                        "headline-md": ["Inter"],
+                        "title-sm": ["Inter"]
+                    },
+                    "fontSize": {
+                        "display-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                        "data-mono": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                        "label-sm": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "500"}],
+                        "body-md": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                        "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                        "title-sm": ["18px", {"lineHeight": "24px", "fontWeight": "600"}]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body {
+            background-color: #0d1516;
+            color: #dce4e5;
+        }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .glass-panel {
+            background: rgba(44, 44, 44, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="flex flex-col min-h-screen">
+<!-- Top Navigation Placeholder (Hidden for Lock Screen focus as per rules) -->
+<header class="bg-zinc-950 flex justify-between items-center w-full px-5 py-3 h-16 border-b border-zinc-800">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-cyan-400" data-icon="cloud_done">cloud_done</span>
+<span class="text-xl font-mono font-black tracking-tighter text-cyan-400">OmniDrive</span>
+</div>
+<span class="material-symbols-outlined text-cyan-400" data-icon="account_circle">account_circle</span>
+</header>
+<!-- Main Content: Lock Screen Canvas -->
+<main class="flex-grow flex flex-col items-center justify-center px-container-margin py-xl space-y-xl">
+<!-- Brand & Lock Icon Section -->
+<div class="flex flex-col items-center space-y-md text-center">
+<div class="w-24 h-24 rounded-full flex items-center justify-center border border-primary-container/30 bg-primary-container/5">
+<span class="material-symbols-outlined text-6xl text-primary-container" data-icon="shield_lock" style="font-variation-settings: 'FILL' 1;">shield_lock</span>
+</div>
+<div>
+<h1 class="font-display-lg text-display-lg text-on-surface">Odblokuj Skarbiec</h1>
+<p class="font-label-sm text-label-sm text-outline uppercase tracking-[0.2em] mt-xs">Szyfrowanie typu End-to-End</p>
+</div>
+</div>
+<!-- Input Section -->
+<div class="w-full max-w-sm space-y-md">
+<!-- Passphrase Field -->
+<div class="relative flex flex-col space-y-sm">
+<div class="relative group">
+<div class="absolute inset-y-0 left-0 pl-md flex items-center pointer-events-none">
+<span class="material-symbols-outlined text-outline group-focus-within:text-primary-container transition-colors" data-icon="lock">lock</span>
+</div>
+<input class="w-full bg-[#333333] border border-outline-variant focus:border-primary-container focus:ring-0 rounded-xl py-lg pl-xl pr-xl text-on-surface font-body-md placeholder-outline transition-all" placeholder="Hasło do Skarbca" type="password"/>
+<div class="absolute inset-y-0 right-0 pr-md flex items-center">
+<button class="text-outline hover:text-on-surface">
+<span class="material-symbols-outlined" data-icon="visibility">visibility</span>
+</button>
+</div>
+</div>
+<!-- Encryption Hint -->
+<div class="flex items-center space-x-xs px-xs">
+<span class="font-data-mono text-[10px] text-secondary">✦</span>
+<span class="font-data-mono text-[10px] text-outline uppercase tracking-tight">Krypto: AES-256-GCM · Argon2id</span>
+</div>
+</div>
+<!-- CTA Button -->
+<button class="w-full bg-primary-container text-on-primary font-title-sm py-md rounded-xl active:scale-95 transition-transform">
+                Odblokuj
+            </button>
+<!-- Biometric Row -->
+<div class="pt-md border-t border-outline-variant flex justify-center">
+<button class="flex flex-col items-center space-y-xs group">
+<div class="w-14 h-14 rounded-full border border-outline-variant flex items-center justify-center group-active:border-secondary transition-colors">
+<span class="material-symbols-outlined text-3xl text-outline group-active:text-secondary" data-icon="fingerprint">fingerprint</span>
+</div>
+<span class="font-label-sm text-label-sm text-outline">Biometria</span>
+</button>
+</div>
+</div>
+</main>
+<!-- Footer Information -->
+<footer class="p-lg space-y-md text-center">
+<div class="inline-flex items-center space-x-sm bg-surface-container-high px-md py-sm rounded-full border border-outline-variant">
+<span class="flex h-2 w-2 rounded-full bg-secondary-container animate-pulse"></span>
+<span class="font-data-mono text-[11px] text-on-surface-variant">Połączony z: 192.168.1.X:7070</span>
+</div>
+<div>
+<a class="font-label-sm text-label-sm text-error hover:underline decoration-error-container underline-offset-4 decoration-2" href="#">
+                Rozłącz urządzenie
+            </a>
+</div>
+</footer>
+<!-- Atmospheric Background -->
+<div class="fixed inset-0 -z-10 opacity-10 pointer-events-none">
+<div class="absolute inset-0 bg-gradient-to-b from-primary/10 to-transparent"></div>
+</div>
+</body></html>
