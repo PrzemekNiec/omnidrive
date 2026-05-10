@@ -5,6 +5,13 @@ use crate::cloud_guard;
 use crate::db;
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::uploader::ProviderConfig;
+
+/// Below this many packs the scrubber switches to a calmer schedule:
+/// poll every hour and deep-verify every Nth shard (rather than every 20th).
+/// Prevents agresywne ssanie B2 daily download cap na małym vault.
+const SMALL_VAULT_PACK_THRESHOLD: i64 = 100;
+const SMALL_VAULT_POLL_INTERVAL: Duration = Duration::from_secs(3600);
+const SMALL_VAULT_DEEP_MODULUS: usize = 100;
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
@@ -92,16 +99,12 @@ impl ScrubberWorker {
     pub async fn run(self) -> Result<(), ScrubberError> {
         diagnostics::set_worker_status(WorkerKind::Scrubber, WorkerStatus::Idle);
         loop {
+            let pack_count = db::count_all_packs(&self.pool).await.unwrap_or(0);
+            let effective_interval = self.effective_poll_interval(pack_count);
             diagnostics::set_worker_status(WorkerKind::Scrubber, WorkerStatus::Active);
-            let processed = self.run_one_batch().await?;
-            if processed == 0 {
-                diagnostics::set_worker_status(WorkerKind::Scrubber, WorkerStatus::Idle);
-                sleep(self.poll_interval).await;
-                continue;
-            }
-
+            let _ = self.run_one_batch().await?;
             diagnostics::set_worker_status(WorkerKind::Scrubber, WorkerStatus::Idle);
-            sleep(self.poll_interval).await;
+            sleep(effective_interval).await;
         }
     }
 
@@ -111,10 +114,13 @@ impl ScrubberWorker {
             return Ok(0);
         }
 
+        let pack_count = db::count_all_packs(&self.pool).await.unwrap_or(0);
+        let modulus = self.effective_deep_verify_modulus(pack_count);
+
         let mut processed = 0usize;
         for (idx, shard) in batch.into_iter().enumerate() {
             processed += 1;
-            let use_deep = self.should_deep_verify(&shard, idx);
+            let use_deep = self.should_deep_verify_with(&shard, idx, modulus);
             if let Err(err) = self.verify_shard(&shard, use_deep).await {
                 warn!(
                     "scrubber verification error pack={} shard={} provider={}: {}",
@@ -124,6 +130,22 @@ impl ScrubberWorker {
         }
 
         Ok(processed)
+    }
+
+    fn effective_poll_interval(&self, pack_count: i64) -> Duration {
+        if pack_count < SMALL_VAULT_PACK_THRESHOLD {
+            self.poll_interval.max(SMALL_VAULT_POLL_INTERVAL)
+        } else {
+            self.poll_interval
+        }
+    }
+
+    fn effective_deep_verify_modulus(&self, pack_count: i64) -> usize {
+        if pack_count < SMALL_VAULT_PACK_THRESHOLD {
+            self.deep_verify_modulus.max(SMALL_VAULT_DEEP_MODULUS)
+        } else {
+            self.deep_verify_modulus
+        }
     }
 
     async fn verify_shard(
@@ -361,10 +383,22 @@ impl ScrubberWorker {
     }
 
     fn should_deep_verify(&self, shard: &db::ScrubShardRecord, batch_index: usize) -> bool {
-        batch_index.is_multiple_of(self.deep_verify_modulus)
+        self.should_deep_verify_with(shard, batch_index, self.deep_verify_modulus)
+    }
+
+    fn should_deep_verify_with(
+        &self,
+        shard: &db::ScrubShardRecord,
+        batch_index: usize,
+        modulus: usize,
+    ) -> bool {
+        if modulus == 0 {
+            return false;
+        }
+        batch_index.is_multiple_of(modulus)
             || usize::try_from(shard.id)
                 .ok()
-                .is_some_and(|id| id % self.deep_verify_modulus == 0)
+                .is_some_and(|id| id % modulus == 0)
     }
 }
 

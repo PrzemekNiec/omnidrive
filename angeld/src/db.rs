@@ -6130,6 +6130,14 @@ pub async fn get_v1_packs_for_migration(
     .await
 }
 
+/// Count total number of packs in the vault. Used by adaptive scrubber pacing.
+#[allow(dead_code)]
+pub async fn count_all_packs(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM packs")
+        .fetch_one(pool)
+        .await
+}
+
 /// Count how many active V1 packs remain in the vault (healthy or degraded).
 #[allow(dead_code)]
 pub async fn count_v1_packs(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
