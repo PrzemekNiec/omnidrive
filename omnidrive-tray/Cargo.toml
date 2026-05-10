@@ -1,6 +1,6 @@
 ﻿[package]
 name = "omnidrive-tray"
-version = "0.3.13"
+version = "0.3.18"
 edition = "2024"
 
 [[bin]]
