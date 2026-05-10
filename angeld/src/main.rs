@@ -249,6 +249,22 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             warn!("[ONBOARDING] startup multipart cleanup failed: {}", err);
         }
     }
+
+    // v0.3.19: reconcile upload_job_targets against pack_shards source-of-truth.
+    // Past sessions left targets stuck in PENDING/FAILED with stale `last_error`
+    // even though the shard had reached COMPLETED via a different worker —
+    // this surfaced as ghost retry-storm alerts and a permanent WARN status.
+    match db::sync_upload_targets_from_shards(&pool).await {
+        Ok(report) => {
+            if report.synced_targets > 0 || report.cleared_errors > 0 {
+                info!(
+                    "[STARTUP] upload_job_targets sync: {} targets reconciled, {} stale errors cleared",
+                    report.synced_targets, report.cleared_errors
+                );
+            }
+        }
+        Err(err) => warn!("[STARTUP] upload_job_targets sync failed: {}", err),
+    }
     let active_provider_configs = match get_active_provider_configs(&pool).await {
         Ok(configs) => configs,
         Err(err) => {

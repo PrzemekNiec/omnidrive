@@ -5686,6 +5686,67 @@ pub async fn list_retry_storm_targets(
 }
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct UploadTargetSyncReport {
+    pub synced_targets: u64,
+    pub cleared_errors: u64,
+}
+
+/// Reconcile `upload_job_targets.status` against the source-of-truth
+/// `pack_shards.status`. When a shard reaches `COMPLETED` the target row
+/// sometimes lingers in `PENDING/FAILED` (historic transient errors that
+/// later resolved on retry from a different worker). That ghost state inflates
+/// `attempts` counters, fires retry-storm alerts, and pollutes `last_error`.
+///
+/// Idempotent. Safe to call at startup and from periodic maintenance.
+#[allow(dead_code)]
+pub async fn sync_upload_targets_from_shards(
+    pool: &SqlitePool,
+) -> Result<UploadTargetSyncReport, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // 1. Targets that should be COMPLETED because the matching shard is.
+    let synced = sqlx::query(
+        r#"
+        UPDATE upload_job_targets
+        SET status = 'COMPLETED',
+            completed_at = COALESCE(completed_at, CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)),
+            updated_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+        WHERE id IN (
+            SELECT ut.id
+            FROM upload_job_targets ut
+            JOIN upload_jobs uj ON uj.id = ut.job_id
+            JOIN pack_shards ps ON ps.pack_id = uj.pack_id AND ps.provider = ut.provider
+            WHERE ut.status NOT IN ('COMPLETED', 'PERMANENTLY_FAILED')
+              AND ps.status = 'COMPLETED'
+        )
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // 2. Stale `last_error` strings for COMPLETED targets — `get_latest_upload_error`
+    // reads from `last_error` and is unaware of status, so cached errors keep
+    // diagnostics in WARN state forever.
+    let cleared = sqlx::query(
+        r#"
+        UPDATE upload_job_targets
+        SET last_error = NULL
+        WHERE status = 'COMPLETED'
+          AND last_error IS NOT NULL
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(UploadTargetSyncReport {
+        synced_targets: synced.rows_affected(),
+        cleared_errors: cleared.rows_affected(),
+    })
+}
+
+#[allow(dead_code)]
 pub async fn mark_upload_target_permanently_failed(
     pool: &SqlitePool,
     job_id: i64,

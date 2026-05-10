@@ -112,6 +112,10 @@ pub(super) fn routes() -> Router<ApiState> {
         .route("/api/maintenance/scrub-errors", get(get_scrub_errors))
         .route("/api/maintenance/retry-storms", get(get_retry_storms))
         .route("/api/maintenance/gc-orphans", post(post_gc_orphans))
+        .route(
+            "/api/maintenance/sync-upload-targets",
+            post(post_sync_upload_targets),
+        )
         .route("/api/maintenance/scrub-now", post(post_scrub_now))
         .route("/api/maintenance/repair-now", post(post_repair_now))
         .route("/api/maintenance/reconcile-now", post(post_reconcile_now))
@@ -314,6 +318,19 @@ async fn get_scrub_status(
         verified_deep_shards: summary.verified_deep_shards,
         last_scrub_timestamp: summary.last_scrub_timestamp,
     }))
+}
+
+async fn post_sync_upload_targets(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<db::UploadTargetSyncReport>, ApiError> {
+    let _caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
+    let report = db::sync_upload_targets_from_shards(&state.pool).await?;
+    info!(
+        "sync-upload-targets: {} targets reconciled, {} stale errors cleared",
+        report.synced_targets, report.cleared_errors
+    );
+    Ok(Json(report))
 }
 
 async fn post_gc_orphans(
