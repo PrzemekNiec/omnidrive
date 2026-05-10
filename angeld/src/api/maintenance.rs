@@ -90,6 +90,14 @@ struct MaintenanceOverviewResponse {
     backup: MaintenanceOverviewItem,
 }
 
+#[derive(Serialize)]
+struct RetryStormsResponse {
+    plateau_threshold: i64,
+    permanent_failure_threshold: i64,
+    max_attempts: i64,
+    targets: Vec<db::RetryStormTargetRecord>,
+}
+
 // ── Routes ──────────────────────────────────────────────────────────────
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -102,6 +110,7 @@ pub(super) fn routes() -> Router<ApiState> {
         .route("/api/cache/status", get(get_cache_status))
         .route("/api/maintenance/scrub-status", get(get_scrub_status))
         .route("/api/maintenance/scrub-errors", get(get_scrub_errors))
+        .route("/api/maintenance/retry-storms", get(get_retry_storms))
         .route("/api/maintenance/scrub-now", post(post_scrub_now))
         .route("/api/maintenance/repair-now", post(post_repair_now))
         .route("/api/maintenance/reconcile-now", post(post_reconcile_now))
@@ -303,6 +312,23 @@ async fn get_scrub_status(
         verified_light_shards: summary.verified_light_shards,
         verified_deep_shards: summary.verified_deep_shards,
         last_scrub_timestamp: summary.last_scrub_timestamp,
+    }))
+}
+
+async fn get_retry_storms(
+    State(state): State<ApiState>,
+) -> Result<Json<RetryStormsResponse>, ApiError> {
+    let targets = db::list_retry_storm_targets(
+        &state.pool,
+        crate::uploader::UPLOAD_RETRY_PLATEAU_AT,
+    )
+    .await?;
+    let max_attempts = targets.iter().map(|t| t.attempts).max().unwrap_or(0);
+    Ok(Json(RetryStormsResponse {
+        plateau_threshold: crate::uploader::UPLOAD_RETRY_PLATEAU_AT,
+        permanent_failure_threshold: crate::uploader::UPLOAD_PERMANENT_FAILURE_AT,
+        max_attempts,
+        targets,
     }))
 }
 

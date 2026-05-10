@@ -328,6 +328,21 @@
         </div>
       </section>
 
+      <!-- ALERT: retry storm (v0.3.18) — pokazujemy gdy jakiś target ma >=100 prób uploadu -->
+      <section id="retryStormAlertSection" class="hidden">
+        <div class="bg-error/10 border border-error/20 p-6 rounded-2xl flex items-start gap-4">
+          <div class="bg-error/20 p-2 rounded-xl">
+            <span class="material-symbols-outlined text-error">warning</span>
+          </div>
+          <div class="flex-1">
+            <h3 class="text-sm font-bold text-error uppercase tracking-wider">Pakiet w pętli retry</h3>
+            <p class="text-xs text-slate-300 mt-1" id="retryStormAlertMessage">—</p>
+            <div class="mt-3 flex flex-wrap gap-2 text-[10px] uppercase tracking-widest font-label" id="retryStormAlertTargets"></div>
+            <p class="text-[10px] text-slate-400 mt-3">Sprawdź credentials u dostawcy. Po 1000 próbach target zostaje oznaczony jako PERMANENTLY_FAILED — wymaga ręcznej akcji.</p>
+          </div>
+        </div>
+      </section>
+
       <!-- ALERT: brak klucza odzyskiwania (F.4 DONE) + STATUS SHARDÓW (F.5 DONE — /api/health/vault) -->
       <section id="overviewAlertsGrid" class="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div id="recoveryAlertCard" class="hidden bg-tertiary/10 border border-tertiary/20 p-6 rounded-2xl items-start gap-4">
@@ -1230,6 +1245,49 @@
       } catch (err) {
         // Bez statusu zakładamy bezpieczniej („missing") — lepiej pokazać alert niż go ukryć.
         applyRecoveryStatus('missing', null);
+      }
+    }
+
+    // ── Retry storm alert (v0.3.18) ─────────────────────────────────
+    function applyRetryStormStatus(payload) {
+      const section = document.getElementById('retryStormAlertSection');
+      const msg = document.getElementById('retryStormAlertMessage');
+      const targetsEl = document.getElementById('retryStormAlertTargets');
+      if (!section || !msg || !targetsEl) return;
+
+      const targets = Array.isArray(payload && payload.targets) ? payload.targets : [];
+      if (targets.length === 0) {
+        section.classList.add('hidden');
+        targetsEl.innerHTML = '';
+        return;
+      }
+
+      const maxAttempts = payload.max_attempts || 0;
+      const plateau = payload.plateau_threshold || 100;
+      const permanent = payload.permanent_failure_threshold || 1000;
+      const worstTarget = targets[0];
+
+      msg.textContent = `Pakiet ${worstTarget.pack_id.slice(0, 12)}… ma ${worstTarget.attempts} prób uploadu na ${worstTarget.provider}. Po ${plateau} próbach uploader przeszedł na 1h plateau; po ${permanent} target zostanie zablokowany.`;
+
+      targetsEl.innerHTML = targets.slice(0, 6).map(t => {
+        const status = t.status === 'PERMANENTLY_FAILED'
+          ? '<span class="text-error">PERMANENTLY_FAILED</span>'
+          : `<span class="text-tertiary">${escapeHtml(t.status)}</span>`;
+        return `<span class="bg-white/5 px-2 py-1 rounded">${escapeHtml(t.provider)}: ${t.attempts} prób ${status}</span>`;
+      }).join('');
+
+      section.classList.remove('hidden');
+    }
+
+    async function fetchRetryStorms() {
+      try {
+        const res = await fetch('/api/maintenance/retry-storms', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const payload = await res.json();
+        applyRetryStormStatus(payload);
+      } catch (err) {
+        // Brak danych — ukryj alert, nie wprowadzaj w błąd.
+        applyRetryStormStatus({ targets: [] });
       }
     }
 
@@ -3281,6 +3339,8 @@
       setInterval(fetchAuditLog, 30_000);
       attachRecoveryCta();
       fetchRecoveryStatus();
+      fetchRetryStorms();
+      setInterval(fetchRetryStorms, 60_000);
       fetchStatsOverview();
       fetchStatsTraffic();
       fetchStatsSystem();

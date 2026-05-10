@@ -35,12 +35,12 @@ pub const KNOWN_PROVIDERS: [&str; 3] = ["cloudflare-r2", "backblaze-b2", "scalew
 /// After this many failed attempts on the same upload target, the worker stops
 /// retrying every 60s and instead waits 1h between attempts. Prevents retry
 /// storms against persistently broken providers (e.g., revoked credentials).
-const UPLOAD_RETRY_PLATEAU_AT: i64 = 100;
+pub const UPLOAD_RETRY_PLATEAU_AT: i64 = 100;
 const UPLOAD_RETRY_PLATEAU_DELAY: Duration = Duration::from_secs(3600);
 
 /// After this many failed attempts the target is marked PERMANENTLY_FAILED
 /// and excluded from future retry cycles. Manual intervention required.
-const UPLOAD_PERMANENT_FAILURE_AT: i64 = 1000;
+pub const UPLOAD_PERMANENT_FAILURE_AT: i64 = 1000;
 
 pub struct Uploader {
     provider_name: &'static str,

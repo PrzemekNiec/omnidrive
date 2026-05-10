@@ -5553,6 +5553,45 @@ pub async fn mark_upload_target_failed(
 }
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct RetryStormTargetRecord {
+    pub job_id: i64,
+    pub pack_id: String,
+    pub provider: String,
+    pub status: String,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub last_attempt_at: Option<i64>,
+}
+
+#[allow(dead_code)]
+pub async fn list_retry_storm_targets(
+    pool: &SqlitePool,
+    attempts_threshold: i64,
+) -> Result<Vec<RetryStormTargetRecord>, sqlx::Error> {
+    sqlx::query_as::<_, RetryStormTargetRecord>(
+        r#"
+        SELECT
+            ut.job_id   AS job_id,
+            uj.pack_id  AS pack_id,
+            ut.provider AS provider,
+            ut.status   AS status,
+            COALESCE(ut.attempts, 0) AS attempts,
+            ut.last_error AS last_error,
+            ut.last_attempt_at AS last_attempt_at
+        FROM upload_job_targets ut
+        INNER JOIN upload_jobs uj ON uj.id = ut.job_id
+        WHERE COALESCE(ut.attempts, 0) >= ?
+          AND ut.status NOT IN ('COMPLETED')
+        ORDER BY ut.attempts DESC, ut.job_id ASC
+        "#,
+    )
+    .bind(attempts_threshold)
+    .fetch_all(pool)
+    .await
+}
+
+#[allow(dead_code)]
 pub async fn mark_upload_target_permanently_failed(
     pool: &SqlitePool,
     job_id: i64,
