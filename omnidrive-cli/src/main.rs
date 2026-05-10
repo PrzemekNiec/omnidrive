@@ -598,7 +598,7 @@ async fn restore_from_cloud() -> Result<(), CliError> {
         .await
         .map_err(|err| CliError::Api(format!("failed to initialize recovery providers: {err}")))?;
 
-    restore_metadata_from_cloud(&provider_manager, &passphrase, &output_db_path)
+    restore_metadata_from_cloud(&provider_manager, &passphrase, &output_db_path, None)
         .await
         .map_err(|err| CliError::Api(format!("restore failed: {err}")))?;
 

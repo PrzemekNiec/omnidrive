@@ -710,6 +710,7 @@ pub async fn perform_vault_restore(
         &provider_manager,
         passphrase,
         &staging_path,
+        Some(pool),
     )
     .await;
 

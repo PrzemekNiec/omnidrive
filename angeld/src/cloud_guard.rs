@@ -191,6 +191,57 @@ pub async fn current_decision(
     Ok(GuardDecision::Allowed)
 }
 
+pub async fn try_authorize_read(
+    pool: &SqlitePool,
+    estimated_bytes: i64,
+) -> Result<(), String> {
+    match current_decision(
+        pool,
+        GuardOperation::Read {
+            count: 1,
+            estimated_egress_bytes: estimated_bytes.max(0),
+        },
+    )
+    .await
+    {
+        Ok(GuardDecision::Allowed) => Ok(()),
+        Ok(GuardDecision::DryRun { message }) => Err(format!("dry-run: {message}")),
+        Ok(GuardDecision::Suspended { reason })
+        | Ok(GuardDecision::QuotaExceeded { reason }) => Err(reason),
+        Err(err) => Err(format!("cloud guard error: {err}")),
+    }
+}
+
+pub async fn reconcile_read_bytes(
+    pool: &SqlitePool,
+    delta_bytes: i64,
+) -> Result<(), CloudGuardError> {
+    if delta_bytes == 0 {
+        return Ok(());
+    }
+    let day_epoch = current_day_epoch();
+    let _ = db::apply_cloud_usage_delta_with_limits(
+        pool,
+        day_epoch,
+        db::CloudUsageDelta {
+            read_ops: 0,
+            write_ops: 0,
+            egress_bytes: delta_bytes,
+        },
+        i64::MAX,
+        i64::MAX,
+        i64::MAX,
+    )
+    .await?;
+    {
+        let mut usage = session_usage()
+            .lock()
+            .expect("session usage mutex poisoned");
+        usage.egress_bytes = usage.egress_bytes.saturating_add(delta_bytes);
+    }
+    Ok(())
+}
+
 pub fn enforce_single_upload_size_limit(file_size: u64) -> Result<(), String> {
     let config = AppConfig::from_env();
     if file_size > config.cloud_max_single_upload_bytes {

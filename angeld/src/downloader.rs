@@ -1066,10 +1066,22 @@ impl Downloader {
             )
         })?;
 
+        let bytes = body.into_bytes();
+        let actual_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+        let delta = actual_size.saturating_sub(estimated_size.max(0));
+        if delta != 0 {
+            if let Err(err) = cloud_guard::reconcile_read_bytes(&self.pool, delta).await {
+                tracing::warn!(
+                    "downloader egress reconcile failed pack={} shard={}: {}",
+                    pack_id, shard_index, err
+                );
+            }
+        }
+
         let local_path = self
             .download_spool_dir
             .join(format!("{pack_id}.download-shard{shard_index}"));
-        write_ephemeral_bytes(&local_path, &body.into_bytes())
+        write_ephemeral_bytes(&local_path, &bytes)
             .await
             .map_err(|err| err.to_string())?;
 

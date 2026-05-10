@@ -1,3 +1,4 @@
+use crate::cloud_guard;
 use crate::db;
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::onboarding::{get_active_provider_configs, unseal_provider_secrets};
@@ -449,6 +450,7 @@ pub async fn restore_metadata_from_cloud(
     provider_manager: &MetadataBackupProviderManager,
     passphrase: &str,
     output_db_path: &Path,
+    pool: Option<&SqlitePool>,
 ) -> Result<(), DisasterRecoveryError> {
     let object_key = "_omnidrive/system/metadata/latest.db.enc";
     let mut errors = Vec::new();
@@ -482,13 +484,13 @@ pub async fn restore_metadata_from_cloud(
 
     for provider in &provider_manager.download_providers {
         let mut candidate_keys = vec![object_key.to_string()];
-        match provider.list_snapshot_keys(32).await {
+        match provider.list_snapshot_keys(pool, 32).await {
             Ok(keys) => candidate_keys.extend(keys),
             Err(err) => errors.push(format!("{} snapshots: {}", provider.provider_name, err)),
         }
 
         for key in dedup_object_keys(candidate_keys) {
-            let encoded = match provider.download_bytes(&key).await {
+            let encoded = match provider.download_bytes(pool, &key).await {
                 Ok(encoded) => encoded,
                 Err(err) => {
                     errors.push(format!("{} {}: {}", provider.provider_name, key, err));
@@ -904,7 +906,21 @@ impl MetadataBackupDownloadProvider {
         })
     }
 
-    async fn download_bytes(&self, object_key: &str) -> Result<Vec<u8>, DisasterRecoveryError> {
+    async fn download_bytes(
+        &self,
+        pool: Option<&SqlitePool>,
+        object_key: &str,
+    ) -> Result<Vec<u8>, DisasterRecoveryError> {
+        if let Some(pool) = pool {
+            if let Err(reason) = cloud_guard::try_authorize_read(pool, 0).await {
+                return Err(DisasterRecoveryError::Uploader(UploaderError::Upload {
+                    provider: self.provider_name,
+                    operation: "get_object",
+                    details: format!("cloud guard blocked read: {reason}"),
+                }));
+            }
+        }
+
         let response = self
             .client
             .get_object()
@@ -930,10 +946,36 @@ impl MetadataBackupDownloadProvider {
                 details: format!("{err}"),
             }))?;
 
-        Ok(body.into_bytes().to_vec())
+        let bytes = body.into_bytes().to_vec();
+        if let Some(pool) = pool {
+            let actual = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+            if let Err(err) = cloud_guard::reconcile_read_bytes(pool, actual).await {
+                tracing::warn!(
+                    "disaster_recovery egress reconcile failed provider={} key={}: {}",
+                    self.provider_name,
+                    object_key,
+                    err
+                );
+            }
+        }
+        Ok(bytes)
     }
 
-    async fn list_snapshot_keys(&self, max_keys: i32) -> Result<Vec<String>, DisasterRecoveryError> {
+    async fn list_snapshot_keys(
+        &self,
+        pool: Option<&SqlitePool>,
+        max_keys: i32,
+    ) -> Result<Vec<String>, DisasterRecoveryError> {
+        if let Some(pool) = pool {
+            if let Err(reason) = cloud_guard::try_authorize_read(pool, 0).await {
+                return Err(DisasterRecoveryError::Uploader(UploaderError::Upload {
+                    provider: self.provider_name,
+                    operation: "list_objects_v2",
+                    details: format!("cloud guard blocked list: {reason}"),
+                }));
+            }
+        }
+
         let response = self
             .client
             .list_objects_v2()

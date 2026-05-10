@@ -1,6 +1,7 @@
 // reserved for future repair epic (shard reconstruction after partial upload failure)
 #![allow(dead_code)]
 
+use crate::cloud_guard;
 use crate::db;
 use crate::db::{PackStatus, StorageMode};
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
@@ -317,6 +318,7 @@ impl RepairWorker {
                     &shard.object_key,
                     &pack.pack_id,
                     shard.shard_index,
+                    pack.shard_size,
                 )
                 .await?;
             if bytes.len() != shard_len {
@@ -625,6 +627,7 @@ impl RepairWorker {
                     &shard.object_key,
                     &pack.pack_id,
                     shard.shard_index,
+                    pack.shard_size,
                 )
                 .await?;
             if bytes.len() != shard_len {
@@ -672,8 +675,14 @@ impl RepairWorker {
             .providers
             .get(&shard.provider)
             .ok_or_else(|| RepairError::InvalidEnv("single replica provider not configured"))?;
-        self.download_shard(provider, &shard.object_key, &pack.pack_id, shard.shard_index)
-            .await
+        self.download_shard(
+            provider,
+            &shard.object_key,
+            &pack.pack_id,
+            shard.shard_index,
+            pack.shard_size,
+        )
+        .await
     }
 
     async fn load_local_only_ciphertext(
@@ -700,7 +709,18 @@ impl RepairWorker {
         object_key: &str,
         pack_id: &str,
         shard_index: i64,
+        estimated_size: i64,
     ) -> Result<Vec<u8>, RepairError> {
+        if let Err(reason) =
+            cloud_guard::try_authorize_read(&self.pool, estimated_size.max(0)).await
+        {
+            return Err(RepairError::Provider {
+                provider: provider.provider_name,
+                operation: "get_object",
+                details: format!("cloud guard blocked read: {reason}"),
+            });
+        }
+
         let response = timeout(
             self.provider_timeout,
             provider
@@ -723,6 +743,16 @@ impl RepairWorker {
             .await
             .map_err(|err| provider_error(provider.provider_name, "read_body", err))?;
         let bytes = body.into_bytes().to_vec();
+        let actual_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+        let delta = actual_size.saturating_sub(estimated_size.max(0));
+        if delta != 0 {
+            if let Err(err) = cloud_guard::reconcile_read_bytes(&self.pool, delta).await {
+                warn!(
+                    "repair egress reconcile failed pack={} shard={}: {}",
+                    pack_id, shard_index, err
+                );
+            }
+        }
 
         let shard_path = local_shard_path(
             &self.spool_dir,

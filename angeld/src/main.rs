@@ -1123,7 +1123,7 @@ async fn maybe_auto_restore_database(db_url: &str) -> Result<bool, Box<dyn std::
         "local SQLite database is missing; attempting automatic metadata restore into {}",
         db_path.display()
     );
-    restore_metadata_from_cloud(&provider_manager, &passphrase, &db_path).await?;
+    restore_metadata_from_cloud(&provider_manager, &passphrase, &db_path, None).await?;
     info!(
         "automatic metadata restore completed for {}",
         db_path.display()

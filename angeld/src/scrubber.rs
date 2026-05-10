@@ -1,6 +1,7 @@
 // reserved for future integrity-scrubbing epic (periodic hash verification of stored shards)
 #![allow(dead_code)]
 
+use crate::cloud_guard;
 use crate::db;
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::uploader::ProviderConfig;
@@ -134,6 +135,14 @@ impl ScrubberWorker {
             return Err(ScrubberError::InvalidEnv("scrub provider not configured"));
         };
 
+        if let Err(reason) = cloud_guard::try_authorize_read(&self.pool, 0).await {
+            warn!(
+                "scrubber HEAD blocked by cloud guard pack={} shard={} provider={}: {}",
+                shard.pack_id, shard.shard_index, provider.provider_name, reason
+            );
+            return Ok(());
+        }
+
         let head_result = timeout(
             self.provider_timeout,
             provider
@@ -231,6 +240,16 @@ impl ScrubberWorker {
         shard: &db::ScrubShardRecord,
         provider: &ScrubProvider,
     ) -> Result<(), ScrubberError> {
+        if let Err(reason) =
+            cloud_guard::try_authorize_read(&self.pool, shard.size.max(0)).await
+        {
+            warn!(
+                "scrubber deep GET blocked by cloud guard pack={} shard={} provider={}: {}",
+                shard.pack_id, shard.shard_index, provider.provider_name, reason
+            );
+            return Ok(());
+        }
+
         let response = timeout(
             self.provider_timeout,
             provider
@@ -264,6 +283,17 @@ impl ScrubberWorker {
                 };
                 let bytes = body.into_bytes();
                 let verified_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+                let delta = verified_size.saturating_sub(shard.size);
+                if delta != 0 {
+                    if let Err(err) =
+                        cloud_guard::reconcile_read_bytes(&self.pool, delta).await
+                    {
+                        warn!(
+                            "scrubber egress reconcile failed pack={} shard={}: {}",
+                            shard.pack_id, shard.shard_index, err
+                        );
+                    }
+                }
                 let checksum = hex_sha256(&bytes);
 
                 if checksum == shard.checksum {
