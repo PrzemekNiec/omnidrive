@@ -111,6 +111,7 @@ pub(super) fn routes() -> Router<ApiState> {
         .route("/api/maintenance/scrub-status", get(get_scrub_status))
         .route("/api/maintenance/scrub-errors", get(get_scrub_errors))
         .route("/api/maintenance/retry-storms", get(get_retry_storms))
+        .route("/api/maintenance/gc-orphans", post(post_gc_orphans))
         .route("/api/maintenance/scrub-now", post(post_scrub_now))
         .route("/api/maintenance/repair-now", post(post_repair_now))
         .route("/api/maintenance/reconcile-now", post(post_reconcile_now))
@@ -313,6 +314,23 @@ async fn get_scrub_status(
         verified_deep_shards: summary.verified_deep_shards,
         last_scrub_timestamp: summary.last_scrub_timestamp,
     }))
+}
+
+async fn post_gc_orphans(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<db::GcOrphanReport>, ApiError> {
+    let _caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
+    let report = db::gc_orphan_packs(&state.pool).await?;
+    info!(
+        "gc-orphans: removed {} orphan packs ({} pack_shards, {} pack_locations, {} upload_jobs, {} targets)",
+        report.deleted_packs,
+        report.deleted_pack_shards,
+        report.deleted_pack_locations,
+        report.deleted_upload_jobs,
+        report.deleted_upload_job_targets,
+    );
+    Ok(Json(report))
 }
 
 async fn get_retry_storms(

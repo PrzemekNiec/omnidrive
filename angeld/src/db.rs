@@ -5553,6 +5553,100 @@ pub async fn mark_upload_target_failed(
 }
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GcOrphanReport {
+    pub orphan_pack_ids: Vec<String>,
+    pub deleted_packs: u64,
+    pub deleted_pack_shards: u64,
+    pub deleted_pack_locations: u64,
+    pub deleted_upload_jobs: u64,
+    pub deleted_upload_job_targets: u64,
+}
+
+#[allow(dead_code)]
+pub async fn gc_orphan_packs(pool: &SqlitePool) -> Result<GcOrphanReport, sqlx::Error> {
+    let orphan_pack_ids: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT p.pack_id
+        FROM packs p
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM pack_locations pl
+            INNER JOIN chunk_refs cr ON cr.chunk_id = pl.chunk_id
+            WHERE pl.pack_id = p.pack_id
+        )
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    if orphan_pack_ids.is_empty() {
+        return Ok(GcOrphanReport {
+            orphan_pack_ids,
+            deleted_packs: 0,
+            deleted_pack_shards: 0,
+            deleted_pack_locations: 0,
+            deleted_upload_jobs: 0,
+            deleted_upload_job_targets: 0,
+        });
+    }
+
+    let mut tx = pool.begin().await?;
+    let mut deleted_targets: u64 = 0;
+    let mut deleted_jobs: u64 = 0;
+    let mut deleted_locations: u64 = 0;
+    let mut deleted_shards: u64 = 0;
+    let mut deleted_packs: u64 = 0;
+
+    for pack_id in &orphan_pack_ids {
+        let job_ids: Vec<i64> =
+            sqlx::query_scalar("SELECT id FROM upload_jobs WHERE pack_id = ?")
+                .bind(pack_id)
+                .fetch_all(&mut *tx)
+                .await?;
+        for job_id in job_ids {
+            let r = sqlx::query("DELETE FROM upload_job_targets WHERE job_id = ?")
+                .bind(job_id)
+                .execute(&mut *tx)
+                .await?;
+            deleted_targets = deleted_targets.saturating_add(r.rows_affected());
+            let r = sqlx::query("DELETE FROM upload_jobs WHERE id = ?")
+                .bind(job_id)
+                .execute(&mut *tx)
+                .await?;
+            deleted_jobs = deleted_jobs.saturating_add(r.rows_affected());
+        }
+        let r = sqlx::query("DELETE FROM pack_locations WHERE pack_id = ?")
+            .bind(pack_id)
+            .execute(&mut *tx)
+            .await?;
+        deleted_locations = deleted_locations.saturating_add(r.rows_affected());
+        // pack_shards cascade-delete via FK ON DELETE CASCADE — count first for report.
+        let count_shards: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pack_shards WHERE pack_id = ?")
+                .bind(pack_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        deleted_shards = deleted_shards.saturating_add(count_shards.max(0) as u64);
+        let r = sqlx::query("DELETE FROM packs WHERE pack_id = ?")
+            .bind(pack_id)
+            .execute(&mut *tx)
+            .await?;
+        deleted_packs = deleted_packs.saturating_add(r.rows_affected());
+    }
+
+    tx.commit().await?;
+    Ok(GcOrphanReport {
+        orphan_pack_ids,
+        deleted_packs,
+        deleted_pack_shards: deleted_shards,
+        deleted_pack_locations: deleted_locations,
+        deleted_upload_jobs: deleted_jobs,
+        deleted_upload_job_targets: deleted_targets,
+    })
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct RetryStormTargetRecord {
     pub job_id: i64,
