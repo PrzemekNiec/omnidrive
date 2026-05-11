@@ -69,13 +69,16 @@
       mergeStatus(status);
       if (String(status.onboarding_state || "").toUpperCase() === "COMPLETED") {
         hideWizard();
+        location.replace("/");
         return;
       }
       st.step = resolveInitialStep(status);
       showWizard();
       render();
+      document.body.style.opacity = "1";
     } catch (error) {
       console.error("wizard init failed", error);
+      document.body.style.opacity = "1";
     }
   }
 
@@ -147,13 +150,23 @@
   }
 
   function resolveInitialStep(status) {
-    if (st.step > 0) return st.step;
-    const step = String(status.current_step || "welcome").toLowerCase();
-    if (step === "identity") return 2;
-    if (step === "providers") return 3;
-    if (step === "security") return 4;
-    if (step === "completed") return 5;
-    return 0;
+    const apiStep = (() => {
+      const step = String(status.current_step || "welcome").toLowerCase();
+      if (step === "identity") return 2;
+      if (step === "providers") return 3;
+      if (step === "security") return 4;
+      if (step === "completed") return 5;
+      return 0;
+    })();
+    // Trust sessionStorage only if it's at most 1 step ahead of the API.
+    // A stale session (e.g. after DB wipe) could report step 5 while API says 0,
+    // which would produce a de-synced double-render.
+    if (st.step > 0 && st.step <= apiStep + 1) return st.step;
+    if (st.step > apiStep + 1) {
+      st.step = apiStep;
+      saveSession();
+    }
+    return apiStep;
   }
 
   function showWizard() {
@@ -268,31 +281,8 @@
   function stepBody() {
     if (st.step === 0) {
       return `
-        <div class="flex flex-col gap-4">
-          <div class="grid grid-cols-2 gap-3">
-            <div class="glass-muted rounded-2xl p-4">
-              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Skarbiec</p>
-              <p class="mt-2 text-base font-semibold text-white">${escape(st.onboarding?.onboarding_state || "INITIAL")}</p>
-            </div>
-            <div class="glass-muted rounded-2xl p-4">
-              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Tryb</p>
-              <p class="mt-2 text-base font-semibold text-white">${escape(modeLabel(st.mode))}</p>
-            </div>
-            <div class="glass-muted rounded-2xl p-4">
-              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Urządzenie</p>
-              <p class="mt-2 text-sm font-semibold text-white break-words">${escape(st.identity.device_name || "To urządzenie")}</p>
-              <p class="mt-1 text-xs text-slate-500">${escape(st.identity.device_id || "ID zostanie nadane po zapisaniu tożsamości")}</p>
-            </div>
-            <div class="glass-muted rounded-2xl p-4">
-              <p class="text-[10px] uppercase tracking-[.18em] text-slate-500">Konto Google</p>
-              <a href="/api/auth/google/start" class="mt-2 flex items-center gap-2 text-sm text-primary hover:underline">
-                <span class="material-symbols-outlined text-base">account_circle</span>Zaloguj przez Google
-              </a>
-            </div>
-          </div>
-          <div class="glass-muted rounded-2xl px-4 py-3">
-            <p class="text-sm text-slate-300">OmniDrive startuje z działającym lokalnym Skarbcem i aktywnym dashboardem. Dostawcy chmurowi i tryb shared-vault rozszerzają bazę, zamiast ją blokować.</p>
-          </div>
+        <div class="flex flex-col items-center gap-3 py-4 text-center">
+          <p class="text-base text-slate-300 max-w-sm leading-relaxed">Kreator przeprowadzi Cię przez kilka prostych kroków — wybór trybu pracy, tożsamość urządzenia i opcjonalne skonfigurowanie dostawców chmurowych.</p>
         </div>`;
     }
 
@@ -361,7 +351,12 @@
           <div class="glass-muted rounded-[20px] p-4 flex flex-col gap-3">
             <div class="flex items-center justify-between">
               <p class="text-sm font-semibold text-white">${escape(PROVIDERS[st.selectedProvider].name)}</p>
-              ${statusBadge(p.last_test_status)}
+              <div class="flex items-center gap-2">
+                ${statusBadge(p.last_test_status)}
+                <button type="button" id="wizardDeleteProviderButton" title="Usuń konfigurację dostawcy" class="flex items-center justify-center rounded-lg p-1 transition-colors ${p.endpoint ? "text-slate-500 hover:text-red-400 hover:bg-red-400/10 cursor-pointer" : "text-slate-700 cursor-not-allowed"}" ${p.endpoint ? "" : "disabled"}>
+                  <span class="material-symbols-outlined" style="font-size:18px;">delete</span>
+                </button>
+              </div>
             </div>
             <label class="flex flex-col gap-1.5">
               <span class="text-[10px] uppercase tracking-[.18em] text-slate-500">Endpoint dostawcy</span>
@@ -490,8 +485,29 @@
     document.getElementById("wizardProviderEnabled")?.addEventListener("change", (e) => { st.providers[st.selectedProvider].enabled = Boolean(e.target.checked); saveSession(); });
     document.getElementById("wizardProviderForcePathStyle")?.addEventListener("change", (e) => { st.providers[st.selectedProvider].force_path_style = Boolean(e.target.checked); saveSession(); });
     document.getElementById("wizardTestProviderButton")?.addEventListener("click", () => void testProvider());
+    document.getElementById("wizardDeleteProviderButton")?.addEventListener("click", () => void deleteProvider());
     bindInput("wizardPassphrase", (v) => { st.security.passphrase = v; }, false);
     bindInput("wizardPassphraseConfirm", (v) => { st.security.confirm = v; }, false);
+  }
+
+  async function deleteProvider() {
+    const name = st.selectedProvider;
+    if (!st.providers[name].endpoint) return;
+    try {
+      await api(`/api/onboarding/provider/${name}`, { method: "DELETE" });
+      st.providers[name] = {
+        provider_name: name, endpoint: "", region: PROVIDERS[name].region || "", bucket: "",
+        force_path_style: false, enabled: true, access_key_status: "MISSING",
+        secret_key_status: "MISSING", last_test_status: null, last_test_error: null,
+        last_test_at: null, validation: null, draft_source: null, busy: false,
+      };
+      st.secrets[name] = { access_key_id: "", secret_access_key: "" };
+      saveSession();
+      hideError();
+      render();
+    } catch (error) {
+      showError(error.message || "Nie udało się usunąć konfiguracji dostawcy.");
+    }
   }
 
   function bindInput(id, handler) {
@@ -574,15 +590,23 @@
           if (!response.restore || response.restore.status !== "OK") {
             throw new Error("Przywracanie Skarbca nie zwróciło pomyślnego wyniku.");
           }
+          // v0.3.21: persist the session token across the location.replace('/')
+          // boundary so the dashboard can authenticate protected endpoints
+          // immediately on first paint.
+          if (response.session_token) {
+            try { sessionStorage.setItem('omnidrive.boot_session_token', response.session_token); } catch (_) {}
+            if (response.expires_at) {
+              try { sessionStorage.setItem('omnidrive.boot_session_expires_at', String(response.expires_at)); } catch (_) {}
+            }
+          }
         } else {
           await api("/api/onboarding/complete", { method: "POST" });
         }
         clearProviderSecrets();
         clearSecuritySecrets();
         sessionStorage.removeItem(STORAGE_KEY);
-        hideWizard();
         st.busy = false;
-        if (typeof window.loadDashboard === "function") window.loadDashboard().catch(console.error);
+        location.replace('/');
         return;
       }
       saveSession();
