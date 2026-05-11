@@ -590,6 +590,15 @@
           if (!response.restore || response.restore.status !== "OK") {
             throw new Error("Przywracanie Skarbca nie zwróciło pomyślnego wyniku.");
           }
+          // v0.3.21: persist the session token across the location.replace('/')
+          // boundary so the dashboard can authenticate protected endpoints
+          // immediately on first paint.
+          if (response.session_token) {
+            try { sessionStorage.setItem('omnidrive.boot_session_token', response.session_token); } catch (_) {}
+            if (response.expires_at) {
+              try { sessionStorage.setItem('omnidrive.boot_session_expires_at', String(response.expires_at)); } catch (_) {}
+            }
+          }
         } else {
           await api("/api/onboarding/complete", { method: "POST" });
         }

@@ -131,6 +131,13 @@ struct JoinExistingResponse {
     onboarding_mode: String,
     cloud_enabled: bool,
     restore: VaultRestoreReport,
+    // v0.3.21: emit session token so the freshly-joined device can call protected
+    // endpoints immediately, without relying on a follow-up /api/vault/status call
+    // (which silently failed if multi-user setup raced with the first request).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -697,49 +704,78 @@ async fn post_join_existing(
         .await?;
     db::set_system_config_value(&state.pool, SYSTEM_CONFIG_CLOUD_ENABLED, "1").await?;
 
-    // After snapshot graft the local device exists only in `local_device_identity`.
-    // Populate the multi-user tables (users, devices, vault_members) so that
-    // create_session_for_local_device can issue tokens and vault ACL checks pass.
+    // v0.3.23: Single-User-Multi-Device adoption.
+    //
+    // graft_restored_metadata_snapshot now copies the source vault's full identity
+    // tables (users, devices, vault_members) — wiping the local migration phantom
+    // first. After graft the only thing missing is *this* device's row in `devices`,
+    // because the source snapshot doesn't know it exists yet.
+    //
+    // ensure_local_device_in_vault inserts that row using the owner user_id read
+    // from the freshly-grafted vault_members. From this point on:
+    //   - create_session_for_local_device reads devices(local_id).user_id → owner_user_id
+    //   - safety_numbers(owner_user_id) is identical to what the source device computes
+    //   - MultiDevice tab shows source's roster + this device
+    let mut multi_user_ready = false;
     if let Ok(Some(local_dev)) = db::get_local_device_identity(&state.pool).await {
-        let local_user_id = format!("user-{}", local_dev.device_id);
-        let placeholder_pubkey = vec![0u8; 32];
-        if let Err(e) = db::create_user(
-            &state.pool,
-            &local_user_id,
-            &local_dev.device_name,
-            None,
-            "local",
-            None,
-        )
-        .await
-        {
-            warn!("[join-existing] create_user for local device: {e}");
+        match db::ensure_local_device_in_vault(&state.pool, &restore.vault_id).await {
+            Ok(true) => info!(
+                "[join-existing] registered local device {} under grafted vault {}",
+                local_dev.device_id, restore.vault_id
+            ),
+            Ok(false) => info!(
+                "[join-existing] local device {} already registered or no owner found in grafted vault_members",
+                local_dev.device_id
+            ),
+            Err(err) => warn!(
+                "[join-existing] ensure_local_device_in_vault failed: {err}"
+            ),
         }
-        if let Err(e) = db::create_device(
-            &state.pool,
-            &local_dev.device_id,
-            &local_user_id,
-            &local_dev.device_name,
-            &placeholder_pubkey,
-        )
-        .await
-        {
-            warn!("[join-existing] create_device for local device: {e}");
-        }
-        if let Err(e) = db::add_vault_member(
-            &state.pool,
-            &local_user_id,
-            &restore.vault_id,
-            "owner",
-            None,
-        )
-        .await
-        {
-            warn!("[join-existing] add_vault_member for local device: {e}");
+
+        // Resolve the adopted user_id (= snapshot owner) and confirm chain integrity.
+        let device_rec = db::get_device(&state.pool, &local_dev.device_id).await.ok().flatten();
+        if let Some(dev) = device_rec {
+            let user_ok = matches!(db::get_user(&state.pool, &dev.user_id).await, Ok(Some(_)));
+            let member_ok = matches!(
+                db::get_vault_member(&state.pool, &dev.user_id, &restore.vault_id).await,
+                Ok(Some(_))
+            );
+            multi_user_ready = user_ok && member_ok;
+            if multi_user_ready {
+                info!(
+                    "[join-existing] adopted owner identity: device={}, user_id={}, vault_id={}",
+                    local_dev.device_id, dev.user_id, restore.vault_id
+                );
+            } else {
+                warn!(
+                    "[join-existing] identity chain broken after graft (user_ok={user_ok}, member_ok={member_ok}, user_id={}) — snapshot may predate multi-user migration",
+                    dev.user_id
+                );
+            }
+        } else {
+            warn!(
+                "[join-existing] device {} missing from devices table after ensure_local_device_in_vault — snapshot likely had no owner",
+                local_dev.device_id
+            );
         }
     } else {
-        warn!("[join-existing] no local_device_identity found — skipping multi-user membership setup");
+        warn!("[join-existing] no local_device_identity found — skipping multi-user adoption");
     }
+
+    // Issue a session token for the joining device so the dashboard can call
+    // protected endpoints (audit, files, multi-device, lock, safety-numbers, logout)
+    // immediately on first load.
+    let (session_token, expires_at) = if multi_user_ready {
+        match super::auth::create_session_for_local_device(&state.pool).await {
+            Ok(session) => (Some(session.token), Some(session.expires_at)),
+            Err(err) => {
+                warn!("[join-existing] session token creation failed: {err}");
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
 
     trigger_runtime_provider_reload(&state, true).await;
 
@@ -767,6 +803,8 @@ async fn post_join_existing(
         onboarding_mode: OnboardingMode::JoinExisting.as_str().to_string(),
         cloud_enabled: true,
         restore,
+        session_token,
+        expires_at,
     }))
 }
 

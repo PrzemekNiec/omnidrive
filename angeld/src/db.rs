@@ -1666,6 +1666,13 @@ pub async fn insert_wrapped_dek(
 #[derive(sqlx::FromRow)] struct RestoredConflictEvent { conflict_id: i64, inode_id: i64, winning_revision_id: i64, losing_revision_id: i64, reason: String, materialized_inode_id: Option<i64>, materialized_revision_id: Option<i64>, created_at: i64 }
 #[allow(dead_code)]
 #[derive(sqlx::FromRow)] struct RestoredProviderConfig { provider_name: String, endpoint: String, region: String, bucket: String, force_path_style: i64, enabled: i64, draft_source: Option<String>, last_test_status: Option<String>, last_test_error: Option<String>, last_test_at: Option<i64>, created_at: i64, updated_at: i64 }
+// v0.3.23: Identity tables grafted as part of Single-User-Multi-Device adoption.
+// On join-existing the joining device adopts the source vault's owner identity
+// instead of inventing a new local user_id; safety_numbers (= SHA256(EVK || user_id))
+// are then identical across devices.
+#[derive(sqlx::FromRow)] struct RestoredUser { user_id: String, display_name: String, email: Option<String>, auth_provider: String, auth_subject: Option<String>, created_at: i64, google_refresh_token_ciphertext: Option<Vec<u8>> }
+#[derive(sqlx::FromRow)] struct RestoredDevice { device_id: String, user_id: String, device_name: String, public_key: Vec<u8>, wrapped_vault_key: Option<Vec<u8>>, vault_key_generation: Option<i64>, revoked_at: Option<i64>, last_seen_at: Option<i64>, created_at: i64, safety_numbers_verified_at: Option<i64>, enrolled_at: Option<i64> }
+#[derive(sqlx::FromRow)] struct RestoredVaultMember { user_id: String, vault_id: String, role: String, invited_by: Option<String>, joined_at: i64 }
 
 pub async fn graft_restored_metadata_snapshot(
     pool: &SqlitePool,
@@ -1764,6 +1771,33 @@ pub async fn graft_restored_metadata_snapshot(
         "SELECT provider_name, endpoint, region, bucket, force_path_style, enabled, \
          draft_source, last_test_status, last_test_error, last_test_at, created_at, \
          updated_at FROM provider_configs",
+    )
+    .fetch_all(&restored_pool)
+    .await
+    .unwrap_or_default();
+
+    // v0.3.23: Identity tables. unwrap_or_default so a snapshot from before the
+    // multi-user migration (e.g. legacy V1 source) doesn't break the graft —
+    // post_join_existing then knows there's no owner to inherit and can fall back.
+    let r_users = sqlx::query_as::<_, RestoredUser>(
+        "SELECT user_id, display_name, email, auth_provider, auth_subject, created_at, \
+         google_refresh_token_ciphertext FROM users",
+    )
+    .fetch_all(&restored_pool)
+    .await
+    .unwrap_or_default();
+
+    let r_devices = sqlx::query_as::<_, RestoredDevice>(
+        "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
+         vault_key_generation, revoked_at, last_seen_at, created_at, \
+         safety_numbers_verified_at, enrolled_at FROM devices",
+    )
+    .fetch_all(&restored_pool)
+    .await
+    .unwrap_or_default();
+
+    let r_vault_members = sqlx::query_as::<_, RestoredVaultMember>(
+        "SELECT user_id, vault_id, role, invited_by, joined_at FROM vault_members",
     )
     .fetch_all(&restored_pool)
     .await
@@ -1879,8 +1913,56 @@ pub async fn graft_restored_metadata_snapshot(
             "DELETE FROM metadata_backups",
             "DELETE FROM sync_policies",
             "DELETE FROM inodes",
+            // v0.3.23: identity tables — wipe local migration phantoms before adopting
+            // the source vault's owner/devices/membership. Order matters w.r.t. FKs
+            // even with foreign_keys=OFF (vault_members.invited_by → users).
+            "DELETE FROM vault_members",
+            "DELETE FROM devices",
+            "DELETE FROM users",
         ] {
             sqlx::query(statement).execute(&mut *conn).await?;
+        }
+
+        // v0.3.23: Insert identity rows from the snapshot. If the snapshot predates
+        // the multi-user migration these vectors are empty and post_join_existing
+        // bootstraps a fresh owner. When present, the joining device adopts:
+        //   - the source vault's owner user_id (so safety_numbers match cross-device)
+        //   - the source vault's full devices roster (so MultiDevice tab shows peers)
+        //   - the source vault's vault_members roster (ACL works against the grafted vault_id)
+        for row in &r_users {
+            sqlx::query(
+                "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, \
+                 created_at, google_refresh_token_ciphertext) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&row.user_id).bind(&row.display_name).bind(&row.email)
+            .bind(&row.auth_provider).bind(&row.auth_subject).bind(row.created_at)
+            .bind(&row.google_refresh_token_ciphertext)
+            .execute(&mut *conn).await?;
+        }
+
+        for row in &r_devices {
+            sqlx::query(
+                "INSERT INTO devices (device_id, user_id, device_name, public_key, \
+                 wrapped_vault_key, vault_key_generation, revoked_at, last_seen_at, \
+                 created_at, safety_numbers_verified_at, enrolled_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&row.device_id).bind(&row.user_id).bind(&row.device_name)
+            .bind(&row.public_key).bind(&row.wrapped_vault_key)
+            .bind(row.vault_key_generation).bind(row.revoked_at).bind(row.last_seen_at)
+            .bind(row.created_at).bind(row.safety_numbers_verified_at).bind(row.enrolled_at)
+            .execute(&mut *conn).await?;
+        }
+
+        for row in &r_vault_members {
+            sqlx::query(
+                "INSERT INTO vault_members (user_id, vault_id, role, invited_by, joined_at) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&row.user_id).bind(&row.vault_id).bind(&row.role)
+            .bind(&row.invited_by).bind(row.joined_at)
+            .execute(&mut *conn).await?;
         }
 
         for row in &r_inodes {

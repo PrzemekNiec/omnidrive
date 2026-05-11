@@ -3301,7 +3301,7 @@
     }
 
     // ── Hash router (F.7) ───────────────────────────────────────
-    const VALID_VIEWS = ['przeglad', 'pliki', 'skarbiec', 'multi-device', 'chmura', 'audyt', 'ustawienia'];
+    const VALID_VIEWS = ['przeglad', 'pliki', 'skarbiec', 'multi-device', 'chmura', 'audyt', 'ustawienia', 'diagnostyka'];
     const PLACEHOLDER_META = {
       'multi-device': { icon: 'devices',   title: 'Multi-Device' },
       chmura:         { icon: 'cloud',     title: 'Chmura' },
@@ -3754,6 +3754,19 @@
           .catch(() => {});
       }
 
+      // v0.3.21: pick up a session token handed off by the wizard (Join Existing flow)
+      // before we hit /api/vault/status. The wizard stashes it in sessionStorage right
+      // before location.replace('/'); without this the dashboard would silently lose
+      // the token whenever /api/vault/status raced with multi-user table population.
+      try {
+        const bootToken = sessionStorage.getItem('omnidrive.boot_session_token');
+        if (bootToken) {
+          VAULT_STATE.sessionToken = bootToken;
+          sessionStorage.removeItem('omnidrive.boot_session_token');
+          sessionStorage.removeItem('omnidrive.boot_session_expires_at');
+        }
+      } catch (_) {}
+
       // Gate: check onboarding state first, then vault lock state.
       // Lock screen starts display:none — only revealed here if onboarding is COMPLETED.
       fetch('/api/onboarding/status', { headers: { 'Accept': 'application/json' } })
@@ -3769,7 +3782,13 @@
             .then(data => {
               if (data && data.unlocked) {
                 VAULT_STATE.unlocked = true;
-                VAULT_STATE.sessionToken = data.session_token || null;
+                // Prefer the wizard-handoff token if we already adopted one above —
+                // /api/vault/status mints a fresh session on every call, so the older
+                // boot token would otherwise be replaced unnecessarily. Either token
+                // is valid; we just avoid churn.
+                if (!VAULT_STATE.sessionToken) {
+                  VAULT_STATE.sessionToken = data.session_token || null;
+                }
                 startDashboard();
               } else {
                 VAULT_STATE.unlocked = false;

@@ -1,9 +1,9 @@
 # OmniDrive — Kronika projektu & Roadmapa (Single Source of Truth)
 
-> **Ostatnia aktualizacja:** 2026-05-10
-> **Aktualna wersja:** `v0.3.18` — commit `d5f71e3` (lokalny, niepushed) — instalator `OmniDrive-Setup-0.3.18.exe` gotowy
-> **Status:** Bleeding B2 + retry storm fixes (5 commitów). Sesja 2026-05-10 wydała 11 wersji (v0.3.8–v0.3.18). Czekamy na push + Dell smoke test z v0.3.18.
-> **Zasada:** ten plik to jedyne źródło prawdy. Stare pliki planowania w `docs/archive/`.
+> **Ostatnia aktualizacja:** 2026-05-10 (wieczór)
+> **Aktualna wersja:** `v0.3.23` — instalator `OmniDrive-Setup-0.3.23.exe` gotowy. Lokalny daemon Lenovo działa z `target/release` workspace mode.
+> **Status:** Identity Grafting + Cloud Guard endpoint (Single-User-Multi-Device). Po sesji 2026-05-10 wydane 6 wersji w jednym dniu (v0.3.18–v0.3.23). **Decyzja Przemka po sesji:** koniec gaszenia pożarów, formalna roadmapa v0.4 zaakceptowana — patrz §12.
+> **Zasada:** ten plik to jedyne źródło prawdy o roadmapie. Bugi w `docs/KNOWN_ISSUES.md`. Stare pliki planowania w `docs/archive/`.
 
 ---
 
@@ -20,7 +20,11 @@
 9. [Epic 36 — UI Redesign (Stitch Layout)](#9-epic-36--ui-redesign-stitch-layout)
 10. [Fazy H–M.6 — Quick Wins + Local-First Lock-in](#10-fazy-hm6--quick-wins--local-first-lock-in)
 11. [Faza N — Stabilizacja, Hardening, Release v0.3.6](#11-faza-n--stabilizacja-hardening-release-v036)
-12. [Co przed nami](#12-co-przed-nami)
+12. [Roadmap v0.4 → v5.0 → v6.0](#12-roadmap--droga-do-v04--v50--v60)
+    - 12.0 Wizja docelowa · 12.1 Threat Model · 12.2 SLA Performance · 12.3 Quality Gate
+    - 12.4 Faza 0 (QA Foundation) · 12.5 Faza α (Crypto) · 12.6 Faza β (Bug Fixes)
+    - 12.7 Faza γ (Zero Data Loss) · 12.8 Faza δ (Multi-User Closure) · 12.9 Faza ε (VFS Stability)
+    - 12.10 Faza ζ (Test Automation) · 12.11 v0.4.0 Gate · 12.12 v5.0 · 12.13 v6.0
 13. [Decyzje architektoniczne](#13-decyzje-architektoniczne)
 14. [Risk register](#14-risk-register)
 15. [Workflow przypomnienie](#15-workflow-przypomnienie)
@@ -458,6 +462,20 @@
 | v0.3.16 | `8c33d19` | **`IncorrectPassphrase` fallback fix:** błąd od jednego providera (np. tylko Scaleway ma stary klucz) nie przerywa fallbacka — daemon próbuje dalszych providerów, finalny `IncorrectPassphrase` zwraca tylko gdy WSZYSCY odrzucili. Klucz dla Dell join-existing kiedy Scaleway krzywo. |
 | v0.3.17 | `c08e164` | **Provider state guard + read-only test endpoint:** `post_setup_provider` nie cofa już `COMPLETED → IN_PROGRESS` (regresja). Dodany `POST /api/providers/{name}/test` — sprawdza stored credentials bez aktualizacji onboarding state. |
 
+### ✅ v0.3.19–v0.3.23 — Sesja Dell Smoke Test (2026-05-10 wieczór)
+
+| Wersja | Co zrobiono |
+|--------|-------------|
+| **v0.3.19** | „Silent & Smart" — adaptive Google OAuth button (ukryty dla solo vault z `members_count==1`). |
+| **v0.3.20** | Diagnostyka tab — wszystkie operacje serwisowe jako klikalne przyciski. |
+| **v0.3.21** | Fix #1 (HTTP 403 po join-existing): brak session_token w `JoinExistingResponse` → token handoff przez sessionStorage; idempotentny multi-user setup; `'diagnostyka'` w `VALID_VIEWS`. |
+| **v0.3.22** | Fix #2: `post_join_existing` używa `device.user_id` z istniejących `devices` (po `migrate_single_to_multi_user`) zamiast wymyślać `"user-{device_id}"` — token mintowany z prawidłowym user_id. **Częściowy** — odsłonił że Dell+Lenovo to dwóch różnych userów w jednym vault. |
+| **v0.3.23** | **Identity Grafting (Single-User-Multi-Device).** `graft_restored_metadata_snapshot` kopiuje teraz `users`/`devices`/`vault_members` ze snapshot. `post_join_existing` wywołuje `db::ensure_local_device_in_vault` — Dell adoptuje user_id ze snapshot Lenovo. Safety numbers identyczne na obu urządzeniach. MultiDevice tab Della widzi Lenovo + Della. Plus brakujący endpoint `GET /api/diagnostics` (cloud_guard quotas) → fix „Limity dzienne ERROR". |
+
+**Kluczowa lekcja sesji 2026-05-10:** seria reaktywnych fixów (v0.3.21 → v0.3.22 → v0.3.23) była objawem braku zaplanowanej akcji. Identity rozjazd Dell↔Lenovo był decyzją architektoniczną którą można było zauważyć od pierwszego symptomu, gdyby fix nie był reaktywny. Skutek: formalny roadmap v0.4 (§12) z jasnymi kryteriami sukcesu.
+
+---
+
 ### ✅ v0.3.18 — Bleeding B2 + retry storm fixes (NEW — 2026-05-10)
 
 > **Geneza:** Backblaze B2 zaalarmował 2026-05-10 wieczorem o 75% daily download cap mimo „tylko logowania". Diagnoza wykazała: orphaned pack `5962635a87...` z `attempts: 3158` na Scaleway od kwietnia + scrubber co 5 min robi GET deep verify na małym vaulcie + cloud_guard `daily_egress_bytes` raportuje 0 (BUG — accounting nie liczy egressu workerów). Daemon zatrzymany na noc; v0.3.18 = naprawienie wszystkich 4 wektorów.
@@ -475,119 +493,216 @@
 
 ---
 
-## 12. Co przed nami
+## 12. Roadmap — droga do v0.4 → v5.0 → v6.0
 
-### 🔜 Push v0.3.18 commitów na origin (NEXT — P0)
+> **Decyzje przyjęte 2026-05-10 wieczorem (Przemek + Claude).** Koniec gaszenia pożarów. Każdy etap ma jasne **Definition of Done** (DoD). Sekcja zastąpiła stary „Co przed nami" (dotyczył v0.3.18 — już osiągnięte i wyprzedzone).
 
-> Sześć commitów lokalnych (`6ee434c`, `da5a113`, `aa4aaa7`, `b158514`, `91fa8f5`, `d5f71e3`) niepushed na origin. `git push origin main` jako pierwszy krok następnej sesji.
+### 12.0 Wizja docelowa (3 milestones)
 
-### 🔜 Lenovo install v0.3.18 + GC orphans (P0)
+| Wersja | Nazwa robocza | Zakres |
+|--------|--------------|--------|
+| **v0.4** | **Stabilny Fundament (Single-User, Multi-Device)** | Single-user UI, multi-device sync (Lenovo↔Dell), zero data loss, pancerne VFS, hybrid quantum-resistant crypto. **Multi-user infra (Family Cloud) gotowa pod maską w bazie/API** — ale UI pozostaje single-user. |
+| **v5.0** | **Family Cloud (Aktywacja Multi-User UI)** | UI dla invite żony/dzieci, role/ACL flow, recovery dla nietechnicznych userów, dead man switch, RCE defense in depth. Nadbudówka na infrę v0.4 — żadnego przepisywania krypto/schema. |
+| **v6.0** | **Mobile Ecosystem** | Android-first (UniFFI), QR pairing, SQLite snapshot read, Inbox upload, opcjonalnie iOS. WebCrypto compatibility (Epic 33 mobile). |
 
-| Krok | Cel |
-|------|-----|
-| Zainstaluj `OmniDrive-Setup-0.3.18.exe` na Lenovo | Daemon na fixach v0.3.18 (zatrzymany od 2026-05-10 wieczorem) |
-| Unlock vault + wyciągnij `session_token` z `/api/vault/status` | Auth dla maintenance endpointów |
-| `POST /api/maintenance/gc-orphans` z Bearer token | Sprząta orphan pack `5962635a87...` (3158 prób Scaleway) i jego `upload_jobs`/`targets` |
-| Sprawdź `/api/diagnostics/health` → `daily_egress_bytes` rośnie podczas operacji | Dowód że Fix #1 działa (wcześniej raportował 0) |
-| Sprawdź `/api/maintenance/retry-storms` → `targets: []` po GC | Dowód że Fix #4 wyczyścił orphan |
+### 12.1 Threat Model dla v0.4 (zatwierdzony 2026-05-10)
 
-### 🔜 Dell Smoke Test Gate z v0.3.18 (P0)
+**MUST dla v0.4:**
+- (a) **Compromised provider** — full Zero-Knowledge: provider widzi tylko szyfrogram, nigdy plaintext / klucze / nazwy plików / strukturę. EC_2_1 sprawia że jeden provider = niewystarczający.
+- (b) **Compromised local OS** — DPAPI / Windows Hello / TPM dla persistowanych sekretów. Pamięć user-mode procesu = **świadoma akceptacja ryzyka** (malware z user-level privilege może odczytać unwrapped Vault Key z RAM podczas unlock; mitigacja przez auto-lock po inactivity timeout).
+- (d) **Recovery** — pełny działający BIP-39 mnemonik; 2-of-2 (passphrase + device) jako baseline, recovery key jako fallback.
+- (e) **Brute force** — Argon2id 2026 standard params (proponuję m=47MiB, t=1, p=1 — OWASP 2025+; do potwierdzenia benchmarkiem na docelowym sprzęcie ~150ms).
+- (f) **Quantum-Resistance** — **decyzja Przemka**: hybrid X25519 + ML-KEM-768 dla key encapsulation (Vault Key wrap dla devices). Symetryczne chunki AES-GCM-256 zostają — są post-quantum-safe (128-bit security level vs Grover). Schema gotowa od dnia 1, żadnej bolesnej migracji w przyszłości.
 
-> Gate przed tagiem `v0.3.18`. Świeża instalacja na Dellu, weryfikacja v0.3.14–v0.3.18 fixów end-to-end.
+**v5.0+ (świadomie odłożone):**
+- (c) Compromised endpoint (RCE w angeld) — defense in depth
+- Dead Man Switch (idle X miesięcy → trigger recovery transferu)
 
-| Assert | Co weryfikuje | Wersja źródłowa |
-|--------|---------------|-----------------|
-| `Join Existing Vault` z passphrase + B2/R2/Scaleway | Graft metadanych + unlock end-to-end | v0.3.6 + v0.3.14 |
-| Po join-existing: vault się odblokowuje, `lock` zwraca 200 | session_token zapisany przez post-graft membership creation | v0.3.14 |
-| Zmiana hasła → natychmiast widoczna na drugim urządzeniu (po refresh) | `spawn_post_rotation_backup` upload bez 1h tick | v0.3.15 |
-| Join-existing z fragmentem zepsutych providerów (np. Scaleway) → przechodzi | `IncorrectPassphrase` fallback nie blokuje | v0.3.16 |
-| Wielokrotne `setup-provider` updates nie cofają stanu COMPLETED | Provider state guard | v0.3.17 |
-| `POST /api/providers/{name}/test` zwraca read-only walidację | Read-only test endpoint | v0.3.17 |
-| `POST /api/maintenance/gc-orphans` (admin) usuwa orphan packs | Fix #4 | v0.3.18 |
-| Dashboard retry-storm card hidden gdy max_attempts < 100 | Fix #3 | v0.3.18 |
-| Po 24h pracy: `daily_egress_bytes` > 0, scrubber poll faktycznie 1h dla małego vault | Fix #1 + #5 | v0.3.18 |
-| `%LOCALAPPDATA%\OmniDrive\restore-staging-*` pusty po graftcie | A.0+A.2+A.4 (N.5) na Dellu | v0.3.6 |
-| `accept_device` z `[0;32]` → `400 low_order_pubkey` | A.3 działa | v0.3.6 |
-| Brute-force `/api/recovery/restore` 10× → 429 po 3. próbie | B.2 działa | v0.3.6 |
-| Cross-device Identicon + mnemonik (Lenovo ↔ Dell) | M.5 deterministic | v0.3.5 |
+### 12.2 SLA Performance dla v0.4 (zatwierdzone 2026-05-10)
 
-### 🔜 Tag v0.3.18 Release (po Dell smoke — P0)
+| Komponent | SLA |
+|-----------|-----|
+| Watcher CPU | < 1% w spoczynku, < 5% przy 100 zmianach/min |
+| VFS cold fetch (placeholder hydration) | < 2s dla pliku < 10 MB; < 10s dla pliku < 100 MB; throughput min 50 MB/s |
+| VFS warm cache open | < 100ms |
+| Daemon RAM idle | < 200 MB |
+| Daemon cold start (boot → API ready) | < 5s |
 
-| Krok | Co zrobiono |
-|------|-------------|
-| — | `git tag v0.3.18` + push tag |
-| — | SHA-256 instalatora w GitHub Releases + `README.md` |
-| CHANGELOG | Wpis v0.3.18: bleeding B2 + retry storm fixes (5 fixów) |
+### 12.3 Quality Gate v0.4 (zatwierdzony 2026-05-10)
 
-### ⬜ Batch 7 — POST-DELL (P2 — Backlog)
+| # | Kryterium | Pomiar |
+|---|-----------|--------|
+| QG1 | Smoke test ręczny pełen cykl (wizard + join-existing + lock/unlock + upload/download + power-cycle) na **Lenovo + Dell** bez błędów | Checklist `docs/SMOKE_CHECKLIST.md` (do utworzenia w Fazie 0) |
+| QG2 | Stress test: 1000 plików małych (<1MB) + 1 plik >1GB + 24h soak watchera. Zero crashów, zero zgubionych plików, zero dataloss. | Skrypt `scripts/stress-test.ps1` (do utworzenia w Fazie ζ) |
+| QG3 | `cargo test --workspace --all-features` — 100% pass. **Pokrycie kluczowych flow** (lista §12.10) — każdy ma e2e test. | CI gate `cargo test` — green required przed tagiem |
+| QG4 | `docs/KNOWN_ISSUES.md` zero P1/P2 | Bug list audit (Przemek zatwierdza, Claude weryfikuje) |
+| QG5 | Formalny crypto review (Claude) — patrz Faza α DoD | Dokument `docs/superpowers/specs/2026-XX-XX-crypto-review.md` |
+| QG6 | Wszystkie SLA performance §12.2 spełnione | Benchmark suite `cargo bench` lub osobny PowerShell harness |
 
-| Item | Zakres |
-|------|--------|
-| **C.3** rustls/hyper consolidation | `aws-config`/`aws-sdk-s3` → hyper-1. `sqlx` → rustls. `cargo audit` clean. Odłożone: major AWS SDK bump = wysokie ryzyko regresji. |
-| **B.3 Krok 2** | OAuth code-exchange refactor: `/?oauth_code=` + `POST /api/auth/oauth/exchange` → `Set-Cookie: HttpOnly; Secure; SameSite=Strict`. |
-| **B.2 Tray confirmation** | Task 35.3 IPC: tray popup przy próbie recovery restore (fizyczna obecność). |
+**Brak audytu zewnętrznego krypto dla v0.4** — to v5.0 gate (gdy w grę wchodzą cudze pliki). v0.4 polega na formalnym Claude review (QG5).
 
-### ⬜ Faza O.1 — Quota Fix (P1 — po v0.3.6)
+---
 
-Raportowanie pojemności `O:\` z faktycznego cloud quota (B2/R2) zamiast z `C:`. ~1 dzień.
+### 12.4 Faza 0 — QA Foundation *(START: jutro)*
 
-### ⬜ Epic 33 Tryb B — Public Shares przez CF Pages (P2 — po v0.3.6)
+> **Cel:** zanim cokolwiek nowego kodujemy, mamy infrastrukturę żeby _mierzyć_ jakość.
 
-| Komponent | Zakres |
-|-----------|--------|
-| Upload | Duplicate encrypted chunków pod `shares/{share_id}/chunk-*.bin` |
-| Link format | `https://skarbiec.app/s/{id}#{dek}@{b2_base}` |
-| Password protection | `wrapped_dek = AES-KW(dek, PBKDF2(password, salt))` w manifeście |
-| Revocation | DELETE prefix w B2 → 404 dla Boba; SQLite mapping `share_id → [object keys]` |
-| `share-site` repo | Osobny repo: `index.html` + `decryptor.js`, CF Pages auto-deploy |
-| Fallback | `omnidrive.github.io/share` jeśli CF odpadnie |
-| Szacunek | 2–3 tygodnie |
+| Krok | Zakres | DoD |
+|------|--------|-----|
+| **0.1** | Audyt kodu — pełen przegląd `angeld/src/` i `omnidrive-core/src/` pod kątem: TODOs, `unimplemented!()`, `unwrap()` na hot paths, dead code (`cargo +nightly udeps`). Każde znalezisko → wpis P3 w `KNOWN_ISSUES.md`. | Lista znalezisk w `KNOWN_ISSUES.md` |
+| **0.2** | `docs/SMOKE_CHECKLIST.md` — manualna lista 30–50 sprawdzeń do przejścia po każdym buildzie (przed Dell smoke). | Plik gotowy, użyty przy następnym buildzie |
+| **0.3** | Performance baseline benchmark (watcher, VFS cold/warm fetch, RAM, cold start) — _aktualne_ wartości na Lenovo. Bez tego nie wiemy jak daleko jesteśmy od SLA. | `docs/perf-baseline-2026-05-XX.md` z tabelą metryk |
+| **0.4** | CI: GitHub Actions (lub lokalny Windows runner) — `cargo test --workspace`, `cargo clippy -- -D warnings`, `cargo fmt --check`. Każdy push → pipeline. | Pipeline zielony na main |
+| **0.5** | Push lokalnych commitów (v0.3.19–v0.3.23) na `origin` (memory: niepushed) | `git push origin main` przeszedł |
 
-### ⬜ Faza O.2+ — Cross-Platform VFS Foundation (P2 — backlog)
+**Szacunek:** 2–3 sesje.
 
-Trait `FileSystemAdapter`, refactor `cfapi` → implementacja traitu, prototyp FUSE adaptera Linux/macOS. Enabler dla Fazy P–R. ~2–4 tygodnie.
+---
 
-### ⬜ Faza P — Core Extraction dla Mobile (P3 — po v0.4.0)
+### 12.5 Faza α — Crypto Hardening *(po Fazie 0)*
 
-| Krok | Zakres |
-|------|--------|
-| P.1 | Audit `angeld/src/*.rs`: „pure logic" → `omnidrive-core` (packer, downloader, vault crypto) vs „platform glue" (zostaje w angeld) |
-| P.2 | `index.json.enc` — SQLite snapshot generowany przez daemon (daemon writes, mobile reads). D4 = Opcja C zatwierdzona. |
-| P.3 | UniFFI proc-macro: eksport `ffi_unwrap_key`, `ffi_decrypt_chunk_v2` (scaffold już w `79e2ba9`). Kotlin bindingi. `libomni_core.so`. |
-| Szacunek | 2–3 dni |
+> **Cel:** zamknąć wszystkie bramki krypto z §12.1 (a–f) zanim zaczniemy bug-fixy. Krypto = fundament; każdy fix do crypto po reszcie = ryzyko dataloss.
 
-### ⬜ Faza Q — Mobile Bridge & Handshake (P3)
+| Krok | Zakres | DoD |
+|------|--------|-----|
+| **α.1** | **Argon2id 2026 params bump.** Zmiana defaultu (m=47MiB, t=1, p=1). Migracja: nowy unlock z istniejącym vault → re-derive KEK z nowymi params + re-wrap Vault Key + bump `parameter_set_version`. Stara generacja zachowana w schema (recovery z legacy). | Test e2e: vault z m=19 → unlock → re-key → unlock z m=47 OK |
+| **α.2** | **ML-KEM-768 hybrid wrap.** Crate `ml-kem = "0.2"` (audited, NIST FIPS 203). Schema: `devices.kyber_public_key BLOB` (1184 B), `devices.wrapped_vault_key_kyber BLOB` (~1100 B + AAD). Każde wrap operacji produkuje 2 ciphertexts. Unwrap: próbuje X25519 (default), failover na ML-KEM. Dla solo vault: 1 device, 1 user — wrap obu metod dla siebie. | Test e2e: vault z hybrid wrap → unlock → assert oba ciphertexty deszyfrują na ten sam VK |
+| **α.3** | **Real X25519 keypair generation** (zamiast `[0;32]` placeholder w `migrate_single_to_multi_user` i `post_join_existing`). Klucze trzymane: public w `devices.public_key`, private w `local_device_identity.encrypted_private_key` (sealed Vault Key). | Test: świeży vault → device.public_key ≠ `[0;32]`, `validate_x25519_pubkey` accept |
+| **α.4** | **Snapshot extension dla pełnej tożsamości.** Audit `graft_restored_metadata_snapshot` — czy kopiuje **wszystkie** tabele które potrzebne są dla kompletnej tożsamości: `data_encryption_keys` (P1-001!), `recovery_keys` (jeśli istnieją), `oauth_states` (NIE — to per-instance). Pełna lista w `docs/crypto-spec.md`. | P1-001 zamknięty; e2e test multi-device pliku end-to-end (wgranie Lenovo, hydration Dell) |
+| **α.5** | **Formal Claude crypto review** — przegląd całego pipeline (passphrase → Argon2id → KEK → AES-KW → VK → AES-KW → DEK → AES-GCM chunki). Sprawdzenie: AAD strings, nonce uniqueness, key zeroization, timing leaks (deklaratywnie). Output: `docs/superpowers/specs/2026-XX-XX-crypto-review.md`. **QG5.** | Dokument review zaakceptowany przez Przemka |
 
-| Krok | Zakres |
-|------|--------|
-| Q.1 | Android skeleton (Kotlin + Compose, `minSdkVersion 26`) |
-| Q.2 | ML Kit QR scanning + parsowanie `omnidrive://pair?...` |
-| Q.3 | ECDH X25519 (Tink Android) + SAS 4-cyfrowy kod (7-step protocol z spec `docs/superpowers/specs/2026-04-20-mobile-qr-pairing-design.md`) |
-| Q.4 | Android Keystore AES-256 wrapping VK |
-| Nowe endpointy | `/api/mobile/pair-{start,init,confirm,cancel}` |
-| Schema | `devices`: `platform`, `paired_at`, `pairing_status`, `vault_key_generation` |
-| Szacunek | 5–7 dni |
+**Szacunek:** 5–8 sesji. Najcięższa faza — krypto + nowy algorytm + wiele testów.
 
-### ⬜ Faza R — Mobile V1 Read-Only (P3)
+---
 
-| Krok | Zakres |
-|------|--------|
-| R.1 | BiometricPrompt unlock → VK w pamięci (zeroize po 5 min inactivity) |
-| R.2 | `GET /api/snapshot/latest` → `vault_snapshot.db` lokalnie |
-| R.3 | Compose file browser (katalogi, metadane, search) |
-| R.4 | Streaming decrypt: chunki LAN → `decrypt_chunk` UniFFI → Android Intent |
-| R.5 | Offline pinning: long-press → cache w internal storage (zaszyfrowany) |
-| Szacunek | 7–10 dni |
+### 12.6 Faza β — Critical Bug Fixes *(po Fazie α)*
 
-### ⬜ Faza S — Mobile V2 Read-Write (P4)
+> **Cel:** zamknąć wszystkie P1 z `KNOWN_ISSUES.md`. Po Fazie α mamy poprawne krypto i tożsamość — fixujemy resztę.
 
-| Krok | Zakres |
-|------|--------|
-| S.1 | Inbox upload: ShareSheet → `POST /api/mobile/inbox/upload` → daemon szyfruje V2 → B2/R2 |
-| S.2 | iOS File Provider Extension + Android SAF |
-| S.3 | Conflict resolution: Opcja c = version branching `file (Conflict from iPhone).pdf` |
-| S.4 | Camera upload WorkManager + `READ_MEDIA_IMAGES` (opcjonalne) |
-| Szacunek | 5–7 dni |
+| Krok | Zakres | DoD |
+|------|--------|-----|
+| **β.1** | **P1-001 AES-GCM hydration fail** — graft kopiuje DEK (zrobione w α.4); test: Lenovo wgra 5MB plik → Dell unlock → otwórz plik z O:\ → checksum match. | P1-001 → FIXED |
+| **β.2** | **P1-002 Snapshot fetch worker** — periodic refresh snapshotu na istniejących urządzeniach (co 1h). Lock wokół DB, lamport clock per snapshot, conflict resolve = newer wins (z audit log entry). | Test: Dell join, Lenovo czeka, Lenovo MultiDevice tab pokazuje Della po max 1h |
+| **β.3** | **P1-003+P1-004 Snapshot redundancy fix** — Scaleway IAM/policy debug; R2 ConnReset retry-with-fresh-pool. **QG kryterium:** snapshot _zawsze_ w ≥1 sprawnym miejscu, najlepiej w 2/3. | metadata-backup status: ≥2/3 providers zielone |
+| **β.4** | **Watcher CPU fix (P2-001)** — po pomiarach z 0.3 (perf baseline). Możliwe: debounce + batch + ReadDirectoryChangesW zamiast polling. | SLA `watcher idle < 1%` osiągnięty |
+| **β.5** | **VFS lag fix (P2-002)** — dekompozycja `smart_sync.rs` (2197 linii) na moduły. Streaming hydration zamiast fetch-all-then-decrypt. | SLA cold fetch §12.2 osiągnięte |
+
+**Szacunek:** 4–6 sesji.
+
+---
+
+### 12.7 Faza γ — Zero Data Loss Hardening *(po Fazie β)*
+
+> **Cel:** spełnić wszystkie 5 kryteriów Zero Data Loss zaakceptowanych w decyzji 2026-05-10.
+
+| Krok | Zakres | DoD |
+|------|--------|-----|
+| **γ.1** | **Resume upload after crash.** Multipart upload state persist w SQLite (`multipart_uploads` table z S3 upload_id, parts, completed_at). Daemon po crashu → wznowienie pending parts zamiast restart-from-zero. | Test: kill daemona w środku 1GB upload → restart → plik w chmurze kompletny |
+| **γ.2** | **Conflict copy.** Modyfikacja tego samego inode z 2 urządzeń → oba revisions zachowane, materialized w O:\ jako `file (Conflict from Dell).pdf`. (Faza S w starym roadmap to mobile; tutaj desktop-first.) | Test 2-device write conflict → 2 revisions w `file_revisions` + 2 pliki w O:\ |
+| **γ.3** | **Soft-delete grace period.** `inodes.deleted_at` + grace 7 dni. UI „Kosz" w sidebar. Twardy delete dopiero po grace. | Test: usuń plik → 7 dni odzyskiwalny → po 7 dniach gone |
+| **γ.4** | **Snapshot upload guard.** Daemon nie wgra nowego snapshotu jeśli wszystkie 3 providery odpowiedziały błędem; trzyma stary aktualny w cache. Backup `omnidrive.db.bak.YYYYMMDD_HHMMSS` co 24h lokalnie. | Test simulated 3-provider outage → snapshot lokalny kompletny po recovery |
+
+**Szacunek:** 4–6 sesji.
+
+---
+
+### 12.8 Faza δ — Multi-User Infra Closure *(pod maską, bez UI)*
+
+> **Cel:** zamknąć Epic 34 — multi-user/Family Cloud infrastruktura w pełni działa _pod maską_, ale UI single-user. v5.0 = włączenie UI, żadnego dotykania krypto/schema.
+
+| Krok | Zakres | DoD |
+|------|--------|-----|
+| **δ.1** | **Per-user Vault Key wrap end-to-end.** Owner generuje, member dostaje wrapped VK (X25519+ML-KEM hybrid, faza α). Test: 2 userów, każdy unlock swoim hasłem, oba dostają ten sam plaintext VK. | E2E test passes |
+| **δ.2** | **Invite/accept_device flow** — pełen test: Owner generuje invite → kopiuje link → drugi user wkleja → wpisuje swoje hasło → device dostaje wrapped VK → unlock działa. ACL: drugi user = Member, nie Owner. | E2E test passes |
+| **δ.3** | **Recovery BIP-39 dla nietechnicznego usera.** Mnemonik 24-słowny → unlock bez znanego hasła. Action: druk karty A4 (już w Sesji G.6). Czy działa po α.2 (hybrid wrap)? | Test recovery na sklonowanym DB |
+| **δ.4** | **ACL roles enforcement audit.** Każdy `acl::require_role(Role::X)` audit pod kątem: Czy wybrane role to minimum potrzebne? Czy Owner może coś czego Admin nie? Czy Viewer naprawdę tylko reads? | Audit table `docs/superpowers/specs/2026-XX-XX-acl-audit.md` |
+
+**Szacunek:** 3–5 sesji. Większość kodu istnieje (Epic 34 Sesje A–E DONE), tu chodzi o weryfikację i domknięcie luk.
+
+---
+
+### 12.9 Faza ε — VFS Stability *(pancerne O:)*
+
+> **Cel:** „Arka musi płynąć gładko" — VFS bez zająknień, native cfapi state mapping, Defender-friendly.
+
+| Krok | Zakres | DoD |
+|------|--------|-----|
+| **ε.1** | Dekompozycja `smart_sync.rs` (2197 linii → 4–5 modułów: `placeholder.rs`, `hydration.rs`, `pin_state.rs`, `state_machine.rs`, `stream.rs`). Test coverage przed/po identyczne. | Compiles + tests pass + każdy moduł < 800 linii |
+| **ε.2** | Native cfapi state mapping (Epic 35.2c IPC) — `CfReportProviderProgress` + `CfUpdatePlaceholderInfo` dla ikon: cloud-only / local / pinned / syncing / error. Bez własnych shell overlay (per memory `feedback_no_custom_overlays.md`). | Eksplorator pokazuje natywne ikony dla 4 stanów |
+| **ε.3** | Drive O: stress test — file open/close storm (np. PowerShell `1..1000 \| % { Get-Item O:\test\$_.txt }`). Brak deadlock w cfapi. | Stress test passes 1000 cycles |
+| **ε.4** | Defender exclusion guidance (instalator + dokumentacja) — instrukcja dla użytkownika jak dodać `%LOCALAPPDATA%\OmniDrive\` do exclusion list (bez tego cfapi races z Defenderem). | README sekcja + opcjonalnie skrypt PS w instalatorze |
+
+**Szacunek:** 4–6 sesji.
+
+---
+
+### 12.10 Faza ζ — Test Automation 100% kluczowych flow
+
+> **Cel:** każdy krytyczny user flow ma e2e test. „Głupie błędy podczas testów" — niedopuszczalne na etapie ręcznym.
+
+**Lista kluczowych flow do automatyzacji:**
+
+| # | Flow | Status |
+|---|------|--------|
+| F1 | Bootstrap local-only (wizard local, brak chmury, plik w O:) | ⬜ |
+| F2 | Wizard cloud-enabled (3 providery, unlock, upload, download) | ⬜ |
+| F3 | Join Existing Vault (Dell scenario v0.3.23) | ⬜ |
+| F4 | Lock → Unlock cycle z passphrase i Windows Hello | ⬜ |
+| F5 | File upload + download integrity (1MB, 100MB, 1GB) | ⬜ |
+| F6 | Conflict resolution (γ.2 — 2-device write) | ⬜ |
+| F7 | Recovery key BIP-39 generation + restore | ⬜ |
+| F8 | Multi-device add (invite + accept_device + per-user wrap, faza δ) | ⬜ |
+| F9 | Change passphrase + auto-snapshot upload (v0.3.15) | ⬜ |
+| F10 | Disaster recovery (kasacja DB → restore z chmury) | ⬜ |
+| F11 | Soft-delete + restore from trash (γ.3) | ⬜ |
+| F12 | Crypto re-key rotation (Vault Key generation bump) | ⬜ |
+
+| Krok | Zakres | DoD |
+|------|--------|-----|
+| **ζ.1** | Stress test harness — `scripts/stress-test.ps1` lub `cargo test --features stress` (1000 plików, 1 GB plik, 24h soak). | Stress test runnable, baseline metrics zapisane |
+| **ζ.2** | Każdy z F1–F12 → e2e test w `angeld/tests/`. | Każdy F# zielony |
+| **ζ.3** | Coverage report (`cargo tarpaulin` lub `grcov`) — nie celujemy w 100% line coverage, ale w 100% pokrycia _critical paths_. | Report w `docs/coverage-vYYY-MM-DD.html` |
+
+**Szacunek:** 6–10 sesji. To największy gap — aktualnie 13 unit + 7 integration testów na 41 638 linii kodu.
+
+---
+
+### 12.11 v0.4.0 Release Gate
+
+Wszystkie QG1–QG6 spełnione → tag `v0.4.0`, instalator, CHANGELOG, push GitHub Releases.
+
+---
+
+### 12.12 v5.0 Family Cloud (po v0.4.0)
+
+> **Skupienie:** UI dla nietechnicznych użytkowników. Infra już jest (faza δ).
+
+- UI Family Cloud: invite link generation w sidebarze, pending devices view, accept/reject z safety numbers verification
+- Friendly recovery flow (przewodnik krok-po-kroku dla osoby która zgubiła hasło)
+- Dead Man Switch (idle X miesięcy → email do recovery contact, transfer ownership)
+- Audyt zewnętrzny krypto (gate przed wpuszczeniem cudzych plików!)
+- RCE defense in depth (sandbox angeld, capability-based file access)
+
+### 12.13 v6.0 Mobile Ecosystem (po v5.0)
+
+Patrz Fazy P/Q/R/S w starej sekcji (zachowane w archiwum). Założenia z `feedback_mobile_architecture.md`:
+- Android-first (UniFFI, Kotlin + Compose)
+- QR pairing z derived key (nie raw key)
+- SQLite snapshot read-only (V1) → SAF write (V3)
+- Inbox upload (camera, file share)
+- WebCrypto compat dla web (Epic 33 mobile leg) — wymaga ML-KEM WASM polyfill (faza α już to ułatwi)
+
+---
+
+### 12.14 Stary „Co przed nami" — przeniesione do Backlog
+
+Niektóre items z poprzedniej wersji STATUS.md nie wpadły do roadmapy v0.4 ale zachowujemy:
+
+- **Batch 7 (POST-DELL):** rustls/hyper consolidation (powiązane z β.3); OAuth code-exchange refactor; Tray IPC dla recovery confirm — wszystkie do v5.0+ chyba że priorytet wzrośnie.
+- **Faza O.1 Quota Fix:** raportowanie pojemności O:\ z cloud quota (B2/R2) — P3, do v0.4.x patch.
+- **Epic 33 Tryb B (CF Pages share-site):** odłożone do v6.0 (mobile share = naturalny kontekst).
+- **Faza O.2+ Cross-Platform VFS:** odłożone do v6.0 (Linux/macOS = post-mobile).
+- **Faza P/Q/R/S** (Mobile read-only / Mobile bridge / Mobile read-write) — pełne tabele zarchiwizowane w `docs/archive/roadmap.md`. Wykonanie po v5.0 (patrz §12.13). Założenia (UniFFI, QR pairing, SQLite snapshot, SAF write) niezmienione.
 
 ---
 
@@ -606,6 +721,12 @@ Trait `FileSystemAdapter`, refactor `cfapi` → implementacja traitu, prototyp F
 | **B.6** | `validate_user_session` bez constant-time | 256-bit random token + LAN-only + SQLite overhead = timing attack niewykonalny. Udokumentowane §11 `crypto-spec.md`. |
 | **C.1 Wariant B** | VK Sealing dla refresh tokena | Refresh wymaga unlocked vault = zero dostępu bez hasła. Zgodne z Zero-Knowledge. |
 | **C.3 POST-DELL** | rustls/hyper consolidation odłożone | Major AWS SDK bump = wysokie ryzyko regresji przed smoke testem. |
+| **D7** (2026-05-10) | **v0.4 = Single-User UI, Multi-User infra pod maską** | Zero przepisywania krypto/schema przy v5.0. Decyzja Przemka: „nie chcę niczego przepisywać przy v5.0". |
+| **D8** (2026-05-10) | **Quantum-Resistant hybrid (X25519 + ML-KEM-768) od dnia 1** | „Store now, decrypt later" mitigation. Tylko key encapsulation — chunki AES-GCM zostają (Grover safe). |
+| **D9** (2026-05-10) | **Argon2id 2026 baseline (m=47MiB, t=1, p=1)** | OWASP 2025+ rekomendacja. Migracja: re-derive KEK przy następnym unlocku z nowymi params. |
+| **D10** (2026-05-10) | **Identity grafting (Single-User-Multi-Device)** | Dell po join przyjmuje user_id ze snapshot Lenovo. Safety numbers identyczne. Implemented v0.3.23. |
+| **D11** (2026-05-10) | **Audyt zewnętrzny krypto = gate v5.0**, nie v0.4 | v0.4 polega na formalnym Claude review (QG5). Zewnętrzny audyt dopiero gdy w grę wchodzą cudze pliki. |
+| **D12** (2026-05-10) | **Bug tracking = `docs/KNOWN_ISSUES.md`** | Pojedynczy plik z P0/P1/P2/P3 buckets. Nie GitHub Issues. Claude wpisuje, Przemek zatwierdza. |
 
 ---
 
@@ -632,6 +753,13 @@ Trait `FileSystemAdapter`, refactor `cfapi` → implementacja traitu, prototyp F
 | Windows Defender blokuje hydrated files | MEDIUM | Early MotW testing + placeholder signature (post v0.3.0) |
 | Mobile conflict resolution | HIGH | Świadoma decyzja: version branching (Faza S) |
 | Multi-device formal lease/fencing brak | LOW | Produkt-first nad spec v1. Szczegóły: `docs/archive/spec_review.md` |
+| **DEK keymap nie kopiowany w grafcie (P1-001)** | HIGH | ⬜ OPEN — `KNOWN_ISSUES.md` P1-001. Faza β.1 v0.4. Skutek: hydration plików multi-device nie działa po join-existing. |
+| **Snapshot fetch jednokierunkowy (P1-002)** | MEDIUM | ⬜ OPEN — Faza β.2. Lenovo nie widzi nowych devices bez restart daemona. |
+| **Snapshot redundancja 1/3 providers żywych (P1-003+P1-004)** | MEDIUM | ⬜ OPEN — Faza β.3. Tylko B2 wgra, Scaleway 403, R2 ConnReset. |
+| **Watcher CPU mieli (P2-001)** | MEDIUM | ⬜ OPEN — Faza β.4 po pomiarach. SLA: < 1% idle. |
+| **VFS lag duże pliki (P2-002)** | MEDIUM | ⬜ OPEN — Faza β.5/ε. SLA: < 10s/100MB cold fetch. |
+| **ML-KEM crate maturity** | MEDIUM | Mitygacja: `ml-kem = "0.2"` to RustCrypto, audited; FIPS 203 reference. Plan: adopt + sandbox test w fazie α.2 przed wpięciem do produkcji. |
+| **Test coverage < 5% lines** | HIGH | ⬜ OPEN — 13 unit + 7 integration testów na 41 638 linii. Faza ζ celuje w 100% kluczowych flow (F1–F12). |
 
 ---
 

@@ -144,12 +144,44 @@ pub fn routes() -> Router<ApiState> {
     Router::new()
         .route("/api/transfers", get(get_transfers))
         .route("/api/health", get(get_health))
+        .route("/api/diagnostics", get(get_diagnostics_overview))
         .route("/api/diagnostics/health", get(get_diagnostics_health))
         .route("/api/diagnostics/shell", get(get_shell_state))
         .route("/api/diagnostics/sync-root", get(get_sync_root_state))
         .route("/api/diagnostics/restore", get(get_restore_state))
         .route("/api/storage/cost", get(get_storage_cost))
         .route("/api/multidevice/status", get(get_multidevice_status))
+}
+
+/// v0.3.23: Diagnostics overview — exposes cloud_guard quotas (egress, read ops, write ops)
+/// for the Diagnostyka tab. Frontend reads `cloud_guard_status` + `daily_*` + `*_quota_percent`
+/// fields. Previously the route was missing → 404 → "ERROR" badge with all values dashed out.
+async fn get_diagnostics_overview(
+    State(state): State<ApiState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let snapshot = cloud_guard::snapshot(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal { message: e.to_string() })?;
+    Ok(Json(serde_json::json!({
+        "cloud_guard_status": snapshot.status,
+        "cloud_guard_message": snapshot.message,
+        "dry_run_active": snapshot.dry_run_active,
+        "cloud_suspended": snapshot.cloud_suspended,
+        "cloud_suspend_reason": snapshot.cloud_suspend_reason,
+        "day_epoch": snapshot.day_epoch,
+        "session_read_ops": snapshot.session_read_ops,
+        "session_write_ops": snapshot.session_write_ops,
+        "session_egress_bytes": snapshot.session_egress_bytes,
+        "daily_read_ops": snapshot.daily_read_ops,
+        "daily_write_ops": snapshot.daily_write_ops,
+        "daily_egress_bytes": snapshot.daily_egress_bytes,
+        "daily_read_ops_limit": snapshot.daily_read_ops_limit,
+        "daily_write_ops_limit": snapshot.daily_write_ops_limit,
+        "daily_egress_bytes_limit": snapshot.daily_egress_bytes_limit,
+        "read_quota_percent": snapshot.read_quota_percent,
+        "write_quota_percent": snapshot.write_quota_percent,
+        "egress_quota_percent": snapshot.egress_quota_percent,
+    })))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
