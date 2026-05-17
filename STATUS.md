@@ -1,8 +1,8 @@
 # OmniDrive — Kronika projektu & Roadmapa (Single Source of Truth)
 
-> **Ostatnia aktualizacja:** 2026-05-17 (Faza 0 — 5/6 kroków DONE, 7 commitów na main; szczegóły §12.4)
+> **Ostatnia aktualizacja:** 2026-05-17 (Faza 0 — **6/6 DONE, ZAMKNIĘTA**, 9 commitów na main; szczegóły §12.4)
 > **Aktualna wersja:** `v0.3.23` — instalator `OmniDrive-Setup-0.3.23.exe` gotowy. Lokalny daemon Lenovo działa z `target/release` workspace mode.
-> **Status:** Faza 0 (QA Foundation) prawie zamknięta — pozostał tylko krok 0.3 (perf baseline na Lenovo). Audyt wykrył **3 nowe security gapy** (P1-006 logout-locks-vault + P2-004 auto-lock + P2-005 Zeroize) — Faza α dostała 3 kroki α.0a/0b/0c PRZED α.1 (Argon2id bump). Pre-push hook aktywny lokalnie, CI z fmt-check gate.
+> **Status:** Faza 0 (QA Foundation) **ZAMKNIĘTA** — wszystkie 6 kroków DONE. Perf baseline M1-M4 PASS 4/4 z marginesami 38%–500× (Lenovo Intel Core Ultra 7 155H). Audyt wykrył **3 nowe security gapy** (P1-006 logout-locks-vault + P2-004 auto-lock + P2-005 Zeroize) — Faza α dostała 3 kroki α.0a/0b/0c PRZED α.1 (Argon2id bump). Pre-push hook aktywny lokalnie, CI z fmt-check gate. **Następna sesja → Faza α.0a (P1-006 hot-fix).**
 > **Zasada:** ten plik to jedyne źródło prawdy o roadmapie. Bugi w `docs/KNOWN_ISSUES.md`. Stare pliki planowania w `docs/archive/`.
 
 ---
@@ -543,7 +543,7 @@
 
 ---
 
-### 12.4 Faza 0 — QA Foundation *(2026-05-17 — 5/6 DONE, jedyny pozostały krok = 0.3 perf baseline)*
+### 12.4 Faza 0 — QA Foundation *(2026-05-17 — **6/6 DONE, FAZA ZAMKNIĘTA**)*
 
 > **Cel:** zanim cokolwiek nowego kodujemy, mamy infrastrukturę żeby _mierzyć_ jakość.
 
@@ -551,11 +551,11 @@
 |------|--------|--------|
 | **0.1** | Audyt kodu — pełen przegląd `angeld/src/` i `omnidrive-core/src/` pod kątem: TODOs, `unimplemented!()`, `unwrap()` na hot paths, dead code (`cargo +nightly udeps`). Każde znalezisko → wpis P3 (lub wyżej) w `KNOWN_ISSUES.md`. | ✅ DONE — raw metrics `9b874ed`, triage `cf6ae9b`; raport `docs/superpowers/specs/2026-05-11-code-audit.md` §1-4 wypełniony; **6 wpisów dodanych do KNOWN_ISSUES (P1-006, P2-003/004/005, P3-001/002).** |
 | **0.2** | `docs/SMOKE_CHECKLIST.md` — manualna lista 30–50 sprawdzeń do przejścia po każdym buildzie (przed Dell smoke). | ✅ DONE — `cd7a4f2`; **50 punktów w 8 sekcjach** (A build/instalacja, B nowy vault, C join-existing z safety-numbers Dell↔Lenovo, D upload/download/sync, E UI, F recovery/maintenance, G stabilność, H zero-knowledge security). Każdy 🚨 EXPECTED-FAIL ma ref do KNOWN_ISSUES + roadmap target. |
-| **0.3** | Performance baseline benchmark (watcher, VFS cold/warm fetch, RAM, cold start) — _aktualne_ wartości na Lenovo (dev box). Bez tego nie wiemy jak daleko jesteśmy od SLA z §12.2. | 🟡 PENDING — wymaga uruchomienia daemona na Lenovo z testowymi danymi. Może iść równolegle z α.0a. |
+| **0.3** | Performance baseline benchmark (watcher, VFS cold/warm fetch, RAM, cold start) — _aktualne_ wartości na Lenovo (dev box). Bez tego nie wiemy jak daleko jesteśmy od SLA z §12.2. | ✅ DONE — `d2fa947`; **M1-M4 PASS 4/4** (Faza A+B; Faza C wstrzymana per decyzja). M1 cold start **1863 ms** (<3000 ms, 38% margin), M2 RAM idle **34.2 MB** (<150 MB, 4.4× margin), M3 watcher CPU idle **0%** (<1%), M4 watcher CPU load **avg 0.01% / max 0.14%** (<5%, ~500× margin). Raport: `docs/perf-baseline-2026-05-17.md`. Faza C (M5/M6 VFS fetch) wymaga vault unlock + mount T: → osobna sesja po β.4/β.5. |
 | **0.4** | CI: GitHub Actions — `cargo test --workspace`, `cargo clippy -- -D warnings`, `cargo fmt --check`. Każdy push → pipeline. Plus lokalny pre-push hook (fmt+clippy). | ✅ DONE — fix CI red `06febb1` (clippy 1.94 lints), fmt baseline `0cbee99` (63 plików), pipeline hooks + CI fmt step + Cargo.lock `a95a338`. **Pre-push hook samo-przetestowany przy własnym pushu — działa.** |
 | **0.5** | Push lokalnych commitów (v0.3.19–v0.3.23) na `origin`. | ✅ DONE (już 2026-05-11 sesja "Clean Ark") |
 
-**Wykonanie 2026-05-17 (7 commitów na main):**
+**Wykonanie 2026-05-17 (9 commitów na main):**
 
 | Commit | Krok | Treść |
 |---|---|---|
@@ -566,6 +566,8 @@
 | `cd7a4f2` | 0.2 | SMOKE_CHECKLIST.md (50 punktów ready-to-tick) |
 | `0cbee99` | 0.4b | cargo fmt --all baseline (63 plików, mechaniczny commit) |
 | `a95a338` | 0.4c | .githooks/pre-push (bash: fmt+clippy gate) + scripts/install-git-hooks.ps1 + CI +rustfmt component +fmt --check step + Cargo.lock committed (deterministic builds) |
+| `d4497d4` | 0.3a | perf-baseline.ps1 — isolated test daemon harness (Phase A+B M1-M4, port 8788, --no-sync, LOCALAPPDATA override) |
+| `d2fa947` | 0.3b | perf baseline run executed: M1-M4 **PASS 4/4** + raport `docs/perf-baseline-2026-05-17.md` + script fixes (-Yes flag, TcpClient probe) |
 
 **Bonus odkrycia (poza pierwotnym planem) — rebalansują kolejność Fazy α:**
 - **P1-006:** `/api/auth/logout` (api/auth.rs:189) nie wywołuje `vault_keys.lock()`. Klucze plaintext zostają w RAM po wylogowaniu. **Zero-knowledge gap.** Hot-fix-able do v0.3.24.
@@ -574,7 +576,7 @@
 - **P3-001:** AAD `&[]` na chunk encrypt — świadoma decyzja (WebCrypto compat Trybu B), brak udokumentowania w crypto-spec → §12 do dopisania.
 - **P3-002:** 23 prod unwrap (nie 24 z Task 1) → 2 eskalowane do P2: `peer.rs:159` (reqwest builder) + `ingest.rs:184` (packer init).
 
-**Szacunek pierwotny:** 2–3 sesje. **Faktyczne wykonanie:** 1 sesja (5 z 6 kroków) — pozostało tylko 0.3 perf baseline.
+**Szacunek pierwotny:** 2–3 sesje. **Faktyczne wykonanie:** 1 sesja (6/6 kroków) — **Faza 0 zamknięta**. Wszystkie SLA performance §12.2 (M1-M4) z marginesami 38%–500×. Bramka β.4 (watcher CPU fix) — bez akcji, wynik już PASS.
 
 ---
 
