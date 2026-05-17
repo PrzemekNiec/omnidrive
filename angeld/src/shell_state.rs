@@ -186,14 +186,14 @@ pub fn repair_virtual_drive() -> Result<ShellRepairReport, ShellStateError> {
     if let Some(target) = &current_target
         && (normalized_path(target) != normalized_path(&expected_target)
             || !is_drive_browsable(&preferred_drive_letter))
-        {
-            virtual_drive::unmount_virtual_drive(&preferred_drive_letter)?;
-            actions.push(format!(
-                "removed stale virtual drive mapping {} -> {}",
-                preferred_drive_letter,
-                target.display()
-            ));
-        }
+    {
+        virtual_drive::unmount_virtual_drive(&preferred_drive_letter)?;
+        actions.push(format!(
+            "removed stale virtual drive mapping {} -> {}",
+            preferred_drive_letter,
+            target.display()
+        ));
+    }
 
     let current_target = virtual_drive::get_virtual_drive_target(&preferred_drive_letter)?;
     if current_target.is_none() || !is_drive_browsable(&preferred_drive_letter) {
@@ -216,23 +216,24 @@ pub fn repair_virtual_drive() -> Result<ShellRepairReport, ShellStateError> {
 pub fn repair_explorer_integration() -> Result<ShellRepairReport, ShellStateError> {
     let preferred_drive_letter = preferred_drive_letter();
     let expected_target = expected_drive_target();
-    let active_drive_letter = active_drive_letter_for_target(&preferred_drive_letter, &expected_target)
-        .unwrap_or(preferred_drive_letter.clone());
+    let active_drive_letter =
+        active_drive_letter_for_target(&preferred_drive_letter, &expected_target)
+            .unwrap_or(preferred_drive_letter.clone());
     let icon_path = virtual_drive_icon_path();
     let api_base = shell_api_base();
     let mut actions = Vec::new();
 
-    virtual_drive::configure_virtual_drive_appearance(&active_drive_letter, "OmniDrive", &icon_path)?;
+    virtual_drive::configure_virtual_drive_appearance(
+        &active_drive_letter,
+        "OmniDrive",
+        &icon_path,
+    )?;
     actions.push(format!(
         "configured virtual drive appearance for {}",
         active_drive_letter
     ));
 
-    shell_integration::register_explorer_context_menu(
-        &active_drive_letter,
-        &api_base,
-        &icon_path,
-    )?;
+    shell_integration::register_explorer_context_menu(&active_drive_letter, &api_base, &icon_path)?;
     actions.push(format!(
         "registered explorer context menu for {}",
         active_drive_letter
@@ -326,7 +327,8 @@ fn active_drive_letter_for_target(preferred: &str, expected_target: &Path) -> Op
         .ok()
         .and_then(|mappings| {
             mappings.into_iter().find_map(|(drive_letter, target)| {
-                (normalized_path(&target) == normalized_path(expected_target)).then_some(drive_letter)
+                (normalized_path(&target) == normalized_path(expected_target))
+                    .then_some(drive_letter)
             })
         })
 }
@@ -337,12 +339,13 @@ fn virtual_drive_icon_path() -> PathBuf {
     }
 
     if let Ok(current_exe) = env::current_exe()
-        && let Some(exe_dir) = current_exe.parent() {
-            let installed_icon = exe_dir.join("icons").join("omnidrive.ico");
-            if installed_icon.exists() {
-                return installed_icon;
-            }
+        && let Some(exe_dir) = current_exe.parent()
+    {
+        let installed_icon = exe_dir.join("icons").join("omnidrive.ico");
+        if installed_icon.exists() {
+            return installed_icon;
         }
+    }
 
     PathBuf::from("icons").join("omnidrive.ico")
 }
@@ -373,7 +376,13 @@ fn same_drive_letter(left: &str, right: &str) -> bool {
 }
 
 fn is_drive_browsable(drive_letter: &str) -> bool {
-    let root = format!(r"{}\", drive_letter.trim().trim_end_matches('\\').trim_end_matches('/'));
+    let root = format!(
+        r"{}\",
+        drive_letter
+            .trim()
+            .trim_end_matches('\\')
+            .trim_end_matches('/')
+    );
     std::fs::read_dir(root).is_ok()
 }
 
@@ -397,8 +406,8 @@ fn normalized_string_path(path: &str) -> String {
 fn read_registry_string(key: &str, value_name: Option<&str>) -> Option<String> {
     use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
     use windows::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WOW64_64KEY, REG_SZ, RegCloseKey,
-        RegOpenKeyExW, RegQueryValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WOW64_64KEY, REG_SZ, RegCloseKey, RegOpenKeyExW,
+        RegQueryValueExW,
     };
     use windows::core::PCWSTR;
 
@@ -440,7 +449,9 @@ fn read_registry_string(key: &str, value_name: Option<&str>) -> Option<String> {
         )
     };
     if res.0 != 0 || size == 0 {
-        unsafe { let _ = RegCloseKey(hkey); }
+        unsafe {
+            let _ = RegCloseKey(hkey);
+        }
         return None;
     }
 
@@ -455,7 +466,9 @@ fn read_registry_string(key: &str, value_name: Option<&str>) -> Option<String> {
             Some(&mut size),
         )
     };
-    unsafe { let _ = RegCloseKey(hkey); }
+    unsafe {
+        let _ = RegCloseKey(hkey);
+    }
     if res.0 != 0 {
         return None;
     }

@@ -114,7 +114,11 @@ impl ShellHarness {
     }
 
     async fn shutdown(&mut self) {
-        let _ = Command::new("subst").arg(&self.drive_letter).arg("/D").output().await;
+        let _ = Command::new("subst")
+            .arg(&self.drive_letter)
+            .arg("/D")
+            .output()
+            .await;
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
         let _ = std::fs::remove_dir_all(&self.temp_root);
@@ -130,8 +134,8 @@ impl Drop for ShellHarness {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an unrestricted desktop session for subst-backed virtual drive mapping"]
-async fn shell_repair_restores_drive_and_context_menu_after_local_drift(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn shell_repair_restores_drive_and_context_menu_after_local_drift()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut harness = ShellHarness::spawn().await?;
 
     let initial = harness.get_json("/api/diagnostics/shell").await?;
@@ -174,7 +178,10 @@ async fn shell_repair_restores_drive_and_context_menu_after_local_drift(
     assert_eq!(final_state["drive_browsable"], true);
     assert_eq!(final_state["drive_target_matches"], true);
     assert_eq!(final_state["context_menu_registered"], true);
-    assert_eq!(final_state["duplicate_drive_mappings"], serde_json::json!([]));
+    assert_eq!(
+        final_state["duplicate_drive_mappings"],
+        serde_json::json!([])
+    );
 
     harness.shutdown().await;
     Ok(())
@@ -187,19 +194,32 @@ async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
     Ok(port)
 }
 
-async fn http_get_json(url: &str, token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
+async fn http_get_json(
+    url: &str,
+    token: Option<&str>,
+) -> Result<Value, Box<dyn std::error::Error>> {
     http_request_json("GET", url, token).await
 }
 
 #[allow(dead_code)]
-async fn http_post_json(url: &str, token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
+async fn http_post_json(
+    url: &str,
+    token: Option<&str>,
+) -> Result<Value, Box<dyn std::error::Error>> {
     http_request_json("POST", url, token).await
 }
 
-async fn http_request_json(method: &str, url: &str, token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
-    let without_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http:// URLs are supported"))?;
+async fn http_request_json(
+    method: &str,
+    url: &str,
+    token: Option<&str>,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http:// URLs are supported",
+        )
+    })?;
     let (host_port, path) = without_scheme
         .split_once('/')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;

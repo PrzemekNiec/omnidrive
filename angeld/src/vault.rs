@@ -2,16 +2,15 @@ use crate::{db, identity};
 use bip39::Mnemonic;
 use hkdf::Hkdf;
 use omnidrive_core::crypto::{
-    CryptoError, KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_kek, derive_root_keys,
-    derive_subkey, decrypt_secret, encrypt_secret,
-    generate_random_key, unwrap_key, wrap_key,
+    CryptoError, KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, decrypt_secret, derive_kek,
+    derive_root_keys, derive_subkey, encrypt_secret, generate_random_key, unwrap_key, wrap_key,
 };
+use rand::RngCore;
 use secrecy::{ExposeSecret, SecretBox};
 use sha2::Sha256;
 use sqlx::SqlitePool;
 use std::fmt;
 use std::sync::Arc;
-use rand::RngCore;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -41,7 +40,11 @@ struct UnlockedVaultKeys {
 }
 
 impl UnlockedVaultKeys {
-    fn with_envelope_key(master_key: KeyBytes, vault_key: KeyBytes, envelope_key: KeyBytes) -> Self {
+    fn with_envelope_key(
+        master_key: KeyBytes,
+        vault_key: KeyBytes,
+        envelope_key: KeyBytes,
+    ) -> Self {
         Self {
             master_key: SecretBox::new(Box::new(master_key)),
             vault_key: SecretBox::new(Box::new(vault_key)),
@@ -77,7 +80,9 @@ impl UnlockedVaultKeys {
     }
 
     fn previous_envelope_vault_key(&self) -> Option<KeyBytes> {
-        self.previous_envelope_vault_key.as_ref().map(|k| *k.expose_secret())
+        self.previous_envelope_vault_key
+            .as_ref()
+            .map(|k| *k.expose_secret())
     }
 
     /// Deterministic 32-byte SHA-256 fingerprint of `envelope_vault_key || user_id`.
@@ -173,13 +178,20 @@ impl VaultKeyStore {
 
         // Try to unwrap the V2 envelope Vault Key if it exists in the DB.
         let vault_params = db::get_vault_params(pool).await?;
-        let unlocked = match vault_params.as_ref().and_then(|v| v.encrypted_vault_key.as_ref()) {
+        let unlocked = match vault_params
+            .as_ref()
+            .and_then(|v| v.encrypted_vault_key.as_ref())
+        {
             Some(wrapped_bytes) if wrapped_bytes.len() == WRAPPED_KEY_LEN => {
-                let wrapped: [u8; WRAPPED_KEY_LEN] =
-                    wrapped_bytes.as_slice().try_into().unwrap();
+                let wrapped: [u8; WRAPPED_KEY_LEN] = wrapped_bytes.as_slice().try_into().unwrap();
                 let envelope_key = unwrap_key(&root_keys.kek, &wrapped)?;
-                info!("[VAULT] V2 envelope Vault Key unwrapped successfully (generation {})",
-                    vault_params.as_ref().and_then(|v| v.vault_key_generation).unwrap_or(0));
+                info!(
+                    "[VAULT] V2 envelope Vault Key unwrapped successfully (generation {})",
+                    vault_params
+                        .as_ref()
+                        .and_then(|v| v.vault_key_generation)
+                        .unwrap_or(0)
+                );
                 UnlockedVaultKeys::with_envelope_key(
                     root_keys.master_key,
                     root_keys.vault_key,
@@ -205,7 +217,9 @@ impl VaultKeyStore {
                     let envelope_key = generate_random_key();
                     let wrapped = wrap_key(&root_keys.kek, &envelope_key)?;
                     db::store_encrypted_vault_key(pool, &wrapped, 1).await?;
-                    info!("[VAULT] V2 envelope Vault Key bootstrapped for existing V1 vault (generation 1)");
+                    info!(
+                        "[VAULT] V2 envelope Vault Key bootstrapped for existing V1 vault (generation 1)"
+                    );
                     UnlockedVaultKeys::with_envelope_key(
                         root_keys.master_key,
                         root_keys.vault_key,
@@ -269,7 +283,11 @@ impl VaultKeyStore {
     /// Returns `None` if no rotation has happened or re-wrap is complete.
     #[allow(dead_code)]
     pub async fn previous_envelope_key(&self) -> Option<KeyBytes> {
-        self.inner.read().await.as_ref().and_then(|k| k.previous_envelope_vault_key())
+        self.inner
+            .read()
+            .await
+            .as_ref()
+            .and_then(|k| k.previous_envelope_vault_key())
     }
 
     pub async fn safety_numbers(&self, user_id: &str) -> Option<String> {
@@ -292,7 +310,11 @@ impl VaultKeyStore {
     /// Returns an opaque blob (nonce || ciphertext || tag). Fails with `VaultError::Locked` if
     /// the vault is not unlocked (envelope key unavailable).
     /// `user_id` is used as AAD — the blob can only be decrypted for the same user.
-    pub async fn seal_oauth_token(&self, user_id: &str, token: &str) -> Result<Vec<u8>, VaultError> {
+    pub async fn seal_oauth_token(
+        &self,
+        user_id: &str,
+        token: &str,
+    ) -> Result<Vec<u8>, VaultError> {
         let evk = self.require_envelope_key().await?;
         let derived = derive_subkey(&evk, OAUTH_REFRESH_TOKEN_INFO)?;
         let blob = encrypt_secret(&derived, token.as_bytes(), user_id.as_bytes())?;
@@ -302,11 +324,16 @@ impl VaultKeyStore {
     /// Decrypt a blob produced by [`seal_oauth_token`] back to a refresh token string.
     /// Fails with `VaultError::Locked` if the vault is not unlocked.
     #[allow(dead_code)] // reserved for token-refresh endpoint (POST-DELL)
-    pub async fn unseal_oauth_token(&self, user_id: &str, blob: &[u8]) -> Result<String, VaultError> {
+    pub async fn unseal_oauth_token(
+        &self,
+        user_id: &str,
+        blob: &[u8],
+    ) -> Result<String, VaultError> {
         let evk = self.require_envelope_key().await?;
         let derived = derive_subkey(&evk, OAUTH_REFRESH_TOKEN_INFO)?;
         let plaintext = decrypt_secret(&derived, blob, user_id.as_bytes())?;
-        String::from_utf8(plaintext).map_err(|_| VaultError::InvalidConfig("sealed oauth token is not valid utf-8"))
+        String::from_utf8(plaintext)
+            .map_err(|_| VaultError::InvalidConfig("sealed oauth token is not valid utf-8"))
     }
 
     #[allow(dead_code)]
@@ -356,8 +383,7 @@ impl VaultKeyStore {
         let dek = generate_random_key();
         let wrapped = wrap_key(&envelope_key, &dek)?;
         let vault_key_gen = self.current_vault_key_generation(pool).await?;
-        let dek_id =
-            db::insert_wrapped_dek(pool, inode_id, &wrapped, 1, vault_key_gen).await?;
+        let dek_id = db::insert_wrapped_dek(pool, inode_id, &wrapped, 1, vault_key_gen).await?;
         info!("[DEK] created dek_id={dek_id} for inode_id={inode_id} (gen={vault_key_gen})");
         Ok((dek_id, SecretBox::new(Box::new(dek))))
     }
@@ -365,18 +391,21 @@ impl VaultKeyStore {
     /// Read the current vault_key_generation from DB (defaults to 1).
     async fn current_vault_key_generation(&self, pool: &SqlitePool) -> Result<i64, VaultError> {
         let vault = db::get_vault_params(pool).await?;
-        Ok(vault
-            .and_then(|v| v.vault_key_generation)
-            .unwrap_or(1))
+        Ok(vault.and_then(|v| v.vault_key_generation).unwrap_or(1))
     }
 
     /// Check whether the given passphrase correctly unlocks the current wrapped vault key.
     /// Does not modify any state. Returns `Ok(false)` for wrong passphrase.
-    pub async fn verify_passphrase(&self, pool: &SqlitePool, passphrase: &str) -> Result<bool, VaultError> {
+    pub async fn verify_passphrase(
+        &self,
+        pool: &SqlitePool,
+        passphrase: &str,
+    ) -> Result<bool, VaultError> {
         if passphrase.is_empty() {
             return Ok(false);
         }
-        let config = db::get_vault_config(pool).await?
+        let config = db::get_vault_config(pool)
+            .await?
             .ok_or(VaultError::InvalidConfig("no vault_config found"))?;
         let params = to_root_kdf_params(config)?;
         let root_keys = derive_root_keys(passphrase.as_bytes(), &params)?;
@@ -414,7 +443,8 @@ impl VaultKeyStore {
 
         // ── Step 1: Derive new root keys with fresh salt ──
         let new_salt = RootKdfParams::random_salt();
-        let existing_config = db::get_vault_config(pool).await?
+        let existing_config = db::get_vault_config(pool)
+            .await?
             .ok_or(VaultError::InvalidConfig("no vault_config found"))?;
         let new_params = RootKdfParams::new(
             u32::try_from(existing_config.parameter_set_version)
@@ -424,8 +454,7 @@ impl VaultKeyStore {
                 .map_err(|_| VaultError::InvalidConfig("memory_cost_kib"))?,
             u32::try_from(existing_config.time_cost)
                 .map_err(|_| VaultError::InvalidConfig("time_cost"))?,
-            u32::try_from(existing_config.lanes)
-                .map_err(|_| VaultError::InvalidConfig("lanes"))?,
+            u32::try_from(existing_config.lanes).map_err(|_| VaultError::InvalidConfig("lanes"))?,
         );
         let new_root_keys = derive_root_keys(new_passphrase.as_bytes(), &new_params)?;
 
@@ -442,11 +471,12 @@ impl VaultKeyStore {
 
         let mut rewrapped: Vec<(i64, Vec<u8>)> = Vec::with_capacity(deks_count);
         for dek_record in &all_deks {
-            let old_wrapped: [u8; WRAPPED_KEY_LEN] = dek_record
-                .wrapped_dek
-                .as_slice()
-                .try_into()
-                .map_err(|_| VaultError::InvalidConfig("wrapped_dek has invalid length"))?;
+            let old_wrapped: [u8; WRAPPED_KEY_LEN] =
+                dek_record
+                    .wrapped_dek
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| VaultError::InvalidConfig("wrapped_dek has invalid length"))?;
             let plaintext_dek = unwrap_key(&old_envelope_key, &old_wrapped)?;
             let new_wrapped = wrap_key(&new_vault_key, &plaintext_dek)?;
             rewrapped.push((dek_record.dek_id, new_wrapped.to_vec()));
@@ -537,8 +567,11 @@ impl VaultKeyStore {
         db::rotate_vault_key_only(pool, &wrapped_new_vk, new_generation).await?;
 
         // Step 3: Re-wrap VK for each active device (ECDH)
-        let owner_private = identity::get_device_private_key(pool, &master_key).await
-            .map_err(|e| VaultError::InvalidConfig(Box::leak(format!("identity: {e}").into_boxed_str())))?;
+        let owner_private = identity::get_device_private_key(pool, &master_key)
+            .await
+            .map_err(|e| {
+                VaultError::InvalidConfig(Box::leak(format!("identity: {e}").into_boxed_str()))
+            })?;
 
         let vault_id = vault_params
             .as_ref()
@@ -553,12 +586,24 @@ impl VaultKeyStore {
                 if dev.public_key.len() == 32 && dev.public_key != vec![0u8; 32] {
                     let mut pub_key = [0u8; 32];
                     pub_key.copy_from_slice(&dev.public_key);
-                    match identity::wrap_vault_key_for_device(&owner_private, &pub_key, &new_vault_key) {
+                    match identity::wrap_vault_key_for_device(
+                        &owner_private,
+                        &pub_key,
+                        &new_vault_key,
+                    ) {
                         Ok(wrapped) => {
                             if let Err(e) = db::set_device_wrapped_vault_key(
-                                pool, &dev.device_id, &wrapped, new_generation,
-                            ).await {
-                                warn!("[VAULT] failed to re-wrap VK for device {}: {e}", dev.device_id);
+                                pool,
+                                &dev.device_id,
+                                &wrapped,
+                                new_generation,
+                            )
+                            .await
+                            {
+                                warn!(
+                                    "[VAULT] failed to re-wrap VK for device {}: {e}",
+                                    dev.device_id
+                                );
                             } else {
                                 devices_rewrapped += 1;
                             }
@@ -633,7 +678,8 @@ impl VaultKeyStore {
                 db::update_wrapped_dek(pool, item.dek_id, &new_wrapped, new_generation).await?;
                 db::complete_rewrap_item(pool, item.dek_id).await?;
                 Ok(())
-            }.await;
+            }
+            .await;
 
             match result {
                 Ok(()) => processed += 1,
@@ -653,7 +699,6 @@ impl VaultKeyStore {
 
         Ok(processed)
     }
-
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -745,10 +790,7 @@ async fn ensure_local_vault_params(
     let vault_id = format!("local-vault-{}", hex_prefix(&config.salt));
     let params_json = format!(
         r#"{{"mode":"LOCAL_VAULT","parameter_set_version":{},"memory_cost_kib":{},"time_cost":{},"lanes":{}}}"#,
-        config.parameter_set_version,
-        config.memory_cost_kib,
-        config.time_cost,
-        config.lanes
+        config.parameter_set_version, config.memory_cost_kib, config.time_cost, config.lanes
     );
     db::set_vault_params(pool, &salt, &params_json, &vault_id).await?;
     Ok(true)
@@ -811,7 +853,10 @@ mod tests {
         store_b.unlock(&pool, "secret").await?;
         let envelope_b = store_b.require_envelope_key().await?;
 
-        assert_eq!(envelope_a, envelope_b, "envelope key must be stable across unlocks");
+        assert_eq!(
+            envelope_a, envelope_b,
+            "envelope key must be stable across unlocks"
+        );
 
         // V1 key is deterministic and separate from envelope key
         let v1_key = store_a.require_key().await?;
@@ -954,8 +999,16 @@ mod tests {
         let (_, dek_a_after) = store_new.get_or_create_dek(&pool, 10).await?;
         let (_, dek_b_after) = store_new.get_or_create_dek(&pool, 20).await?;
 
-        assert_eq!(*dek_a_after.expose_secret(), dek_a_bytes, "DEK A must survive rotation");
-        assert_eq!(*dek_b_after.expose_secret(), dek_b_bytes, "DEK B must survive rotation");
+        assert_eq!(
+            *dek_a_after.expose_secret(),
+            dek_a_bytes,
+            "DEK A must survive rotation"
+        );
+        assert_eq!(
+            *dek_b_after.expose_secret(),
+            dek_b_bytes,
+            "DEK B must survive rotation"
+        );
 
         // ── 5. Verify generation bumped in DB ──
         let vault = db::get_vault_params(&pool).await?.unwrap();
@@ -979,10 +1032,10 @@ mod tests {
         let dek_b_bytes = *dek_b.expose_secret();
 
         // ── 2. Setup owner device identity (X25519 keypair) ──
-        db::upsert_local_device_identity(&pool, "dev-owner", "OwnerPC", "tok")
-            .await?;
+        db::upsert_local_device_identity(&pool, "dev-owner", "OwnerPC", "tok").await?;
         let master_key = store.require_master_key().await?;
-        let _owner_pubkey = identity::ensure_device_keypair(&pool, &master_key).await
+        let _owner_pubkey = identity::ensure_device_keypair(&pool, &master_key)
+            .await
             .map_err(|e| format!("keypair: {e}"))?;
 
         // Setup multi-user schema: owner user + vault membership
@@ -999,8 +1052,16 @@ mod tests {
         // ── 4. Verify dual-VK read: old DEKs still accessible ──
         let (_, dek_a_during) = store.get_or_create_dek(&pool, 10).await?;
         let (_, dek_b_during) = store.get_or_create_dek(&pool, 20).await?;
-        assert_eq!(*dek_a_during.expose_secret(), dek_a_bytes, "DEK A must be readable during rewrap");
-        assert_eq!(*dek_b_during.expose_secret(), dek_b_bytes, "DEK B must be readable during rewrap");
+        assert_eq!(
+            *dek_a_during.expose_secret(),
+            dek_a_bytes,
+            "DEK A must be readable during rewrap"
+        );
+        assert_eq!(
+            *dek_b_during.expose_secret(),
+            dek_b_bytes,
+            "DEK B must be readable during rewrap"
+        );
 
         // ── 5. Process rewrap batch ──
         let processed = store.process_rewrap_batch(&pool, 500).await?;
@@ -1013,13 +1074,24 @@ mod tests {
         assert_eq!(failed, 0);
 
         // Previous VK should be purged
-        assert!(store.previous_envelope_key().await.is_none(), "previous VK must be cleared");
+        assert!(
+            store.previous_envelope_key().await.is_none(),
+            "previous VK must be cleared"
+        );
 
         // ── 6. DEKs still readable with new VK only ──
         let (_, dek_a_after) = store.get_or_create_dek(&pool, 10).await?;
         let (_, dek_b_after) = store.get_or_create_dek(&pool, 20).await?;
-        assert_eq!(*dek_a_after.expose_secret(), dek_a_bytes, "DEK A must survive full rotation");
-        assert_eq!(*dek_b_after.expose_secret(), dek_b_bytes, "DEK B must survive full rotation");
+        assert_eq!(
+            *dek_a_after.expose_secret(),
+            dek_a_bytes,
+            "DEK A must survive full rotation"
+        );
+        assert_eq!(
+            *dek_b_after.expose_secret(),
+            dek_b_bytes,
+            "DEK B must survive full rotation"
+        );
 
         // ── 7. Verify generation in DB ──
         let vault = db::get_vault_params(&pool).await?.unwrap();
@@ -1041,14 +1113,20 @@ mod tests {
         let store = VaultKeyStore::new();
         store.unlock(&pool, "test-passphrase").await?;
 
-        let s = store.safety_numbers("user-abc").await.expect("safety numbers");
+        let s = store
+            .safety_numbers("user-abc")
+            .await
+            .expect("safety numbers");
         // 12 groups × 5 digits = 60 digits, joined by 11 single-space separators → 71 chars.
         assert_eq!(s.len(), 71, "expected 71 chars, got: {s}");
         let parts: Vec<&str> = s.split(' ').collect();
         assert_eq!(parts.len(), 12);
         for part in &parts {
             assert_eq!(part.len(), 5);
-            assert!(part.chars().all(|c| c.is_ascii_digit()), "non-digit: {part}");
+            assert!(
+                part.chars().all(|c| c.is_ascii_digit()),
+                "non-digit: {part}"
+            );
         }
         Ok(())
     }
@@ -1077,9 +1155,17 @@ mod tests {
         assert_eq!(a, b, "mnemonic must be deterministic for the same user");
 
         let words: Vec<&str> = a.split_whitespace().collect();
-        assert_eq!(words.len(), 12, "expected 12 words, got {}: {a}", words.len());
+        assert_eq!(
+            words.len(),
+            12,
+            "expected 12 words, got {}: {a}",
+            words.len()
+        );
         for w in &words {
-            assert!(w.chars().all(|c| c.is_ascii_lowercase()), "non-lowercase: {w}");
+            assert!(
+                w.chars().all(|c| c.is_ascii_lowercase()),
+                "non-lowercase: {w}"
+            );
         }
 
         // Must round-trip through BIP-39 parser (checksum is valid).

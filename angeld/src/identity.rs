@@ -71,7 +71,9 @@ fn encrypt_private_key(kek: &[u8; 32], private_key: &[u8; 32]) -> Result<Vec<u8>
 /// Decrypts a private key blob previously produced by `encrypt_private_key`.
 pub fn decrypt_private_key(kek: &[u8; 32], blob: &[u8]) -> Result<[u8; 32], IdentityError> {
     if blob.len() < NONCE_LEN + 32 {
-        return Err(IdentityError::Crypto("encrypted private key blob too short".into()));
+        return Err(IdentityError::Crypto(
+            "encrypted private key blob too short".into(),
+        ));
     }
     let (nonce_bytes, ciphertext) = blob.split_at(NONCE_LEN);
     let cipher = Aes256Gcm::new_from_slice(kek)
@@ -82,7 +84,9 @@ pub fn decrypt_private_key(kek: &[u8; 32], blob: &[u8]) -> Result<[u8; 32], Iden
         .map_err(|e| IdentityError::Crypto(format!("AES-GCM decrypt: {e}")))?;
     let mut key = [0u8; 32];
     if plaintext.len() != 32 {
-        return Err(IdentityError::Crypto("decrypted key is not 32 bytes".into()));
+        return Err(IdentityError::Crypto(
+            "decrypted key is not 32 bytes".into(),
+        ));
     }
     key.copy_from_slice(&plaintext);
     Ok(key)
@@ -105,13 +109,13 @@ pub async fn ensure_device_keypair(
         .ok_or(IdentityError::NoDeviceIdentity)?;
 
     // Already has a keypair?
-    if let (Some(_enc_priv), Some(pubkey)) =
-        (&device.encrypted_private_key, &device.public_key)
-        && pubkey.len() == 32 {
-            let mut pk = [0u8; 32];
-            pk.copy_from_slice(pubkey);
-            return Ok(pk);
-        }
+    if let (Some(_enc_priv), Some(pubkey)) = (&device.encrypted_private_key, &device.public_key)
+        && pubkey.len() == 32
+    {
+        let mut pk = [0u8; 32];
+        pk.copy_from_slice(pubkey);
+        return Ok(pk);
+    }
 
     // Generate new X25519 keypair
     let mut secret_bytes = [0u8; 32];
@@ -145,9 +149,9 @@ pub async fn get_device_private_key(
         .await?
         .ok_or(IdentityError::NoDeviceIdentity)?;
 
-    let encrypted = device
-        .encrypted_private_key
-        .ok_or(IdentityError::Crypto("no encrypted private key stored".into()))?;
+    let encrypted = device.encrypted_private_key.ok_or(IdentityError::Crypto(
+        "no encrypted private key stored".into(),
+    ))?;
 
     let kek = derive_identity_kek(master_key)?;
     decrypt_private_key(&kek, &encrypted)
@@ -198,7 +202,8 @@ pub fn wrap_vault_key_for_device(
         ));
     }
     let wrapping_key = derive_wrapping_key(shared.as_bytes())?;
-    wrap_key(&wrapping_key, vault_key).map_err(|e| IdentityError::Crypto(format!("AES-KW wrap: {e}")))
+    wrap_key(&wrapping_key, vault_key)
+        .map_err(|e| IdentityError::Crypto(format!("AES-KW wrap: {e}")))
 }
 
 /// Unwraps a Vault Key received from another device using ECDH + AES-KW.
@@ -432,10 +437,12 @@ mod tests {
         let vault_key: KeyBytes = [0xAB; 32];
 
         // Owner wraps VK for member's public key
-        let wrapped = wrap_vault_key_for_device(&owner_privkey, &member_pubkey, &vault_key).unwrap();
+        let wrapped =
+            wrap_vault_key_for_device(&owner_privkey, &member_pubkey, &vault_key).unwrap();
 
         // Member unwraps VK using owner's public key
-        let recovered = unwrap_vault_key_from_device(&member_priv, &owner_pubkey, &wrapped).unwrap();
+        let recovered =
+            unwrap_vault_key_from_device(&member_priv, &owner_pubkey, &wrapped).unwrap();
         assert_eq!(recovered, vault_key);
     }
 
@@ -469,8 +476,10 @@ mod tests {
         let dev2_pubkey = x25519_dalek::PublicKey::from(&dev2_secret).to_bytes();
 
         // Owner wraps VK for both devices
-        let wrapped_1 = wrap_vault_key_for_device(&owner_privkey, &dev1_pubkey, &vault_key).unwrap();
-        let wrapped_2 = wrap_vault_key_for_device(&owner_privkey, &dev2_pubkey, &vault_key).unwrap();
+        let wrapped_1 =
+            wrap_vault_key_for_device(&owner_privkey, &dev1_pubkey, &vault_key).unwrap();
+        let wrapped_2 =
+            wrap_vault_key_for_device(&owner_privkey, &dev2_pubkey, &vault_key).unwrap();
 
         // Wrapped blobs differ (different ECDH shared secrets)
         assert_ne!(wrapped_1, wrapped_2);
@@ -500,14 +509,21 @@ mod tests {
         db::create_device(&pool, "dev-1", user_id, "Laptop", &[1u8; 32])
             .await
             .unwrap();
-        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
-        assert!(active.is_empty(), "device without wrapped VK should not be active");
+        let active = db::get_active_devices_for_user(&pool, user_id)
+            .await
+            .unwrap();
+        assert!(
+            active.is_empty(),
+            "device without wrapped VK should not be active"
+        );
 
         // Accept device 1 → becomes active
         db::set_device_wrapped_vault_key(&pool, "dev-1", &[0xAA; 40], 1)
             .await
             .unwrap();
-        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        let active = db::get_active_devices_for_user(&pool, user_id)
+            .await
+            .unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].device_id, "dev-1");
 
@@ -518,12 +534,16 @@ mod tests {
         db::set_device_wrapped_vault_key(&pool, "dev-2", &[0xBB; 40], 1)
             .await
             .unwrap();
-        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        let active = db::get_active_devices_for_user(&pool, user_id)
+            .await
+            .unwrap();
         assert_eq!(active.len(), 2);
 
         // Revoke device 1 → only device 2 active
         db::revoke_device(&pool, "dev-1").await.unwrap();
-        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        let active = db::get_active_devices_for_user(&pool, user_id)
+            .await
+            .unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].device_id, "dev-2");
     }
@@ -557,8 +577,14 @@ mod tests {
 
         // Verify: wrapped_vault_key cleared, revoked_at set
         let dev = db::get_device(&pool, "dev-bob-1").await.unwrap().unwrap();
-        assert!(dev.wrapped_vault_key.is_none(), "wrapped VK must be cleared on revoke");
-        assert!(dev.vault_key_generation.is_none(), "VK generation must be cleared on revoke");
+        assert!(
+            dev.wrapped_vault_key.is_none(),
+            "wrapped VK must be cleared on revoke"
+        );
+        assert!(
+            dev.vault_key_generation.is_none(),
+            "VK generation must be cleared on revoke"
+        );
         assert!(dev.revoked_at.is_some(), "revoked_at must be set");
 
         // Double-revoke is a no-op
@@ -588,7 +614,8 @@ mod tests {
         let member_pubkey = x25519_dalek::PublicKey::from(&member_secret).to_bytes();
 
         let vault_key: KeyBytes = [0xAB; 32];
-        let wrapped = wrap_vault_key_for_device(&owner_privkey, &member_pubkey, &vault_key).unwrap();
+        let wrapped =
+            wrap_vault_key_for_device(&owner_privkey, &member_pubkey, &vault_key).unwrap();
 
         // Register member in DB
         let user_id = "user-member";
@@ -605,7 +632,8 @@ mod tests {
         // Before revoke: member can retrieve and unwrap
         let dev = db::get_device(&pool, "dev-member").await.unwrap().unwrap();
         let stored_wrapped: [u8; 40] = dev.wrapped_vault_key.unwrap().try_into().unwrap();
-        let recovered = unwrap_vault_key_from_device(&member_priv, &owner_pubkey, &stored_wrapped).unwrap();
+        let recovered =
+            unwrap_vault_key_from_device(&member_priv, &owner_pubkey, &stored_wrapped).unwrap();
         assert_eq!(recovered, vault_key);
 
         // Revoke device
@@ -613,7 +641,10 @@ mod tests {
 
         // After revoke: wrapped_vault_key is gone from DB
         let dev = db::get_device(&pool, "dev-member").await.unwrap().unwrap();
-        assert!(dev.wrapped_vault_key.is_none(), "revoked device must not have wrapped VK in DB");
+        assert!(
+            dev.wrapped_vault_key.is_none(),
+            "revoked device must not have wrapped VK in DB"
+        );
         assert!(dev.revoked_at.is_some());
     }
 
@@ -648,9 +679,16 @@ mod tests {
             .unwrap();
 
         // Verify: 2 active devices, 1 membership
-        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        let active = db::get_active_devices_for_user(&pool, user_id)
+            .await
+            .unwrap();
         assert_eq!(active.len(), 2);
-        assert!(db::get_vault_member(&pool, user_id, vault_id).await.unwrap().is_some());
+        assert!(
+            db::get_vault_member(&pool, user_id, vault_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         // Simulate user removal: revoke all devices + delete membership
         let devices = db::list_devices_for_user(&pool, user_id).await.unwrap();
@@ -659,14 +697,21 @@ mod tests {
                 db::revoke_device(&pool, &dev.device_id).await.unwrap();
             }
         }
-        db::remove_vault_member(&pool, user_id, vault_id).await.unwrap();
+        db::remove_vault_member(&pool, user_id, vault_id)
+            .await
+            .unwrap();
 
         // Verify: 0 active devices, no membership, devices are revoked
-        let active = db::get_active_devices_for_user(&pool, user_id).await.unwrap();
+        let active = db::get_active_devices_for_user(&pool, user_id)
+            .await
+            .unwrap();
         assert!(active.is_empty(), "all devices must be revoked");
 
         assert!(
-            db::get_vault_member(&pool, user_id, vault_id).await.unwrap().is_none(),
+            db::get_vault_member(&pool, user_id, vault_id)
+                .await
+                .unwrap()
+                .is_none(),
             "membership must be deleted"
         );
 

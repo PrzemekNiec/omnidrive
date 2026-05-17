@@ -7,11 +7,10 @@
 #![allow(non_snake_case)]
 
 use std::ffi::c_void;
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::LibraryLoader::*;
@@ -21,6 +20,7 @@ use windows::Win32::System::SystemServices::*;
 use windows::Win32::UI::Shell::Common::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::*;
 
 // ── CLSID ──────────────────────────────────────────────────────────────────
 
@@ -108,7 +108,11 @@ unsafe extern "system" fn DllGetClassObject(
 #[unsafe(no_mangle)]
 extern "system" fn DllCanUnloadNow() -> HRESULT {
     catch_unwind(|| {
-        if OBJECT_COUNT.load(Ordering::SeqCst) == 0 { S_OK } else { S_FALSE }
+        if OBJECT_COUNT.load(Ordering::SeqCst) == 0 {
+            S_OK
+        } else {
+            S_FALSE
+        }
     })
     .unwrap_or(S_FALSE)
 }
@@ -156,9 +160,8 @@ fn reg_set_string(key: HKEY, name: Option<&str>, value: &str) -> std::result::Re
     let wide_name = name.map(wide_null);
     let wide_val = wide_null(value);
     let name_ptr = PCWSTR(wide_name.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()));
-    let val_bytes = unsafe {
-        std::slice::from_raw_parts(wide_val.as_ptr() as *const u8, wide_val.len() * 2)
-    };
+    let val_bytes =
+        unsafe { std::slice::from_raw_parts(wide_val.as_ptr() as *const u8, wide_val.len() * 2) };
     let status = unsafe { RegSetValueExW(key, name_ptr, Some(0), REG_SZ, Some(val_bytes)) };
     if status.is_err() {
         return Err(format!("RegSetValueExW: {}", status.0));
@@ -178,7 +181,9 @@ fn reg_create_key(parent: HKEY, subkey: &str) -> std::result::Result<HKEY, Strin
 
 fn reg_delete_tree(parent: HKEY, subkey: &str) {
     let wide = wide_null(subkey);
-    unsafe { let _ = RegDeleteTreeW(parent, PCWSTR(wide.as_ptr())); }
+    unsafe {
+        let _ = RegDeleteTreeW(parent, PCWSTR(wide.as_ptr()));
+    }
 }
 
 fn register_server() -> std::result::Result<(), String> {
@@ -187,7 +192,9 @@ fn register_server() -> std::result::Result<(), String> {
     // HKCR\CLSID\{...}
     let clsid_key = reg_create_key(HKEY_CLASSES_ROOT, &format!("CLSID\\{CLSID_STR}"))?;
     reg_set_string(clsid_key, None, EXTENSION_NAME)?;
-    unsafe { let _ = RegCloseKey(clsid_key); }
+    unsafe {
+        let _ = RegCloseKey(clsid_key);
+    }
 
     // HKCR\CLSID\{...}\InprocServer32 with ThreadingModel = Apartment
     let inproc_key = reg_create_key(
@@ -196,7 +203,9 @@ fn register_server() -> std::result::Result<(), String> {
     )?;
     reg_set_string(inproc_key, None, &dll_path)?;
     reg_set_string(inproc_key, Some("ThreadingModel"), "Apartment")?;
-    unsafe { let _ = RegCloseKey(inproc_key); }
+    unsafe {
+        let _ = RegCloseKey(inproc_key);
+    }
 
     // HKCR\*\shellex\ContextMenuHandlers\OmniDrive
     let files_key = reg_create_key(
@@ -204,7 +213,9 @@ fn register_server() -> std::result::Result<(), String> {
         &format!("*\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
     )?;
     reg_set_string(files_key, None, CLSID_STR)?;
-    unsafe { let _ = RegCloseKey(files_key); }
+    unsafe {
+        let _ = RegCloseKey(files_key);
+    }
 
     // HKCR\Directory\shellex\ContextMenuHandlers\OmniDrive
     let dir_key = reg_create_key(
@@ -212,7 +223,9 @@ fn register_server() -> std::result::Result<(), String> {
         &format!("Directory\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
     )?;
     reg_set_string(dir_key, None, CLSID_STR)?;
-    unsafe { let _ = RegCloseKey(dir_key); }
+    unsafe {
+        let _ = RegCloseKey(dir_key);
+    }
 
     // Approved list
     let approved_key = reg_create_key(
@@ -220,7 +233,9 @@ fn register_server() -> std::result::Result<(), String> {
         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
     )?;
     reg_set_string(approved_key, Some(CLSID_STR), EXTENSION_NAME)?;
-    unsafe { let _ = RegCloseKey(approved_key); }
+    unsafe {
+        let _ = RegCloseKey(approved_key);
+    }
 
     // Clean up any leftover overlay handler keys from previous versions
     cleanup_legacy_overlay_keys();
@@ -244,9 +259,8 @@ fn unregister_server() -> std::result::Result<(), String> {
     cleanup_legacy_overlay_keys();
 
     // Clean Approved list
-    let wide_path = wide_null(
-        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
-    );
+    let wide_path =
+        wide_null("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved");
     unsafe {
         let mut key = HKEY::default();
         if RegOpenKeyExW(
@@ -400,8 +414,7 @@ impl IShellExtInit_Impl for OmniDriveContextMenu_Impl {
 /// Extract first file path using modern Shell Item API (avoids STGMEDIUM).
 fn extract_first_path(dataobj: &IDataObject) -> Result<String> {
     unsafe {
-        let items: IShellItemArray =
-            SHCreateShellItemArrayFromDataObject(dataobj)?;
+        let items: IShellItemArray = SHCreateShellItemArrayFromDataObject(dataobj)?;
         let item: IShellItem = items.GetItemAt(0)?;
         let display_name = item.GetDisplayName(SIGDN_FILESYSPATH)?;
         let path = display_name.to_string()?;
@@ -428,74 +441,76 @@ impl IContextMenu_Impl for OmniDriveContextMenu_Impl {
         _idcmdlast: u32,
         _uflags: u32,
     ) -> HRESULT {
-        let result = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<HRESULT, Error> {
-            unsafe {
-                let popup = CreatePopupMenu()?;
+        let result = catch_unwind(AssertUnwindSafe(
+            || -> std::result::Result<HRESULT, Error> {
+                unsafe {
+                    let popup = CreatePopupMenu()?;
 
-                let text_free = wide_null("Zwolnij miejsce");
-                AppendMenuW(
-                    popup,
-                    MF_STRING,
-                    (idcmdfirst + CMD_FREE_SPACE) as usize,
-                    PCWSTR(text_free.as_ptr()),
-                )?;
+                    let text_free = wide_null("Zwolnij miejsce");
+                    AppendMenuW(
+                        popup,
+                        MF_STRING,
+                        (idcmdfirst + CMD_FREE_SPACE) as usize,
+                        PCWSTR(text_free.as_ptr()),
+                    )?;
 
-                let text_dl = wide_null("Pobierz na to urz\u{0105}dzenie");
-                AppendMenuW(
-                    popup,
-                    MF_STRING,
-                    (idcmdfirst + CMD_DOWNLOAD) as usize,
-                    PCWSTR(text_dl.as_ptr()),
-                )?;
+                    let text_dl = wide_null("Pobierz na to urz\u{0105}dzenie");
+                    AppendMenuW(
+                        popup,
+                        MF_STRING,
+                        (idcmdfirst + CMD_DOWNLOAD) as usize,
+                        PCWSTR(text_dl.as_ptr()),
+                    )?;
 
-                // ── Separator + protection levels ──
-                AppendMenuW(popup, MF_SEPARATOR, 0, PCWSTR::null())?;
+                    // ── Separator + protection levels ──
+                    AppendMenuW(popup, MF_SEPARATOR, 0, PCWSTR::null())?;
 
-                let text_lok = wide_null("LOKALNIE \u{2014} tylko ten komputer");
-                AppendMenuW(
-                    popup,
-                    MF_STRING,
-                    (idcmdfirst + CMD_LOKALNIE) as usize,
-                    PCWSTR(text_lok.as_ptr()),
-                )?;
+                    let text_lok = wide_null("LOKALNIE \u{2014} tylko ten komputer");
+                    AppendMenuW(
+                        popup,
+                        MF_STRING,
+                        (idcmdfirst + CMD_LOKALNIE) as usize,
+                        PCWSTR(text_lok.as_ptr()),
+                    )?;
 
-                let text_combo = wide_null("COMBO \u{2014} chmura + lokalnie");
-                AppendMenuW(
-                    popup,
-                    MF_STRING,
-                    (idcmdfirst + CMD_COMBO) as usize,
-                    PCWSTR(text_combo.as_ptr()),
-                )?;
+                    let text_combo = wide_null("COMBO \u{2014} chmura + lokalnie");
+                    AppendMenuW(
+                        popup,
+                        MF_STRING,
+                        (idcmdfirst + CMD_COMBO) as usize,
+                        PCWSTR(text_combo.as_ptr()),
+                    )?;
 
-                let text_chmura = wide_null("CHMURA \u{2014} tylko w chmurze");
-                AppendMenuW(
-                    popup,
-                    MF_STRING,
-                    (idcmdfirst + CMD_CHMURA) as usize,
-                    PCWSTR(text_chmura.as_ptr()),
-                )?;
+                    let text_chmura = wide_null("CHMURA \u{2014} tylko w chmurze");
+                    AppendMenuW(
+                        popup,
+                        MF_STRING,
+                        (idcmdfirst + CMD_CHMURA) as usize,
+                        PCWSTR(text_chmura.as_ptr()),
+                    )?;
 
-                let text_fort = wide_null("FORTECA \u{2014} pe\u{0142}na ochrona");
-                AppendMenuW(
-                    popup,
-                    MF_STRING,
-                    (idcmdfirst + CMD_FORTECA) as usize,
-                    PCWSTR(text_fort.as_ptr()),
-                )?;
+                    let text_fort = wide_null("FORTECA \u{2014} pe\u{0142}na ochrona");
+                    AppendMenuW(
+                        popup,
+                        MF_STRING,
+                        (idcmdfirst + CMD_FORTECA) as usize,
+                        PCWSTR(text_fort.as_ptr()),
+                    )?;
 
-                let text_omni = wide_null("OmniDrive");
-                InsertMenuW(
-                    hmenu,
-                    indexmenu,
-                    MF_BYPOSITION | MF_POPUP,
-                    popup.0 as usize,
-                    PCWSTR(text_omni.as_ptr()),
-                )?;
+                    let text_omni = wide_null("OmniDrive");
+                    InsertMenuW(
+                        hmenu,
+                        indexmenu,
+                        MF_BYPOSITION | MF_POPUP,
+                        popup.0 as usize,
+                        PCWSTR(text_omni.as_ptr()),
+                    )?;
 
-                log_to_file("QueryContextMenu — submenu inserted");
-                Ok(HRESULT(CMD_COUNT as i32))
-            }
-        }));
+                    log_to_file("QueryContextMenu — submenu inserted");
+                    Ok(HRESULT(CMD_COUNT as i32))
+                }
+            },
+        ));
 
         match result {
             Ok(Ok(hr)) => hr,
@@ -538,7 +553,9 @@ impl IContextMenu_Impl for OmniDriveContextMenu_Impl {
                 _ => return Err(Error::from(E_INVALIDARG)),
             };
 
-            log_to_file(&format!("InvokeCommand: action=\"{action}\", path=\"{path}\""));
+            log_to_file(&format!(
+                "InvokeCommand: action=\"{action}\", path=\"{path}\""
+            ));
 
             match send_pipe_command(action, &path) {
                 Ok(()) => {
@@ -605,9 +622,7 @@ fn send_pipe_command(action: &str, path: &str) -> std::result::Result<(), String
     .map_err(|e| format!("CreateFileW pipe: {e}"))?;
 
     // Wrap in OwnedHandle for auto-close.
-    let mut pipe_file: std::fs::File = unsafe {
-        std::fs::File::from_raw_handle(handle.0)
-    };
+    let mut pipe_file: std::fs::File = unsafe { std::fs::File::from_raw_handle(handle.0) };
 
     // Build JSON request.
     let escaped_path = path.replace('\\', "\\\\").replace('"', "\\\"");
@@ -616,9 +631,7 @@ fn send_pipe_command(action: &str, path: &str) -> std::result::Result<(), String
     pipe_file
         .write_all(request.as_bytes())
         .map_err(|e| format!("write pipe: {e}"))?;
-    pipe_file
-        .flush()
-        .map_err(|e| format!("flush pipe: {e}"))?;
+    pipe_file.flush().map_err(|e| format!("flush pipe: {e}"))?;
 
     // Read response (max 4 KB).
     let mut response_buf = [0u8; 4096];
@@ -630,8 +643,7 @@ fn send_pipe_command(action: &str, path: &str) -> std::result::Result<(), String
         return Err("empty response from angeld".into());
     }
 
-    let response_str =
-        std::str::from_utf8(&response_buf[..n]).map_err(|e| format!("utf8: {e}"))?;
+    let response_str = std::str::from_utf8(&response_buf[..n]).map_err(|e| format!("utf8: {e}"))?;
 
     // Minimal JSON parse: check for "ok":true
     if response_str.contains("\"ok\":true") || response_str.contains("\"ok\": true") {

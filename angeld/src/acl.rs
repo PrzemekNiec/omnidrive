@@ -70,7 +70,7 @@ pub async fn require_role(
             return Err(ApiError::BadRequest {
                 code: "vault_not_initialized",
                 message: "vault not initialized".to_string(),
-            })
+            });
         }
     };
 
@@ -211,10 +211,7 @@ mod tests {
             .unwrap();
 
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            format!("Bearer {token}").parse().unwrap(),
-        );
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
 
         // Member can access Viewer-level endpoint
         assert!(require_role(&pool, &headers, Role::Viewer).await.is_ok());
@@ -251,10 +248,7 @@ mod tests {
             .unwrap();
 
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            format!("Bearer {token}").parse().unwrap(),
-        );
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
 
         assert!(require_role(&pool, &headers, Role::Viewer).await.is_ok());
         assert!(require_role(&pool, &headers, Role::Member).await.is_ok());
@@ -277,15 +271,18 @@ mod tests {
             .unwrap();
         // NOTE: no vault_members entry for u-stranger
         let token = db::generate_session_token();
-        db::create_user_session(&pool, &token, "u-stranger", "dev-s", db::SESSION_TTL_SECONDS)
-            .await
-            .unwrap();
+        db::create_user_session(
+            &pool,
+            &token,
+            "u-stranger",
+            "dev-s",
+            db::SESSION_TTL_SECONDS,
+        )
+        .await
+        .unwrap();
 
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            format!("Bearer {token}").parse().unwrap(),
-        );
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
 
         // Even Viewer-level access is denied for non-members
         assert!(require_role(&pool, &headers, Role::Viewer).await.is_err());

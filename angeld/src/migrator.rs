@@ -4,12 +4,11 @@
 use crate::db;
 use crate::db::{PackStatus, StorageMode};
 use crate::packer::{
-    build_manifest_bytes_v2, build_shards, compute_pack_id, local_pack_path,
-    storage_mode_scheme,
+    build_manifest_bytes_v2, build_shards, compute_pack_id, local_pack_path, storage_mode_scheme,
 };
 use crate::secure_fs::write_ephemeral_bytes;
 use crate::vault::{VaultError, VaultKeyStore};
-use omnidrive_core::crypto::{decrypt_chunk, encrypt_chunk_v2, KeyBytes};
+use omnidrive_core::crypto::{KeyBytes, decrypt_chunk, encrypt_chunk_v2};
 use omnidrive_core::layout::ChunkRecordPrefix;
 use secrecy::ExposeSecret;
 use sqlx::SqlitePool;
@@ -90,7 +89,9 @@ impl MigrationManager {
         }
 
         let remaining = db::count_v1_packs(&self.pool).await? as u64;
-        info!("[MIGRATOR] Batch complete: migrated={migrated}, failed={failed}, remaining={remaining}");
+        info!(
+            "[MIGRATOR] Batch complete: migrated={migrated}, failed={failed}, remaining={remaining}"
+        );
 
         if remaining == 0 {
             db::finalize_vault_format_v2(&self.pool).await?;
@@ -190,9 +191,14 @@ impl MigrationManager {
             .await
             .map_err(|err| MigrationError::Io(std::io::Error::other(err.to_string())))?;
 
-        let shards = build_shards(&self.spool_dir, &new_pack_id, &v2_encrypted.ciphertext, storage_mode)
-            .await
-            .map_err(|err| MigrationError::Packer(err.to_string()))?;
+        let shards = build_shards(
+            &self.spool_dir,
+            &new_pack_id,
+            &v2_encrypted.ciphertext,
+            storage_mode,
+        )
+        .await
+        .map_err(|err| MigrationError::Packer(err.to_string()))?;
 
         let cipher_size =
             i64::try_from(v2_encrypted.ciphertext.len()).unwrap_or(v1_pack.cipher_size);
@@ -201,8 +207,7 @@ impl MigrationManager {
         } else {
             shards.first().map(|s| s.size).unwrap_or(0)
         };
-        let manifest_size =
-            i64::try_from(manifest_bytes.len()).unwrap_or(0);
+        let manifest_size = i64::try_from(manifest_bytes.len()).unwrap_or(0);
 
         // ── Step 6: DB transaction — insert new pack, update pointers, remove old ──
         db::create_pack(
@@ -227,8 +232,14 @@ impl MigrationManager {
         .await?;
 
         // Update pack_locations to point chunk_id → new pack
-        db::link_chunk_to_pack(&self.pool, &v1_pack.chunk_id, &new_pack_id, 0, manifest_size)
-            .await?;
+        db::link_chunk_to_pack(
+            &self.pool,
+            &v1_pack.chunk_id,
+            &new_pack_id,
+            0,
+            manifest_size,
+        )
+        .await?;
 
         // Register new shards for upload
         for shard in &shards {
@@ -396,7 +407,10 @@ mod tests {
         let pool = db::init_db("sqlite::memory:").await.unwrap();
         let test_root = env::temp_dir().join(format!(
             "omnidrive-migrator-test-{}",
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         let spool_dir = test_root.join("spool");
         fs::create_dir_all(&spool_dir).await.unwrap();
@@ -413,7 +427,14 @@ mod tests {
             .await
             .unwrap();
         let revision_id = db::create_file_revision(
-            &pool, inode_id, plaintext.len() as i64, None, None, None, "local_write", None,
+            &pool,
+            inode_id,
+            plaintext.len() as i64,
+            None,
+            None,
+            None,
+            "local_write",
+            None,
         )
         .await
         .unwrap();
@@ -454,9 +475,15 @@ mod tests {
         .unwrap();
 
         let manifest_size = manifest_bytes.len() as i64;
-        db::register_chunk(&pool, revision_id, &v1_encrypted.chunk_id, 0, plaintext.len() as i64)
-            .await
-            .unwrap();
+        db::register_chunk(
+            &pool,
+            revision_id,
+            &v1_encrypted.chunk_id,
+            0,
+            plaintext.len() as i64,
+        )
+        .await
+        .unwrap();
         db::link_chunk_to_pack(&pool, &v1_encrypted.chunk_id, &pack_id, 0, manifest_size)
             .await
             .unwrap();
@@ -522,7 +549,10 @@ mod tests {
 
         use omnidrive_core::crypto::decrypt_chunk_v2;
         let decrypted = decrypt_chunk_v2(&dek, &nonce, &[], ciphertext, &gcm_tag).unwrap();
-        assert_eq!(decrypted, plaintext, "decrypted plaintext should match original");
+        assert_eq!(
+            decrypted, plaintext,
+            "decrypted plaintext should match original"
+        );
 
         // Old pack file should be deleted
         let old_exists = fs::try_exists(&manifest_path).await.unwrap_or(true);

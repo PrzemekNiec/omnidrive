@@ -3,12 +3,12 @@ mod common;
 use angeld::db;
 use angeld::downloader::Downloader;
 use angeld::vault::VaultKeyStore;
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::put;
-use axum::Router;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -147,7 +147,10 @@ impl ChaosEnv {
             .env("OMNIDRIVE_DB_URL", &self.db_url)
             .env("OMNIDRIVE_WATCH_DIR", &self.watch_root)
             .env("OMNIDRIVE_SPOOL_DIR", self.base.join("Spool"))
-            .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", self.base.join("download-spool"))
+            .env(
+                "OMNIDRIVE_DOWNLOAD_SPOOL_DIR",
+                self.base.join("download-spool"),
+            )
             .env("OMNIDRIVE_CACHE_DIR", self.base.join("Cache"))
             .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
             .env("OMNIDRIVE_WATCH_DEBOUNCE_MS", "100")
@@ -176,7 +179,11 @@ impl ChaosEnv {
             .stderr(Stdio::inherit());
 
         let child = command.spawn()?;
-        let handle = DaemonHandle { child, base_url, session_token: None };
+        let handle = DaemonHandle {
+            child,
+            base_url,
+            session_token: None,
+        };
         handle.wait_for_api_ready().await?;
         Ok(handle)
     }
@@ -186,10 +193,10 @@ impl DaemonHandle {
     async fn wait_for_api_ready(&self) -> Result<(), Box<dyn std::error::Error>> {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            match http_get_json::<DiagnosticsHealth>(&format!(
-                "{}/api/diagnostics/health",
-                self.base_url
-            ), None)
+            match http_get_json::<DiagnosticsHealth>(
+                &format!("{}/api/diagnostics/health", self.base_url),
+                None,
+            )
             .await
             {
                 Ok(_) => return Ok(()),
@@ -215,13 +222,20 @@ impl DaemonHandle {
 
     async fn list_files(&mut self) -> Result<Vec<FileEntry>, Box<dyn std::error::Error>> {
         self.ensure_running()?;
-        http_get_json::<Vec<FileEntry>>(&format!("{}/api/files", self.base_url), self.session_token.as_deref()).await
+        http_get_json::<Vec<FileEntry>>(
+            &format!("{}/api/files", self.base_url),
+            self.session_token.as_deref(),
+        )
+        .await
     }
 
     async fn health(&mut self) -> Result<DiagnosticsHealth, Box<dyn std::error::Error>> {
         self.ensure_running()?;
-        http_get_json::<DiagnosticsHealth>(&format!("{}/api/diagnostics/health", self.base_url), None)
-            .await
+        http_get_json::<DiagnosticsHealth>(
+            &format!("{}/api/diagnostics/health", self.base_url),
+            None,
+        )
+        .await
     }
 
     async fn scrub_now(&mut self) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
@@ -287,8 +301,8 @@ impl Drop for ScopedEnv {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn scrubber_detects_missing_shard_and_repair_restores_health_without_read_failures(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn scrubber_detects_missing_shard_and_repair_restores_health_without_read_failures()
+-> Result<(), Box<dyn std::error::Error>> {
     let env = ChaosEnv::create().await?;
     let (mock_addr, mock_server) = spawn_fs_mock_s3(env.object_root.clone()).await?;
     let mut daemon = env.spawn_daemon(mock_addr).await?;
@@ -311,7 +325,10 @@ async fn scrubber_detects_missing_shard_and_repair_restores_health_without_read_
     env_guard.set("OMNIDRIVE_DB_URL", env.db_url.clone());
     env_guard.set(
         "OMNIDRIVE_DOWNLOAD_SPOOL_DIR",
-        env.base.join("download-spool").to_string_lossy().to_string(),
+        env.base
+            .join("download-spool")
+            .to_string_lossy()
+            .to_string(),
     );
     env_guard.set(
         "OMNIDRIVE_CACHE_DIR",
@@ -361,21 +378,11 @@ async fn scrubber_detects_missing_shard_and_repair_restores_health_without_read_
         object_path.display()
     );
 
-    let heartbeat = spawn_heartbeat(
-        downloader.clone(),
-        inode_id,
-        revision_id,
-        payload.clone(),
-    );
+    let heartbeat = spawn_heartbeat(downloader.clone(), inode_id, revision_id, payload.clone());
     fs::remove_file(&object_path).await?;
 
-    wait_for_missing_shard_and_degraded_pack(
-        &mut daemon,
-        &pool,
-        &active_pack.pack_id,
-        &sabotaged,
-    )
-    .await?;
+    wait_for_missing_shard_and_degraded_pack(&mut daemon, &pool, &active_pack.pack_id, &sabotaged)
+        .await?;
     wait_for_repair_and_rescrub(
         &mut daemon,
         &pool,
@@ -472,9 +479,9 @@ async fn wait_for_missing_shard_and_degraded_pack(
         daemon.ensure_running()?;
         let _ = daemon.scrub_now().await?;
 
-        let pack = db::get_pack(pool, pack_id)
-            .await?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "pack missing after sabotage"))?;
+        let pack = db::get_pack(pool, pack_id).await?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "pack missing after sabotage")
+        })?;
         let shard = shard_snapshot(pool, pack_id, sabotaged.shard_index).await?;
         if pack.status == "COMPLETED_DEGRADED"
             && shard.status == "FAILED"
@@ -538,9 +545,7 @@ async fn wait_for_repair_and_rescrub(
         daemon.ensure_running()?;
         let _ = daemon.scrub_now().await?;
         let shard = shard_snapshot(pool, pack_id, sabotaged.shard_index).await?;
-        if shard.status == "COMPLETED"
-            && shard.verification_status.as_deref() == Some("HEALTHY")
-        {
+        if shard.status == "COMPLETED" && shard.verification_status.as_deref() == Some("HEALTHY") {
             return Ok(());
         }
 
@@ -626,9 +631,7 @@ async fn wait_for_file_ingested(
             && let Some(revision_id) = file.current_revision_id
         {
             let active = current_active_pack(pool, file.inode_id).await?;
-            if active.mode == db::StorageMode::Ec2_1
-                && active.status == "COMPLETED_HEALTHY"
-            {
+            if active.mode == db::StorageMode::Ec2_1 && active.status == "COMPLETED_HEALTHY" {
                 return Ok((file.inode_id, revision_id, file.path));
             }
         }
@@ -800,9 +803,12 @@ async fn http_get_json<T: for<'de> Deserialize<'de>>(
     url: &str,
     token: Option<&str>,
 ) -> Result<T, Box<dyn std::error::Error>> {
-    let without_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http:// URLs are supported"))?;
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http:// URLs are supported",
+        )
+    })?;
     let (host_port, path) = without_scheme
         .split_once('/')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
@@ -814,9 +820,8 @@ async fn http_get_json<T: for<'de> Deserialize<'de>>(
     };
 
     let mut stream = TcpStream::connect(host_port).await?;
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n"
-    );
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
 
     let mut response = Vec::new();
@@ -829,9 +834,12 @@ async fn http_post_json(
     body: &serde_json::Value,
     token: Option<&str>,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let without_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http:// URLs are supported"))?;
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http:// URLs are supported",
+        )
+    })?;
     let (host_port, path) = without_scheme
         .split_once('/')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::env;
 
-use super::error::ApiError;
 use super::ApiState;
+use super::error::ApiError;
 
 // ── Response / Request structs ──────────────────────────────────────────
 
@@ -489,9 +489,7 @@ async fn materialize_conflict_copy(
     }))
 }
 
-async fn get_quota(
-    State(state): State<ApiState>,
-) -> Result<Json<QuotaResponse>, ApiError> {
+async fn get_quota(State(state): State<ApiState>) -> Result<Json<QuotaResponse>, ApiError> {
     let app_config = AppConfig::from_env();
     let mut providers = Vec::with_capacity(KNOWN_PROVIDERS.len());
 

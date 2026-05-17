@@ -127,7 +127,9 @@ impl AppConfig {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             google_client_id: env::var("GOOGLE_CLIENT_ID").ok().filter(|s| !s.is_empty()),
-            google_client_secret: env::var("GOOGLE_CLIENT_SECRET").ok().filter(|s| !s.is_empty()),
+            google_client_secret: env::var("GOOGLE_CLIENT_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
             oauth_redirect_url: env::var("OAUTH_REDIRECT_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:8787/api/auth/google/callback".to_string()),
             oauth_google_auth_url: env::var("OMNIDRIVE_OAUTH_GOOGLE_AUTH_URL")
@@ -156,11 +158,8 @@ impl AppConfig {
     /// `localhost`, `[::1]` — all over plain HTTP (browsers allow loopback
     /// exempt from the https-only rule).
     pub fn validate_oauth_redirect_loopback_only(&self) -> Result<(), String> {
-        const ALLOWED_PREFIXES: &[&str] = &[
-            "http://127.0.0.1:",
-            "http://localhost:",
-            "http://[::1]:",
-        ];
+        const ALLOWED_PREFIXES: &[&str] =
+            &["http://127.0.0.1:", "http://localhost:", "http://[::1]:"];
         if ALLOWED_PREFIXES
             .iter()
             .any(|p| self.oauth_redirect_url.starts_with(p))

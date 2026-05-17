@@ -18,13 +18,15 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use omnidrive_core::crypto::{KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_root_keys, wrap_key};
+use omnidrive_core::crypto::{
+    KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, derive_root_keys, wrap_key,
+};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
-use super::error::ApiError;
 use super::ApiState;
+use super::error::ApiError;
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
@@ -44,9 +46,7 @@ struct StatusResponse {
     word_count: usize,
 }
 
-async fn recovery_status(
-    State(state): State<ApiState>,
-) -> Result<Json<StatusResponse>, ApiError> {
+async fn recovery_status(State(state): State<ApiState>) -> Result<Json<StatusResponse>, ApiError> {
     let vault = db::get_vault_params(&state.pool)
         .await?
         .ok_or(ApiError::BadRequest {
@@ -79,13 +79,19 @@ async fn generate_recovery_key(
 ) -> Result<Json<GenerateResponse>, ApiError> {
     let caller = acl::require_role(&state.pool, &headers, Role::Owner).await?;
 
-    let envelope_key = state.vault_keys.require_envelope_key().await.map_err(|err| match err {
-        VaultError::Locked => ApiError::BadRequest {
-            code: "vault_locked",
-            message: "odblokuj Skarbiec przed wygenerowaniem klucza odzyskiwania".to_string(),
-        },
-        other => ApiError::Internal { message: other.to_string() },
-    })?;
+    let envelope_key = state
+        .vault_keys
+        .require_envelope_key()
+        .await
+        .map_err(|err| match err {
+            VaultError::Locked => ApiError::BadRequest {
+                code: "vault_locked",
+                message: "odblokuj Skarbiec przed wygenerowaniem klucza odzyskiwania".to_string(),
+            },
+            other => ApiError::Internal {
+                message: other.to_string(),
+            },
+        })?;
 
     let vault = db::get_vault_params(&state.pool)
         .await?
@@ -97,8 +103,11 @@ async fn generate_recovery_key(
 
     let mnemonic = recovery::generate_mnemonic();
     let recovery_key = recovery::derive_recovery_key(&mnemonic);
-    let wrapped = recovery::wrap_vault_key(&recovery_key, &envelope_key)
-        .map_err(|err: recovery::RecoveryError| ApiError::Internal { message: err.to_string() })?;
+    let wrapped = recovery::wrap_vault_key(&recovery_key, &envelope_key).map_err(
+        |err: recovery::RecoveryError| ApiError::Internal {
+            message: err.to_string(),
+        },
+    )?;
 
     let recovery_key_id = db::insert_recovery_key(
         &state.pool,
@@ -255,7 +264,9 @@ async fn restore_from_recovery_key(
                 None,
                 None,
                 None,
-                Some(&format!(r#"{{"ip":"{ip}","reason":"invalid_mnemonic","ua":{ua:?}}}"#)),
+                Some(&format!(
+                    r#"{{"ip":"{ip}","reason":"invalid_mnemonic","ua":{ua:?}}}"#
+                )),
             )
             .await;
             return Err(ApiError::BadRequest {
@@ -291,7 +302,9 @@ async fn restore_from_recovery_key(
                 None,
                 None,
                 None,
-                Some(&format!(r#"{{"ip":"{ip}","reason":"mnemonic_mismatch","ua":{ua:?}}}"#)),
+                Some(&format!(
+                    r#"{{"ip":"{ip}","reason":"mnemonic_mismatch","ua":{ua:?}}}"#
+                )),
             )
             .await;
             return Err(ApiError::Unauthorized {
@@ -323,27 +336,24 @@ async fn restore_from_recovery_key(
             message: "invalid lanes".to_string(),
         })?,
     );
-    let new_root_keys = derive_root_keys(request.new_passphrase.expose_secret().as_bytes(), &params).map_err(
-        |err| ApiError::Internal {
-            message: err.to_string(),
-        },
-    )?;
+    let new_root_keys =
+        derive_root_keys(request.new_passphrase.expose_secret().as_bytes(), &params).map_err(
+            |err| ApiError::Internal {
+                message: err.to_string(),
+            },
+        )?;
 
-    let new_wrapped = wrap_key(&new_root_keys.kek, &envelope_key).map_err(|err| {
-        ApiError::Internal {
+    let new_wrapped =
+        wrap_key(&new_root_keys.kek, &envelope_key).map_err(|err| ApiError::Internal {
             message: err.to_string(),
-        }
-    })?;
+        })?;
 
     // Keep the same VK generation — the envelope key hasn't changed, so DEKs
     // still point at the right VK.
     let generation = vault.vault_key_generation.unwrap_or(1);
     let argon2_params_json = format!(
         r#"{{"mode":"LOCAL_VAULT","parameter_set_version":{},"memory_cost_kib":{},"time_cost":{},"lanes":{}}}"#,
-        params.parameter_set_version,
-        params.memory_cost_kib,
-        params.time_cost,
-        params.lanes
+        params.parameter_set_version, params.memory_cost_kib, params.time_cost, params.lanes
     );
     db::rotate_vault_state(
         &state.pool,
@@ -372,7 +382,9 @@ async fn restore_from_recovery_key(
         None,
         None,
         None,
-        Some(&format!(r#"{{"vk_generation":{generation},"ip":"{ip}","ua":{ua:?}}}"#)),
+        Some(&format!(
+            r#"{{"vk_generation":{generation},"ip":"{ip}","ua":{ua:?}}}"#
+        )),
     )
     .await;
 

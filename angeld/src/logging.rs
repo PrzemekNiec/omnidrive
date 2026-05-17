@@ -37,7 +37,9 @@ pub fn init_logging() -> io::Result<PathBuf> {
                         .with_ansi(false),
                 )
                 .try_init()
-                .map_err(|err| io::Error::other(format!("failed to initialize tracing subscriber: {err}")))?;
+                .map_err(|err| {
+                    io::Error::other(format!("failed to initialize tracing subscriber: {err}"))
+                })?;
 
             let _ = LOG_GUARDS.set(vec![guard]);
         }
@@ -58,7 +60,9 @@ pub fn init_logging() -> io::Result<PathBuf> {
                             .with_ansi(false),
                     )
                     .try_init()
-                    .map_err(|err| io::Error::other(format!("failed to initialize tracing subscriber: {err}")))?;
+                    .map_err(|err| {
+                        io::Error::other(format!("failed to initialize tracing subscriber: {err}"))
+                    })?;
             }
 
             #[cfg(not(debug_assertions))]

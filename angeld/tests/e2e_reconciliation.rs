@@ -3,12 +3,12 @@ mod common;
 use angeld::db;
 use angeld::downloader::Downloader;
 use angeld::vault::VaultKeyStore;
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::put;
-use axum::Router;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -109,7 +109,10 @@ impl ReconciliationEnv {
         })
     }
 
-    async fn spawn_daemon(&self, mock_addr: std::net::SocketAddr) -> Result<DaemonHandle, Box<dyn std::error::Error>> {
+    async fn spawn_daemon(
+        &self,
+        mock_addr: std::net::SocketAddr,
+    ) -> Result<DaemonHandle, Box<dyn std::error::Error>> {
         // Pre-seed the DB with mock provider configs so the daemon starts in
         // full cloud mode (with repair/scrubber/gc workers enabled).
         let pool = db::init_db(&self.db_url).await?;
@@ -130,7 +133,10 @@ impl ReconciliationEnv {
             .env("OMNIDRIVE_DB_URL", &self.db_url)
             .env("OMNIDRIVE_WATCH_DIR", &self.watch_root)
             .env("OMNIDRIVE_SPOOL_DIR", self.base.join("Spool"))
-            .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", self.base.join("download-spool"))
+            .env(
+                "OMNIDRIVE_DOWNLOAD_SPOOL_DIR",
+                self.base.join("download-spool"),
+            )
             .env("OMNIDRIVE_CACHE_DIR", self.base.join("Cache"))
             .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
             .env("OMNIDRIVE_WATCH_DEBOUNCE_MS", "100")
@@ -153,7 +159,11 @@ impl ReconciliationEnv {
             .stderr(Stdio::inherit());
 
         let child = command.spawn()?;
-        let handle = DaemonHandle { child, base_url, session_token: None };
+        let handle = DaemonHandle {
+            child,
+            base_url,
+            session_token: None,
+        };
         handle.wait_for_api_ready().await?;
         Ok(handle)
     }
@@ -163,10 +173,10 @@ impl DaemonHandle {
     async fn wait_for_api_ready(&self) -> Result<(), Box<dyn std::error::Error>> {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            match http_get_json::<DiagnosticsHealth>(&format!(
-                "{}/api/diagnostics/health",
-                self.base_url
-            ), None)
+            match http_get_json::<DiagnosticsHealth>(
+                &format!("{}/api/diagnostics/health", self.base_url),
+                None,
+            )
             .await
             {
                 Ok(_) => return Ok(()),
@@ -192,7 +202,11 @@ impl DaemonHandle {
 
     async fn list_files(&mut self) -> Result<Vec<FileEntry>, Box<dyn std::error::Error>> {
         self.ensure_running()?;
-        http_get_json::<Vec<FileEntry>>(&format!("{}/api/files", self.base_url), self.session_token.as_deref()).await
+        http_get_json::<Vec<FileEntry>>(
+            &format!("{}/api/files", self.base_url),
+            self.session_token.as_deref(),
+        )
+        .await
     }
 
     fn ensure_running(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -204,8 +218,11 @@ impl DaemonHandle {
 
     async fn health(&mut self) -> Result<DiagnosticsHealth, Box<dyn std::error::Error>> {
         self.ensure_running()?;
-        http_get_json::<DiagnosticsHealth>(&format!("{}/api/diagnostics/health", self.base_url), None)
-            .await
+        http_get_json::<DiagnosticsHealth>(
+            &format!("{}/api/diagnostics/health", self.base_url),
+            None,
+        )
+        .await
     }
 
     async fn shutdown(&mut self) {
@@ -254,8 +271,8 @@ impl Drop for ScopedEnv {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn policy_reconciliation_keeps_reads_alive_during_atomic_pack_swaps(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn policy_reconciliation_keeps_reads_alive_during_atomic_pack_swaps()
+-> Result<(), Box<dyn std::error::Error>> {
     let env = ReconciliationEnv::create().await?;
     let (mock_addr, mock_server) = spawn_mock_s3().await?;
     let mut daemon = env.spawn_daemon(mock_addr).await?;
@@ -272,8 +289,8 @@ async fn policy_reconciliation_keeps_reads_alive_during_atomic_pack_swaps(
         .await?
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "inode path missing"))?;
 
-    let initial = wait_for_active_pack_mode(&mut daemon, &pool, inode_id, db::StorageMode::Ec2_1)
-        .await?;
+    let initial =
+        wait_for_active_pack_mode(&mut daemon, &pool, inode_id, db::StorageMode::Ec2_1).await?;
     assert_eq!(initial.shard_count, 3);
     assert_eq!(initial.status, "COMPLETED_HEALTHY");
 
@@ -282,7 +299,10 @@ async fn policy_reconciliation_keeps_reads_alive_during_atomic_pack_swaps(
     env_guard.set("OMNIDRIVE_DB_URL", env.db_url.clone());
     env_guard.set(
         "OMNIDRIVE_DOWNLOAD_SPOOL_DIR",
-        env.base.join("download-spool").to_string_lossy().to_string(),
+        env.base
+            .join("download-spool")
+            .to_string_lossy()
+            .to_string(),
     );
     env_guard.set(
         "OMNIDRIVE_CACHE_DIR",
@@ -326,12 +346,7 @@ async fn policy_reconciliation_keeps_reads_alive_during_atomic_pack_swaps(
     for (policy_type, expected_mode, expected_shards) in transitions {
         let previous = current_active_pack(&pool, inode_id).await?;
         db::set_sync_policy_type_for_path(&pool, &canonical_path, policy_type).await?;
-        let heartbeat = spawn_heartbeat(
-            downloader.clone(),
-            inode_id,
-            revision_id,
-            payload.clone(),
-        );
+        let heartbeat = spawn_heartbeat(downloader.clone(), inode_id, revision_id, payload.clone());
 
         let next = wait_for_transition(
             &mut daemon,
@@ -444,7 +459,10 @@ async fn wait_for_file_ingested(
     loop {
         daemon.ensure_running()?;
         let files = daemon.list_files().await?;
-        let current_paths = files.iter().map(|file| file.path.clone()).collect::<Vec<_>>();
+        let current_paths = files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
         if let Some(file) = files
             .into_iter()
             .find(|file| file.path.replace('\\', "/").ends_with(expected_path))
@@ -458,9 +476,7 @@ async fn wait_for_file_ingested(
                 active.status,
                 active.shard_count
             ));
-            if active.mode == db::StorageMode::Ec2_1
-                && active.status == "COMPLETED_HEALTHY"
-            {
+            if active.mode == db::StorageMode::Ec2_1 && active.status == "COMPLETED_HEALTHY" {
                 return Ok((file.inode_id, revision_id, file.path));
             }
         }
@@ -468,9 +484,7 @@ async fn wait_for_file_ingested(
         if Instant::now() >= deadline {
             return Err(format!(
                 "watcher/uploader did not ingest {} in time; api_files={:?}; active={:?}",
-                expected_path,
-                current_paths,
-                last_active_details
+                expected_path, current_paths, last_active_details
             )
             .into());
         }
@@ -553,8 +567,8 @@ async fn active_pack_location_count(
     .await?)
 }
 
-async fn spawn_mock_s3(
-) -> Result<(std::net::SocketAddr, JoinHandle<()>), Box<dyn std::error::Error>> {
+async fn spawn_mock_s3()
+-> Result<(std::net::SocketAddr, JoinHandle<()>), Box<dyn std::error::Error>> {
     let state = MockS3State {
         objects: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -673,9 +687,12 @@ async fn http_get_json<T: for<'de> Deserialize<'de>>(
     url: &str,
     token: Option<&str>,
 ) -> Result<T, Box<dyn std::error::Error>> {
-    let without_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http:// URLs are supported"))?;
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http:// URLs are supported",
+        )
+    })?;
     let (host_port, path) = without_scheme
         .split_once('/')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
@@ -702,9 +719,12 @@ async fn http_post_json(
     body: &serde_json::Value,
     token: Option<&str>,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let without_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http:// URLs are supported"))?;
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http:// URLs are supported",
+        )
+    })?;
     let (host_port, path) = without_scheme
         .split_once('/')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;

@@ -170,11 +170,7 @@ fn current_user_sid_string() -> Result<String, AclError> {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_sddl_to_directory(
-    path: &Path,
-    sddl: &str,
-    protected: bool,
-) -> Result<(), AclError> {
+fn apply_sddl_to_directory(path: &Path, sddl: &str, protected: bool) -> Result<(), AclError> {
     use std::ffi::OsStr;
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
@@ -185,8 +181,8 @@ fn apply_sddl_to_directory(
         SetNamedSecurityInfoW,
     };
     use windows::Win32::Security::{
-        DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR,
-        PROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_DACL_SECURITY_INFORMATION,
+        DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, UNPROTECTED_DACL_SECURITY_INFORMATION,
     };
     use windows::core::PCWSTR;
 
@@ -255,8 +251,7 @@ fn secure_directory_inner(_path: &Path) -> Result<(), AclError> {
 #[cfg(target_os = "windows")]
 #[cfg_attr(debug_assertions, allow(dead_code))]
 fn apply_sync_root_acl_with_icacls(path: &Path) -> Result<(), String> {
-    let current_user_sid =
-        current_user_sid_string().map_err(|err| err.to_string())?;
+    let current_user_sid = current_user_sid_string().map_err(|err| err.to_string())?;
     let path_str = path.as_os_str().to_string_lossy().to_string();
 
     use std::os::windows::process::CommandExt;

@@ -46,7 +46,9 @@ impl RecoveryEnv {
         );
         let real_localapp = std::env::var_os("LOCALAPPDATA")
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
-        let sync_root = PathBuf::from(real_localapp).join("OmniDrive").join("OmniSync");
+        let sync_root = PathBuf::from(real_localapp)
+            .join("OmniDrive")
+            .join("OmniSync");
 
         tokio::fs::create_dir_all(base.join("logs")).await?;
         tokio::fs::create_dir_all(base.join("Cache")).await?;
@@ -111,7 +113,10 @@ impl RecoveryEnv {
             .env("OMNIDRIVE_DB_URL", &self.db_url)
             .env("OMNIDRIVE_SYNC_ROOT", &self.sync_root)
             .env("OMNIDRIVE_SPOOL_DIR", self.base.join("Spool"))
-            .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", self.base.join("download-spool"))
+            .env(
+                "OMNIDRIVE_DOWNLOAD_SPOOL_DIR",
+                self.base.join("download-spool"),
+            )
             .env("OMNIDRIVE_CACHE_DIR", self.base.join("Cache"))
             .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
             .env("OMNIDRIVE_DRIVE_LETTER", "Y:")
@@ -159,7 +164,8 @@ impl DaemonHandle {
             &format!("{}/api/unlock", self.base_url),
             &serde_json::json!({ "passphrase": PASSPHRASE }),
             None,
-        ).await?;
+        )
+        .await?;
         self.session_token = resp["session_token"].as_str().map(|s| s.to_string());
         Ok(resp)
     }
@@ -169,11 +175,20 @@ impl DaemonHandle {
         path: &str,
         body: &Value,
     ) -> Result<Value, Box<dyn std::error::Error>> {
-        http_post_json(&format!("{}{}", self.base_url, path), body, self.session_token.as_deref()).await
+        http_post_json(
+            &format!("{}{}", self.base_url, path),
+            body,
+            self.session_token.as_deref(),
+        )
+        .await
     }
 
     async fn get_json(&self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
-        http_get_json(&format!("{}{}", self.base_url, path), self.session_token.as_deref()).await
+        http_get_json(
+            &format!("{}{}", self.base_url, path),
+            self.session_token.as_deref(),
+        )
+        .await
     }
 
     async fn shutdown(&mut self) {
@@ -191,8 +206,8 @@ impl Drop for DaemonHandle {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn disaster_recovery_rebuilds_local_db_inventory_after_total_db_loss(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn disaster_recovery_rebuilds_local_db_inventory_after_total_db_loss()
+-> Result<(), Box<dyn std::error::Error>> {
     let env = RecoveryEnv::create().await?;
     let mut expected_paths = env.seed_database().await?;
     expected_paths.sort();
@@ -200,10 +215,8 @@ async fn disaster_recovery_rebuilds_local_db_inventory_after_total_db_loss(
     let mut first = env.spawn_daemon(false).await?;
     first.unlock().await?;
 
-    let original_files = filtered_file_inventory(
-        first.get_json("/api/files").await?,
-        &env.test_prefix,
-    )?;
+    let original_files =
+        filtered_file_inventory(first.get_json("/api/files").await?, &env.test_prefix)?;
     assert_eq!(original_files, expected_paths);
 
     let backup_response = first
@@ -233,10 +246,8 @@ async fn disaster_recovery_rebuilds_local_db_inventory_after_total_db_loss(
 
     let mut second = env.spawn_daemon(true).await?;
     second.unlock().await?;
-    let restored_files = filtered_file_inventory(
-        second.get_json("/api/files").await?,
-        &env.test_prefix,
-    )?;
+    let restored_files =
+        filtered_file_inventory(second.get_json("/api/files").await?, &env.test_prefix)?;
     assert_eq!(restored_files, expected_paths);
     let restored_placeholders =
         wait_for_placeholder_tree(&env.sync_root, &env.test_prefix, expected_paths.len()).await?;
@@ -272,7 +283,10 @@ async fn wait_for_backup_completion(
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let status = handle.get_json("/api/metadata-backup/status").await?;
-        let recent = status["recent_attempts"].as_array().cloned().unwrap_or_default();
+        let recent = status["recent_attempts"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         let has_completed = recent
             .iter()
             .any(|entry| entry["status"].as_str() == Some("COMPLETED"));
@@ -457,20 +471,28 @@ async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
     Ok(port)
 }
 
-async fn http_get_json(url: &str, token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
+async fn http_get_json(
+    url: &str,
+    token: Option<&str>,
+) -> Result<Value, Box<dyn std::error::Error>> {
     let (host_port, path) = split_http_url(url)?;
     let auth = match token {
         Some(t) => format!("Authorization: Bearer {t}\r\n"),
         None => String::new(),
     };
     let mut stream = TcpStream::connect(&host_port).await?;
-    let request = format!("GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n");
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
     let response = read_http_body(&mut stream).await?;
     Ok(serde_json::from_str(&response)?)
 }
 
-async fn http_post_json(url: &str, body: &Value, token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
+async fn http_post_json(
+    url: &str,
+    body: &Value,
+    token: Option<&str>,
+) -> Result<Value, Box<dyn std::error::Error>> {
     let (host_port, path) = split_http_url(url)?;
     let body_text = body.to_string();
     let auth = match token {
@@ -499,9 +521,12 @@ async fn read_http_body(stream: &mut TcpStream) -> Result<String, Box<dyn std::e
 }
 
 fn split_http_url(url: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
-    let without_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http:// URLs are supported"))?;
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http:// URLs are supported",
+        )
+    })?;
     let (host_port, path) = without_scheme
         .split_once('/')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;

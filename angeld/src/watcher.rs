@@ -3,8 +3,8 @@
 
 use crate::config::AppConfig;
 use crate::db;
-use crate::onboarding::{OnboardingState, SYSTEM_CONFIG_ONBOARDING_STATE};
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
+use crate::onboarding::{OnboardingState, SYSTEM_CONFIG_ONBOARDING_STATE};
 use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
 use crate::vault::VaultKeyStore;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -161,13 +161,11 @@ impl FileWatcher {
         // processing. On a fresh machine (Dell smoke test), the watcher must not touch files
         // while onboarding is still in progress — CLAUDE.md Świętej Zasady Integralności.
         let dry_run = AppConfig::from_env().dry_run_active;
-        let onboarding_complete = db::get_system_config_value(
-            &self.pool,
-            SYSTEM_CONFIG_ONBOARDING_STATE,
-        )
-        .await
-        .unwrap_or(None)
-        .is_some_and(|v| OnboardingState::from_str(&v) == OnboardingState::Completed);
+        let onboarding_complete =
+            db::get_system_config_value(&self.pool, SYSTEM_CONFIG_ONBOARDING_STATE)
+                .await
+                .unwrap_or(None)
+                .is_some_and(|v| OnboardingState::from_str(&v) == OnboardingState::Completed);
 
         if dry_run || !onboarding_complete {
             info!(
@@ -346,13 +344,14 @@ impl FileWatcher {
         }
 
         if metadata.is_file()
-            && let Err(err) = self.process_file(path.clone(), processed_files).await {
-                if is_vault_locked_error(&err) {
-                    warn!("watcher skipped {} while vault is locked", path.display());
-                    return Ok(());
-                }
-                return Err(err);
+            && let Err(err) = self.process_file(path.clone(), processed_files).await
+        {
+            if is_vault_locked_error(&err) {
+                warn!("watcher skipped {} while vault is locked", path.display());
+                return Ok(());
             }
+            return Err(err);
+        }
 
         Ok(())
     }
@@ -390,8 +389,7 @@ impl FileWatcher {
         let metadata_unchanged = previous_state.as_ref().is_some_and(|prev| {
             prev.size == metadata.len()
                 && prev.mtime == mtime
-                && prev.base_revision_id
-                    == current_revision.as_ref().map(|r| r.revision_id)
+                && prev.base_revision_id == current_revision.as_ref().map(|r| r.revision_id)
         });
         if metadata_unchanged {
             return Ok(());

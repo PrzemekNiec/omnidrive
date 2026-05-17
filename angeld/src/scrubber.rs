@@ -57,7 +57,11 @@ impl fmt::Display for ScrubberError {
             Self::InvalidEnv(key) => write!(f, "invalid environment variable {key}"),
             Self::Db(err) => write!(f, "sqlite error: {err}"),
             Self::Timeout { provider, duration } => {
-                write!(f, "scrub operation to {provider} timed out after {:?}", duration)
+                write!(
+                    f,
+                    "scrub operation to {provider} timed out after {:?}",
+                    duration
+                )
             }
         }
     }
@@ -262,9 +266,7 @@ impl ScrubberWorker {
         shard: &db::ScrubShardRecord,
         provider: &ScrubProvider,
     ) -> Result<(), ScrubberError> {
-        if let Err(reason) =
-            cloud_guard::try_authorize_read(&self.pool, shard.size.max(0)).await
-        {
+        if let Err(reason) = cloud_guard::try_authorize_read(&self.pool, shard.size.max(0)).await {
             warn!(
                 "scrubber deep GET blocked by cloud guard pack={} shard={} provider={}: {}",
                 shard.pack_id, shard.shard_index, provider.provider_name, reason
@@ -307,8 +309,7 @@ impl ScrubberWorker {
                 let verified_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
                 let delta = verified_size.saturating_sub(shard.size);
                 if delta != 0
-                    && let Err(err) =
-                        cloud_guard::reconcile_read_bytes(&self.pool, delta).await
+                    && let Err(err) = cloud_guard::reconcile_read_bytes(&self.pool, delta).await
                 {
                     warn!(
                         "scrubber egress reconcile failed pack={} shard={}: {}",

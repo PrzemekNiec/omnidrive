@@ -13,8 +13,8 @@ use tracing::warn;
 
 use secrecy::{ExposeSecret, SecretString};
 
-use super::error::ApiError;
 use super::ApiState;
+use super::error::ApiError;
 
 // ── Request / Response structs ──────────────────────────────────────
 
@@ -87,7 +87,7 @@ struct AddDeviceResponse {
     status: String,
     device_id: String,
     user_id: String,
-    wrapped_vault_key: Option<String>,        // base64url
+    wrapped_vault_key: Option<String>, // base64url
     vault_key_generation: Option<i64>,
     wrapping_device_public_key: Option<String>, // base64url — for ECDH unwrap on the new device
 }
@@ -140,7 +140,11 @@ async fn get_vault_health(
 
 async fn get_vault_status(State(state): State<ApiState>) -> Json<serde_json::Value> {
     let unlocked = state.vault_keys.require_key().await.is_ok();
-    let initialized = db::get_vault_config(&state.pool).await.ok().flatten().is_some();
+    let initialized = db::get_vault_config(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
 
     // v0.3.19: expose vault membership count so UI can hide the Google login
     // button for solo vaults. `members_count` is source of truth; `multi_user`
@@ -153,7 +157,9 @@ async fn get_vault_status(State(state): State<ApiState>) -> Json<serde_json::Val
     };
 
     if unlocked {
-        let session = super::auth::create_session_for_local_device(&state.pool).await.ok();
+        let session = super::auth::create_session_for_local_device(&state.pool)
+            .await
+            .ok();
         Json(serde_json::json!({
             "unlocked": true,
             "initialized": true,
@@ -199,11 +205,19 @@ async fn post_vault_invite(
         .as_secs() as i64;
     let expires_at = req.expires_in_secs.map(|secs| now + secs);
 
-    db::create_invite_code(&state.pool, &code, &vault_id, &owner_user_id, &role, max_uses, expires_at)
-        .await
-        .map_err(|e| ApiError::Internal {
-            message: e.to_string(),
-        })?;
+    db::create_invite_code(
+        &state.pool,
+        &code,
+        &vault_id,
+        &owner_user_id,
+        &role,
+        max_uses,
+        expires_at,
+    )
+    .await
+    .map_err(|e| ApiError::Internal {
+        message: e.to_string(),
+    })?;
 
     let _ = db::insert_audit_log(
         &state.pool,
@@ -264,11 +278,21 @@ async fn post_vault_join(
         })?;
 
     let user_id = format!("user-{}", &req.device_id);
-    if let Err(e) = db::create_user(&state.pool, &user_id, &req.device_name, None, "local", None).await {
+    if let Err(e) =
+        db::create_user(&state.pool, &user_id, &req.device_name, None, "local", None).await
+    {
         warn!("create_user during join: {e}");
     }
 
-    if let Err(e) = db::create_device(&state.pool, &req.device_id, &user_id, &req.device_name, &public_key).await {
+    if let Err(e) = db::create_device(
+        &state.pool,
+        &req.device_id,
+        &user_id,
+        &req.device_name,
+        &public_key,
+    )
+    .await
+    {
         warn!("create_device during join: {e}");
     }
 
@@ -292,7 +316,10 @@ async fn post_vault_join(
         Some(&req.device_id),
         None,
         None,
-        Some(&format!(r#"{{"invite_code":"[REDACTED]","role":"{}"}}"#, invite.role)),
+        Some(&format!(
+            r#"{{"invite_code":"[REDACTED]","role":"{}"}}"#,
+            invite.role
+        )),
     )
     .await;
 
@@ -312,25 +339,29 @@ async fn post_accept_device(
     let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
     let vault_id = caller.vault_id;
 
-    let master_key = state.vault_keys.require_master_key().await.map_err(|_| {
-        ApiError::Locked {
+    let master_key = state
+        .vault_keys
+        .require_master_key()
+        .await
+        .map_err(|_| ApiError::Locked {
             message: "vault must be unlocked to accept devices".to_string(),
-        }
-    })?;
+        })?;
 
-    let envelope_key = state.vault_keys.require_envelope_key().await.map_err(|_| {
-        ApiError::BadRequest {
-            code: "no_envelope_key",
-            message: "vault key not available".to_string(),
-        }
-    })?;
-
-    let owner_private =
-        identity::get_device_private_key(&state.pool, &master_key)
+    let envelope_key =
+        state
+            .vault_keys
+            .require_envelope_key()
             .await
-            .map_err(|e| ApiError::Internal {
-                message: e.to_string(),
+            .map_err(|_| ApiError::BadRequest {
+                code: "no_envelope_key",
+                message: "vault key not available".to_string(),
             })?;
+
+    let owner_private = identity::get_device_private_key(&state.pool, &master_key)
+        .await
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
 
     let target_device = db::get_device(&state.pool, &target_device_id)
         .await
@@ -380,10 +411,11 @@ async fn post_accept_device(
         });
     }
 
-    let wrapped = identity::wrap_vault_key_for_device(&owner_private, &member_pubkey, &envelope_key)
-        .map_err(|e| ApiError::Internal {
-            message: format!("key wrap failed: {e}"),
-        })?;
+    let wrapped =
+        identity::wrap_vault_key_for_device(&owner_private, &member_pubkey, &envelope_key)
+            .map_err(|e| ApiError::Internal {
+                message: format!("key wrap failed: {e}"),
+            })?;
 
     db::set_device_wrapped_vault_key(&state.pool, &target_device_id, &wrapped, 1)
         .await
@@ -543,7 +575,8 @@ async fn post_add_device(
             message: e.to_string(),
         })?
         .ok_or(ApiError::Forbidden {
-            message: "user is not a vault member — use /api/vault/join with an invite code".to_string(),
+            message: "user is not a vault member — use /api/vault/join with an invite code"
+                .to_string(),
         })?;
 
     let public_key = base64::Engine::decode(
@@ -571,11 +604,20 @@ async fn post_add_device(
         }
     }
 
-    if let Err(e) = db::create_device(&state.pool, &req.device_id, &req.user_id, &req.device_name, &public_key).await {
+    if let Err(e) = db::create_device(
+        &state.pool,
+        &req.device_id,
+        &req.user_id,
+        &req.device_name,
+        &public_key,
+    )
+    .await
+    {
         warn!("create_device during add-device: {e}");
     }
 
-    let auto_accepted = try_auto_wrap_vault_key(&state, &req.device_id, &public_key, &vault_id).await;
+    let auto_accepted =
+        try_auto_wrap_vault_key(&state, &req.device_id, &public_key, &vault_id).await;
 
     let (wrapped_vk_b64, vk_gen, wrapping_pub_b64) = match auto_accepted {
         Some((wrapped, generation, pub_key)) => (Some(wrapped), Some(generation), Some(pub_key)),
@@ -596,7 +638,11 @@ async fn post_add_device(
         Some(&req.device_id),
         None,
         None,
-        Some(&format!(r#"{{"auto_accepted":{},"device_name":"{}"}}"#, wrapped_vk_b64.is_some(), req.device_name)),
+        Some(&format!(
+            r#"{{"auto_accepted":{},"device_name":"{}"}}"#,
+            wrapped_vk_b64.is_some(),
+            req.device_name
+        )),
     )
     .await;
 
@@ -618,7 +664,9 @@ async fn try_auto_wrap_vault_key(
 ) -> Option<(String, i64, String)> {
     let master_key = state.vault_keys.require_master_key().await.ok()?;
     let envelope_key = state.vault_keys.require_envelope_key().await.ok()?;
-    let owner_private = identity::get_device_private_key(&state.pool, &master_key).await.ok()?;
+    let owner_private = identity::get_device_private_key(&state.pool, &master_key)
+        .await
+        .ok()?;
 
     let mut target_pub = [0u8; 32];
     if target_public_key.len() != 32 {
@@ -626,7 +674,8 @@ async fn try_auto_wrap_vault_key(
     }
     target_pub.copy_from_slice(target_public_key);
 
-    let wrapped = identity::wrap_vault_key_for_device(&owner_private, &target_pub, &envelope_key).ok()?;
+    let wrapped =
+        identity::wrap_vault_key_for_device(&owner_private, &target_pub, &envelope_key).ok()?;
 
     let vk_gen = match db::get_vault_params(&state.pool).await {
         Ok(Some(v)) => v.vault_key_generation.unwrap_or(1),
@@ -643,10 +692,8 @@ async fn try_auto_wrap_vault_key(
         return None;
     }
 
-    let wrapped_b64 = base64::Engine::encode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        wrapped,
-    );
+    let wrapped_b64 =
+        base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, wrapped);
     let pub_b64 = base64::Engine::encode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         &pub_key_bytes,
@@ -682,7 +729,8 @@ async fn post_revoke_device(
     if caller_device_id == target_device_id {
         return Err(ApiError::BadRequest {
             code: "cannot_revoke_self",
-            message: "cannot revoke the local device — use another device to revoke this one".to_string(),
+            message: "cannot revoke the local device — use another device to revoke this one"
+                .to_string(),
         });
     }
 
@@ -776,14 +824,14 @@ async fn post_remove_member(
         Some(m) if m.role == "owner" => {
             return Err(ApiError::Forbidden {
                 message: "cannot remove the vault owner".to_string(),
-            })
+            });
         }
         Some(_) => {}
         None => {
             return Err(ApiError::NotFound {
                 resource: "member",
                 id: target_user_id.clone(),
-            })
+            });
         }
     }
 
@@ -796,9 +844,10 @@ async fn post_remove_member(
     let mut devices_revoked = 0u64;
     for dev in &devices {
         if dev.revoked_at.is_none()
-            && let Ok(true) = db::revoke_device(&state.pool, &dev.device_id).await {
-                devices_revoked += 1;
-            }
+            && let Ok(true) = db::revoke_device(&state.pool, &dev.device_id).await
+        {
+            devices_revoked += 1;
+        }
     }
 
     db::remove_vault_member(&state.pool, &target_user_id, &vault_id)
@@ -866,7 +915,8 @@ async fn get_vault_devices(
             .await
             .unwrap_or_default();
         for dev in devices {
-            let fingerprint = dev.device_id
+            let fingerprint = dev
+                .device_id
                 .chars()
                 .filter(|c| c.is_ascii_alphanumeric())
                 .take(8)
@@ -894,11 +944,12 @@ async fn get_rewrap_status(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     acl::require_role(&state.pool, &headers, Role::Viewer).await?;
 
-    let (total, pending, failed) = db::get_rewrap_status(&state.pool)
-        .await
-        .map_err(|e| ApiError::Internal {
-            message: e.to_string(),
-        })?;
+    let (total, pending, failed) =
+        db::get_rewrap_status(&state.pool)
+            .await
+            .map_err(|e| ApiError::Internal {
+                message: e.to_string(),
+            })?;
 
     let done = total - pending - failed;
     Ok(Json(serde_json::json!({
@@ -936,7 +987,8 @@ async fn post_vault_lock(
         }
 
         // Unmount the virtual drive from Explorer after CF is torn down.
-        let drive_letter = std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
+        let drive_letter =
+            std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
         if let Err(err) = crate::virtual_drive::unmount_virtual_drive(&drive_letter) {
             tracing::warn!("[LOCK] virtual drive unmount warning: {err}");
         }
@@ -982,7 +1034,9 @@ async fn post_rotate_key(
         .vault_keys
         .rotate_vault_key(&state.pool, req.new_passphrase.expose_secret())
         .await
-        .map_err(|e| ApiError::Internal { message: e.to_string() })?;
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
 
     let _ = db::insert_audit_log(
         &state.pool,
@@ -1032,9 +1086,14 @@ async fn get_safety_numbers(
 
     let vault = db::get_vault_params(&state.pool)
         .await
-        .map_err(|e| ApiError::Internal { message: e.to_string() })?;
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
 
-    let key_generation = vault.as_ref().and_then(|v| v.vault_key_generation).unwrap_or(0);
+    let key_generation = vault
+        .as_ref()
+        .and_then(|v| v.vault_key_generation)
+        .unwrap_or(0);
 
     let verified_at = db::get_device_safety_verified_at(&state.pool, &caller.device_id)
         .await
@@ -1064,7 +1123,9 @@ async fn post_verify_device(
 
     db::get_device(&state.pool, &target_device_id)
         .await
-        .map_err(|e| ApiError::Internal { message: e.to_string() })?
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?
         .ok_or(ApiError::NotFound {
             resource: "device",
             id: target_device_id.clone(),
@@ -1072,7 +1133,9 @@ async fn post_verify_device(
 
     db::set_device_safety_verified(&state.pool, &target_device_id)
         .await
-        .map_err(|e| ApiError::Internal { message: e.to_string() })?;
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
 
     Ok(Json(serde_json::json!({ "verified_at": db::epoch_secs() })))
 }

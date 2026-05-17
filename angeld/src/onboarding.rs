@@ -208,9 +208,7 @@ pub enum RestoreError {
 impl RestoreError {
     pub fn human_readable_reason(&self) -> &'static str {
         match self {
-            Self::IncorrectPassphrase(_) => {
-                "Niepoprawne hasło Skarbca."
-            }
+            Self::IncorrectPassphrase(_) => "Niepoprawne hasło Skarbca.",
             Self::MetadataNotFound(_) => {
                 "Nie znaleziono kopii metadanych dla wybranego dostawcy. Najpierw prześlij metadane z urządzenia głównego."
             }
@@ -380,11 +378,23 @@ pub(crate) fn provider_config_from_env(provider_name: &str) -> Option<ProviderCo
 /// Reset onboarding state back to initial (wizard will reappear).
 /// Provider configs and secrets are preserved so the user does not have to re-enter them.
 pub async fn reset_onboarding(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    db::set_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_STATE, OnboardingState::Initial.as_str()).await?;
-    db::set_system_config_value(pool, SYSTEM_CONFIG_ONBOARDING_MODE, OnboardingMode::LocalOnly.as_str()).await?;
+    db::set_system_config_value(
+        pool,
+        SYSTEM_CONFIG_ONBOARDING_STATE,
+        OnboardingState::Initial.as_str(),
+    )
+    .await?;
+    db::set_system_config_value(
+        pool,
+        SYSTEM_CONFIG_ONBOARDING_MODE,
+        OnboardingMode::LocalOnly.as_str(),
+    )
+    .await?;
     db::set_system_config_value(pool, SYSTEM_CONFIG_LAST_ONBOARDING_STEP, "welcome").await?;
     db::set_system_config_value(pool, SYSTEM_CONFIG_CLOUD_ENABLED, "0").await?;
-    tracing::info!("[ONBOARDING] onboarding state has been reset — wizard will reappear on next dashboard load");
+    tracing::info!(
+        "[ONBOARDING] onboarding state has been reset — wizard will reappear on next dashboard load"
+    );
     Ok(())
 }
 
@@ -477,7 +487,11 @@ pub(crate) async fn load_provider_config_from_onboarding_db(
 ) -> Result<ProviderConfig, ProviderError> {
     let config_record = db::get_provider_config(pool, provider_name)
         .await
-        .map_err(|err| ProviderError::Aws(format!("nie udało się wczytać konfiguracji dostawcy: {err}")))?
+        .map_err(|err| {
+            ProviderError::Aws(format!(
+                "nie udało się wczytać konfiguracji dostawcy: {err}"
+            ))
+        })?
         .ok_or_else(|| {
             ProviderError::MissingProviderConfig(format!(
                 "brak konfiguracji dostawcy {provider_name}"
@@ -485,7 +499,9 @@ pub(crate) async fn load_provider_config_from_onboarding_db(
         })?;
     let secret_record = db::get_provider_secret(pool, provider_name)
         .await
-        .map_err(|err| ProviderError::Aws(format!("nie udało się wczytać sekretu dostawcy: {err}")))?
+        .map_err(|err| {
+            ProviderError::Aws(format!("nie udało się wczytać sekretu dostawcy: {err}"))
+        })?
         .ok_or_else(|| {
             ProviderError::MissingSecrets(format!("brak sekretu dostawcy {provider_name}"))
         })?;
@@ -500,9 +516,11 @@ pub(crate) async fn load_provider_config_from_onboarding_db(
 pub(crate) async fn get_active_provider_configs(
     pool: &SqlitePool,
 ) -> Result<Vec<FullProviderSetup>, ProviderError> {
-    let records = db::list_provider_configs(pool)
-        .await
-        .map_err(|err| ProviderError::Aws(format!("nie udało się pobrać listy konfiguracji dostawców: {err}")))?;
+    let records = db::list_provider_configs(pool).await.map_err(|err| {
+        ProviderError::Aws(format!(
+            "nie udało się pobrać listy konfiguracji dostawców: {err}"
+        ))
+    })?;
     let mut configs = Vec::new();
 
     for record in records {
@@ -704,7 +722,9 @@ pub async fn perform_vault_restore(
         .map_err(|err| map_restore_bootstrap_error(provider_id, err))?;
 
     // ── Phase 1: download ──────────────────────────────────────────────
-    db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "downloading").await.ok();
+    db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "downloading")
+        .await
+        .ok();
 
     let restore_result = disaster_recovery::restore_metadata_from_cloud(
         &provider_manager,
@@ -717,14 +737,26 @@ pub async fn perform_vault_restore(
     if let Err(err) = restore_result {
         secure_fs::secure_delete(&staging_path).await.ok();
         let now = db::epoch_secs();
-        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "last_failed").await.ok();
-        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT, &now.to_string()).await.ok();
-        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_MSG, "download_failed").await.ok();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "last_failed")
+            .await
+            .ok();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT, &now.to_string())
+            .await
+            .ok();
+        db::set_system_config_value(
+            pool,
+            SYSTEM_CONFIG_RESTORE_LAST_ERROR_MSG,
+            "download_failed",
+        )
+        .await
+        .ok();
         return Err(map_restore_download_error(provider_id, err));
     }
 
     // ── Phase 2: apply ─────────────────────────────────────────────────
-    db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "applying").await.ok();
+    db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "applying")
+        .await
+        .ok();
 
     let apply_result = db::graft_restored_metadata_snapshot(pool, &staging_path)
         .await
@@ -741,9 +773,15 @@ pub async fn perform_vault_restore(
 
     if apply_result.is_err() {
         let now = db::epoch_secs();
-        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "last_failed").await.ok();
-        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT, &now.to_string()).await.ok();
-        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_MSG, "apply_failed").await.ok();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "last_failed")
+            .await
+            .ok();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT, &now.to_string())
+            .await
+            .ok();
+        db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_MSG, "apply_failed")
+            .await
+            .ok();
     }
 
     let applied = apply_result?;
@@ -762,7 +800,9 @@ pub async fn perform_vault_restore(
         );
     }
 
-    db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "last_succeeded").await.ok();
+    db::set_system_config_value(pool, SYSTEM_CONFIG_RESTORE_STATE, "last_succeeded")
+        .await
+        .ok();
 
     Ok(VaultRestoreReport {
         status: "OK".to_string(),
@@ -1034,10 +1074,14 @@ async fn probe_endpoint_reachability(endpoint: &str) -> Result<bool, ProviderErr
     timeout(Duration::from_secs(5), TcpStream::connect(addrs[0]))
         .await
         .map_err(|_| {
-            ProviderError::EndpointUnreachable(format!("przekroczono czas łączenia z {host}:{port}"))
+            ProviderError::EndpointUnreachable(format!(
+                "przekroczono czas łączenia z {host}:{port}"
+            ))
         })?
         .map_err(|err| {
-            ProviderError::EndpointUnreachable(format!("nie udało się połączyć z {host}:{port}: {err}"))
+            ProviderError::EndpointUnreachable(format!(
+                "nie udało się połączyć z {host}:{port}: {err}"
+            ))
         })?;
 
     Ok(true)
@@ -1134,10 +1178,12 @@ pub async fn cleanup_stale_restore_staging(runtime_paths: &RuntimePaths) {
     while let Ok(Some(entry)) = read_dir.next_entry().await {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("restore-staging-") && name.ends_with(".db")
-            && tokio::fs::remove_file(entry.path()).await.is_ok() {
-                removed += 1;
-            }
+        if name.starts_with("restore-staging-")
+            && name.ends_with(".db")
+            && tokio::fs::remove_file(entry.path()).await.is_ok()
+        {
+            removed += 1;
+        }
     }
     if removed > 0 {
         tracing::info!("[ONBOARDING] cleaned up {removed} stale restore-staging file(s)");
@@ -1195,7 +1241,9 @@ fn map_restore_download_error(
                 ))
             }
         }
-        other => RestoreError::Runtime(format!("restore od dostawcy {provider_id} nie powiódł się: {other}")),
+        other => RestoreError::Runtime(format!(
+            "restore od dostawcy {provider_id} nie powiódł się: {other}"
+        )),
     }
 }
 

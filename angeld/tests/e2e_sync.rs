@@ -42,7 +42,9 @@ impl SyncHarness {
         let db_url = format!("sqlite:///{}", normalize_for_sqlite_url(&db_path));
         let real_localapp = std::env::var_os("LOCALAPPDATA")
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
-        let sync_root = PathBuf::from(real_localapp).join("OmniDrive").join("OmniSync");
+        let sync_root = PathBuf::from(real_localapp)
+            .join("OmniDrive")
+            .join("OmniSync");
         std::fs::create_dir_all(&sync_root)?;
 
         let api_port = reserve_port().await?;
@@ -108,10 +110,10 @@ impl SyncHarness {
     }
 
     async fn health(&self) -> Result<DiagnosticsHealth, Box<dyn std::error::Error>> {
-        http_get_json::<DiagnosticsHealth>(&format!(
-            "{}/api/diagnostics/health",
-            self.base_url
-        ), None)
+        http_get_json::<DiagnosticsHealth>(
+            &format!("{}/api/diagnostics/health", self.base_url),
+            None,
+        )
         .await
     }
 
@@ -130,17 +132,17 @@ impl Drop for SyncHarness {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn full_stack_sync_root_registers_and_api_reaches_listening_state(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn full_stack_sync_root_registers_and_api_reaches_listening_state()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut harness = SyncHarness::spawn().await?;
     let health = harness.health().await?;
     assert_eq!(health.worker_statuses.api, "idle");
     assert!(health.uptime_seconds <= 30);
 
-    let sync_root_state = http_get_json::<serde_json::Value>(&format!(
-        "{}/api/diagnostics/sync-root",
-        harness.base_url
-    ), None)
+    let sync_root_state = http_get_json::<serde_json::Value>(
+        &format!("{}/api/diagnostics/sync-root", harness.base_url),
+        None,
+    )
     .await?;
     assert_eq!(sync_root_state["registered"], true);
 
@@ -186,9 +188,12 @@ async fn http_request_json<T: for<'de> Deserialize<'de>>(
     url: &str,
     token: Option<&str>,
 ) -> Result<T, Box<dyn std::error::Error>> {
-    let without_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http:// URLs are supported"))?;
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http:// URLs are supported",
+        )
+    })?;
     let (host_port, path) = without_scheme
         .split_once('/')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;

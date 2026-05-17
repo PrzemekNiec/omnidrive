@@ -738,16 +738,12 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     .await?;
 
     // Epic 34.1a: add X25519 keypair columns (existing DBs)
-    let _ = sqlx::query(
-        "ALTER TABLE local_device_identity ADD COLUMN encrypted_private_key BLOB",
-    )
-    .execute(&pool)
-    .await;
-    let _ = sqlx::query(
-        "ALTER TABLE local_device_identity ADD COLUMN public_key BLOB",
-    )
-    .execute(&pool)
-    .await;
+    let _ = sqlx::query("ALTER TABLE local_device_identity ADD COLUMN encrypted_private_key BLOB")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE local_device_identity ADD COLUMN public_key BLOB")
+        .execute(&pool)
+        .await;
 
     sqlx::query(
         r#"
@@ -1063,11 +1059,9 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_ingest_jobs_state ON ingest_jobs(state)",
-    )
-    .execute(&pool)
-    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_ingest_jobs_state ON ingest_jobs(state)")
+        .execute(&pool)
+        .await?;
 
     sqlx::query(
         r#"
@@ -1089,11 +1083,9 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_shared_links_inode ON shared_links(inode_id)",
-    )
-    .execute(&pool)
-    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_shared_links_inode ON shared_links(inode_id)")
+        .execute(&pool)
+        .await?;
 
     // Migration: add password_hash column if missing (existing DBs)
     let _ = sqlx::query("ALTER TABLE shared_links ADD COLUMN password_hash TEXT")
@@ -1381,14 +1373,12 @@ pub async fn update_ingest_progress(
     bytes_processed: i64,
 ) -> Result<(), sqlx::Error> {
     let now = epoch_secs();
-    sqlx::query(
-        "UPDATE ingest_jobs SET bytes_processed = ?, updated_at = ? WHERE id = ?",
-    )
-    .bind(bytes_processed)
-    .bind(now)
-    .bind(job_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE ingest_jobs SET bytes_processed = ?, updated_at = ? WHERE id = ?")
+        .bind(bytes_processed)
+        .bind(now)
+        .bind(job_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -1410,9 +1400,7 @@ pub async fn fail_ingest_job(
     Ok(())
 }
 
-pub async fn reset_interrupted_ingest_jobs(
-    pool: &SqlitePool,
-) -> Result<u64, sqlx::Error> {
+pub async fn reset_interrupted_ingest_jobs(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
     let now = epoch_secs();
     let result = sqlx::query(
         "UPDATE ingest_jobs SET state = 'PENDING', error_message = 'interrupted by restart', \
@@ -1426,9 +1414,7 @@ pub async fn reset_interrupted_ingest_jobs(
 }
 
 #[allow(dead_code)]
-pub async fn list_ingest_jobs(
-    pool: &SqlitePool,
-) -> Result<Vec<IngestJobRow>, sqlx::Error> {
+pub async fn list_ingest_jobs(pool: &SqlitePool) -> Result<Vec<IngestJobRow>, sqlx::Error> {
     sqlx::query_as::<_, IngestJobRow>(
         "SELECT id, file_path, file_size, state, bytes_processed, attempt_count, \
          error_message, created_at, updated_at \
@@ -1470,29 +1456,19 @@ pub async fn requeue_failed_ingest_job(
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn delete_ingest_job(
-    pool: &SqlitePool,
-    job_id: i64,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "DELETE FROM ingest_jobs WHERE id = ? AND state = 'GHOSTED'",
-    )
-    .bind(job_id)
-    .execute(pool)
-    .await?;
+pub async fn delete_ingest_job(pool: &SqlitePool, job_id: i64) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM ingest_jobs WHERE id = ? AND state = 'GHOSTED'")
+        .bind(job_id)
+        .execute(pool)
+        .await?;
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn delete_failed_ingest_job(
-    pool: &SqlitePool,
-    job_id: i64,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "DELETE FROM ingest_jobs WHERE id = ? AND state = 'FAILED'",
-    )
-    .bind(job_id)
-    .execute(pool)
-    .await?;
+pub async fn delete_failed_ingest_job(pool: &SqlitePool, job_id: i64) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM ingest_jobs WHERE id = ? AND state = 'FAILED'")
+        .bind(job_id)
+        .execute(pool)
+        .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -1516,10 +1492,7 @@ pub async fn get_pack_ids_for_inode(
 }
 
 /// Reset a FAILED ingest job to PENDING, clearing error and resetting attempt_count.
-pub async fn retry_ingest_job(
-    pool: &SqlitePool,
-    job_id: i64,
-) -> Result<bool, sqlx::Error> {
+pub async fn retry_ingest_job(pool: &SqlitePool, job_id: i64) -> Result<bool, sqlx::Error> {
     let now = epoch_secs();
     let result = sqlx::query(
         "UPDATE ingest_jobs SET state = 'PENDING', error_message = NULL, \
@@ -1654,25 +1627,167 @@ pub async fn insert_wrapped_dek(
 
 // Row types used exclusively by the restore graft to shuttle data from the
 // restored snapshot pool into the main DB without using ATTACH.
-#[derive(sqlx::FromRow)] struct RestoredInode { id: i64, parent_id: Option<i64>, name: String, kind: String, size: i64, mode: Option<i64>, mtime: Option<i64> }
-#[derive(sqlx::FromRow)] struct RestoredRevision { revision_id: i64, inode_id: i64, created_at: i64, size: i64, is_current: i64, immutable_until: Option<i64>, device_id: Option<String>, parent_revision_id: Option<i64>, origin: String, conflict_reason: Option<String> }
-#[derive(sqlx::FromRow)] struct RestoredSyncPolicy { policy_id: i64, path_prefix: String, require_healthy: i64, enable_versioning: i64, policy_type: String }
-#[derive(sqlx::FromRow)] struct RestoredSmartSyncState { inode_id: i64, revision_id: i64, pin_state: i64, hydration_state: i64 }
-#[derive(sqlx::FromRow)] struct RestoredMetadataBackup { backup_id: String, created_at: i64, snapshot_version: i64, object_key: String, provider: String, encrypted_size: i64, status: String, last_error: Option<String> }
-#[derive(sqlx::FromRow)] struct RestoredPack { pack_id: String, chunk_id: Vec<u8>, plaintext_hash: Option<String>, storage_mode: String, encryption_version: i64, ec_scheme: String, logical_size: i64, cipher_size: i64, shard_size: i64, nonce: Vec<u8>, gcm_tag: Vec<u8>, status: String }
-#[derive(sqlx::FromRow)] struct RestoredPackShard { id: i64, pack_id: String, shard_index: i64, shard_role: String, provider: String, object_key: String, size: i64, checksum: String, status: String, attempts: Option<i64>, last_error: Option<String>, last_verified_at: Option<i64>, last_verification_method: Option<String>, last_verification_status: Option<String>, last_verified_size: Option<i64>, verification_failures: i64 }
-#[derive(sqlx::FromRow)] struct RestoredPackLocation { chunk_id: Vec<u8>, pack_id: String, pack_offset: i64, encrypted_size: i64 }
-#[derive(sqlx::FromRow)] struct RestoredChunkRef { id: i64, revision_id: i64, chunk_id: Vec<u8>, file_offset: i64, size: i64 }
-#[derive(sqlx::FromRow)] struct RestoredConflictEvent { conflict_id: i64, inode_id: i64, winning_revision_id: i64, losing_revision_id: i64, reason: String, materialized_inode_id: Option<i64>, materialized_revision_id: Option<i64>, created_at: i64 }
+#[derive(sqlx::FromRow)]
+struct RestoredInode {
+    id: i64,
+    parent_id: Option<i64>,
+    name: String,
+    kind: String,
+    size: i64,
+    mode: Option<i64>,
+    mtime: Option<i64>,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredRevision {
+    revision_id: i64,
+    inode_id: i64,
+    created_at: i64,
+    size: i64,
+    is_current: i64,
+    immutable_until: Option<i64>,
+    device_id: Option<String>,
+    parent_revision_id: Option<i64>,
+    origin: String,
+    conflict_reason: Option<String>,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredSyncPolicy {
+    policy_id: i64,
+    path_prefix: String,
+    require_healthy: i64,
+    enable_versioning: i64,
+    policy_type: String,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredSmartSyncState {
+    inode_id: i64,
+    revision_id: i64,
+    pin_state: i64,
+    hydration_state: i64,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredMetadataBackup {
+    backup_id: String,
+    created_at: i64,
+    snapshot_version: i64,
+    object_key: String,
+    provider: String,
+    encrypted_size: i64,
+    status: String,
+    last_error: Option<String>,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredPack {
+    pack_id: String,
+    chunk_id: Vec<u8>,
+    plaintext_hash: Option<String>,
+    storage_mode: String,
+    encryption_version: i64,
+    ec_scheme: String,
+    logical_size: i64,
+    cipher_size: i64,
+    shard_size: i64,
+    nonce: Vec<u8>,
+    gcm_tag: Vec<u8>,
+    status: String,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredPackShard {
+    id: i64,
+    pack_id: String,
+    shard_index: i64,
+    shard_role: String,
+    provider: String,
+    object_key: String,
+    size: i64,
+    checksum: String,
+    status: String,
+    attempts: Option<i64>,
+    last_error: Option<String>,
+    last_verified_at: Option<i64>,
+    last_verification_method: Option<String>,
+    last_verification_status: Option<String>,
+    last_verified_size: Option<i64>,
+    verification_failures: i64,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredPackLocation {
+    chunk_id: Vec<u8>,
+    pack_id: String,
+    pack_offset: i64,
+    encrypted_size: i64,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredChunkRef {
+    id: i64,
+    revision_id: i64,
+    chunk_id: Vec<u8>,
+    file_offset: i64,
+    size: i64,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredConflictEvent {
+    conflict_id: i64,
+    inode_id: i64,
+    winning_revision_id: i64,
+    losing_revision_id: i64,
+    reason: String,
+    materialized_inode_id: Option<i64>,
+    materialized_revision_id: Option<i64>,
+    created_at: i64,
+}
 #[allow(dead_code)]
-#[derive(sqlx::FromRow)] struct RestoredProviderConfig { provider_name: String, endpoint: String, region: String, bucket: String, force_path_style: i64, enabled: i64, draft_source: Option<String>, last_test_status: Option<String>, last_test_error: Option<String>, last_test_at: Option<i64>, created_at: i64, updated_at: i64 }
+#[derive(sqlx::FromRow)]
+struct RestoredProviderConfig {
+    provider_name: String,
+    endpoint: String,
+    region: String,
+    bucket: String,
+    force_path_style: i64,
+    enabled: i64,
+    draft_source: Option<String>,
+    last_test_status: Option<String>,
+    last_test_error: Option<String>,
+    last_test_at: Option<i64>,
+    created_at: i64,
+    updated_at: i64,
+}
 // v0.3.23: Identity tables grafted as part of Single-User-Multi-Device adoption.
 // On join-existing the joining device adopts the source vault's owner identity
 // instead of inventing a new local user_id; safety_numbers (= SHA256(EVK || user_id))
 // are then identical across devices.
-#[derive(sqlx::FromRow)] struct RestoredUser { user_id: String, display_name: String, email: Option<String>, auth_provider: String, auth_subject: Option<String>, created_at: i64, google_refresh_token_ciphertext: Option<Vec<u8>> }
-#[derive(sqlx::FromRow)] struct RestoredDevice { device_id: String, user_id: String, device_name: String, public_key: Vec<u8>, wrapped_vault_key: Option<Vec<u8>>, vault_key_generation: Option<i64>, revoked_at: Option<i64>, last_seen_at: Option<i64>, created_at: i64, safety_numbers_verified_at: Option<i64>, enrolled_at: Option<i64> }
-#[derive(sqlx::FromRow)] struct RestoredVaultMember { user_id: String, vault_id: String, role: String, invited_by: Option<String>, joined_at: i64 }
+#[derive(sqlx::FromRow)]
+struct RestoredUser {
+    user_id: String,
+    display_name: String,
+    email: Option<String>,
+    auth_provider: String,
+    auth_subject: Option<String>,
+    created_at: i64,
+    google_refresh_token_ciphertext: Option<Vec<u8>>,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredDevice {
+    device_id: String,
+    user_id: String,
+    device_name: String,
+    public_key: Vec<u8>,
+    wrapped_vault_key: Option<Vec<u8>>,
+    vault_key_generation: Option<i64>,
+    revoked_at: Option<i64>,
+    last_seen_at: Option<i64>,
+    created_at: i64,
+    safety_numbers_verified_at: Option<i64>,
+    enrolled_at: Option<i64>,
+}
+#[derive(sqlx::FromRow)]
+struct RestoredVaultMember {
+    user_id: String,
+    vault_id: String,
+    role: String,
+    invited_by: Option<String>,
+    joined_at: i64,
+}
 
 pub async fn graft_restored_metadata_snapshot(
     pool: &SqlitePool,
@@ -1690,7 +1805,12 @@ pub async fn graft_restored_metadata_snapshot(
     // Use a minimal struct — the restored snapshot may be V1 (no V2 columns).
     #[allow(dead_code)]
     #[derive(sqlx::FromRow)]
-    struct RestoreVaultRecord { id: i64, master_key_salt: Vec<u8>, argon2_params: String, vault_id: String }
+    struct RestoreVaultRecord {
+        id: i64,
+        master_key_salt: Vec<u8>,
+        argon2_params: String,
+        vault_id: String,
+    }
     let remote_vault = sqlx::query_as::<_, RestoreVaultRecord>(
         "SELECT id, master_key_salt, argon2_params, vault_id FROM vault_state WHERE id = 1",
     )
@@ -1935,10 +2055,15 @@ pub async fn graft_restored_metadata_snapshot(
                  created_at, google_refresh_token_ciphertext) \
                  VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(&row.user_id).bind(&row.display_name).bind(&row.email)
-            .bind(&row.auth_provider).bind(&row.auth_subject).bind(row.created_at)
+            .bind(&row.user_id)
+            .bind(&row.display_name)
+            .bind(&row.email)
+            .bind(&row.auth_provider)
+            .bind(&row.auth_subject)
+            .bind(row.created_at)
             .bind(&row.google_refresh_token_ciphertext)
-            .execute(&mut *conn).await?;
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_devices {
@@ -1948,11 +2073,19 @@ pub async fn graft_restored_metadata_snapshot(
                  created_at, safety_numbers_verified_at, enrolled_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(&row.device_id).bind(&row.user_id).bind(&row.device_name)
-            .bind(&row.public_key).bind(&row.wrapped_vault_key)
-            .bind(row.vault_key_generation).bind(row.revoked_at).bind(row.last_seen_at)
-            .bind(row.created_at).bind(row.safety_numbers_verified_at).bind(row.enrolled_at)
-            .execute(&mut *conn).await?;
+            .bind(&row.device_id)
+            .bind(&row.user_id)
+            .bind(&row.device_name)
+            .bind(&row.public_key)
+            .bind(&row.wrapped_vault_key)
+            .bind(row.vault_key_generation)
+            .bind(row.revoked_at)
+            .bind(row.last_seen_at)
+            .bind(row.created_at)
+            .bind(row.safety_numbers_verified_at)
+            .bind(row.enrolled_at)
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_vault_members {
@@ -1960,9 +2093,13 @@ pub async fn graft_restored_metadata_snapshot(
                 "INSERT INTO vault_members (user_id, vault_id, role, invited_by, joined_at) \
                  VALUES (?, ?, ?, ?, ?)",
             )
-            .bind(&row.user_id).bind(&row.vault_id).bind(&row.role)
-            .bind(&row.invited_by).bind(row.joined_at)
-            .execute(&mut *conn).await?;
+            .bind(&row.user_id)
+            .bind(&row.vault_id)
+            .bind(&row.role)
+            .bind(&row.invited_by)
+            .bind(row.joined_at)
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_inodes {
@@ -1970,9 +2107,15 @@ pub async fn graft_restored_metadata_snapshot(
                 "INSERT INTO inodes (id, parent_id, name, kind, size, mode, mtime) \
                  VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(row.id).bind(row.parent_id).bind(&row.name).bind(&row.kind)
-            .bind(row.size).bind(row.mode).bind(row.mtime)
-            .execute(&mut *conn).await?;
+            .bind(row.id)
+            .bind(row.parent_id)
+            .bind(&row.name)
+            .bind(&row.kind)
+            .bind(row.size)
+            .bind(row.mode)
+            .bind(row.mtime)
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_revisions {
@@ -1981,11 +2124,18 @@ pub async fn graft_restored_metadata_snapshot(
                  is_current, immutable_until, device_id, parent_revision_id, origin, \
                  conflict_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(row.revision_id).bind(row.inode_id).bind(row.created_at)
-            .bind(row.size).bind(row.is_current).bind(row.immutable_until)
-            .bind(&row.device_id).bind(row.parent_revision_id)
-            .bind(&row.origin).bind(&row.conflict_reason)
-            .execute(&mut *conn).await?;
+            .bind(row.revision_id)
+            .bind(row.inode_id)
+            .bind(row.created_at)
+            .bind(row.size)
+            .bind(row.is_current)
+            .bind(row.immutable_until)
+            .bind(&row.device_id)
+            .bind(row.parent_revision_id)
+            .bind(&row.origin)
+            .bind(&row.conflict_reason)
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_policies {
@@ -1993,9 +2143,13 @@ pub async fn graft_restored_metadata_snapshot(
                 "INSERT INTO sync_policies (policy_id, path_prefix, require_healthy, \
                  enable_versioning, policy_type) VALUES (?, ?, ?, ?, ?)",
             )
-            .bind(row.policy_id).bind(&row.path_prefix).bind(row.require_healthy)
-            .bind(row.enable_versioning).bind(&row.policy_type)
-            .execute(&mut *conn).await?;
+            .bind(row.policy_id)
+            .bind(&row.path_prefix)
+            .bind(row.require_healthy)
+            .bind(row.enable_versioning)
+            .bind(&row.policy_type)
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_sync_state {
@@ -2003,9 +2157,12 @@ pub async fn graft_restored_metadata_snapshot(
                 "INSERT INTO smart_sync_state (inode_id, revision_id, pin_state, \
                  hydration_state) VALUES (?, ?, ?, ?)",
             )
-            .bind(row.inode_id).bind(row.revision_id).bind(row.pin_state)
+            .bind(row.inode_id)
+            .bind(row.revision_id)
+            .bind(row.pin_state)
             .bind(row.hydration_state)
-            .execute(&mut *conn).await?;
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_backups {
@@ -2014,10 +2171,16 @@ pub async fn graft_restored_metadata_snapshot(
                  object_key, provider, encrypted_size, status, last_error) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(&row.backup_id).bind(row.created_at).bind(row.snapshot_version)
-            .bind(&row.object_key).bind(&row.provider).bind(row.encrypted_size)
-            .bind(&row.status).bind(&row.last_error)
-            .execute(&mut *conn).await?;
+            .bind(&row.backup_id)
+            .bind(row.created_at)
+            .bind(row.snapshot_version)
+            .bind(&row.object_key)
+            .bind(&row.provider)
+            .bind(row.encrypted_size)
+            .bind(&row.status)
+            .bind(&row.last_error)
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_packs {
@@ -2026,11 +2189,20 @@ pub async fn graft_restored_metadata_snapshot(
                  encryption_version, ec_scheme, logical_size, cipher_size, shard_size, \
                  nonce, gcm_tag, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(&row.pack_id).bind(&row.chunk_id).bind(&row.plaintext_hash)
-            .bind(&row.storage_mode).bind(row.encryption_version).bind(&row.ec_scheme)
-            .bind(row.logical_size).bind(row.cipher_size).bind(row.shard_size)
-            .bind(&row.nonce).bind(&row.gcm_tag).bind(&row.status)
-            .execute(&mut *conn).await?;
+            .bind(&row.pack_id)
+            .bind(&row.chunk_id)
+            .bind(&row.plaintext_hash)
+            .bind(&row.storage_mode)
+            .bind(row.encryption_version)
+            .bind(&row.ec_scheme)
+            .bind(row.logical_size)
+            .bind(row.cipher_size)
+            .bind(row.shard_size)
+            .bind(&row.nonce)
+            .bind(&row.gcm_tag)
+            .bind(&row.status)
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_shards {
@@ -2040,13 +2212,24 @@ pub async fn graft_restored_metadata_snapshot(
                  last_verification_method, last_verification_status, last_verified_size, \
                  verification_failures) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(row.id).bind(&row.pack_id).bind(row.shard_index).bind(&row.shard_role)
-            .bind(&row.provider).bind(&row.object_key).bind(row.size).bind(&row.checksum)
-            .bind(&row.status).bind(row.attempts).bind(&row.last_error)
-            .bind(row.last_verified_at).bind(&row.last_verification_method)
-            .bind(&row.last_verification_status).bind(row.last_verified_size)
+            .bind(row.id)
+            .bind(&row.pack_id)
+            .bind(row.shard_index)
+            .bind(&row.shard_role)
+            .bind(&row.provider)
+            .bind(&row.object_key)
+            .bind(row.size)
+            .bind(&row.checksum)
+            .bind(&row.status)
+            .bind(row.attempts)
+            .bind(&row.last_error)
+            .bind(row.last_verified_at)
+            .bind(&row.last_verification_method)
+            .bind(&row.last_verification_status)
+            .bind(row.last_verified_size)
             .bind(row.verification_failures)
-            .execute(&mut *conn).await?;
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_locations {
@@ -2054,9 +2237,12 @@ pub async fn graft_restored_metadata_snapshot(
                 "INSERT INTO pack_locations (chunk_id, pack_id, pack_offset, encrypted_size) \
                  VALUES (?, ?, ?, ?)",
             )
-            .bind(&row.chunk_id).bind(&row.pack_id).bind(row.pack_offset)
+            .bind(&row.chunk_id)
+            .bind(&row.pack_id)
+            .bind(row.pack_offset)
             .bind(row.encrypted_size)
-            .execute(&mut *conn).await?;
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_chunk_refs {
@@ -2064,9 +2250,13 @@ pub async fn graft_restored_metadata_snapshot(
                 "INSERT INTO chunk_refs (id, revision_id, chunk_id, file_offset, size) \
                  VALUES (?, ?, ?, ?, ?)",
             )
-            .bind(row.id).bind(row.revision_id).bind(&row.chunk_id)
-            .bind(row.file_offset).bind(row.size)
-            .execute(&mut *conn).await?;
+            .bind(row.id)
+            .bind(row.revision_id)
+            .bind(&row.chunk_id)
+            .bind(row.file_offset)
+            .bind(row.size)
+            .execute(&mut *conn)
+            .await?;
         }
 
         for row in &r_conflicts {
@@ -2075,11 +2265,16 @@ pub async fn graft_restored_metadata_snapshot(
                  losing_revision_id, reason, materialized_inode_id, \
                  materialized_revision_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(row.conflict_id).bind(row.inode_id).bind(row.winning_revision_id)
-            .bind(row.losing_revision_id).bind(&row.reason)
-            .bind(row.materialized_inode_id).bind(row.materialized_revision_id)
+            .bind(row.conflict_id)
+            .bind(row.inode_id)
+            .bind(row.winning_revision_id)
+            .bind(row.losing_revision_id)
+            .bind(&row.reason)
+            .bind(row.materialized_inode_id)
+            .bind(row.materialized_revision_id)
             .bind(row.created_at)
-            .execute(&mut *conn).await?;
+            .execute(&mut *conn)
+            .await?;
         }
 
         // Graft provider_configs from snapshot (NOT secrets — those are DPAPI-sealed
@@ -2095,11 +2290,16 @@ pub async fn graft_restored_metadata_snapshot(
                  last_test_error, last_test_at, created_at, updated_at) \
                  VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL, NULL, ?, ?)",
             )
-            .bind(&row.provider_name).bind(&row.endpoint).bind(&row.region)
-            .bind(&row.bucket).bind(row.force_path_style)
+            .bind(&row.provider_name)
+            .bind(&row.endpoint)
+            .bind(&row.region)
+            .bind(&row.bucket)
+            .bind(row.force_path_style)
             .bind(&row.draft_source)
-            .bind(local_now).bind(local_now)
-            .execute(&mut *conn).await?;
+            .bind(local_now)
+            .bind(local_now)
+            .execute(&mut *conn)
+            .await?;
         }
 
         // Detect providers that have configs but no local secrets
@@ -5681,11 +5881,10 @@ pub async fn gc_orphan_packs(pool: &SqlitePool) -> Result<GcOrphanReport, sqlx::
     let mut deleted_packs: u64 = 0;
 
     for pack_id in &orphan_pack_ids {
-        let job_ids: Vec<i64> =
-            sqlx::query_scalar("SELECT id FROM upload_jobs WHERE pack_id = ?")
-                .bind(pack_id)
-                .fetch_all(&mut *tx)
-                .await?;
+        let job_ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM upload_jobs WHERE pack_id = ?")
+            .bind(pack_id)
+            .fetch_all(&mut *tx)
+            .await?;
         for job_id in job_ids {
             let r = sqlx::query("DELETE FROM upload_job_targets WHERE job_id = ?")
                 .bind(job_id)
@@ -6328,11 +6527,9 @@ pub async fn mark_pack_migrated_v2(
 /// Set vault_format_version = 2 when all V1 packs have been migrated.
 #[allow(dead_code)]
 pub async fn finalize_vault_format_v2(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE vault_state SET vault_format_version = 2 WHERE id = 1",
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE vault_state SET vault_format_version = 2 WHERE id = 1")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -6505,16 +6702,14 @@ pub async fn get_rewrap_status(pool: &SqlitePool) -> Result<(i64, i64, i64), sql
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dek_rewrap_queue")
         .fetch_one(pool)
         .await?;
-    let pending: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM dek_rewrap_queue WHERE status = 'PENDING'",
-    )
-    .fetch_one(pool)
-    .await?;
-    let failed: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM dek_rewrap_queue WHERE status = 'FAILED'",
-    )
-    .fetch_one(pool)
-    .await?;
+    let pending: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM dek_rewrap_queue WHERE status = 'PENDING'")
+            .fetch_one(pool)
+            .await?;
+    let failed: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM dek_rewrap_queue WHERE status = 'FAILED'")
+            .fetch_one(pool)
+            .await?;
     Ok((total, pending, failed))
 }
 
@@ -6573,9 +6768,10 @@ pub fn is_shared_link_valid(link: &SharedLinkRecord) -> bool {
         }
     }
     if let Some(max) = link.max_downloads
-        && link.download_count >= max {
-            return false;
-        }
+        && link.download_count >= max
+    {
+        return false;
+    }
     true
 }
 
@@ -6625,9 +6821,7 @@ pub async fn get_shared_link(
     .await
 }
 
-pub async fn list_shared_links(
-    pool: &SqlitePool,
-) -> Result<Vec<SharedLinkRecord>, sqlx::Error> {
+pub async fn list_shared_links(pool: &SqlitePool) -> Result<Vec<SharedLinkRecord>, sqlx::Error> {
     sqlx::query_as::<_, SharedLinkRecord>(
         "SELECT share_id, inode_id, revision_id, file_name, file_size, created_at, \
          expires_at, max_downloads, download_count, revoked, password_hash FROM shared_links \
@@ -6651,16 +6845,12 @@ pub async fn list_shared_links_for_inode(
     .await
 }
 
-pub async fn revoke_shared_link(
-    pool: &SqlitePool,
-    share_id: &str,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE shared_links SET revoked = 1 WHERE share_id = ? AND revoked = 0",
-    )
-    .bind(share_id)
-    .execute(pool)
-    .await?;
+pub async fn revoke_shared_link(pool: &SqlitePool, share_id: &str) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("UPDATE shared_links SET revoked = 1 WHERE share_id = ? AND revoked = 0")
+            .bind(share_id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -6668,19 +6858,14 @@ pub async fn increment_shared_link_download_count(
     pool: &SqlitePool,
     share_id: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE shared_links SET download_count = download_count + 1 WHERE share_id = ?",
-    )
-    .bind(share_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE shared_links SET download_count = download_count + 1 WHERE share_id = ?")
+        .bind(share_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
-pub async fn delete_shared_link(
-    pool: &SqlitePool,
-    share_id: &str,
-) -> Result<bool, sqlx::Error> {
+pub async fn delete_shared_link(pool: &SqlitePool, share_id: &str) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("DELETE FROM shared_links WHERE share_id = ?")
         .bind(share_id)
         .execute(pool)
@@ -6898,7 +7083,10 @@ pub async fn create_device(
     Ok(())
 }
 
-pub async fn get_device(pool: &SqlitePool, device_id: &str) -> Result<Option<DeviceRecord>, sqlx::Error> {
+pub async fn get_device(
+    pool: &SqlitePool,
+    device_id: &str,
+) -> Result<Option<DeviceRecord>, sqlx::Error> {
     sqlx::query_as::<_, DeviceRecord>(
         "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
          vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at \
@@ -6926,12 +7114,11 @@ pub async fn get_device_safety_verified_at(
     pool: &SqlitePool,
     device_id: &str,
 ) -> Result<Option<i64>, sqlx::Error> {
-    let row: Option<(Option<i64>,)> = sqlx::query_as(
-        "SELECT safety_numbers_verified_at FROM devices WHERE device_id = ?",
-    )
-    .bind(device_id)
-    .fetch_optional(pool)
-    .await?;
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT safety_numbers_verified_at FROM devices WHERE device_id = ?")
+            .bind(device_id)
+            .fetch_optional(pool)
+            .await?;
     Ok(row.and_then(|(ts,)| ts))
 }
 
@@ -7001,14 +7188,13 @@ pub async fn set_device_public_key(
     public_key: &[u8],
 ) -> Result<bool, sqlx::Error> {
     let now = epoch_secs();
-    let result = sqlx::query(
-        "UPDATE devices SET public_key = ?, enrolled_at = ? WHERE device_id = ?",
-    )
-    .bind(public_key)
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("UPDATE devices SET public_key = ?, enrolled_at = ? WHERE device_id = ?")
+            .bind(public_key)
+            .bind(now)
+            .bind(device_id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -7064,10 +7250,7 @@ pub async fn get_vault_member(
 /// Count members in a vault. v0.3.19: used by `/api/vault/status` to drive
 /// adaptive UI — Google login button stays hidden when count == 1 (solo user).
 #[allow(dead_code)]
-pub async fn count_vault_members(
-    pool: &SqlitePool,
-    vault_id: &str,
-) -> Result<i64, sqlx::Error> {
+pub async fn count_vault_members(pool: &SqlitePool, vault_id: &str) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vault_members WHERE vault_id = ?")
         .bind(vault_id)
         .fetch_one(pool)
@@ -7093,14 +7276,13 @@ pub async fn update_vault_member_role(
     vault_id: &str,
     new_role: &str,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE vault_members SET role = ? WHERE user_id = ? AND vault_id = ?",
-    )
-    .bind(new_role)
-    .bind(user_id)
-    .bind(vault_id)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("UPDATE vault_members SET role = ? WHERE user_id = ? AND vault_id = ?")
+            .bind(new_role)
+            .bind(user_id)
+            .bind(vault_id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -7109,13 +7291,11 @@ pub async fn remove_vault_member(
     user_id: &str,
     vault_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "DELETE FROM vault_members WHERE user_id = ? AND vault_id = ?",
-    )
-    .bind(user_id)
-    .bind(vault_id)
-    .execute(pool)
-    .await?;
+    let result = sqlx::query("DELETE FROM vault_members WHERE user_id = ? AND vault_id = ?")
+        .bind(user_id)
+        .bind(vault_id)
+        .execute(pool)
+        .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -7212,9 +7392,10 @@ pub fn is_invite_code_valid(code: &InviteCodeRecord) -> bool {
         return false;
     }
     if let Some(exp) = code.expires_at
-        && epoch_secs() > exp {
-            return false;
-        }
+        && epoch_secs() > exp
+    {
+        return false;
+    }
     true
 }
 
@@ -7265,10 +7446,9 @@ pub async fn migrate_single_to_multi_user(
     vault_id: &str,
 ) -> Result<bool, sqlx::Error> {
     // Already migrated?
-    let user_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM users")
-            .fetch_one(pool)
-            .await?;
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(pool)
+        .await?;
     if user_count > 0 {
         return Ok(false);
     }
@@ -7568,14 +7748,13 @@ pub async fn renew_user_session(
 ) -> Result<bool, sqlx::Error> {
     let now = epoch_secs();
     let new_expires = now + ttl_seconds;
-    let result = sqlx::query(
-        "UPDATE user_sessions SET expires_at = ? WHERE token = ? AND expires_at > ?",
-    )
-    .bind(new_expires)
-    .bind(token)
-    .bind(now)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("UPDATE user_sessions SET expires_at = ? WHERE token = ? AND expires_at > ?")
+            .bind(new_expires)
+            .bind(token)
+            .bind(now)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -7700,11 +7879,9 @@ pub async fn get_stats_overview(pool: &SqlitePool) -> Result<StatsOverview, sqlx
 }
 
 pub async fn count_active_devices(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL",
-    )
-    .fetch_one(pool)
-    .await
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL")
+        .fetch_one(pool)
+        .await
 }
 
 /// Record upload or download bytes into a 2-hour bucket.
@@ -7828,13 +8005,11 @@ pub async fn store_encrypted_refresh_token(
     user_id: &str,
     ciphertext: &[u8],
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE users SET google_refresh_token_ciphertext = ? WHERE user_id = ?",
-    )
-    .bind(ciphertext)
-    .bind(user_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE users SET google_refresh_token_ciphertext = ? WHERE user_id = ?")
+        .bind(ciphertext)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -7915,7 +8090,9 @@ mod tests {
         assert!(empty.is_empty());
 
         // Increment download count
-        increment_shared_link_download_count(&pool, "abc123").await.unwrap();
+        increment_shared_link_download_count(&pool, "abc123")
+            .await
+            .unwrap();
         let link = get_shared_link(&pool, "abc123").await.unwrap().unwrap();
         assert_eq!(link.download_count, 1);
 
@@ -8058,16 +8235,30 @@ mod tests {
         let pool = init_db("sqlite::memory:").await.unwrap();
 
         // Create token with 10-second TTL
-        create_share_password_token(&pool, "tok1", "share1", 10).await.unwrap();
+        create_share_password_token(&pool, "tok1", "share1", 10)
+            .await
+            .unwrap();
 
         // Valid immediately
-        assert!(validate_share_password_token(&pool, "tok1", "share1").await.unwrap());
+        assert!(
+            validate_share_password_token(&pool, "tok1", "share1")
+                .await
+                .unwrap()
+        );
 
         // Wrong share_id
-        assert!(!validate_share_password_token(&pool, "tok1", "share2").await.unwrap());
+        assert!(
+            !validate_share_password_token(&pool, "tok1", "share2")
+                .await
+                .unwrap()
+        );
 
         // Wrong token
-        assert!(!validate_share_password_token(&pool, "tok_bad", "share1").await.unwrap());
+        assert!(
+            !validate_share_password_token(&pool, "tok_bad", "share1")
+                .await
+                .unwrap()
+        );
     }
 
     // ── Epic 34: Multi-user CRUD tests ──────────────────────────────
@@ -8077,9 +8268,16 @@ mod tests {
         let pool = init_db("sqlite::memory:").await.unwrap();
 
         // Create
-        create_user(&pool, "u1", "Alice", Some("alice@example.com"), "local", None)
-            .await
-            .unwrap();
+        create_user(
+            &pool,
+            "u1",
+            "Alice",
+            Some("alice@example.com"),
+            "local",
+            None,
+        )
+        .await
+        .unwrap();
 
         // Read
         let user = get_user(&pool, "u1").await.unwrap().unwrap();
@@ -8095,12 +8293,20 @@ mod tests {
         assert_eq!(all.len(), 2);
 
         // Update display name
-        assert!(update_user_display_name(&pool, "u1", "Alice Z").await.unwrap());
+        assert!(
+            update_user_display_name(&pool, "u1", "Alice Z")
+                .await
+                .unwrap()
+        );
         let updated = get_user(&pool, "u1").await.unwrap().unwrap();
         assert_eq!(updated.display_name, "Alice Z");
 
         // Update non-existent
-        assert!(!update_user_display_name(&pool, "u999", "Ghost").await.unwrap());
+        assert!(
+            !update_user_display_name(&pool, "u999", "Ghost")
+                .await
+                .unwrap()
+        );
 
         // Delete
         assert!(delete_user(&pool, "u2").await.unwrap());
@@ -8111,12 +8317,16 @@ mod tests {
     #[tokio::test]
     async fn device_crud_lifecycle() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_user(&pool, "u1", "Alice", None, "local", None).await.unwrap();
+        create_user(&pool, "u1", "Alice", None, "local", None)
+            .await
+            .unwrap();
 
         let pubkey = vec![0u8; 32];
 
         // Create device
-        create_device(&pool, "dev1", "u1", "Laptop", &pubkey).await.unwrap();
+        create_device(&pool, "dev1", "u1", "Laptop", &pubkey)
+            .await
+            .unwrap();
 
         // Read
         let dev = get_device(&pool, "dev1").await.unwrap().unwrap();
@@ -8127,13 +8337,19 @@ mod tests {
         assert!(dev.revoked_at.is_none());
 
         // List by user
-        create_device(&pool, "dev2", "u1", "Phone", &pubkey).await.unwrap();
+        create_device(&pool, "dev2", "u1", "Phone", &pubkey)
+            .await
+            .unwrap();
         let devs = list_devices_for_user(&pool, "u1").await.unwrap();
         assert_eq!(devs.len(), 2);
 
         // Set wrapped vault key
         let wvk = vec![1u8; 48];
-        assert!(set_device_wrapped_vault_key(&pool, "dev1", &wvk, 1).await.unwrap());
+        assert!(
+            set_device_wrapped_vault_key(&pool, "dev1", &wvk, 1)
+                .await
+                .unwrap()
+        );
         let dev = get_device(&pool, "dev1").await.unwrap().unwrap();
         assert_eq!(dev.wrapped_vault_key.as_deref(), Some(wvk.as_slice()));
         assert_eq!(dev.vault_key_generation, Some(1));
@@ -8153,15 +8369,26 @@ mod tests {
     #[tokio::test]
     async fn vault_member_crud_lifecycle() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_user(&pool, "u1", "Alice", None, "local", None).await.unwrap();
-        create_user(&pool, "u2", "Bob", None, "local", None).await.unwrap();
+        create_user(&pool, "u1", "Alice", None, "local", None)
+            .await
+            .unwrap();
+        create_user(&pool, "u2", "Bob", None, "local", None)
+            .await
+            .unwrap();
 
         // Add members
-        add_vault_member(&pool, "u1", "vault-1", "owner", None).await.unwrap();
-        add_vault_member(&pool, "u2", "vault-1", "member", Some("u1")).await.unwrap();
+        add_vault_member(&pool, "u1", "vault-1", "owner", None)
+            .await
+            .unwrap();
+        add_vault_member(&pool, "u2", "vault-1", "member", Some("u1"))
+            .await
+            .unwrap();
 
         // Get
-        let member = get_vault_member(&pool, "u2", "vault-1").await.unwrap().unwrap();
+        let member = get_vault_member(&pool, "u2", "vault-1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(member.role, "member");
         assert_eq!(member.invited_by.as_deref(), Some("u1"));
 
@@ -8170,13 +8397,25 @@ mod tests {
         assert_eq!(members.len(), 2);
 
         // Update role
-        assert!(update_vault_member_role(&pool, "u2", "vault-1", "admin").await.unwrap());
-        let updated = get_vault_member(&pool, "u2", "vault-1").await.unwrap().unwrap();
+        assert!(
+            update_vault_member_role(&pool, "u2", "vault-1", "admin")
+                .await
+                .unwrap()
+        );
+        let updated = get_vault_member(&pool, "u2", "vault-1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.role, "admin");
 
         // Remove
         assert!(remove_vault_member(&pool, "u2", "vault-1").await.unwrap());
-        assert!(get_vault_member(&pool, "u2", "vault-1").await.unwrap().is_none());
+        assert!(
+            get_vault_member(&pool, "u2", "vault-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(!remove_vault_member(&pool, "u2", "vault-1").await.unwrap());
     }
 
@@ -8186,16 +8425,28 @@ mod tests {
 
         // Insert logs
         let id1 = insert_audit_log(
-            &pool, "vault-1", "invite", Some("u1"), Some("dev1"),
-            Some("u2"), None, Some(r#"{"role":"member"}"#),
+            &pool,
+            "vault-1",
+            "invite",
+            Some("u1"),
+            Some("dev1"),
+            Some("u2"),
+            None,
+            Some(r#"{"role":"member"}"#),
         )
         .await
         .unwrap();
         assert!(id1 > 0);
 
         let id2 = insert_audit_log(
-            &pool, "vault-1", "join", Some("u2"), Some("dev2"),
-            None, None, None,
+            &pool,
+            "vault-1",
+            "join",
+            Some("u2"),
+            Some("dev2"),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -8219,7 +8470,9 @@ mod tests {
     #[tokio::test]
     async fn invite_code_crud_lifecycle() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_user(&pool, "u1", "Alice", None, "local", None).await.unwrap();
+        create_user(&pool, "u1", "Alice", None, "local", None)
+            .await
+            .unwrap();
 
         // Create invite
         create_invite_code(&pool, "INV123", "vault-1", "u1", "member", 2, None)
@@ -8289,14 +8542,19 @@ mod tests {
             .unwrap();
 
         // Migration should succeed
-        let migrated = migrate_single_to_multi_user(&pool, "vault-42").await.unwrap();
+        let migrated = migrate_single_to_multi_user(&pool, "vault-42")
+            .await
+            .unwrap();
         assert!(migrated);
 
         // Verify owner user created with UUID v4
         let users = list_users(&pool).await.unwrap();
         assert_eq!(users.len(), 1);
         assert_eq!(users[0].user_id.len(), 36, "user_id must be UUID v4");
-        assert!(!users[0].user_id.starts_with("owner-"), "user_id must not use legacy owner- prefix");
+        assert!(
+            !users[0].user_id.starts_with("owner-"),
+            "user_id must not use legacy owner- prefix"
+        );
         assert_eq!(users[0].display_name, "TestPC");
         assert_eq!(users[0].auth_provider, "local");
         let owner_uid = users[0].user_id.clone();
@@ -8331,10 +8589,18 @@ mod tests {
             .unwrap();
 
         // First migration
-        assert!(migrate_single_to_multi_user(&pool, "vault-42").await.unwrap());
+        assert!(
+            migrate_single_to_multi_user(&pool, "vault-42")
+                .await
+                .unwrap()
+        );
 
         // Second call is a no-op
-        assert!(!migrate_single_to_multi_user(&pool, "vault-42").await.unwrap());
+        assert!(
+            !migrate_single_to_multi_user(&pool, "vault-42")
+                .await
+                .unwrap()
+        );
 
         // Still only one user
         let users = list_users(&pool).await.unwrap();
@@ -8346,7 +8612,11 @@ mod tests {
         let pool = init_db("sqlite::memory:").await.unwrap();
 
         // No device identity → migration is a no-op
-        assert!(!migrate_single_to_multi_user(&pool, "vault-42").await.unwrap());
+        assert!(
+            !migrate_single_to_multi_user(&pool, "vault-42")
+                .await
+                .unwrap()
+        );
         let users = list_users(&pool).await.unwrap();
         assert!(users.is_empty());
     }
@@ -8394,7 +8664,9 @@ mod tests {
     #[tokio::test]
     async fn session_create_validate_delete() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_user(&pool, "user-1", "Alice", None, "local", None).await.unwrap();
+        create_user(&pool, "user-1", "Alice", None, "local", None)
+            .await
+            .unwrap();
 
         let token = generate_session_token();
         assert_eq!(token.len(), 43); // 32 bytes → 43 base64url chars (no pad)
@@ -8413,7 +8685,9 @@ mod tests {
         assert_eq!(valid.user_id, "user-1");
 
         // Invalid token returns None
-        let bogus = validate_user_session(&pool, "not-a-real-token").await.unwrap();
+        let bogus = validate_user_session(&pool, "not-a-real-token")
+            .await
+            .unwrap();
         assert!(bogus.is_none());
 
         // Delete (logout)
@@ -8428,7 +8702,9 @@ mod tests {
     #[tokio::test]
     async fn session_expires() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_user(&pool, "user-1", "Alice", None, "local", None).await.unwrap();
+        create_user(&pool, "user-1", "Alice", None, "local", None)
+            .await
+            .unwrap();
 
         // Create session with TTL=0 so it's already expired
         let token = generate_session_token();
@@ -8448,7 +8724,9 @@ mod tests {
     #[tokio::test]
     async fn session_renew() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_user(&pool, "user-1", "Alice", None, "local", None).await.unwrap();
+        create_user(&pool, "user-1", "Alice", None, "local", None)
+            .await
+            .unwrap();
 
         let token = generate_session_token();
         let session = create_user_session(&pool, &token, "user-1", "dev-a", 3600)
@@ -8457,7 +8735,11 @@ mod tests {
         let old_expires = session.expires_at;
 
         // Renew with longer TTL
-        assert!(renew_user_session(&pool, &token, SESSION_TTL_SECONDS).await.unwrap());
+        assert!(
+            renew_user_session(&pool, &token, SESSION_TTL_SECONDS)
+                .await
+                .unwrap()
+        );
 
         let renewed = validate_user_session(&pool, &token).await.unwrap().unwrap();
         assert!(renewed.expires_at > old_expires);
@@ -8466,17 +8748,27 @@ mod tests {
     #[tokio::test]
     async fn session_delete_all_for_user() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_user(&pool, "user-1", "Alice", None, "local", None).await.unwrap();
+        create_user(&pool, "user-1", "Alice", None, "local", None)
+            .await
+            .unwrap();
 
         // Create 3 sessions
         for i in 0..3 {
             let t = generate_session_token();
-            create_user_session(&pool, &t, "user-1", &format!("dev-{i}"), SESSION_TTL_SECONDS)
-                .await
-                .unwrap();
+            create_user_session(
+                &pool,
+                &t,
+                "user-1",
+                &format!("dev-{i}"),
+                SESSION_TTL_SECONDS,
+            )
+            .await
+            .unwrap();
         }
 
-        let deleted = delete_user_sessions_for_user(&pool, "user-1").await.unwrap();
+        let deleted = delete_user_sessions_for_user(&pool, "user-1")
+            .await
+            .unwrap();
         assert_eq!(deleted, 3);
     }
 
@@ -8501,17 +8793,42 @@ mod tests {
         insert_recovery_key(&pool, "vault-a", &[0xCDu8; 40], 1, None)
             .await
             .unwrap();
-        assert_eq!(list_active_recovery_keys(&pool, "vault-a").await.unwrap().len(), 2);
+        assert_eq!(
+            list_active_recovery_keys(&pool, "vault-a")
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
 
         // Other vaults are isolated.
-        insert_recovery_key(&pool, "vault-b", &blob, 1, None).await.unwrap();
-        assert_eq!(list_active_recovery_keys(&pool, "vault-b").await.unwrap().len(), 1);
+        insert_recovery_key(&pool, "vault-b", &blob, 1, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            list_active_recovery_keys(&pool, "vault-b")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         // Revoke marks all keys for vault-a, leaves vault-b alone.
         let affected = revoke_all_recovery_keys(&pool, "vault-a").await.unwrap();
         assert_eq!(affected, 2);
-        assert!(list_active_recovery_keys(&pool, "vault-a").await.unwrap().is_empty());
-        assert_eq!(list_active_recovery_keys(&pool, "vault-b").await.unwrap().len(), 1);
+        assert!(
+            list_active_recovery_keys(&pool, "vault-a")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            list_active_recovery_keys(&pool, "vault-b")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         // Double revoke is a no-op.
         let again = revoke_all_recovery_keys(&pool, "vault-a").await.unwrap();
@@ -8523,32 +8840,56 @@ mod tests {
     #[tokio::test]
     async fn oauth_state_create_and_retrieve() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_oauth_state(&pool, "state-abc", "verifier-xyz", 600).await.unwrap();
-        let v = get_and_delete_oauth_state(&pool, "state-abc").await.unwrap();
+        create_oauth_state(&pool, "state-abc", "verifier-xyz", 600)
+            .await
+            .unwrap();
+        let v = get_and_delete_oauth_state(&pool, "state-abc")
+            .await
+            .unwrap();
         assert_eq!(v.as_deref(), Some("verifier-xyz"));
     }
 
     #[tokio::test]
     async fn oauth_state_is_single_use() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_oauth_state(&pool, "state-once", "verifier-once", 600).await.unwrap();
-        assert!(get_and_delete_oauth_state(&pool, "state-once").await.unwrap().is_some());
-        assert!(get_and_delete_oauth_state(&pool, "state-once").await.unwrap().is_none());
+        create_oauth_state(&pool, "state-once", "verifier-once", 600)
+            .await
+            .unwrap();
+        assert!(
+            get_and_delete_oauth_state(&pool, "state-once")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            get_and_delete_oauth_state(&pool, "state-once")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn oauth_state_csrf_mismatch_returns_none() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_oauth_state(&pool, "real-state", "verifier-real", 600).await.unwrap();
-        let v = get_and_delete_oauth_state(&pool, "attacker-state").await.unwrap();
+        create_oauth_state(&pool, "real-state", "verifier-real", 600)
+            .await
+            .unwrap();
+        let v = get_and_delete_oauth_state(&pool, "attacker-state")
+            .await
+            .unwrap();
         assert!(v.is_none());
     }
 
     #[tokio::test]
     async fn oauth_state_expired_returns_none() {
         let pool = init_db("sqlite::memory:").await.unwrap();
-        create_oauth_state(&pool, "expired-state", "verifier-exp", -1).await.unwrap();
-        let v = get_and_delete_oauth_state(&pool, "expired-state").await.unwrap();
+        create_oauth_state(&pool, "expired-state", "verifier-exp", -1)
+            .await
+            .unwrap();
+        let v = get_and_delete_oauth_state(&pool, "expired-state")
+            .await
+            .unwrap();
         assert!(v.is_none(), "expired state must return None");
     }
 
@@ -8557,9 +8898,17 @@ mod tests {
         let pool = init_db("sqlite::memory:").await.unwrap();
         create_oauth_state(&pool, "exp-1", "v1", -10).await.unwrap();
         create_oauth_state(&pool, "exp-2", "v2", -5).await.unwrap();
-        create_oauth_state(&pool, "live-1", "v3", 600).await.unwrap();
+        create_oauth_state(&pool, "live-1", "v3", 600)
+            .await
+            .unwrap();
         assert_eq!(delete_expired_oauth_states(&pool).await.unwrap(), 2);
-        assert_eq!(get_and_delete_oauth_state(&pool, "live-1").await.unwrap().as_deref(), Some("v3"));
+        assert_eq!(
+            get_and_delete_oauth_state(&pool, "live-1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("v3")
+        );
     }
 
     #[tokio::test]

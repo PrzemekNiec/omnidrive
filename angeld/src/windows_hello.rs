@@ -14,17 +14,20 @@ mod inner {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Security::Credentials::{
-        CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+        CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredFree, CredReadW, CredWriteW,
     };
     use windows::Win32::Security::Cryptography::{
-        CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
     };
     use windows::core::{PCWSTR, PWSTR};
 
     const CRED_TARGET: &str = "OmniDrive/VaultPassphrase";
 
     fn to_wide_null(s: &str) -> Vec<u16> {
-        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
@@ -32,7 +35,10 @@ mod inner {
             cbData: data.len() as u32,
             pbData: data.as_ptr() as *mut u8,
         };
-        let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        let mut output = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
         unsafe {
             CryptProtectData(
                 &input,
@@ -47,9 +53,8 @@ mod inner {
         .map_err(|e| format!("CryptProtectData: {e}"))?;
         // Copy before the LocalHeap allocation is reclaimed.
         // Tiny blob (~200 bytes), one-time per unlock — acceptable to not explicitly free.
-        let result = unsafe {
-            std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec()
-        };
+        let result =
+            unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
         Ok(result)
     }
 
@@ -58,7 +63,10 @@ mod inner {
             cbData: data.len() as u32,
             pbData: data.as_ptr() as *mut u8,
         };
-        let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        let mut output = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
         unsafe {
             CryptUnprotectData(
                 &input,
@@ -71,9 +79,8 @@ mod inner {
             )
         }
         .map_err(|e| format!("CryptUnprotectData: {e}"))?;
-        let result = unsafe {
-            std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec()
-        };
+        let result =
+            unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
         Ok(result)
     }
 
@@ -119,7 +126,9 @@ mod inner {
             return Ok(None);
         };
         let plain = dpapi_unprotect(&encrypted)?;
-        String::from_utf8(plain).map(Some).map_err(|e| e.to_string())
+        String::from_utf8(plain)
+            .map(Some)
+            .map_err(|e| e.to_string())
     }
 
     pub fn has_stored_credential() -> bool {

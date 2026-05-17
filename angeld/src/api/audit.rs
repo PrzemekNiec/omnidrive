@@ -15,8 +15,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use super::error::ApiError;
 use super::ApiState;
+use super::error::ApiError;
 
 const DEFAULT_LIMIT: i64 = 100;
 const MAX_LIMIT: i64 = 500;
@@ -54,10 +54,7 @@ async fn list_audit_events(
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<AuditListResponse>, ApiError> {
     let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
-    let limit = query
-        .limit
-        .unwrap_or(DEFAULT_LIMIT)
-        .clamp(1, MAX_LIMIT);
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
     let records = db::list_audit_logs(&state.pool, &caller.vault_id, limit).await?;
     let events = records

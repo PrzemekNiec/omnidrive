@@ -10,8 +10,8 @@ use std::sync::OnceLock;
 use sysinfo::System;
 use tokio::sync::Mutex;
 
-use super::error::ApiError;
 use super::ApiState;
+use super::error::ApiError;
 
 static SYSINFO: OnceLock<Mutex<System>> = OnceLock::new();
 

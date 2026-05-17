@@ -477,7 +477,10 @@ impl UploadWorker {
         if provider_names.is_empty() {
             warn!("uploader is running with no active remote providers loaded from DB");
         } else {
-            info!("active providers loaded from DB for uploader: [{}]", provider_names.join(", "));
+            info!(
+                "active providers loaded from DB for uploader: [{}]",
+                provider_names.join(", ")
+            );
         }
 
         Ok(provider_names)
@@ -558,13 +561,9 @@ impl UploadWorker {
                     "provider {} is not active in runtime configuration; waiting for hot-reload",
                     shard.provider
                 );
-                let attempts = db::requeue_pack_shard(
-                    &self.pool,
-                    &job.pack_id,
-                    shard.shard_index,
-                    &message,
-                )
-                .await?;
+                let attempts =
+                    db::requeue_pack_shard(&self.pool, &job.pack_id, shard.shard_index, &message)
+                        .await?;
                 let target_attempts =
                     db::requeue_upload_target(&self.pool, job.id, &shard.provider, &message)
                         .await?;
@@ -849,8 +848,7 @@ impl UploadWorker {
             "upload target permanently failed pack={} shard={} provider={} attempts={} last_error={}",
             pack_id, shard_index, provider, target_attempts, last_error
         );
-        db::mark_upload_target_permanently_failed(&self.pool, job_id, provider, last_error)
-            .await?;
+        db::mark_upload_target_permanently_failed(&self.pool, job_id, provider, last_error).await?;
         db::mark_pack_shard_permanently_failed(&self.pool, pack_id, shard_index, last_error)
             .await?;
         diagnostics::record_upload_error(format!(
@@ -1025,11 +1023,7 @@ impl Uploader {
         self.force_path_style
     }
 
-    fn sdk_error(
-        &self,
-        operation: &'static str,
-        err: impl std::error::Error,
-    ) -> UploaderError {
+    fn sdk_error(&self, operation: &'static str, err: impl std::error::Error) -> UploaderError {
         UploaderError::Upload {
             provider: self.provider_name,
             operation,

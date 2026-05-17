@@ -191,10 +191,7 @@ pub async fn current_decision(
     Ok(GuardDecision::Allowed)
 }
 
-pub async fn try_authorize_read(
-    pool: &SqlitePool,
-    estimated_bytes: i64,
-) -> Result<(), String> {
+pub async fn try_authorize_read(pool: &SqlitePool, estimated_bytes: i64) -> Result<(), String> {
     match current_decision(
         pool,
         GuardOperation::Read {
@@ -206,8 +203,9 @@ pub async fn try_authorize_read(
     {
         Ok(GuardDecision::Allowed) => Ok(()),
         Ok(GuardDecision::DryRun { message }) => Err(format!("dry-run: {message}")),
-        Ok(GuardDecision::Suspended { reason })
-        | Ok(GuardDecision::QuotaExceeded { reason }) => Err(reason),
+        Ok(GuardDecision::Suspended { reason }) | Ok(GuardDecision::QuotaExceeded { reason }) => {
+            Err(reason)
+        }
         Err(err) => Err(format!("cloud guard error: {err}")),
     }
 }

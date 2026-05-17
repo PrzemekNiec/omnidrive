@@ -64,7 +64,9 @@ pub fn parse_mnemonic(phrase: &str) -> Result<Mnemonic, RecoveryError> {
             actual: word_count,
         });
     }
-    phrase.parse::<Mnemonic>().map_err(RecoveryError::InvalidMnemonic)
+    phrase
+        .parse::<Mnemonic>()
+        .map_err(RecoveryError::InvalidMnemonic)
 }
 
 /// Derive a 32-byte recovery key from a mnemonic using BIP-39's standard
@@ -102,7 +104,10 @@ mod tests {
     #[test]
     fn generated_mnemonic_has_24_words() {
         let m = generate_mnemonic();
-        assert_eq!(m.to_string().split_whitespace().count(), RECOVERY_WORD_COUNT);
+        assert_eq!(
+            m.to_string().split_whitespace().count(),
+            RECOVERY_WORD_COUNT
+        );
     }
 
     #[test]
@@ -133,7 +138,9 @@ mod tests {
     #[test]
     fn parse_rejects_bad_checksum() {
         // 24 valid wordlist words but arranged to fail the checksum.
-        let bad = std::iter::repeat_n("abandon", 24).collect::<Vec<_>>().join(" ");
+        let bad = std::iter::repeat_n("abandon", 24)
+            .collect::<Vec<_>>()
+            .join(" ");
         let err = parse_mnemonic(&bad).unwrap_err();
         assert!(matches!(err, RecoveryError::InvalidMnemonic(_)));
     }
@@ -213,10 +220,7 @@ mod tests {
         let new_wrapped = wrap_key(&new_root.kek, &recovered_envelope)?;
         let argon2_json = format!(
             r#"{{"mode":"LOCAL_VAULT","parameter_set_version":{},"memory_cost_kib":{},"time_cost":{},"lanes":{}}}"#,
-            params.parameter_set_version,
-            params.memory_cost_kib,
-            params.time_cost,
-            params.lanes
+            params.parameter_set_version, params.memory_cost_kib, params.time_cost, params.lanes
         );
         db::rotate_vault_state(
             &pool,
@@ -238,7 +242,12 @@ mod tests {
 
         // 4. Original passphrase must no longer unlock.
         let store_old = VaultKeyStore::new();
-        assert!(store_old.unlock(&pool, "original-passphrase").await.is_err());
+        assert!(
+            store_old
+                .unlock(&pool, "original-passphrase")
+                .await
+                .is_err()
+        );
 
         // 5. New passphrase unlocks, exposes the same envelope VK, and the
         //    DEK wrapped under the old passphrase still decrypts.
@@ -255,7 +264,11 @@ mod tests {
         // 7. Revoke removes the recovery key from the active set.
         let revoked = db::revoke_all_recovery_keys(&pool, &vault.vault_id).await?;
         assert_eq!(revoked, 1);
-        assert!(db::list_active_recovery_keys(&pool, &vault.vault_id).await?.is_empty());
+        assert!(
+            db::list_active_recovery_keys(&pool, &vault.vault_id)
+                .await?
+                .is_empty()
+        );
 
         Ok(())
     }

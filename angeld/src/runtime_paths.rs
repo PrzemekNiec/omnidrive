@@ -28,10 +28,11 @@ impl RuntimePaths {
         let mode = detect_runtime_mode();
         let local_app_base = local_app_omnidrive_root();
         let workspace_runtime_base = PathBuf::from(".omnidrive");
-        let runtime_base_dir = env_path("OMNIDRIVE_RUNTIME_BASE_DIR").unwrap_or_else(|| match mode {
-            RuntimeMode::Installed => local_app_base.clone(),
-            RuntimeMode::Workspace => workspace_runtime_base,
-        });
+        let runtime_base_dir =
+            env_path("OMNIDRIVE_RUNTIME_BASE_DIR").unwrap_or_else(|| match mode {
+                RuntimeMode::Installed => local_app_base.clone(),
+                RuntimeMode::Workspace => workspace_runtime_base,
+            });
 
         let db_url = env::var("OMNIDRIVE_DB_URL").unwrap_or_else(|_| {
             if let Some(path) = env_path("OMNIDRIVE_DB_PATH") {
@@ -61,14 +62,13 @@ impl RuntimePaths {
             }
         });
 
-        let download_spool_dir =
-            env_path("OMNIDRIVE_DOWNLOAD_SPOOL_DIR").unwrap_or_else(|| {
-                if mode == RuntimeMode::Installed {
-                    runtime_base_dir.join("download-spool")
-                } else {
-                    PathBuf::from(".omnidrive").join("download-spool")
-                }
-            });
+        let download_spool_dir = env_path("OMNIDRIVE_DOWNLOAD_SPOOL_DIR").unwrap_or_else(|| {
+            if mode == RuntimeMode::Installed {
+                runtime_base_dir.join("download-spool")
+            } else {
+                PathBuf::from(".omnidrive").join("download-spool")
+            }
+        });
 
         let log_dir = env_path("OMNIDRIVE_LOG_DIR").unwrap_or_else(|| {
             if mode == RuntimeMode::Installed {
@@ -78,8 +78,8 @@ impl RuntimePaths {
             }
         });
 
-        let sync_root = env_path("OMNIDRIVE_SYNC_ROOT")
-            .unwrap_or_else(|| local_app_base.join("OmniSync"));
+        let sync_root =
+            env_path("OMNIDRIVE_SYNC_ROOT").unwrap_or_else(|| local_app_base.join("OmniSync"));
         let default_watch_dir = env_path("OMNIDRIVE_WATCH_DIR").or_else(|| {
             if mode == RuntimeMode::Installed {
                 Some(default_local_vault_root())
@@ -261,9 +261,10 @@ fn detect_runtime_mode() -> RuntimeMode {
     }
 
     if let Ok(exe_path) = env::current_exe()
-        && is_in_installed_location(&exe_path) {
-            return RuntimeMode::Installed;
-        }
+        && is_in_installed_location(&exe_path)
+    {
+        return RuntimeMode::Installed;
+    }
 
     RuntimeMode::Workspace
 }

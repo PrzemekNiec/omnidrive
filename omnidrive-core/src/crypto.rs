@@ -252,8 +252,7 @@ pub fn encrypt_chunk_v2(
     let mut nonce = [0u8; CHUNK_NONCE_LEN];
     rand::rngs::OsRng.fill_bytes(&mut nonce);
 
-    let cipher =
-        Aes256Gcm::new_from_slice(dek).map_err(|_| CryptoError::Aead(aes_gcm::Error))?;
+    let cipher = Aes256Gcm::new_from_slice(dek).map_err(|_| CryptoError::Aead(aes_gcm::Error))?;
     let mut ciphertext = plaintext_chunk.to_vec();
     let tag = cipher
         .encrypt_in_place_detached(Nonce::from_slice(&nonce), aad, &mut ciphertext)
@@ -279,8 +278,7 @@ pub fn decrypt_chunk_v2(
     ciphertext: &[u8],
     gcm_tag: &GcmTag,
 ) -> Result<Vec<u8>, CryptoError> {
-    let cipher =
-        Aes256Gcm::new_from_slice(dek).map_err(|_| CryptoError::Aead(aes_gcm::Error))?;
+    let cipher = Aes256Gcm::new_from_slice(dek).map_err(|_| CryptoError::Aead(aes_gcm::Error))?;
     let mut plaintext = ciphertext.to_vec();
     cipher
         .decrypt_in_place_detached(
@@ -312,7 +310,10 @@ pub fn generate_random_key() -> KeyBytes {
 
 /// Wrap a 256-bit key using AES-256-KW (RFC 3394).
 /// Returns 40 bytes (32-byte key + 8-byte integrity check value).
-pub fn wrap_key(wrapping_key: &KeyBytes, plaintext_key: &KeyBytes) -> Result<[u8; WRAPPED_KEY_LEN], CryptoError> {
+pub fn wrap_key(
+    wrapping_key: &KeyBytes,
+    plaintext_key: &KeyBytes,
+) -> Result<[u8; WRAPPED_KEY_LEN], CryptoError> {
     let kek = Kek::from(*wrapping_key);
     let mut output = [0u8; WRAPPED_KEY_LEN];
     kek.wrap(plaintext_key, &mut output)
@@ -321,7 +322,10 @@ pub fn wrap_key(wrapping_key: &KeyBytes, plaintext_key: &KeyBytes) -> Result<[u8
 }
 
 /// Unwrap a 40-byte AES-KW ciphertext back to a 256-bit key.
-pub fn unwrap_key(wrapping_key: &KeyBytes, wrapped_key: &[u8; WRAPPED_KEY_LEN]) -> Result<KeyBytes, CryptoError> {
+pub fn unwrap_key(
+    wrapping_key: &KeyBytes,
+    wrapped_key: &[u8; WRAPPED_KEY_LEN],
+) -> Result<KeyBytes, CryptoError> {
     let kek = Kek::from(*wrapping_key);
     let mut output = [0u8; KEY_LEN];
     kek.unwrap(wrapped_key, &mut output)
@@ -342,7 +346,11 @@ pub fn derive_subkey(master: &KeyBytes, info: &[u8]) -> Result<KeyBytes, CryptoE
 
 /// Encrypt a small secret with AES-256-GCM.  Returns `nonce[12] || ciphertext || tag[16]`.
 /// `aad` is authenticated but not encrypted (use e.g. user_id to bind ciphertext to an identity).
-pub fn encrypt_secret(key: &KeyBytes, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub fn encrypt_secret(
+    key: &KeyBytes,
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     let mut nonce_bytes = [0u8; CHUNK_NONCE_LEN];
     rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::Aead(aes_gcm::Error))?;
@@ -445,23 +453,19 @@ mod tests {
     fn rfc3394_test_vector_256bit() {
         // RFC 3394 § 4.6: 256-bit KEK wrapping 256-bit data
         let kek_bytes: [u8; 32] = [
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-            0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-            0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
+            0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B,
+            0x1C, 0x1D, 0x1E, 0x1F,
         ];
         let plaintext: [u8; 32] = [
-            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-            0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-            0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+            0xEE, 0xFF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+            0x0C, 0x0D, 0x0E, 0x0F,
         ];
         let expected_wrapped: [u8; 40] = [
-            0x28, 0xC9, 0xF4, 0x04, 0xC4, 0xB8, 0x10, 0xF4,
-            0xCB, 0xCC, 0xB3, 0x5C, 0xFB, 0x87, 0xF8, 0x26,
-            0x3F, 0x57, 0x86, 0xE2, 0xD8, 0x0E, 0xD3, 0x26,
-            0xCB, 0xC7, 0xF0, 0xE7, 0x1A, 0x99, 0xF4, 0x3B,
-            0xFB, 0x98, 0x8B, 0x9B, 0x7A, 0x02, 0xDD, 0x21,
+            0x28, 0xC9, 0xF4, 0x04, 0xC4, 0xB8, 0x10, 0xF4, 0xCB, 0xCC, 0xB3, 0x5C, 0xFB, 0x87,
+            0xF8, 0x26, 0x3F, 0x57, 0x86, 0xE2, 0xD8, 0x0E, 0xD3, 0x26, 0xCB, 0xC7, 0xF0, 0xE7,
+            0x1A, 0x99, 0xF4, 0x3B, 0xFB, 0x98, 0x8B, 0x9B, 0x7A, 0x02, 0xDD, 0x21,
         ];
 
         let wrapped = wrap_key(&kek_bytes, &plaintext).unwrap();
@@ -497,7 +501,13 @@ mod tests {
         let dek_b = generate_random_key();
         let encrypted = encrypt_chunk_v2(&dek_a, b"secret data", b"").unwrap();
 
-        let result = decrypt_chunk_v2(&dek_b, &encrypted.nonce, b"", &encrypted.ciphertext, &encrypted.gcm_tag);
+        let result = decrypt_chunk_v2(
+            &dek_b,
+            &encrypted.nonce,
+            b"",
+            &encrypted.ciphertext,
+            &encrypted.gcm_tag,
+        );
         assert!(result.is_err());
     }
 
@@ -559,10 +569,10 @@ mod tests {
     fn v2_wire_format_various_sizes() {
         let dek = generate_random_key();
         let test_cases: Vec<Vec<u8>> = vec![
-            vec![],                          // empty
-            vec![0x42],                      // 1 byte
-            vec![0xAB; 1024],                // 1 KB
-            vec![0xCD; 64 * 1024],           // 64 KB (typical chunk)
+            vec![],                // empty
+            vec![0x42],            // 1 byte
+            vec![0xAB; 1024],      // 1 KB
+            vec![0xCD; 64 * 1024], // 64 KB (typical chunk)
         ];
 
         for plaintext in &test_cases {

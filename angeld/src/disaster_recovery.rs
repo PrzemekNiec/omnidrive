@@ -3,6 +3,8 @@ use crate::db;
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::onboarding::{get_active_provider_configs, unseal_provider_secrets};
 use crate::secure_fs::secure_delete;
+use crate::uploader::{ProviderConfig, Uploader, UploaderError};
+use crate::vault::VaultKeyStore;
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
@@ -17,8 +19,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, MissedTickBehavior, interval};
-use crate::uploader::{ProviderConfig, Uploader, UploaderError};
-use crate::vault::VaultKeyStore;
 use tracing::{info, warn};
 
 pub const METADATA_BACKUP_MAGIC: &[u8; 15] = b"OMNIDRIVE-META1";
@@ -57,10 +57,16 @@ impl fmt::Display for DisasterRecoveryError {
             Self::Uploader(err) => write!(f, "uploader error: {err}"),
             Self::NoConfiguredProviders => write!(f, "no metadata backup providers configured"),
             Self::NoSuccessfulUploads => write!(f, "metadata backup failed on every provider"),
-            Self::InvalidBackupFormat(reason) => write!(f, "invalid metadata backup format: {reason}"),
+            Self::InvalidBackupFormat(reason) => {
+                write!(f, "invalid metadata backup format: {reason}")
+            }
             Self::BackupDecryptFailed => write!(f, "failed to decrypt metadata backup"),
             Self::DownloadFailed(errors) => {
-                write!(f, "failed to download metadata backup: {}", errors.join(" | "))
+                write!(
+                    f,
+                    "failed to download metadata backup: {}",
+                    errors.join(" | ")
+                )
             }
         }
     }
@@ -140,9 +146,8 @@ impl MetadataBackupProviderManager {
 
         for config in configs {
             uploaders.push(Uploader::from_provider_config(config.clone()).await?);
-            download_providers.push(
-                MetadataBackupDownloadProvider::from_provider_config(config).await?,
-            );
+            download_providers
+                .push(MetadataBackupDownloadProvider::from_provider_config(config).await?);
         }
 
         if uploaders.is_empty() {
@@ -195,14 +200,14 @@ impl MetadataBackupProviderManager {
 
         Ok(Self {
             uploaders: Vec::new(),
-            download_providers: vec![MetadataBackupDownloadProvider::from_provider_config(config).await?],
+            download_providers: vec![
+                MetadataBackupDownloadProvider::from_provider_config(config).await?,
+            ],
             local_store: None,
         })
     }
 
-    pub async fn from_onboarding_db_all(
-        pool: &SqlitePool,
-    ) -> Result<Self, DisasterRecoveryError> {
+    pub async fn from_onboarding_db_all(pool: &SqlitePool) -> Result<Self, DisasterRecoveryError> {
         let configs = get_active_provider_configs(pool)
             .await
             .map_err(|err| DisasterRecoveryError::DownloadFailed(vec![err.to_string()]))?;
@@ -224,9 +229,8 @@ impl MetadataBackupProviderManager {
         let mut download_providers = Vec::with_capacity(configs.len());
         for config in configs {
             uploaders.push(Uploader::from_provider_config(config.clone()).await?);
-            download_providers.push(
-                MetadataBackupDownloadProvider::from_provider_config(config).await?,
-            );
+            download_providers
+                .push(MetadataBackupDownloadProvider::from_provider_config(config).await?);
         }
 
         Ok(Self {
@@ -352,11 +356,9 @@ pub async fn create_encrypted_metadata_snapshot(
 
     create_metadata_snapshot(source_pool, &temp_snapshot_path).await?;
 
-    let vault_config = db::get_vault_config(source_pool)
-        .await?
-        .ok_or(DisasterRecoveryError::InvalidBackupFormat(
-            "vault_config missing",
-        ))?;
+    let vault_config = db::get_vault_config(source_pool).await?.ok_or(
+        DisasterRecoveryError::InvalidBackupFormat("vault_config missing"),
+    )?;
     let kdf_params = RootKdfParams::new(
         u32::try_from(vault_config.parameter_set_version)
             .map_err(|_| DisasterRecoveryError::InvalidBackupFormat("parameter_set_version"))?,
@@ -381,7 +383,9 @@ pub async fn create_encrypted_metadata_snapshot(
     encrypt_result?;
     match remove_result {
         Ok(()) => Ok(()),
-        Err(err) => Err(DisasterRecoveryError::Io(std::io::Error::other(err.to_string()))),
+        Err(err) => Err(DisasterRecoveryError::Io(std::io::Error::other(
+            err.to_string(),
+        ))),
     }
 }
 
@@ -401,11 +405,7 @@ pub async fn encrypt_metadata_snapshot(
         DisasterRecoveryError::InvalidOutputPath("metadata backup key length was invalid")
     })?;
     let mut ciphertext = input_bytes;
-    let tag = cipher.encrypt_in_place_detached(
-        Nonce::from_slice(&nonce),
-        &[],
-        &mut ciphertext,
-    )?;
+    let tag = cipher.encrypt_in_place_detached(Nonce::from_slice(&nonce), &[], &mut ciphertext)?;
 
     if let Some(parent) = output_enc_path.parent() {
         fs::create_dir_all(parent).await?;
@@ -532,9 +532,7 @@ async fn write_plaintext_snapshot_if_valid(
     snapshot_has_vault_state_row(output_db_path).await
 }
 
-async fn snapshot_has_vault_state_row(
-    snapshot_path: &Path,
-) -> Result<bool, DisasterRecoveryError> {
+async fn snapshot_has_vault_state_row(snapshot_path: &Path) -> Result<bool, DisasterRecoveryError> {
     let db_url = format!(
         "sqlite://{}",
         snapshot_path.to_string_lossy().replace('\\', "/")
@@ -558,10 +556,7 @@ pub async fn upload_metadata_backup(
     let encrypted_size = i64::try_from(metadata.len())
         .map_err(|_| DisasterRecoveryError::InvalidOutputPath("encrypted size overflow"))?;
     let created_at = unix_timestamp_ms()? as i64;
-    let snapshot_key = format!(
-        "_omnidrive/system/metadata/snapshots/{}.db.enc",
-        created_at
-    );
+    let snapshot_key = format!("_omnidrive/system/metadata/snapshots/{}.db.enc", created_at);
     let latest_key = "_omnidrive/system/metadata/latest.db.enc";
 
     let mut successful_uploads = 0usize;
@@ -581,39 +576,32 @@ pub async fn upload_metadata_backup(
         .await?;
 
         match local_store.upload_file(enc_file_path, &snapshot_key).await {
-            Ok(()) => {
-                match local_store.upload_file(enc_file_path, latest_key).await {
-                    Ok(()) => {
-                        successful_uploads += 1;
-                        db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
-                            .await?;
-                    }
-                    Err(err) => {
-                        let error_text = format!("latest pointer update failed: {err}");
-                        db::update_metadata_backup_status(
-                            db_pool,
-                            &backup_id,
-                            "FAILED",
-                            Some(&error_text),
-                        )
+            Ok(()) => match local_store.upload_file(enc_file_path, latest_key).await {
+                Ok(()) => {
+                    successful_uploads += 1;
+                    db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
                         .await?;
-                        warn!(
-                            "metadata backup latest pointer update failed for {}: {}",
-                            local_store.provider_name(),
-                            err
-                        );
-                    }
                 }
-            }
+                Err(err) => {
+                    let error_text = format!("latest pointer update failed: {err}");
+                    db::update_metadata_backup_status(
+                        db_pool,
+                        &backup_id,
+                        "FAILED",
+                        Some(&error_text),
+                    )
+                    .await?;
+                    warn!(
+                        "metadata backup latest pointer update failed for {}: {}",
+                        local_store.provider_name(),
+                        err
+                    );
+                }
+            },
             Err(err) => {
                 let error_text = err.to_string();
-                db::update_metadata_backup_status(
-                    db_pool,
-                    &backup_id,
-                    "FAILED",
-                    Some(&error_text),
-                )
-                .await?;
+                db::update_metadata_backup_status(db_pool, &backup_id, "FAILED", Some(&error_text))
+                    .await?;
             }
         }
     }
@@ -632,31 +620,32 @@ pub async fn upload_metadata_backup(
         )
         .await?;
 
-        match uploader.upload_system_file(enc_file_path, &snapshot_key).await {
-            Ok(_) => {
-                match uploader.upload_system_file(enc_file_path, latest_key).await {
-                    Ok(_) => {
-                        successful_uploads += 1;
-                        db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
-                            .await?;
-                    }
-                    Err(err) => {
-                        let error_text = format!("latest pointer update failed: {err}");
-                        db::update_metadata_backup_status(
-                            db_pool,
-                            &backup_id,
-                            "FAILED",
-                            Some(&error_text),
-                        )
+        match uploader
+            .upload_system_file(enc_file_path, &snapshot_key)
+            .await
+        {
+            Ok(_) => match uploader.upload_system_file(enc_file_path, latest_key).await {
+                Ok(_) => {
+                    successful_uploads += 1;
+                    db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
                         .await?;
-                        warn!(
-                            "metadata backup latest pointer update failed for {}: {}",
-                            uploader.provider_name(),
-                            err
-                        );
-                    }
                 }
-            }
+                Err(err) => {
+                    let error_text = format!("latest pointer update failed: {err}");
+                    db::update_metadata_backup_status(
+                        db_pool,
+                        &backup_id,
+                        "FAILED",
+                        Some(&error_text),
+                    )
+                    .await?;
+                    warn!(
+                        "metadata backup latest pointer update failed for {}: {}",
+                        uploader.provider_name(),
+                        err
+                    );
+                }
+            },
             Err(err) => {
                 db::update_metadata_backup_status(
                     db_pool,
@@ -868,9 +857,7 @@ fn unix_timestamp_ms() -> Result<u64, DisasterRecoveryError> {
 
 #[allow(dead_code)]
 impl MetadataBackupDownloadProvider {
-    async fn from_provider_config(
-        config: ProviderConfig,
-    ) -> Result<Self, DisasterRecoveryError> {
+    async fn from_provider_config(config: ProviderConfig) -> Result<Self, DisasterRecoveryError> {
         let timeout_config = aws_config::timeout::TimeoutConfig::builder()
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(90))
@@ -936,15 +923,13 @@ impl MetadataBackupDownloadProvider {
                 })
             })?;
 
-        let body = response
-            .body
-            .collect()
-            .await
-            .map_err(|err| DisasterRecoveryError::Uploader(UploaderError::Upload {
+        let body = response.body.collect().await.map_err(|err| {
+            DisasterRecoveryError::Uploader(UploaderError::Upload {
                 provider: self.provider_name,
                 operation: "get_object",
                 details: format!("{err}"),
-            }))?;
+            })
+        })?;
 
         let bytes = body.into_bytes().to_vec();
         if let Some(pool) = pool {
@@ -1025,7 +1010,10 @@ impl LocalMetadataBackupStore {
         Ok(fs::read(source_path).await?)
     }
 
-    async fn list_snapshot_keys(&self, max_keys: usize) -> Result<Vec<String>, DisasterRecoveryError> {
+    async fn list_snapshot_keys(
+        &self,
+        max_keys: usize,
+    ) -> Result<Vec<String>, DisasterRecoveryError> {
         let snapshot_root = self.root.join("_omnidrive\\system\\metadata\\snapshots");
         if !fs::try_exists(&snapshot_root).await? {
             return Ok(Vec::new());
@@ -1072,7 +1060,10 @@ mod tests {
 
         fs::create_dir_all(&test_root).await?;
 
-        let source_url = format!("sqlite://{}", source_path.to_string_lossy().replace('\\', "/"));
+        let source_url = format!(
+            "sqlite://{}",
+            source_path.to_string_lossy().replace('\\', "/")
+        );
         let pool = db::init_db(&source_url).await?;
         let inode_id = db::create_inode(&pool, None, "snapshot-test.txt", "FILE", 123).await?;
         assert!(inode_id > 0);
@@ -1095,8 +1086,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn encrypts_snapshot_into_expected_binary_format() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn encrypts_snapshot_into_expected_binary_format()
+    -> Result<(), Box<dyn std::error::Error>> {
         let test_root = env::temp_dir().join(format!(
             "omnidrive-dr-encrypt-test-{}",
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
@@ -1115,8 +1106,14 @@ mod tests {
 
         let encoded = fs::read(&output_path).await?;
         assert!(encoded.len() > METADATA_BACKUP_MAGIC.len() + 1 + METADATA_BACKUP_NONCE_LEN);
-        assert_eq!(&encoded[..METADATA_BACKUP_MAGIC.len()], METADATA_BACKUP_MAGIC);
-        assert_eq!(encoded[METADATA_BACKUP_MAGIC.len()], METADATA_BACKUP_VERSION);
+        assert_eq!(
+            &encoded[..METADATA_BACKUP_MAGIC.len()],
+            METADATA_BACKUP_MAGIC
+        );
+        assert_eq!(
+            encoded[METADATA_BACKUP_MAGIC.len()],
+            METADATA_BACKUP_VERSION
+        );
         let decrypted = decrypt_metadata_backup(&encoded, passphrase)?;
         assert_eq!(decrypted, b"sqlite-snapshot-payload");
 

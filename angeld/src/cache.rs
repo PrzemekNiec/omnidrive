@@ -235,7 +235,10 @@ impl CacheManager {
         let digest_hex = hex_lower(&digest);
         let dir_a = &digest_hex[..2];
         let dir_b = &digest_hex[2..4];
-        self.root_dir.join(dir_a).join(dir_b).join(format!("{cache_key}.bin"))
+        self.root_dir
+            .join(dir_a)
+            .join(dir_b)
+            .join(format!("{cache_key}.bin"))
     }
 
     async fn encrypt_cache_payload(
@@ -249,10 +252,13 @@ impl CacheManager {
         let mut nonce = [0u8; CACHE_NONCE_LEN];
         rand::rngs::OsRng.fill_bytes(&mut nonce);
         let ciphertext = cipher
-            .encrypt(Nonce::from_slice(&nonce), aes_gcm::aead::Payload {
-                msg: plaintext,
-                aad: cache_key.as_bytes(),
-            })
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                aes_gcm::aead::Payload {
+                    msg: plaintext,
+                    aad: cache_key.as_bytes(),
+                },
+            )
             .map_err(|_| CacheError::Crypto("cache encryption failed"))?;
 
         let mut output = Vec::with_capacity(CACHE_NONCE_LEN + ciphertext.len());
@@ -275,10 +281,13 @@ impl CacheManager {
             .map_err(|_| CacheError::Crypto("invalid cache key length"))?;
         let (nonce_bytes, ciphertext) = encrypted_payload.split_at(CACHE_NONCE_LEN);
         cipher
-            .decrypt(Nonce::from_slice(nonce_bytes), aes_gcm::aead::Payload {
-                msg: ciphertext,
-                aad: cache_key.as_bytes(),
-            })
+            .decrypt(
+                Nonce::from_slice(nonce_bytes),
+                aes_gcm::aead::Payload {
+                    msg: ciphertext,
+                    aad: cache_key.as_bytes(),
+                },
+            )
             .map_err(|_| CacheError::Crypto("cache decryption failed"))
     }
 }

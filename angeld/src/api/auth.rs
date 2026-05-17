@@ -1,5 +1,5 @@
-use super::error::ApiError;
 use super::ApiState;
+use super::error::ApiError;
 use crate::db;
 use crate::disaster_recovery;
 use crate::runtime_paths::RuntimePaths;
@@ -10,8 +10,8 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
 use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 #[derive(Deserialize)]
@@ -72,7 +72,8 @@ async fn post_unlock(
         }
 
         // 2. Hide OmniSync dir and mount virtual drive.
-        let preferred = std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
+        let preferred =
+            std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
         if let Err(err) = crate::virtual_drive::hide_sync_root(&paths.sync_root) {
             tracing::warn!("[UNLOCK] hide_sync_root failed: {err}");
         }
@@ -168,7 +169,10 @@ async fn get_auth_session(
 ) -> impl IntoResponse {
     match extract_session(&state.pool, &headers).await {
         Some(session) => {
-            let user = db::get_user(&state.pool, &session.user_id).await.ok().flatten();
+            let user = db::get_user(&state.pool, &session.user_id)
+                .await
+                .ok()
+                .flatten();
             Json(serde_json::json!({
                 "valid": true,
                 "user_id": session.user_id,
@@ -177,7 +181,7 @@ async fn get_auth_session(
                 "email": user.as_ref().and_then(|u| u.email.as_deref()),
                 "display_name": user.as_ref().map(|u| u.display_name.as_str()),
             }))
-        },
+        }
         None => Json(serde_json::json!({
             "valid": false,
             "error": "invalid_or_expired_session",
@@ -200,7 +204,10 @@ async fn post_auth_logout(
         })?;
 
     // Capture session identity before deleting so we can emit an audit event
-    let session_before = db::validate_user_session(&state.pool, token).await.ok().flatten();
+    let session_before = db::validate_user_session(&state.pool, token)
+        .await
+        .ok()
+        .flatten();
 
     let deleted = db::delete_user_session(&state.pool, token).await?;
     if deleted {
@@ -279,9 +286,11 @@ async fn post_change_password(
     headers: axum::http::HeaderMap,
     Json(request): Json<ChangePasswordRequest>,
 ) -> Result<Json<ChangePasswordResponse>, ApiError> {
-    extract_session(&state.pool, &headers).await.ok_or(ApiError::Unauthorized {
-        message: "valid session required to change password".to_string(),
-    })?;
+    extract_session(&state.pool, &headers)
+        .await
+        .ok_or(ApiError::Unauthorized {
+            message: "valid session required to change password".to_string(),
+        })?;
 
     if request.new_passphrase.expose_secret().is_empty() {
         return Err(ApiError::BadRequest {
@@ -294,7 +303,9 @@ async fn post_change_password(
         .vault_keys
         .verify_passphrase(&state.pool, request.old_passphrase.expose_secret())
         .await
-        .map_err(|e| ApiError::Internal { message: e.to_string() })?;
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
     if !valid {
         return Err(ApiError::BadRequest {
             code: "wrong_passphrase",
@@ -306,7 +317,9 @@ async fn post_change_password(
         .vault_keys
         .rotate_vault_key(&state.pool, request.new_passphrase.expose_secret())
         .await
-        .map_err(|e| ApiError::Internal { message: e.to_string() })?;
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
 
     // Update Windows Hello credential so subsequent Hello unlocks use the new passphrase.
     if let Err(err) = windows_hello::store_passphrase(request.new_passphrase.expose_secret()) {
@@ -363,7 +376,9 @@ pub(super) async fn spawn_post_rotation_backup(
             return;
         }
     };
-    let pm = match disaster_recovery::MetadataBackupProviderManager::from_onboarding_db_all(&pool).await {
+    let pm = match disaster_recovery::MetadataBackupProviderManager::from_onboarding_db_all(&pool)
+        .await
+    {
         Ok(pm) => pm,
         Err(e) => {
             warn!("[{caller}] post-rotation backup: provider config unavailable: {e}");
@@ -413,7 +428,8 @@ async fn post_windows_hello_unlock(
             tracing::warn!("[WH_UNLOCK] CF mount failed: {err}");
             return;
         }
-        let preferred = std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
+        let preferred =
+            std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
         if let Err(err) = crate::virtual_drive::hide_sync_root(&paths.sync_root) {
             tracing::warn!("[WH_UNLOCK] hide_sync_root failed: {err}");
         }

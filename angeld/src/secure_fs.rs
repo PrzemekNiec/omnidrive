@@ -125,13 +125,9 @@ pub async fn secure_delete(path: impl AsRef<Path>) -> Result<(), SecureFsError> 
     file.sync_all().await?;
     drop(file);
 
-    retry_io(
-        "secure_delete",
-        path,
-        5,
-        Duration::from_millis(500),
-        || fs::remove_file(path),
-    )
+    retry_io("secure_delete", path, 5, Duration::from_millis(500), || {
+        fs::remove_file(path)
+    })
     .await
     .or_else(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {

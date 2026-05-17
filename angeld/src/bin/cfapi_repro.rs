@@ -4,19 +4,18 @@ mod win {
     use std::iter;
     use std::os::windows::ffi::OsStrExt;
     use std::path::PathBuf;
-    use windows::core::{GUID, PCWSTR};
     use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
     use windows::Win32::Storage::CloudFilters::{
-        CfRegisterSyncRoot, CfUnregisterSyncRoot, CF_HARDLINK_POLICY, CF_HARDLINK_POLICY_NONE,
-        CF_HYDRATION_POLICY, CF_HYDRATION_POLICY_FULL, CF_HYDRATION_POLICY_MODIFIER,
-        CF_HYDRATION_POLICY_MODIFIER_NONE, CF_HYDRATION_POLICY_PRIMARY, CF_INSYNC_POLICY,
-        CF_INSYNC_POLICY_NONE, CF_PLACEHOLDER_MANAGEMENT_POLICY,
-        CF_PLACEHOLDER_MANAGEMENT_POLICY_CREATE_UNRESTRICTED, CF_POPULATION_POLICY,
-        CF_POPULATION_POLICY_FULL, CF_POPULATION_POLICY_MODIFIER,
+        CF_HARDLINK_POLICY, CF_HARDLINK_POLICY_NONE, CF_HYDRATION_POLICY, CF_HYDRATION_POLICY_FULL,
+        CF_HYDRATION_POLICY_MODIFIER, CF_HYDRATION_POLICY_MODIFIER_NONE,
+        CF_HYDRATION_POLICY_PRIMARY, CF_INSYNC_POLICY, CF_INSYNC_POLICY_NONE,
+        CF_PLACEHOLDER_MANAGEMENT_POLICY, CF_PLACEHOLDER_MANAGEMENT_POLICY_CREATE_UNRESTRICTED,
+        CF_POPULATION_POLICY, CF_POPULATION_POLICY_FULL, CF_POPULATION_POLICY_MODIFIER,
         CF_POPULATION_POLICY_MODIFIER_NONE, CF_POPULATION_POLICY_PRIMARY, CF_REGISTER_FLAG_NONE,
-        CF_SYNC_POLICIES, CF_SYNC_REGISTRATION,
+        CF_SYNC_POLICIES, CF_SYNC_REGISTRATION, CfRegisterSyncRoot, CfUnregisterSyncRoot,
     };
-    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+    use windows::core::{GUID, PCWSTR};
 
     const PROVIDER_NAME: &str = "OmniDrive_SA";
     const PROVIDER_VERSION: &str = "1.0";
@@ -53,10 +52,13 @@ mod win {
         } else if hr == RPC_E_CHANGED_MODE {
             false
         } else {
-            return Err(format!("CoInitializeEx failed: {}", windows::core::Error::from(hr)).into());
+            return Err(
+                format!("CoInitializeEx failed: {}", windows::core::Error::from(hr)).into(),
+            );
         };
 
-        let sync_root = PathBuf::from(r"C:\Users\Przemek\AppData\Local\OmniDrive_StandAlone\SyncRoot");
+        let sync_root =
+            PathBuf::from(r"C:\Users\Przemek\AppData\Local\OmniDrive_StandAlone\SyncRoot");
         println!("create_dir_all({})", sync_root.display());
         std::fs::create_dir_all(&sync_root)?;
 

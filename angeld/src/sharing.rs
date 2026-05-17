@@ -4,8 +4,8 @@
 //! (never sent to the server). Recipients decrypt in-browser via WebCrypto.
 
 use argon2::{Algorithm, Argon2, Params, Version};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
 
 /// Length of the random share ID in bytes (128-bit).

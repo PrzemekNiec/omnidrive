@@ -44,7 +44,10 @@ impl From<windows::core::Error> for VirtualDriveError {
     }
 }
 
-pub fn mount_virtual_drive(drive_letter: &str, target_path: &Path) -> Result<(), VirtualDriveError> {
+pub fn mount_virtual_drive(
+    drive_letter: &str,
+    target_path: &Path,
+) -> Result<(), VirtualDriveError> {
     #[cfg(windows)]
     {
         imp::mount_virtual_drive(drive_letter, target_path)
@@ -58,7 +61,9 @@ pub fn mount_virtual_drive(drive_letter: &str, target_path: &Path) -> Result<(),
     }
 }
 
-pub fn select_mount_drive_letter(preferred_drive_letter: &str) -> Result<String, VirtualDriveError> {
+pub fn select_mount_drive_letter(
+    preferred_drive_letter: &str,
+) -> Result<String, VirtualDriveError> {
     #[cfg(windows)]
     {
         imp::select_mount_drive_letter(preferred_drive_letter)
@@ -149,19 +154,19 @@ mod imp {
     use std::ffi::OsStr;
     use std::iter;
     use std::os::windows::ffi::OsStrExt;
-    use std::path::{Path, PathBuf};
     use std::os::windows::process::CommandExt;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
-        GetFileAttributesW, GetLogicalDrives, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN,
-        FILE_FLAGS_AND_ATTRIBUTES,
+        FILE_ATTRIBUTE_HIDDEN, FILE_FLAGS_AND_ATTRIBUTES, GetFileAttributesW, GetLogicalDrives,
+        SetFileAttributesW,
     };
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, REG_SZ,
+        HKEY, HKEY_CURRENT_USER, REG_SZ, RegCloseKey, RegCreateKeyW, RegSetValueExW,
     };
     use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
+    use windows::core::PCWSTR;
 
     pub fn mount_virtual_drive(
         drive_letter: &str,
@@ -184,11 +189,13 @@ mod imp {
             )));
         }
 
-        let drive_root = format!(r"{}\",
-            device_name
-        );
-        std::fs::read_dir(&drive_root)
-            .map_err(|err| VirtualDriveError::CommandFailed(format!("mounted drive {} is not browsable: {}", drive_root, err)))?;
+        let drive_root = format!(r"{}\", device_name);
+        std::fs::read_dir(&drive_root).map_err(|err| {
+            VirtualDriveError::CommandFailed(format!(
+                "mounted drive {} is not browsable: {}",
+                drive_root, err
+            ))
+        })?;
 
         Ok(())
     }
@@ -254,7 +261,9 @@ mod imp {
     }
 
     pub fn list_virtual_drives() -> Result<Vec<(String, PathBuf)>, VirtualDriveError> {
-        let output = Command::new("subst").creation_flags(CREATE_NO_WINDOW).output()?;
+        let output = Command::new("subst")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()?;
         if !output.status.success() {
             return Err(VirtualDriveError::CommandFailed(format!(
                 "subst query failed: {}",
@@ -325,14 +334,20 @@ mod imp {
     }
 
     fn normalize_drive_letter(drive_letter: &str) -> Result<String, VirtualDriveError> {
-        let trimmed = drive_letter.trim().trim_end_matches('\\').trim_end_matches('/');
+        let trimmed = drive_letter
+            .trim()
+            .trim_end_matches('\\')
+            .trim_end_matches('/');
         let core = trimmed.strip_suffix(':').unwrap_or(trimmed);
 
         if core.len() != 1 {
             return Err(VirtualDriveError::InvalidDriveLetter);
         }
 
-        let letter = core.chars().next().ok_or(VirtualDriveError::InvalidDriveLetter)?;
+        let letter = core
+            .chars()
+            .next()
+            .ok_or(VirtualDriveError::InvalidDriveLetter)?;
         if !letter.is_ascii_alphabetic() {
             return Err(VirtualDriveError::InvalidDriveLetter);
         }
@@ -363,12 +378,7 @@ mod imp {
         let mut key = HKEY::default();
 
         unsafe {
-            RegCreateKeyW(
-                HKEY_CURRENT_USER,
-                PCWSTR(path_w.as_ptr()),
-                &mut key,
-            )
-            .ok()?;
+            RegCreateKeyW(HKEY_CURRENT_USER, PCWSTR(path_w.as_ptr()), &mut key).ok()?;
 
             let bytes = std::slice::from_raw_parts(
                 value_w.as_ptr().cast::<u8>(),

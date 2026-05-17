@@ -24,9 +24,7 @@ pub async fn seed_mock_providers(
 
     // Set sync policy to PARANOIA (EC_2_1) for the watch root so ingested files
     // are uploaded with erasure coding instead of defaulting to LOCAL_ONLY.
-    let policy_path = watch_root
-        .to_string_lossy()
-        .replace('\\', "/");
+    let policy_path = watch_root.to_string_lossy().replace('\\', "/");
     db::set_sync_policy_type_for_path(pool, &policy_path, "PARANOIA").await?;
 
     let endpoint = format!("http://{mock_addr}");
@@ -44,8 +42,8 @@ pub async fn seed_mock_providers(
             &endpoint,
             region,
             bucket,
-            true,  // force_path_style
-            true,  // enabled
+            true, // force_path_style
+            true, // enabled
             None,
             Some("VALID"),
             None,

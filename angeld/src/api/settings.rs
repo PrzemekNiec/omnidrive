@@ -9,9 +9,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
+use super::ApiState;
 use super::auth::extract_session;
 use super::error::ApiError;
-use super::ApiState;
 
 #[derive(Serialize)]
 struct SettingsPathsResponse {
@@ -42,7 +42,9 @@ async fn get_paths(
 ) -> Result<Json<SettingsPathsResponse>, ApiError> {
     extract_session(&state.pool, &headers)
         .await
-        .ok_or(ApiError::Unauthorized { message: "session required".into() })?;
+        .ok_or(ApiError::Unauthorized {
+            message: "session required".into(),
+        })?;
     let paths = RuntimePaths::detect();
     Ok(Json(SettingsPathsResponse {
         log_dir: paths.log_dir.to_string_lossy().into_owned(),
@@ -57,17 +59,16 @@ async fn post_autostart(
 ) -> Result<Json<AutostartResponse>, ApiError> {
     extract_session(&state.pool, &headers)
         .await
-        .ok_or(ApiError::Unauthorized { message: "session required".into() })?;
+        .ok_or(ApiError::Unauthorized {
+            message: "session required".into(),
+        })?;
 
     if req.enabled {
-        let cmd = autostart::default_current_user_autostart_command()
-            .map_err(ApiError::from)?;
-        autostart::register_current_user_autostart(&cmd)
-            .map_err(ApiError::from)?;
+        let cmd = autostart::default_current_user_autostart_command().map_err(ApiError::from)?;
+        autostart::register_current_user_autostart(&cmd).map_err(ApiError::from)?;
         info!("autostart enabled for current user");
     } else {
-        autostart::unregister_current_user_autostart()
-            .map_err(ApiError::from)?;
+        autostart::unregister_current_user_autostart().map_err(ApiError::from)?;
         info!("autostart disabled for current user");
     }
     Ok(Json(AutostartResponse { status: "ok" }))
@@ -79,7 +80,9 @@ async fn post_restart_daemon(
 ) -> Result<impl IntoResponse, ApiError> {
     extract_session(&state.pool, &headers)
         .await
-        .ok_or(ApiError::Unauthorized { message: "session required".into() })?;
+        .ok_or(ApiError::Unauthorized {
+            message: "session required".into(),
+        })?;
 
     // Signal the API server's graceful-shutdown future; main.rs select! then
     // runs the normal cleanup path (SyncRoot, virtual drive, pool close).
@@ -97,7 +100,13 @@ mod tests {
         use std::path::PathBuf;
         let err = autostart::AutostartError::MissingExecutable(PathBuf::from("angeld.exe"));
         let api_err = ApiError::from(err);
-        assert!(matches!(api_err, ApiError::BadRequest { code: "autostart_target_missing", .. }));
+        assert!(matches!(
+            api_err,
+            ApiError::BadRequest {
+                code: "autostart_target_missing",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -109,7 +118,10 @@ mod tests {
 
     #[test]
     fn autostart_error_io_maps_to_internal() {
-        let err = autostart::AutostartError::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"));
+        let err = autostart::AutostartError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
         let api_err = ApiError::from(err);
         assert!(matches!(api_err, ApiError::Internal { .. }));
     }

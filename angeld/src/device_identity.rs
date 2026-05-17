@@ -19,19 +19,20 @@ pub async fn ensure_local_device_identity(
 ) -> Result<LocalDeviceIdentity, sqlx::Error> {
     if let Some(existing) = db::get_local_device_identity(pool).await? {
         if let Some(device_name) = preferred_device_name(config)
-            && device_name != existing.device_name {
-                db::update_local_device_name(pool, &device_name).await?;
-                let refreshed = db::get_local_device_identity(pool)
-                    .await?
-                    .unwrap_or(existing);
-                return Ok(LocalDeviceIdentity {
-                    device_id: refreshed.device_id,
-                    device_name: refreshed.device_name,
-                    peer_token: refreshed.peer_token,
-                    created_at: refreshed.created_at,
-                    updated_at: refreshed.updated_at,
-                });
-            }
+            && device_name != existing.device_name
+        {
+            db::update_local_device_name(pool, &device_name).await?;
+            let refreshed = db::get_local_device_identity(pool)
+                .await?
+                .unwrap_or(existing);
+            return Ok(LocalDeviceIdentity {
+                device_id: refreshed.device_id,
+                device_name: refreshed.device_name,
+                peer_token: refreshed.peer_token,
+                created_at: refreshed.created_at,
+                updated_at: refreshed.updated_at,
+            });
+        }
 
         return Ok(LocalDeviceIdentity {
             device_id: existing.device_id,

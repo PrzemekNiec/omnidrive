@@ -17,8 +17,8 @@ use serde::Serialize;
 use tracing::{error, info};
 
 use super::error::ApiError;
-use super::{unix_timestamp_millis, ApiState, MaintenanceLevel, MaintenanceOverviewItem,
-    MaintenanceStatus,
+use super::{
+    ApiState, MaintenanceLevel, MaintenanceOverviewItem, MaintenanceStatus, unix_timestamp_millis,
 };
 
 // ── Request / Response types (maintenance-only) ─────────────────────────
@@ -126,7 +126,10 @@ pub(super) fn routes() -> Router<ApiState> {
         )
         .route("/api/metadata-backup/status", get(get_recovery_status))
         .route("/api/metadata-backup/backup-now", post(post_backup_now))
-        .route("/api/metadata-backup/snapshot-local", post(post_snapshot_local))
+        .route(
+            "/api/metadata-backup/snapshot-local",
+            post(post_snapshot_local),
+        )
         .route("/api/ingest", get(get_ingest_jobs))
         .route("/api/ingest/{job_id}/retry", post(post_ingest_retry))
         .route("/api/ingest/{job_id}/cleanup", post(post_ingest_cleanup))
@@ -150,9 +153,9 @@ async fn get_maintenance_status(
     };
     let backup = match build_recovery_status_response(&state).await {
         Ok(response) => maintenance_overview_item(&response),
-        Err(err) => maintenance_error_item(format!(
-            "Diagnostyka odzyskiwania nie powiodła się: {err}"
-        )),
+        Err(err) => {
+            maintenance_error_item(format!("Diagnostyka odzyskiwania nie powiodła się: {err}"))
+        }
     };
 
     Json(MaintenanceOverviewResponse {
@@ -163,9 +166,7 @@ async fn get_maintenance_status(
     })
 }
 
-async fn get_maintenance_diagnostics(
-    State(state): State<ApiState>,
-) -> Json<serde_json::Value> {
+async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> Json<serde_json::Value> {
     let health = match super::diagnostics::build_diagnostics_health_response(&state).await {
         Ok(response) => serde_json::to_value(response).unwrap_or_default(),
         Err(err) => serde_json::json!({
@@ -353,11 +354,8 @@ async fn post_gc_orphans(
 async fn get_retry_storms(
     State(state): State<ApiState>,
 ) -> Result<Json<RetryStormsResponse>, ApiError> {
-    let targets = db::list_retry_storm_targets(
-        &state.pool,
-        crate::uploader::UPLOAD_RETRY_PLATEAU_AT,
-    )
-    .await?;
+    let targets =
+        db::list_retry_storm_targets(&state.pool, crate::uploader::UPLOAD_RETRY_PLATEAU_AT).await?;
     let max_attempts = targets.iter().map(|t| t.attempts).max().unwrap_or(0);
     Ok(Json(RetryStormsResponse {
         plateau_threshold: crate::uploader::UPLOAD_RETRY_PLATEAU_AT,
@@ -405,11 +403,11 @@ async fn post_scrub_now(
             )
             .await;
             Ok(Json(serde_json::json!({
-            "status": "OK",
-            "message": format!("Light scrub completed. Processed {} shard(s).", processed_shards),
-            "last_run": unix_timestamp_millis(),
-            "processed_shards": processed_shards,
-        })))
+                "status": "OK",
+                "message": format!("Light scrub completed. Processed {} shard(s).", processed_shards),
+                "last_run": unix_timestamp_millis(),
+                "processed_shards": processed_shards,
+            })))
         }
         Err(scrubber::ScrubberError::MissingProviderConfig) => Ok(Json(serde_json::json!({
             "status": "WARN",
@@ -449,17 +447,17 @@ async fn post_repair_now(
             )
             .await;
             Ok(Json(serde_json::json!({
-            "status": "OK",
-            "message": if report.repaired_packs == 0 {
-                "Brak zdegradowanych pakietów wymagających natychmiastowej naprawy.".to_string()
-            } else {
-                format!("Naprawa przetworzyła {} zdegradowanych pakietów.", report.repaired_packs)
-            },
-            "last_run": unix_timestamp_millis(),
-            "processed_packs": report.processed_packs,
-            "repaired_packs": report.repaired_packs,
-            "reconciled_packs": report.reconciled_packs,
-        })))
+                "status": "OK",
+                "message": if report.repaired_packs == 0 {
+                    "Brak zdegradowanych pakietów wymagających natychmiastowej naprawy.".to_string()
+                } else {
+                    format!("Naprawa przetworzyła {} zdegradowanych pakietów.", report.repaired_packs)
+                },
+                "last_run": unix_timestamp_millis(),
+                "processed_packs": report.processed_packs,
+                "repaired_packs": report.repaired_packs,
+                "reconciled_packs": report.reconciled_packs,
+            })))
         }
         Err(RepairError::MissingProviderConfig) => Ok(Json(serde_json::json!({
             "status": "WARN",
@@ -501,17 +499,17 @@ async fn post_reconcile_now(
             )
             .await;
             Ok(Json(serde_json::json!({
-            "status": "OK",
-            "message": if report.reconciled_packs == 0 {
-                "No pack policy drift required reconciliation.".to_string()
-            } else {
-                format!("Reconciliation processed {} pack(s).", report.reconciled_packs)
-            },
-            "last_run": unix_timestamp_millis(),
-            "processed_packs": report.processed_packs,
-            "repaired_packs": report.repaired_packs,
-            "reconciled_packs": report.reconciled_packs,
-        })))
+                "status": "OK",
+                "message": if report.reconciled_packs == 0 {
+                    "No pack policy drift required reconciliation.".to_string()
+                } else {
+                    format!("Reconciliation processed {} pack(s).", report.reconciled_packs)
+                },
+                "last_run": unix_timestamp_millis(),
+                "processed_packs": report.processed_packs,
+                "repaired_packs": report.repaired_packs,
+                "reconciled_packs": report.reconciled_packs,
+            })))
         }
         Err(RepairError::MissingProviderConfig) => Ok(Json(serde_json::json!({
             "status": "WARN",
@@ -609,27 +607,26 @@ async fn post_snapshot_local(
     acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
     let output_path = std::path::PathBuf::from(&request.output_path);
-    let master_key = state.vault_keys.require_master_key().await.map_err(|err| {
-        match err {
+    let master_key = state
+        .vault_keys
+        .require_master_key()
+        .await
+        .map_err(|err| match err {
             VaultError::Locked => ApiError::BadRequest {
                 code: "vault_locked",
-                message: "odblokuj Skarbiec przed utworzeniem zaszyfrowanej migawki metadanych".to_string(),
+                message: "odblokuj Skarbiec przed utworzeniem zaszyfrowanej migawki metadanych"
+                    .to_string(),
             },
             other => ApiError::Internal {
                 message: other.to_string(),
             },
-        }
-    })?;
+        })?;
 
-    disaster_recovery::create_encrypted_metadata_snapshot(
-        &state.pool,
-        &output_path,
-        &master_key,
-    )
-    .await
-    .map_err(|err| ApiError::Internal {
-        message: err.to_string(),
-    })?;
+    disaster_recovery::create_encrypted_metadata_snapshot(&state.pool, &output_path, &master_key)
+        .await
+        .map_err(|err| ApiError::Internal {
+            message: err.to_string(),
+        })?;
 
     Ok(Json(SnapshotLocalResponse {
         output_path: if output_path
@@ -651,17 +648,20 @@ async fn post_backup_now(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
 
-    let master_key = state.vault_keys.require_master_key().await.map_err(|err| {
-        match err {
+    let master_key = state
+        .vault_keys
+        .require_master_key()
+        .await
+        .map_err(|err| match err {
             VaultError::Locked => ApiError::BadRequest {
                 code: "vault_locked",
-                message: "odblokuj Skarbiec przed utworzeniem zaszyfrowanej kopii metadanych".to_string(),
+                message: "odblokuj Skarbiec przed utworzeniem zaszyfrowanej kopii metadanych"
+                    .to_string(),
             },
             other => ApiError::Internal {
                 message: other.to_string(),
             },
-        }
-    })?;
+        })?;
 
     let provider_manager =
         disaster_recovery::MetadataBackupProviderManager::from_onboarding_db_all(&state.pool)

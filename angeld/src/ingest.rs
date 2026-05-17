@@ -166,7 +166,12 @@ pub struct IngestWorker {
 }
 
 impl IngestWorker {
-    pub fn new(pool: SqlitePool, vault_keys: VaultKeyStore, spool_dir: PathBuf, sync_root: PathBuf) -> Self {
+    pub fn new(
+        pool: SqlitePool,
+        vault_keys: VaultKeyStore,
+        spool_dir: PathBuf,
+        sync_root: PathBuf,
+    ) -> Self {
         let poll_ms: u64 = std::env::var("OMNIDRIVE_INGEST_POLL_INTERVAL_MS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -251,7 +256,13 @@ impl IngestWorker {
     /// `recover_interrupted_jobs` will reset it back to PENDING on next start.
     async fn process_job(&self, job: &IngestJob) -> Result<(), IngestError> {
         // ── Phase 1: PENDING → CHUNKING ───────────────────────────────
-        transition(&self.pool, job.id, IngestState::Pending, IngestState::Chunking).await?;
+        transition(
+            &self.pool,
+            job.id,
+            IngestState::Pending,
+            IngestState::Chunking,
+        )
+        .await?;
         info!("ingest: job {} → CHUNKING", job.id);
 
         let (inode_id, pack_result) = self.do_chunking(job).await?;
@@ -288,7 +299,10 @@ impl IngestWorker {
 
         // ── Cleanup: remove completed job so the worker doesn't revisit it ──
         if let Err(err) = db::delete_ingest_job(&self.pool, job.id).await {
-            warn!("ingest: job {} — cleanup failed (non-fatal): {}", job.id, err);
+            warn!(
+                "ingest: job {} — cleanup failed (non-fatal): {}",
+                job.id, err
+            );
         }
 
         Ok(())
@@ -310,14 +324,11 @@ impl IngestWorker {
         // Ensure inode hierarchy exists in DB for this file path.
         let metadata = tokio::fs::metadata(source_path).await?;
         let file_size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-        let mtime = metadata
-            .modified()
-            .ok()
-            .and_then(|t| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .map(|d| d.as_millis() as i64)
-            });
+        let mtime = metadata.modified().ok().and_then(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as i64)
+        });
         let inode_id =
             ensure_inode_path_for_ingest(&self.pool, &job.file_path, file_size, mtime).await?;
 
@@ -353,7 +364,10 @@ impl IngestWorker {
         pack_result: &PackResult,
     ) -> Result<(), IngestError> {
         if pack_result.pack_ids.is_empty() {
-            info!("ingest: job {} — no packs to upload (empty file or dedup)", job.id);
+            info!(
+                "ingest: job {} — no packs to upload (empty file or dedup)",
+                job.id
+            );
             return Ok(());
         }
 
@@ -391,12 +405,10 @@ impl IngestWorker {
             }
 
             if any_failed {
-                return Err(IngestError::Io(std::io::Error::other(
-                    format!(
-                        "one or more packs failed upload for job {}",
-                        job.id
-                    ),
-                )));
+                return Err(IngestError::Io(std::io::Error::other(format!(
+                    "one or more packs failed upload for job {}",
+                    job.id
+                ))));
             }
 
             if all_done {
@@ -484,10 +496,7 @@ async fn ensure_inode_path_for_ingest(
     file_mtime: Option<i64>,
 ) -> Result<i64, IngestError> {
     let normalized = file_path.replace('\\', "/");
-    let segments: Vec<&str> = normalized
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
+    let segments: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
 
     if segments.is_empty() {
         return Err(IngestError::Io(std::io::Error::new(
@@ -545,12 +554,11 @@ pub async fn cleanup_failed_ingest(
         .unwrap_or(&row.file_path)
         .to_string();
 
-    let inode_id: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM inodes WHERE name = ? AND kind = 'FILE' LIMIT 1",
-    )
-    .bind(&file_name)
-    .fetch_optional(pool)
-    .await?;
+    let inode_id: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM inodes WHERE name = ? AND kind = 'FILE' LIMIT 1")
+            .bind(&file_name)
+            .fetch_optional(pool)
+            .await?;
 
     // 3. Delete local spool files for all packs associated with this inode.
     if let Some(inode_id) = inode_id {

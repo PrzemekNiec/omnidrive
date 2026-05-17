@@ -2,7 +2,7 @@ use crate::acl::{self, Role};
 use crate::db;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -12,8 +12,8 @@ use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info};
 
-use super::error::ApiError;
 use super::ApiState;
+use super::error::ApiError;
 
 // ── Request / Response structs ──────────────────────────────────────────
 
@@ -103,11 +103,14 @@ async fn create_share_link(
 ) -> Result<(StatusCode, Json<CreateShareResponse>), ApiError> {
     let caller = acl::require_role(&state.pool, &headers, Role::Member).await?;
 
-    let envelope_key = state.vault_keys.require_envelope_key().await.map_err(|_| {
-        ApiError::Forbidden {
-            message: "vault is locked".to_string(),
-        }
-    })?;
+    let envelope_key =
+        state
+            .vault_keys
+            .require_envelope_key()
+            .await
+            .map_err(|_| ApiError::Forbidden {
+                message: "vault is locked".to_string(),
+            })?;
 
     let inode = db::get_inode_by_id(&state.pool, inode_id)
         .await?
@@ -435,25 +438,32 @@ async fn get_share_chunk(
 
     check_share_password_access(&state.pool, &link, &query.token).await?;
 
-    let downloader = state.downloader.as_ref().ok_or(ApiError::ServiceUnavailable {
-        message: "downloader unavailable".to_string(),
-    })?;
+    let downloader = state
+        .downloader
+        .as_ref()
+        .ok_or(ApiError::ServiceUnavailable {
+            message: "downloader unavailable".to_string(),
+        })?;
 
     let chunks = db::get_chunk_locations_for_revision(&state.pool, link.revision_id).await?;
 
-    let chunk = chunks.iter().find(|c| c.chunk_index == chunk_index).ok_or(
-        ApiError::NotFound {
+    let chunk = chunks
+        .iter()
+        .find(|c| c.chunk_index == chunk_index)
+        .ok_or(ApiError::NotFound {
             resource: "chunk",
             id: chunk_index.to_string(),
-        },
-    )?;
+        })?;
 
-    let encrypted = downloader.get_encrypted_chunk_bytes(chunk).await.map_err(|err| {
-        error!("failed to get encrypted chunk for share {share_id}: {err}");
-        ApiError::Internal {
-            message: "chunk fetch failed".to_string(),
-        }
-    })?;
+    let encrypted = downloader
+        .get_encrypted_chunk_bytes(chunk)
+        .await
+        .map_err(|err| {
+            error!("failed to get encrypted chunk for share {share_id}: {err}");
+            ApiError::Internal {
+                message: "chunk fetch failed".to_string(),
+            }
+        })?;
 
     // If this is the last chunk, increment download count
     let is_last_chunk = chunk_index == (chunks.len() as i64 - 1);

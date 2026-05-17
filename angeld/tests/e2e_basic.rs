@@ -96,26 +96,30 @@ impl DaemonHarness {
         let deadline = Instant::now() + Duration::from_secs(15);
 
         loop {
-            match http_get_json::<DiagnosticsHealth>(&format!(
-                "{}/api/diagnostics/health",
-                self.base_url
-            ), None)
+            match http_get_json::<DiagnosticsHealth>(
+                &format!("{}/api/diagnostics/health", self.base_url),
+                None,
+            )
             .await
             {
                 Ok(_) => return Ok(()),
                 Err(_) if Instant::now() < deadline => sleep(Duration::from_millis(100)).await,
                 Err(err) => {
-                    return Err(format!("{}\nlast error: {err}", self.failure_message("API did not become ready")).into())
+                    return Err(format!(
+                        "{}\nlast error: {err}",
+                        self.failure_message("API did not become ready")
+                    )
+                    .into());
                 }
             }
         }
     }
 
     async fn health(&self) -> Result<DiagnosticsHealth, Box<dyn std::error::Error>> {
-        http_get_json::<DiagnosticsHealth>(&format!(
-            "{}/api/diagnostics/health",
-            self.base_url
-        ), None)
+        http_get_json::<DiagnosticsHealth>(
+            &format!("{}/api/diagnostics/health", self.base_url),
+            None,
+        )
         .await
     }
 
@@ -146,8 +150,8 @@ impl Drop for DaemonHarness {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn happy_path_upload_queue_clears_and_uploader_returns_idle(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn happy_path_upload_queue_clears_and_uploader_returns_idle()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut harness = DaemonHarness::spawn().await?;
     let initial = harness.health().await?;
     assert_eq!(initial.pending_uploads_queue_size, 0);
@@ -210,7 +214,10 @@ async fn happy_path_upload_queue_clears_and_uploader_returns_idle(
         }
 
         let job = angeld::db::get_upload_job_by_pack_id(&pool, pack_id).await?;
-        let completed = matches!(job.as_ref().map(|job| job.status.as_str()), Some("COMPLETED"));
+        let completed = matches!(
+            job.as_ref().map(|job| job.status.as_str()),
+            Some("COMPLETED")
+        );
 
         if health.pending_uploads_queue_size == 0 && completed && saw_idle_after_active {
             assert!(health.uptime_seconds <= 30);
@@ -248,9 +255,12 @@ async fn http_get_json<T: for<'de> Deserialize<'de>>(
     url: &str,
     token: Option<&str>,
 ) -> Result<T, Box<dyn std::error::Error>> {
-    let without_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http:// URLs are supported"))?;
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http:// URLs are supported",
+        )
+    })?;
     let (host_port, path) = without_scheme
         .split_once('/')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
@@ -262,9 +272,8 @@ async fn http_get_json<T: for<'de> Deserialize<'de>>(
     };
 
     let mut stream = TcpStream::connect(host_port).await?;
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n"
-    );
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
 
     let mut response = Vec::new();

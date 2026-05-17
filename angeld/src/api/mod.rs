@@ -15,20 +15,20 @@ mod vault;
 use crate::diagnostics::{DaemonDiagnostics, WorkerKind, WorkerStatus};
 use crate::downloader::Downloader;
 use crate::vault::VaultKeyStore;
-use axum::http::{Method, header, HeaderName};
+use axum::Router;
+use axum::http::{HeaderName, Method, header};
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
-use axum::Router;
-use serde::Serialize;
-use tower_http::cors::{AllowOrigin, CorsLayer};
-use sqlx::SqlitePool;
 use dashmap::DashMap;
+use serde::Serialize;
+use sqlx::SqlitePool;
 use std::env;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::info;
 
 // ── Recovery rate limiter ──────────────────────────────────────────────
@@ -45,14 +45,17 @@ pub(super) struct RecoveryRateLimiter {
 
 impl RecoveryRateLimiter {
     fn new() -> Self {
-        Self { map: DashMap::new() }
+        Self {
+            map: DashMap::new(),
+        }
     }
 
     /// Returns `Err(retry_after_secs)` when the IP is rate-limited.
     pub(super) fn check(&self, ip: IpAddr) -> Result<(), u64> {
         let now = Instant::now();
         let mut rec = self.map.entry(ip).or_default();
-        rec.failures.retain(|t| now.duration_since(*t) < Duration::from_secs(300));
+        rec.failures
+            .retain(|t| now.duration_since(*t) < Duration::from_secs(300));
 
         if let Some(last) = rec.last_failure_at {
             let elapsed = now.duration_since(last);
@@ -94,7 +97,9 @@ pub(super) struct JoinRateLimiter {
 
 impl JoinRateLimiter {
     fn new() -> Self {
-        Self { map: DashMap::new() }
+        Self {
+            map: DashMap::new(),
+        }
     }
 
     /// Returns `Err(retry_after_secs)` when the IP must wait.
@@ -102,7 +107,8 @@ impl JoinRateLimiter {
     pub(super) fn check(&self, ip: IpAddr) -> Result<(), u64> {
         let now = Instant::now();
         let mut rec = self.map.entry(ip).or_default();
-        rec.failures.retain(|t| now.duration_since(*t) < Duration::from_secs(300));
+        rec.failures
+            .retain(|t| now.duration_since(*t) < Duration::from_secs(300));
 
         let fail_count = rec.failures.len();
         if fail_count < 3 {
@@ -162,7 +168,6 @@ pub enum ApiServerError {
     InvalidBindAddress(String),
     Io(std::io::Error),
 }
-
 
 #[derive(Clone, Copy)]
 pub(super) enum MaintenanceLevel {
@@ -244,7 +249,10 @@ impl ApiServer {
             .route("/wizard", get(get_wizard))
             .route("/wizard.js", get(get_wizard_js))
             .route("/qrcode.min.js", get(get_qrcode_js))
-            .route("/material-symbols-outlined.ttf", get(get_material_symbols_font))
+            .route(
+                "/material-symbols-outlined.ttf",
+                get(get_material_symbols_font),
+            )
             .merge(onboarding::routes())
             .merge(diagnostics::routes())
             .merge(maintenance::routes())
@@ -271,13 +279,16 @@ impl ApiServer {
         diagnostics.set_worker_status(WorkerKind::Api, WorkerStatus::Idle);
         info!("api server listening on http://{}", self.bind_addr);
 
-        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-            .with_graceful_shutdown(async move {
-                let mut rx = daemon_shutdown_rx;
-                rx.changed().await.ok();
-            })
-            .await
-            .map_err(ApiServerError::Io)
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let mut rx = daemon_shutdown_rx;
+            rx.changed().await.ok();
+        })
+        .await
+        .map_err(ApiServerError::Io)
     }
 }
 
@@ -315,8 +326,10 @@ async fn get_wizard() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-store"),
             (HeaderName::from_static("x-frame-options"), "DENY"),
             (HeaderName::from_static("referrer-policy"), "no-referrer"),
-            (HeaderName::from_static("content-security-policy"),
-             "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"),
+            (
+                HeaderName::from_static("content-security-policy"),
+                "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+            ),
         ],
         Html(include_str!("../../static/wizard.html")),
     )
@@ -325,7 +338,10 @@ async fn get_wizard() -> impl IntoResponse {
 async fn get_wizard_js() -> impl IntoResponse {
     (
         [
-            (header::CONTENT_TYPE, "application/javascript; charset=utf-8"),
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
             (header::CACHE_CONTROL, "no-store"),
         ],
         include_str!("../../static/wizard.js"),
@@ -397,17 +413,17 @@ fn is_allowed_origin(origin: &[u8]) -> bool {
     if host == b"localhost" || host == b"127.0.0.1" {
         return true;
     }
-    let Ok(s) = std::str::from_utf8(host) else { return false; };
-    let Ok(ip) = s.parse::<std::net::IpAddr>() else { return false; };
+    let Ok(s) = std::str::from_utf8(host) else {
+        return false;
+    };
+    let Ok(ip) = s.parse::<std::net::IpAddr>() else {
+        return false;
+    };
     match ip {
         std::net::IpAddr::V4(v4) => {
             let o = v4.octets();
-            o[0] == 10
-                || (o[0] == 172 && (16..=31).contains(&o[1]))
-                || (o[0] == 192 && o[1] == 168)
+            o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168)
         }
         std::net::IpAddr::V6(_) => false,
     }
 }
-
-

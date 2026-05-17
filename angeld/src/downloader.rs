@@ -17,10 +17,12 @@ use crate::vault::{VaultError, VaultKeyStore};
 use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
-use omnidrive_core::crypto::{ChunkId, CryptoError, GcmTag, KeyBytes, decrypt_chunk, decrypt_chunk_v2};
-use secrecy::ExposeSecret;
+use omnidrive_core::crypto::{
+    ChunkId, CryptoError, GcmTag, KeyBytes, decrypt_chunk, decrypt_chunk_v2,
+};
 use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix};
 use reed_solomon_erasure::galois_8::ReedSolomon;
+use secrecy::ExposeSecret;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::env;
@@ -124,7 +126,9 @@ impl fmt::Display for DownloaderError {
             }
             Self::InvalidPackRecord(reason) => write!(f, "invalid pack record: {reason}"),
             Self::CloudGuard(reason) => write!(f, "cloud guard blocked operation: {reason}"),
-            Self::RuntimeConfig(reason) => write!(f, "runtime provider configuration error: {reason}"),
+            Self::RuntimeConfig(reason) => {
+                write!(f, "runtime provider configuration error: {reason}")
+            }
         }
     }
 }
@@ -169,7 +173,10 @@ impl From<reed_solomon_erasure::Error> for DownloaderError {
 
 impl Downloader {
     pub fn has_remote_providers(&self) -> bool {
-        self.providers.read().map(|providers| !providers.is_empty()).unwrap_or(false)
+        self.providers
+            .read()
+            .map(|providers| !providers.is_empty())
+            .unwrap_or(false)
     }
 
     pub async fn from_env(
@@ -273,7 +280,8 @@ impl Downloader {
         let output_path = output_path.as_ref().to_path_buf();
         let vault_key = self.vault_keys.require_key().await?;
         // Try to get V2 DEK for this inode (may not exist for V1-only files)
-        let dek_option = self.vault_keys
+        let dek_option = self
+            .vault_keys
             .get_or_create_dek(&self.pool, inode_id)
             .await
             .ok()
@@ -301,7 +309,8 @@ impl Downloader {
             };
 
             let pack_bytes = fs::read(&source.local_path).await?;
-            let plaintext = decrypt_chunk_record(&pack_bytes, &chunk, &vault_key, dek_option.as_ref())?;
+            let plaintext =
+                decrypt_chunk_record(&pack_bytes, &chunk, &vault_key, dek_option.as_ref())?;
 
             let desired_offset = to_u64(chunk.file_offset, "file offset")?;
             if current_offset != desired_offset {
@@ -366,7 +375,8 @@ impl Downloader {
             .await?
             .unwrap_or_else(|| format!("inode/{inode_id}"));
         let vault_key = self.vault_keys.require_key().await?;
-        let dek_option = self.vault_keys
+        let dek_option = self
+            .vault_keys
             .get_or_create_dek(&self.pool, inode_id)
             .await
             .ok()
@@ -660,7 +670,8 @@ impl Downloader {
         }
 
         let vault_key = self.vault_keys.require_key().await?;
-        let dek_option = self.vault_keys
+        let dek_option = self
+            .vault_keys
             .get_or_create_dek(&self.pool, chunk.inode_id)
             .await
             .ok()
@@ -683,7 +694,8 @@ impl Downloader {
             downloaded
         };
         let pack_bytes = fs::read(&source.local_path).await?;
-        let bytes = decrypt_chunk_record(&pack_bytes, &file_chunk, &vault_key, dek_option.as_ref())?;
+        let bytes =
+            decrypt_chunk_record(&pack_bytes, &file_chunk, &vault_key, dek_option.as_ref())?;
         self.cache
             .put_chunk(
                 chunk.inode_id,
@@ -716,7 +728,7 @@ impl Downloader {
 
         let previous_chunk_index = {
             let mut state = self.prefetch_state.lock().await;
-            
+
             state.insert(revision_id, last_chunk_index)
         };
 
@@ -777,7 +789,8 @@ impl Downloader {
         }
 
         let vault_key = self.vault_keys.require_key().await?;
-        let dek_option = self.vault_keys
+        let dek_option = self
+            .vault_keys
             .get_or_create_dek(&self.pool, inode_id)
             .await
             .ok()
@@ -1074,7 +1087,9 @@ impl Downloader {
         {
             tracing::warn!(
                 "downloader egress reconcile failed pack={} shard={}: {}",
-                pack_id, shard_index, err
+                pack_id,
+                shard_index,
+                err
             );
         }
 
@@ -1219,9 +1234,10 @@ fn reconstruct_ciphertext(
     let shard_len = to_usize(pack.shard_size, "shard size")?;
     for shard in shards.iter_mut() {
         if let Some(bytes) = shard.as_mut()
-            && bytes.len() != shard_len {
-                return Err(DownloaderError::InvalidPackRecord("shard size mismatch"));
-            }
+            && bytes.len() != shard_len
+        {
+            return Err(DownloaderError::InvalidPackRecord("shard size mismatch"));
+        }
     }
 
     let reed_solomon = ReedSolomon::new(DATA_SHARDS, PARITY_SHARDS)?;

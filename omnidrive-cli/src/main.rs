@@ -1,7 +1,7 @@
-use clap::{Parser, Subcommand};
 use angeld::autostart;
 use angeld::disaster_recovery::{MetadataBackupProviderManager, restore_metadata_from_cloud};
 use angeld::runtime_paths::{RuntimePaths, sqlite_db_file_path};
+use clap::{Parser, Subcommand};
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
@@ -23,10 +23,19 @@ struct Cli {
 enum Command {
     Status,
     Ls,
-    History { inode_id: i64 },
-    Restore { inode_id: i64, revision_id: i64 },
-    Pin { inode_id: i64 },
-    Unpin { inode_id: i64 },
+    History {
+        inode_id: i64,
+    },
+    Restore {
+        inode_id: i64,
+        revision_id: i64,
+    },
+    Pin {
+        inode_id: i64,
+    },
+    Unpin {
+        inode_id: i64,
+    },
     Cache {
         #[command(subcommand)]
         command: CacheCommand,
@@ -308,7 +317,8 @@ async fn list_files(client: &Client, api_base: &str) -> Result<(), CliError> {
 }
 
 async fn cache_status(client: &Client, api_base: &str) -> Result<(), CliError> {
-    let status: CacheStatusResponse = get_json(client, &format!("{api_base}/api/cache/status")).await?;
+    let status: CacheStatusResponse =
+        get_json(client, &format!("{api_base}/api/cache/status")).await?;
     let total_ops = status.hit_count + status.miss_count;
     let hit_ratio = if total_ops == 0 {
         0.0
@@ -450,7 +460,10 @@ async fn backup_now(client: &Client, api_base: &str) -> Result<(), CliError> {
     }
 
     let backup: BackupNowResponse = response.json().await?;
-    println!("Uploaded encrypted metadata backup (uploaded={})", backup.uploaded);
+    println!(
+        "Uploaded encrypted metadata backup (uploaded={})",
+        backup.uploaded
+    );
     Ok(())
 }
 

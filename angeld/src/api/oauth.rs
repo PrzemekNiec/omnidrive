@@ -1,12 +1,12 @@
-use super::error::ApiError;
 use super::ApiState;
+use super::error::ApiError;
 use crate::config::AppConfig;
 use crate::db;
 
+use axum::Router;
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect};
 use axum::routing::get;
-use axum::Router;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,9 +26,7 @@ fn pkce_pair() -> (String, String) {
 
 // ── GET /api/auth/google/start ────────────────────────────────────────
 
-async fn get_google_start(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, ApiError> {
+async fn get_google_start(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
     let cfg = AppConfig::from_env();
     let client_id = cfg.google_client_id.ok_or(ApiError::NotFound {
         resource: "oauth",
@@ -132,7 +130,9 @@ async fn get_google_callback(
         .await
         .map_err(|e| {
             warn!("OAuth token exchange failed: {e}");
-            ApiError::Internal { message: "token_exchange_failed".to_string() }
+            ApiError::Internal {
+                message: "token_exchange_failed".to_string(),
+            }
         })?;
 
     if !token_res.status().is_success() {
@@ -144,7 +144,9 @@ async fn get_google_callback(
 
     let token: TokenResponse = token_res.json().await.map_err(|e| {
         warn!("OAuth token parse failed: {e}");
-        ApiError::Internal { message: "token_parse_failed".to_string() }
+        ApiError::Internal {
+            message: "token_parse_failed".to_string(),
+        }
     })?;
 
     // Fetch user info
@@ -155,13 +157,17 @@ async fn get_google_callback(
         .await
         .map_err(|e| {
             warn!("OAuth userinfo fetch failed: {e}");
-            ApiError::Internal { message: "userinfo_fetch_failed".to_string() }
+            ApiError::Internal {
+                message: "userinfo_fetch_failed".to_string(),
+            }
         })?
         .json()
         .await
         .map_err(|e| {
             warn!("OAuth userinfo parse failed: {e}");
-            ApiError::Internal { message: "userinfo_parse_failed".to_string() }
+            ApiError::Internal {
+                message: "userinfo_parse_failed".to_string(),
+            }
         })?;
 
     // Upsert user: create if new, update display_name/email/refresh_token if existing.
@@ -212,7 +218,9 @@ async fn get_google_callback(
             Err(_) => {
                 // Vault is locked — refresh token remains as plaintext in users.google_refresh_token
                 // (written by the upsert above) and will be sealed on next vault unlock.
-                tracing::info!("[OAUTH] Vault locked — refresh token stored as plaintext, will be sealed on next unlock");
+                tracing::info!(
+                    "[OAUTH] Vault locked — refresh token stored as plaintext, will be sealed on next unlock"
+                );
             }
         }
     }
@@ -272,8 +280,16 @@ mod tests {
         assert_eq!(verifier.len(), 128);
         // base64url of 32-byte SHA-256 = 43 chars (no padding)
         assert_eq!(challenge.len(), 43);
-        assert!(verifier.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
-        assert!(challenge.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(
+            verifier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
+        assert!(
+            challenge
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
     }
 
     #[test]

@@ -116,7 +116,11 @@ impl DaemonDiagnostics {
     pub fn snapshot(&self) -> DiagnosticsSnapshot {
         DiagnosticsSnapshot {
             uptime_seconds: self.started_at.elapsed().as_secs(),
-            last_upload_error: self.last_upload_error.read().ok().and_then(|value| value.clone()),
+            last_upload_error: self
+                .last_upload_error
+                .read()
+                .ok()
+                .and_then(|value| value.clone()),
             uploader: load_status(&self.uploader),
             repair: load_status(&self.repair),
             scrubber: load_status(&self.scrubber),

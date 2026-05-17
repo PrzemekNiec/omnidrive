@@ -5,9 +5,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
 
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -140,14 +140,13 @@ async fn poll_daemon_state(client: &reqwest::Client) -> TrayState {
         .timeout(Duration::from_secs(2))
         .send()
         .await
-        && let Ok(providers) = resp.json::<Vec<ProviderHealth>>().await {
-            let any_failed = providers
-                .iter()
-                .any(|p| p.connection_status == "FAILED");
-            if any_failed {
-                return TrayState::Error;
-            }
+        && let Ok(providers) = resp.json::<Vec<ProviderHealth>>().await
+    {
+        let any_failed = providers.iter().any(|p| p.connection_status == "FAILED");
+        if any_failed {
+            return TrayState::Error;
         }
+    }
 
     // 3. Check ingest queue
     if let Ok(resp) = client
@@ -155,19 +154,21 @@ async fn poll_daemon_state(client: &reqwest::Client) -> TrayState {
         .timeout(Duration::from_secs(2))
         .send()
         .await
-        && let Ok(ingest) = resp.json::<IngestResponse>().await {
-            let has_failed = ingest.jobs.iter().any(|j| j.state == "FAILED");
-            if has_failed {
-                return TrayState::Error;
-            }
-
-            let has_active = ingest.jobs.iter().any(|j| {
-                matches!(j.state.as_str(), "PENDING" | "CHUNKING" | "UPLOADING")
-            });
-            if has_active {
-                return TrayState::Syncing;
-            }
+        && let Ok(ingest) = resp.json::<IngestResponse>().await
+    {
+        let has_failed = ingest.jobs.iter().any(|j| j.state == "FAILED");
+        if has_failed {
+            return TrayState::Error;
         }
+
+        let has_active = ingest
+            .jobs
+            .iter()
+            .any(|j| matches!(j.state.as_str(), "PENDING" | "CHUNKING" | "UPLOADING"));
+        if has_active {
+            return TrayState::Syncing;
+        }
+    }
 
     TrayState::Synced
 }
@@ -271,8 +272,7 @@ fn main() {
     let icons = load_icons(&icons_dir);
 
     // Build tao event loop with custom user events
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event()
-        .build();
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
     // Context menu
     let menu = Menu::new();
@@ -335,9 +335,8 @@ fn main() {
     let mut current_state = TrayState::Idle;
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(
-            std::time::Instant::now() + Duration::from_millis(100),
-        );
+        *control_flow =
+            ControlFlow::WaitUntil(std::time::Instant::now() + Duration::from_millis(100));
 
         // Handle menu events
         if let Ok(event) = menu_rx.try_recv() {
@@ -358,13 +357,14 @@ fn main() {
 
         // Handle state changes from poller
         if let Event::UserEvent(UserEvent::StateChanged(new_state)) = event
-            && new_state != current_state {
-                current_state = new_state;
-                tray.set_icon(Some(icon_for_state(&icons, current_state)))
-                    .unwrap_or_else(|e| error!("set_icon failed: {e}"));
-                tray.set_tooltip(Some(tooltip_for_state(current_state)))
-                    .unwrap_or_else(|e| error!("set_tooltip failed: {e}"));
-            }
+            && new_state != current_state
+        {
+            current_state = new_state;
+            tray.set_icon(Some(icon_for_state(&icons, current_state)))
+                .unwrap_or_else(|e| error!("set_icon failed: {e}"));
+            tray.set_tooltip(Some(tooltip_for_state(current_state)))
+                .unwrap_or_else(|e| error!("set_tooltip failed: {e}"));
+        }
     });
 }
 

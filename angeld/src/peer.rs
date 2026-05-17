@@ -156,7 +156,10 @@ impl PeerClient {
             pool,
             caller_device_id,
             local_vault_id,
-            http: Client::builder().timeout(Duration::from_millis(900)).build().expect("peer client"),
+            http: Client::builder()
+                .timeout(Duration::from_millis(900))
+                .build()
+                .expect("peer client"),
         }
     }
 
@@ -193,7 +196,10 @@ impl PeerClient {
                 continue;
             }
 
-            let url = format!("{}/peer/chunks/{chunk_hex}", peer.peer_api_base.trim_end_matches('/'));
+            let url = format!(
+                "{}/peer/chunks/{chunk_hex}",
+                peer.peer_api_base.trim_end_matches('/')
+            );
             let response = self
                 .http
                 .get(&url)
@@ -214,7 +220,8 @@ impl PeerClient {
                     db::update_peer_error(&self.pool, &peer.peer_id, Some(&message)).await?;
                 }
                 Err(err) => {
-                    db::update_peer_error(&self.pool, &peer.peer_id, Some(&err.to_string())).await?;
+                    db::update_peer_error(&self.pool, &peer.peer_id, Some(&err.to_string()))
+                        .await?;
                 }
             }
         }
@@ -402,7 +409,9 @@ async fn handshake_peer(
     expected_peer_id: &str,
     peer_api_base: &str,
 ) -> Result<(), PeerError> {
-    let http = Client::builder().timeout(Duration::from_millis(900)).build()?;
+    let http = Client::builder()
+        .timeout(Duration::from_millis(900))
+        .build()?;
     let url = format!(
         "{}/peer/hello?vault_id={}",
         peer_api_base.trim_end_matches('/'),

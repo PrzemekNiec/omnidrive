@@ -4,8 +4,8 @@
 
 mod acl;
 mod api;
-mod autostart;
 mod api_error;
+mod autostart;
 mod aws_http;
 mod cache;
 mod cloud_guard;
@@ -13,10 +13,10 @@ mod config;
 mod db;
 mod device_identity;
 mod diagnostics;
-mod identity;
 mod disaster_recovery;
 mod downloader;
 mod gc;
+mod identity;
 mod ingest;
 mod logging;
 mod migrator;
@@ -219,9 +219,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         .clone()
         .unwrap_or_else(|| sync_root.clone());
     let preferred_drive_letter = virtual_drive_letter();
-    runtime_paths
-        .bootstrap_directories(false)
-        .await?;
+    runtime_paths.bootstrap_directories(false).await?;
     runtime_paths.secure_runtime_directories()?;
     let database_missing_on_start = runtime_paths
         .db_file_path
@@ -345,12 +343,8 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => warn!("ensure_local_device_in_vault failed (non-fatal): {e}"),
     }
     // A.9: assert vault_id ↔ user_id ↔ device_id consistency (CLAUDE.md §4).
-    if let Err(msg) = db::verify_vault_device_binding(
-        &pool,
-        &local_vault_id,
-        &local_device.device_id,
-    )
-    .await
+    if let Err(msg) =
+        db::verify_vault_device_binding(&pool, &local_vault_id, &local_device.device_id).await
     {
         panic!("[STARTUP] vault_id consistency check failed: {msg}");
     }
@@ -771,8 +765,12 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let scrubber_worker = ScrubberWorker::from_onboarding_db(pool.clone()).await?;
     let gc_worker = GcWorker::from_onboarding_db(pool.clone()).await?;
     let ingest_spool_dir = env_path("OMNIDRIVE_SPOOL_DIR", ".omnidrive/spool");
-    let ingest_worker =
-        ingest::IngestWorker::new(pool.clone(), vault_keys.clone(), ingest_spool_dir, sync_root.clone());
+    let ingest_worker = ingest::IngestWorker::new(
+        pool.clone(),
+        vault_keys.clone(),
+        ingest_spool_dir,
+        sync_root.clone(),
+    );
     let metadata_backup_provider_manager =
         Arc::new(MetadataBackupProviderManager::from_onboarding_db_all(&pool).await?);
     let metadata_backup_worker = start_metadata_backup_worker(
@@ -936,14 +934,13 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 warn!("smart sync shutdown warning: {}", err);
             }
 
-            if e2e_test_mode
-                && let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
-                    warn!(
-                        "smart sync unregister warning for {}: {}",
-                        sync_root.display(),
-                        err
-                    );
-                }
+            if e2e_test_mode && let Err(err) = smart_sync::unregister_sync_root(&sync_root) {
+                warn!(
+                    "smart sync unregister warning for {}: {}",
+                    sync_root.display(),
+                    err
+                );
+            }
         }
 
         if let Err(err) = virtual_drive::unmount_virtual_drive(&drive_letter) {
@@ -965,30 +962,30 @@ async fn bootstrap_default_local_vault(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let mut bootstrapped = false;
 
-    if database_missing_on_start && !just_restored
-        && bootstrap_local_vault(pool).await? {
-            info!(
-                "initialized default local vault metadata in {}",
-                runtime_paths
-                    .db_file_path
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| runtime_paths.db_url.clone())
-            );
-            bootstrapped = true;
-        }
+    if database_missing_on_start && !just_restored && bootstrap_local_vault(pool).await? {
+        info!(
+            "initialized default local vault metadata in {}",
+            runtime_paths
+                .db_file_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| runtime_paths.db_url.clone())
+        );
+        bootstrapped = true;
+    }
 
     if db::list_sync_policies(pool).await?.is_empty()
-        && let Some(default_watch_dir) = &runtime_paths.default_watch_dir {
-            fs::create_dir_all(default_watch_dir).await?;
-            let policy_path = absolute_path_to_policy_key(default_watch_dir)?;
-            db::set_sync_policy_type_for_path(pool, &policy_path, "LOCAL").await?;
-            info!(
-                "bootstrapped default local vault watch root at {}",
-                default_watch_dir.display()
-            );
-            bootstrapped = true;
-        }
+        && let Some(default_watch_dir) = &runtime_paths.default_watch_dir
+    {
+        fs::create_dir_all(default_watch_dir).await?;
+        let policy_path = absolute_path_to_policy_key(default_watch_dir)?;
+        db::set_sync_policy_type_for_path(pool, &policy_path, "LOCAL").await?;
+        info!(
+            "bootstrapped default local vault watch root at {}",
+            default_watch_dir.display()
+        );
+        bootstrapped = true;
+    }
 
     Ok(bootstrapped)
 }

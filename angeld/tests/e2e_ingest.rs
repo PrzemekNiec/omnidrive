@@ -8,7 +8,7 @@ use angeld::vault::VaultKeyStore;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 /// Generate a unique temp directory path for this test run.
 fn test_dir(label: &str) -> PathBuf {
@@ -71,14 +71,13 @@ async fn ingest_pipeline_full_cycle() -> Result<(), Box<dyn std::error::Error>> 
     // Set OMNIDRIVE_WATCH_DIR so projection_relative_path strips correctly.
     let sync_root_str = sync_root.to_string_lossy().replace('\\', "/");
     // SAFETY: single-threaded at this point, no other threads reading env.
-    unsafe { std::env::set_var("OMNIDRIVE_WATCH_DIR", &sync_root_str); }
+    unsafe {
+        std::env::set_var("OMNIDRIVE_WATCH_DIR", &sync_root_str);
+    }
 
     // Init DB.
     let db_path = root.join("test-ingest.db");
-    let db_url = format!(
-        "sqlite:///{}",
-        db_path.to_string_lossy().replace('\\', "/")
-    );
+    let db_url = format!("sqlite:///{}", db_path.to_string_lossy().replace('\\', "/"));
     let pool = db::init_db(&db_url).await?;
 
     // Unlock vault (creates V2 keys).
@@ -97,7 +96,9 @@ async fn ingest_pipeline_full_cycle() -> Result<(), Box<dyn std::error::Error>> 
     let job_id = db::create_ingest_job(&pool, &file_path_str, payload_size as i64).await?;
 
     // Verify job is PENDING.
-    let row = db::get_ingest_job(&pool, job_id).await?.expect("job should exist");
+    let row = db::get_ingest_job(&pool, job_id)
+        .await?
+        .expect("job should exist");
     assert_eq!(row.state, "PENDING");
 
     // ── 4. Start mock shard uploader in background ──────────────────────

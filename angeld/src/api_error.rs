@@ -1,23 +1,48 @@
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 
 #[derive(Debug)]
 pub enum ApiError {
     // 4xx
-    BadRequest { code: &'static str, message: String },
-    Unauthorized { message: String },
-    Forbidden { message: String },
-    NotFound { resource: &'static str, id: String },
-    Conflict { message: String },
-    Gone { message: String },
-    Locked { message: String },
-    TooManyRequests { retry_after_secs: u64, message: String },
+    BadRequest {
+        code: &'static str,
+        message: String,
+    },
+    Unauthorized {
+        message: String,
+    },
+    Forbidden {
+        message: String,
+    },
+    NotFound {
+        resource: &'static str,
+        id: String,
+    },
+    Conflict {
+        message: String,
+    },
+    Gone {
+        message: String,
+    },
+    Locked {
+        message: String,
+    },
+    TooManyRequests {
+        retry_after_secs: u64,
+        message: String,
+    },
     // 5xx
-    Internal { message: String },
-    BadGateway { message: String },
-    ServiceUnavailable { message: String },
+    Internal {
+        message: String,
+    },
+    BadGateway {
+        message: String,
+    },
+    ServiceUnavailable {
+        message: String,
+    },
 }
 
 impl std::fmt::Display for ApiError {
@@ -30,7 +55,9 @@ impl std::fmt::Display for ApiError {
             Self::Conflict { message } => write!(f, "conflict: {message}"),
             Self::Gone { message } => write!(f, "gone: {message}"),
             Self::Locked { message } => write!(f, "locked: {message}"),
-            Self::TooManyRequests { retry_after_secs, .. } => write!(f, "too_many_requests: retry after {retry_after_secs}s"),
+            Self::TooManyRequests {
+                retry_after_secs, ..
+            } => write!(f, "too_many_requests: retry after {retry_after_secs}s"),
             Self::Internal { message } => write!(f, "internal: {message}"),
             Self::BadGateway { message } => write!(f, "bad_gateway: {message}"),
             Self::ServiceUnavailable { message } => write!(f, "service_unavailable: {message}"),
@@ -54,7 +81,10 @@ impl IntoResponse for ApiError {
             Self::Conflict { message } => (StatusCode::CONFLICT, "conflict", message.clone()),
             Self::Gone { message } => (StatusCode::GONE, "gone", message.clone()),
             Self::Locked { message } => (StatusCode::LOCKED, "locked", message.clone()),
-            Self::TooManyRequests { retry_after_secs, message } => {
+            Self::TooManyRequests {
+                retry_after_secs,
+                message,
+            } => {
                 let mut hmap = axum::http::HeaderMap::new();
                 if let Ok(v) = retry_after_secs.to_string().parse() {
                     hmap.insert(axum::http::header::RETRY_AFTER, v);

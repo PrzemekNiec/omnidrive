@@ -7,11 +7,10 @@ use crate::secure_fs::write_ephemeral_bytes;
 use crate::vault::{VaultError, VaultKeyStore};
 use omnidrive_core::crypto::{CryptoError, KeyBytes, encrypt_chunk_v2};
 use omnidrive_core::layout::{
-    CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix,
-    KEY_WRAPPING_ALGO_AES_KW,
+    CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix, KEY_WRAPPING_ALGO_AES_KW,
 };
-use secrecy::ExposeSecret;
 use reed_solomon_erasure::galois_8::ReedSolomon;
+use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::fmt;
@@ -212,7 +211,10 @@ impl Packer {
 
         let created_at_ms = unix_timestamp_ms()?;
         // V2: get per-file DEK (generates if first time for this inode)
-        let (dek_id, dek_secret) = self.vault_keys.get_or_create_dek(&self.pool, inode_id).await?;
+        let (dek_id, dek_secret) = self
+            .vault_keys
+            .get_or_create_dek(&self.pool, inode_id)
+            .await?;
         let dek: KeyBytes = *dek_secret.expose_secret();
         let storage_mode = db::get_storage_mode_for_inode(&self.pool, inode_id).await?;
         let mut file = File::open(&source_path).await?;
@@ -319,38 +321,45 @@ impl Packer {
         }
 
         let local_device = db::get_local_device_identity(&self.pool).await?;
-        let local_device_id = local_device.as_ref().map(|device| device.device_id.as_str());
+        let local_device_id = local_device
+            .as_ref()
+            .map(|device| device.device_id.as_str());
         let local_device_name = local_device
             .as_ref()
             .map(|device| device.device_name.as_str())
             .unwrap_or("Unknown Device");
         let current_revision = db::get_current_file_revision(&self.pool, inode_id).await?;
         let mut conflict_copy_name = None;
-        let parent_revision_id = if let Some(expected_parent_revision_id) = expected_parent_revision_id {
-            match current_revision.as_ref() {
-                Some(current) => {
-                    let lineage = db::classify_revision_lineage(
-                        &self.pool,
-                        expected_parent_revision_id,
-                        current.revision_id,
-                    )
-                    .await?;
-                    match lineage {
-                        db::RevisionLineageRelation::Same => Some(expected_parent_revision_id),
-                        db::RevisionLineageRelation::CandidateDescendsFromCurrent => {
-                            Some(expected_parent_revision_id)
-                        }
-                        db::RevisionLineageRelation::CurrentDescendsFromCandidate
-                        | db::RevisionLineageRelation::Parallel => {
-                            let reason = match lineage {
-                                db::RevisionLineageRelation::CurrentDescendsFromCandidate => {
-                                    "stale_local_base"
-                                }
-                                db::RevisionLineageRelation::Parallel => "parallel_local_edit",
-                                _ => unreachable!(),
-                            };
-                            let (_conflict_inode_id, _conflict_revision_id, materialized_name, _conflict_id) =
-                                db::materialize_conflict_copy_from_revision(
+        let parent_revision_id =
+            if let Some(expected_parent_revision_id) = expected_parent_revision_id {
+                match current_revision.as_ref() {
+                    Some(current) => {
+                        let lineage = db::classify_revision_lineage(
+                            &self.pool,
+                            expected_parent_revision_id,
+                            current.revision_id,
+                        )
+                        .await?;
+                        match lineage {
+                            db::RevisionLineageRelation::Same => Some(expected_parent_revision_id),
+                            db::RevisionLineageRelation::CandidateDescendsFromCurrent => {
+                                Some(expected_parent_revision_id)
+                            }
+                            db::RevisionLineageRelation::CurrentDescendsFromCandidate
+                            | db::RevisionLineageRelation::Parallel => {
+                                let reason = match lineage {
+                                    db::RevisionLineageRelation::CurrentDescendsFromCandidate => {
+                                        "stale_local_base"
+                                    }
+                                    db::RevisionLineageRelation::Parallel => "parallel_local_edit",
+                                    _ => unreachable!(),
+                                };
+                                let (
+                                    _conflict_inode_id,
+                                    _conflict_revision_id,
+                                    materialized_name,
+                                    _conflict_id,
+                                ) = db::materialize_conflict_copy_from_revision(
                                     &self.pool,
                                     current.revision_id,
                                     local_device_id,
@@ -358,16 +367,18 @@ impl Packer {
                                     reason,
                                 )
                                 .await?;
-                            conflict_copy_name = Some(materialized_name);
-                            Some(expected_parent_revision_id)
+                                conflict_copy_name = Some(materialized_name);
+                                Some(expected_parent_revision_id)
+                            }
                         }
                     }
+                    None => Some(expected_parent_revision_id),
                 }
-                None => Some(expected_parent_revision_id),
-            }
-        } else {
-            current_revision.as_ref().map(|revision| revision.revision_id)
-        };
+            } else {
+                current_revision
+                    .as_ref()
+                    .map(|revision| revision.revision_id)
+            };
         let revision_id = db::create_file_revision(
             &self.pool,
             inode_id,

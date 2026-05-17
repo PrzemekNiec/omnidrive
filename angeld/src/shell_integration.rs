@@ -14,7 +14,9 @@ impl fmt::Display for ShellIntegrationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(err) => write!(f, "shell integration i/o error: {err}"),
-            Self::UnsupportedPlatform => write!(f, "shell integration is only supported on Windows"),
+            Self::UnsupportedPlatform => {
+                write!(f, "shell integration is only supported on Windows")
+            }
             #[cfg(windows)]
             Self::Windows(err) => write!(f, "shell integration windows error: {err}"),
         }
@@ -62,10 +64,10 @@ mod imp {
     use std::iter;
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
-    use windows::core::PCWSTR;
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, REG_DWORD, REG_SZ,
+        HKEY, HKEY_CURRENT_USER, REG_DWORD, REG_SZ, RegCloseKey, RegCreateKeyW, RegSetValueExW,
     };
+    use windows::core::PCWSTR;
 
     pub fn register_explorer_context_menu(
         drive_letter: &str,
@@ -74,7 +76,13 @@ mod imp {
     ) -> Result<(), ShellIntegrationError> {
         let drive_root = normalize_drive_root(drive_letter);
         let applies_to = format!(r#"System.ItemPathDisplay:~="{drive_root}\""#);
-        let icon_value = format!("{},0", icon_path.canonicalize()?.to_string_lossy().replace('/', "\\"));
+        let icon_value = format!(
+            "{},0",
+            icon_path
+                .canonicalize()?
+                .to_string_lossy()
+                .replace('/', "\\")
+        );
 
         for class_key in ["*", "Directory"] {
             let base = format!(r"Software\Classes\{class_key}\shell\OmniDrive");
@@ -160,7 +168,10 @@ mod imp {
     }
 
     fn normalize_drive_root(drive_letter: &str) -> String {
-        let trimmed = drive_letter.trim().trim_end_matches('\\').trim_end_matches('/');
+        let trimmed = drive_letter
+            .trim()
+            .trim_end_matches('\\')
+            .trim_end_matches('/');
         let core = trimmed.strip_suffix(':').unwrap_or(trimmed);
         format!("{}:", core.to_ascii_uppercase())
     }
@@ -220,7 +231,10 @@ mod imp {
     ) -> Result<(), ShellIntegrationError> {
         let name_w = name.map(wide_null);
         let bytes = unsafe {
-            std::slice::from_raw_parts(wide.as_ptr().cast::<u8>(), wide.len() * std::mem::size_of::<u16>())
+            std::slice::from_raw_parts(
+                wide.as_ptr().cast::<u8>(),
+                wide.len() * std::mem::size_of::<u16>(),
+            )
         };
         unsafe {
             RegSetValueExW(

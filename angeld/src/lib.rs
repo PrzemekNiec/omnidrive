@@ -1,7 +1,6 @@
 pub mod acl;
 pub mod api_error;
 pub mod autostart;
-pub mod ingest;
 pub mod aws_http;
 pub mod cache;
 pub mod cloud_guard;
@@ -12,6 +11,7 @@ pub mod diagnostics;
 pub mod disaster_recovery;
 pub mod downloader;
 pub mod identity;
+pub mod ingest;
 pub mod logging;
 pub mod migrator;
 pub mod onboarding;

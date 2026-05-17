@@ -85,7 +85,9 @@ pub async fn register_sync_root(sync_root_path: &Path) -> Result<(), SmartSyncEr
     }
 }
 
-pub fn audit_sync_root_state(sync_root_path: &Path) -> Result<SyncRootStateSnapshot, SmartSyncError> {
+pub fn audit_sync_root_state(
+    sync_root_path: &Path,
+) -> Result<SyncRootStateSnapshot, SmartSyncError> {
     #[cfg(windows)]
     {
         imp::audit_sync_root_state(sync_root_path)
@@ -298,18 +300,18 @@ mod imp {
     use crate::db::{self, ProjectionFileRecord};
     use crate::downloader::Downloader;
     use crate::win_acl;
-    use sqlx::SqlitePool;
     use sha2::{Digest, Sha256};
+    use sqlx::SqlitePool;
     use std::ffi::OsStr;
     use std::iter;
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::MetadataExt;
     use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::Component;
     use std::path::{Path, PathBuf};
-    use std::os::windows::process::CommandExt;
     use std::process::Command;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     use std::ptr;
@@ -317,46 +319,39 @@ mod imp {
     use std::time::{Duration, UNIX_EPOCH};
     use tokio::runtime::Handle;
     use tracing::{error, info, trace, warn};
-    use windows::core::{GUID, HRESULT, PCWSTR};
     use windows::Win32::Foundation::{HANDLE, NTSTATUS, RPC_E_CHANGED_MODE, S_FALSE, S_OK};
     use windows::Win32::Storage::CloudFilters::{
-        CfConnectSyncRoot, CfConvertToPlaceholder, CfCreatePlaceholders,
-        CfDisconnectSyncRoot, CfExecute, CfGetSyncRootInfoByPath,
-        CfHydratePlaceholder, CfSetInSyncState,
-        CfRegisterSyncRoot, CfSetPinState, CfUnregisterSyncRoot, CfUpdatePlaceholder,
-        CF_CONVERT_FLAG_NONE,
-        CF_IN_SYNC_STATE_IN_SYNC, CF_IN_SYNC_STATE_NOT_IN_SYNC,
-        CF_SET_IN_SYNC_FLAG_NONE,
-        CF_CALLBACK_INFO, CF_CALLBACK_PARAMETERS,
-        CF_CALLBACK_REGISTRATION, CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
-        CF_CALLBACK_TYPE_FETCH_DATA, CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS,
-        CF_CALLBACK_TYPE_NONE, CF_CONNECT_FLAG_NONE,
-        CF_CONNECTION_KEY, CF_CREATE_FLAGS, CF_CREATE_FLAG_NONE, CF_CREATE_FLAG_STOP_ON_ERROR,
-        CF_HYDRATE_FLAGS,
-        CF_FILE_RANGE, CF_FS_METADATA, CF_HARDLINK_POLICY, CF_HARDLINK_POLICY_NONE,
-        CF_HYDRATION_POLICY, CF_HYDRATION_POLICY_FULL, CF_HYDRATION_POLICY_MODIFIER,
-        CF_HYDRATION_POLICY_MODIFIER_NONE, CF_HYDRATION_POLICY_PRIMARY, CF_INSYNC_POLICY,
-        CF_INSYNC_POLICY_NONE, CF_OPERATION_INFO, CF_OPERATION_PARAMETERS, CF_PIN_STATE,
-        CF_PIN_STATE_PINNED, CF_PIN_STATE_UNPINNED, CF_OPERATION_TRANSFER_DATA_FLAGS,
-        CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS,
-        CF_OPERATION_TYPE_TRANSFER_DATA, CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS,
-        CF_PLACEHOLDER_CREATE_FLAGS,
+        CF_CALLBACK_INFO, CF_CALLBACK_PARAMETERS, CF_CALLBACK_REGISTRATION,
+        CF_CALLBACK_TYPE_CANCEL_FETCH_DATA, CF_CALLBACK_TYPE_FETCH_DATA,
+        CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS, CF_CALLBACK_TYPE_NONE, CF_CONNECT_FLAG_NONE,
+        CF_CONNECTION_KEY, CF_CONVERT_FLAG_NONE, CF_CREATE_FLAG_NONE, CF_CREATE_FLAG_STOP_ON_ERROR,
+        CF_CREATE_FLAGS, CF_FILE_RANGE, CF_FS_METADATA, CF_HARDLINK_POLICY,
+        CF_HARDLINK_POLICY_NONE, CF_HYDRATE_FLAGS, CF_HYDRATION_POLICY, CF_HYDRATION_POLICY_FULL,
+        CF_HYDRATION_POLICY_MODIFIER, CF_HYDRATION_POLICY_MODIFIER_NONE,
+        CF_HYDRATION_POLICY_PRIMARY, CF_IN_SYNC_STATE_IN_SYNC, CF_IN_SYNC_STATE_NOT_IN_SYNC,
+        CF_INSYNC_POLICY, CF_INSYNC_POLICY_NONE, CF_OPERATION_INFO, CF_OPERATION_PARAMETERS,
+        CF_OPERATION_TRANSFER_DATA_FLAGS, CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS,
+        CF_OPERATION_TYPE_TRANSFER_DATA, CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS, CF_PIN_STATE,
+        CF_PIN_STATE_PINNED, CF_PIN_STATE_UNPINNED, CF_PLACEHOLDER_CREATE_FLAGS,
         CF_PLACEHOLDER_CREATE_INFO, CF_PLACEHOLDER_MANAGEMENT_POLICY,
         CF_PLACEHOLDER_MANAGEMENT_POLICY_CREATE_UNRESTRICTED, CF_POPULATION_POLICY,
-        CF_POPULATION_POLICY_MODIFIER,
-        CF_POPULATION_POLICY_MODIFIER_NONE, CF_POPULATION_POLICY_PARTIAL,
-        CF_POPULATION_POLICY_PRIMARY, CF_REGISTER_FLAGS,
-        CF_REGISTER_FLAG_NONE, CF_REGISTER_FLAG_UPDATE, CF_SET_PIN_FLAG_NONE, CF_SET_PIN_FLAGS, CF_SYNC_POLICIES,
-        CF_SYNC_REGISTRATION, CF_SYNC_ROOT_INFO_STANDARD, CF_SYNC_ROOT_STANDARD_INFO,
-        CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
+        CF_POPULATION_POLICY_MODIFIER, CF_POPULATION_POLICY_MODIFIER_NONE,
+        CF_POPULATION_POLICY_PARTIAL, CF_POPULATION_POLICY_PRIMARY, CF_REGISTER_FLAG_NONE,
+        CF_REGISTER_FLAG_UPDATE, CF_REGISTER_FLAGS, CF_SET_IN_SYNC_FLAG_NONE, CF_SET_PIN_FLAG_NONE,
+        CF_SET_PIN_FLAGS, CF_SYNC_POLICIES, CF_SYNC_REGISTRATION, CF_SYNC_ROOT_INFO_STANDARD,
+        CF_SYNC_ROOT_STANDARD_INFO, CF_UPDATE_FLAG_DEHYDRATE, CF_UPDATE_FLAG_NONE, CF_UPDATE_FLAGS,
+        CfConnectSyncRoot, CfConvertToPlaceholder, CfCreatePlaceholders, CfDisconnectSyncRoot,
+        CfExecute, CfGetSyncRootInfoByPath, CfHydratePlaceholder, CfRegisterSyncRoot,
+        CfSetInSyncState, CfSetPinState, CfUnregisterSyncRoot, CfUpdatePlaceholder,
     };
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, FILE_BASIC_INFO,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
     };
-    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
     use windows::Win32::UI::Shell::{SHCNE_UPDATEITEM, SHCNF_PATHW, SHChangeNotify};
+    use windows::core::{GUID, HRESULT, PCWSTR};
 
     const PROVIDER_NAME: &str = "OmniDrive";
     const PROVIDER_VERSION: &str = "1.0";
@@ -456,10 +451,9 @@ mod imp {
         let callback_parameters = unsafe { &*callback_parameters };
         let fetch = unsafe { callback_parameters.Anonymous.FetchData };
 
-        let Some(identity) = decode_file_identity(
-            callback_info.FileIdentity,
-            callback_info.FileIdentityLength,
-        ) else {
+        let Some(identity) =
+            decode_file_identity(callback_info.FileIdentity, callback_info.FileIdentityLength)
+        else {
             warn!(
                 "smart-sync: hydration requested with invalid identity, request_key={}",
                 callback_info.RequestKey
@@ -500,9 +494,7 @@ mod imp {
         if !context.downloader.has_remote_providers() {
             warn!(
                 "smart-sync: no remote providers configured for request_key={}, inode={}, revision={}; returning empty hydration result in setup/local-only mode",
-                request.request_key,
-                request.inode_id,
-                request.revision_id
+                request.request_key, request.inode_id, request.revision_id
             );
             flush_smart_sync_logs();
             let _ = complete_transfer_success(&request, &[]);
@@ -610,9 +602,7 @@ mod imp {
         }
     }
 
-    unsafe fn fetch_placeholders_callback_inner(
-        callback_info: *const CF_CALLBACK_INFO,
-    ) {
+    unsafe fn fetch_placeholders_callback_inner(callback_info: *const CF_CALLBACK_INFO) {
         if callback_info.is_null() {
             return;
         }
@@ -681,26 +671,20 @@ mod imp {
         let cancel = unsafe { callback_parameters.Anonymous.Cancel };
         let fetch = unsafe { cancel.Anonymous.FetchData };
 
-        let identity = decode_file_identity(
-            callback_info.FileIdentity,
-            callback_info.FileIdentityLength,
-        );
+        let identity =
+            decode_file_identity(callback_info.FileIdentity, callback_info.FileIdentityLength);
 
         match identity {
             Some(identity) => {
                 warn!(
                     "smart-sync: hydration canceled for inode={}, revision={}, offset={}, length={}",
-                    identity.inode_id,
-                    identity.revision_id,
-                    fetch.FileOffset,
-                    fetch.Length
+                    identity.inode_id, identity.revision_id, fetch.FileOffset, fetch.Length
                 );
             }
             None => {
                 warn!(
                     "smart-sync: hydration canceled for unknown identity, offset={}, length={}",
-                    fetch.FileOffset,
-                    fetch.Length
+                    fetch.FileOffset, fetch.Length
                 );
             }
         }
@@ -717,10 +701,12 @@ mod imp {
 
         error!(
             "smart-sync: {} callback panicked: {}",
-            callback_name,
-            message
+            callback_name, message
         );
-        eprintln!("smart-sync: {} callback panicked: {}", callback_name, message);
+        eprintln!(
+            "smart-sync: {} callback panicked: {}",
+            callback_name, message
+        );
         crate::logging::flush_logs_best_effort();
     }
 
@@ -788,7 +774,10 @@ mod imp {
     }
 
     pub fn shutdown_sync_root() -> Result<(), SmartSyncError> {
-        let key_opt = CONNECTION_KEY.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let key_opt = CONNECTION_KEY
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(connection_key) = key_opt {
             unsafe {
                 let _ = CfDisconnectSyncRoot(connection_key);
@@ -852,7 +841,10 @@ mod imp {
         let sync_root = normalize_sync_root_path(sync_root_path)?;
 
         // 1. Recursive dehydrate — wipe every decrypted byte from the CF cache.
-        info!("[LOCK] starting recursive dehydration of {}", sync_root.display());
+        info!(
+            "[LOCK] starting recursive dehydration of {}",
+            sync_root.display()
+        );
         flush_smart_sync_logs();
         dehydrate_directory_recursive(&sync_root);
         info!("[LOCK] recursive dehydration finished");
@@ -959,9 +951,13 @@ mod imp {
 
         // After pin/dehydrate changes, placeholder is still in-sync with cloud.
         if target_path.exists()
-            && let Err(err) = mark_in_sync(&target_path, true) {
-                warn!("smart-sync: mark_in_sync after pin state sync failed for inode={}: {}", inode_id, err);
-            }
+            && let Err(err) = mark_in_sync(&target_path, true)
+        {
+            warn!(
+                "smart-sync: mark_in_sync after pin state sync failed for inode={}: {}",
+                inode_id, err
+            );
+        }
 
         notify_shell_path_changed(&target_path);
 
@@ -993,12 +989,14 @@ mod imp {
 
         hydrate_placeholder(&target_path)?;
         db::set_pin_state(pool, inode_id, 1).await?;
-        db::set_hydration_state(pool, inode_id, state.hydration_state.max(1))
-            .await?;
+        db::set_hydration_state(pool, inode_id, state.hydration_state.max(1)).await?;
 
         // Hydrated + pinned = fully synced, show green checkmark.
         if let Err(err) = mark_in_sync(&target_path, true) {
-            warn!("smart-sync: mark_in_sync after hydrate_now failed for inode={}: {}", inode_id, err);
+            warn!(
+                "smart-sync: mark_in_sync after hydrate_now failed for inode={}: {}",
+                inode_id, err
+            );
         }
 
         notify_shell_path_changed(&target_path);
@@ -1115,7 +1113,10 @@ mod imp {
         // Step 3: Mark in-sync — dehydrated ghost is still in-sync with cloud
         // (its revision matches). This makes Explorer show the cloud icon.
         if let Err(err) = mark_in_sync(&target_path, true) {
-            warn!("smart-sync: mark_in_sync after ghost swap failed for inode={}: {}", inode_id, err);
+            warn!(
+                "smart-sync: mark_in_sync after ghost swap failed for inode={}: {}",
+                inode_id, err
+            );
         }
 
         // Step 4: Update DB — mark as dehydrated (hydration_state=0, unpinned).
@@ -1173,7 +1174,8 @@ mod imp {
                         LastAccessTime: file_time,
                         LastWriteTime: file_time,
                         ChangeTime: file_time,
-                        FileAttributes: FILE_ATTRIBUTE_ARCHIVE.0 | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED.0,
+                        FileAttributes: FILE_ATTRIBUTE_ARCHIVE.0
+                            | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED.0,
                     },
                     FileSize: file.size,
                 },
@@ -1222,8 +1224,7 @@ mod imp {
                     "CfCreatePlaceholders",
                     format!(
                         "placeholder {} failed with HRESULT 0x{:08X}",
-                        relative_path,
-                        placeholder[0].Result.0 as u32
+                        relative_path, placeholder[0].Result.0 as u32
                     ),
                 ));
             }
@@ -1231,11 +1232,21 @@ mod imp {
             info!("smart-sync: placeholder ready {}", relative_path);
         }
 
-        apply_pin_state(&target_path, if pinned { CF_PIN_STATE_PINNED } else { CF_PIN_STATE_UNPINNED })?;
+        apply_pin_state(
+            &target_path,
+            if pinned {
+                CF_PIN_STATE_PINNED
+            } else {
+                CF_PIN_STATE_UNPINNED
+            },
+        )?;
 
         // New placeholder is in-sync with the cloud (its content matches the known revision).
         if let Err(err) = mark_in_sync(&target_path, true) {
-            warn!("smart-sync: mark_in_sync for new placeholder {} failed: {}", relative_path, err);
+            warn!(
+                "smart-sync: mark_in_sync for new placeholder {} failed: {}",
+                relative_path, err
+            );
         }
 
         Ok(())
@@ -1316,7 +1327,13 @@ mod imp {
         };
 
         let path = PCWSTR(sync_root_wide.as_ptr());
-        if inspect_existing_sync_root(sync_root_path, path, &provider_name, &provider_version, &sync_root_identity) {
+        if inspect_existing_sync_root(
+            sync_root_path,
+            path,
+            &provider_name,
+            &provider_version,
+            &sync_root_identity,
+        ) {
             info!(
                 "smart-sync: existing sync root detected, updating policies for {}",
                 sync_root_path.display()
@@ -1343,7 +1360,12 @@ mod imp {
             return Ok(());
         }
 
-        log_registration_context(sync_root_path, &registration, register_flags(false), "initial");
+        log_registration_context(
+            sync_root_path,
+            &registration,
+            register_flags(false),
+            "initial",
+        );
 
         let first_error = initial_result
             .err()
@@ -1360,7 +1382,12 @@ mod imp {
             let _ = CfUnregisterSyncRoot(path);
         }
 
-        log_registration_context(sync_root_path, &registration, register_flags(true), "update");
+        log_registration_context(
+            sync_root_path,
+            &registration,
+            register_flags(true),
+            "update",
+        );
         unsafe { CfRegisterSyncRoot(path, &registration, &policies, register_flags(true))? };
         Ok(())
     }
@@ -1375,8 +1402,9 @@ mod imp {
         match get_existing_sync_root_info(sync_root_path, path) {
             Ok(Some(info)) => {
                 let identity_matches = info.identity_bytes == expected_identity;
-                let provider_name_matches =
-                    info.provider_name.eq_ignore_ascii_case(expected_provider_name);
+                let provider_name_matches = info
+                    .provider_name
+                    .eq_ignore_ascii_case(expected_provider_name);
                 let provider_version_matches = info.provider_version == expected_provider_version;
                 if provider_name_matches && provider_version_matches && identity_matches {
                     true
@@ -1473,8 +1501,7 @@ mod imp {
     }
 
     fn sync_provider_name() -> String {
-        std::env::var("OMNIDRIVE_SYNC_PROVIDER_NAME")
-            .unwrap_or_else(|_| PROVIDER_NAME.to_string())
+        std::env::var("OMNIDRIVE_SYNC_PROVIDER_NAME").unwrap_or_else(|_| PROVIDER_NAME.to_string())
     }
 
     fn sync_provider_version() -> String {
@@ -1506,11 +1533,12 @@ mod imp {
     }
 
     fn debug_log_sync_root_security(path: &Path) {
-        let owner_output = powershell_literal_output(
-            path,
-            "$acl = Get-Acl -LiteralPath __PATH__; $acl.Owner",
-        );
-        let acl_output = Command::new("icacls").arg(path).creation_flags(CREATE_NO_WINDOW).output();
+        let owner_output =
+            powershell_literal_output(path, "$acl = Get-Acl -LiteralPath __PATH__; $acl.Owner");
+        let acl_output = Command::new("icacls")
+            .arg(path)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
 
         match owner_output {
             Ok(owner) => trace!(
@@ -1545,11 +1573,11 @@ mod imp {
         }
     }
 
-    fn powershell_literal_output(path: &Path, script_template: &str) -> Result<String, SmartSyncError> {
-        let escaped = path
-            .display()
-            .to_string()
-            .replace('\'', "''");
+    fn powershell_literal_output(
+        path: &Path,
+        script_template: &str,
+    ) -> Result<String, SmartSyncError> {
+        let escaped = path.display().to_string().replace('\'', "''");
         let script = script_template.replace("__PATH__", &format!("'{}'", escaped));
         let output = Command::new("powershell.exe")
             .arg("-NoProfile")
@@ -1610,7 +1638,9 @@ mod imp {
         Ok(())
     }
 
-    pub fn audit_sync_root_state(sync_root_path: &Path) -> Result<SyncRootStateSnapshot, SmartSyncError> {
+    pub fn audit_sync_root_state(
+        sync_root_path: &Path,
+    ) -> Result<SyncRootStateSnapshot, SmartSyncError> {
         let provider_name = sync_provider_name();
         let provider_version = sync_provider_version();
         let expected_identity = sync_root_identity_bytes();
@@ -1637,7 +1667,10 @@ mod imp {
             path_exists,
             registered,
             registered_for_provider,
-            connected: CONNECTION_KEY.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
+            connected: CONNECTION_KEY
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some(),
             provider_name: existing.as_ref().map(|info| info.provider_name.clone()),
             provider_version: existing.as_ref().map(|info| info.provider_version.clone()),
             identity: existing
@@ -1653,7 +1686,11 @@ mod imp {
         let mut actions = Vec::new();
         let state = audit_sync_root_state(sync_root_path)?;
 
-        if CONNECTION_KEY.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        if CONNECTION_KEY
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
             shutdown_sync_root()?;
             actions.push(format!(
                 "disconnected existing sync root connection for {}",
@@ -1703,7 +1740,10 @@ mod imp {
 
     fn prepare_sync_root_directory(path: &Path) -> Result<(), SmartSyncError> {
         if path.exists() {
-            trace!("smart-sync: sync root exists before prep: {}", path.display());
+            trace!(
+                "smart-sync: sync root exists before prep: {}",
+                path.display()
+            );
             let metadata = std::fs::metadata(path).map_err(SmartSyncError::Io)?;
             if !metadata.is_dir() {
                 return Err(SmartSyncError::InvalidPath(
@@ -1719,7 +1759,10 @@ mod imp {
             );
         }
 
-        trace!("smart-sync: creating sync root directory {}", path.display());
+        trace!(
+            "smart-sync: creating sync root directory {}",
+            path.display()
+        );
         std::fs::create_dir_all(path).map_err(SmartSyncError::Io)?;
         trace!("smart-sync: created sync root directory {}", path.display());
         if let Err(err) = win_acl::prepare_sync_root_directory(path) {
@@ -1751,7 +1794,11 @@ mod imp {
     }
 
     fn normalize_relative_placeholder_path(path: &str) -> Result<String, SmartSyncError> {
-        let normalized = path.replace('\\', "/").trim_start_matches('/').trim().to_string();
+        let normalized = path
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .trim()
+            .to_string();
 
         if normalized.is_empty() {
             return Err(SmartSyncError::InvalidPath(
@@ -1759,10 +1806,9 @@ mod imp {
             ));
         }
 
-        if normalized
-            .split('/')
-            .any(|segment| segment.is_empty() || segment == "." || segment == ".." || segment.contains(':'))
-        {
+        if normalized.split('/').any(|segment| {
+            segment.is_empty() || segment == "." || segment == ".." || segment.contains(':')
+        }) {
             return Err(SmartSyncError::InvalidPath(
                 "placeholder path contains invalid segments",
             ));
@@ -1991,7 +2037,11 @@ mod imp {
     /// Convert an existing regular directory into a cfapi placeholder so that
     /// the cloud-files minifilter does not block directory enumeration.
     fn convert_directory_to_placeholder(path: &Path) {
-        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(iter::once(0)).collect();
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(iter::once(0))
+            .collect();
         let handle = unsafe {
             CreateFileW(
                 PCWSTR(wide.as_ptr()),
@@ -2014,17 +2064,11 @@ mod imp {
                 return;
             }
         };
-        let result = unsafe {
-            CfConvertToPlaceholder(
-                handle,
-                None,
-                0,
-                CF_CONVERT_FLAG_NONE,
-                None,
-                None,
-            )
-        };
-        unsafe { windows::Win32::Foundation::CloseHandle(handle).ok(); }
+        let result =
+            unsafe { CfConvertToPlaceholder(handle, None, 0, CF_CONVERT_FLAG_NONE, None, None) };
+        unsafe {
+            windows::Win32::Foundation::CloseHandle(handle).ok();
+        }
         match result {
             Ok(()) => {
                 info!(
@@ -2079,12 +2123,7 @@ mod imp {
             CF_IN_SYNC_STATE_NOT_IN_SYNC
         };
         unsafe {
-            CfSetInSyncState(
-                as_handle(&file),
-                state,
-                CF_SET_IN_SYNC_FLAG_NONE,
-                None,
-            )?;
+            CfSetInSyncState(as_handle(&file), state, CF_SET_IN_SYNC_FLAG_NONE, None)?;
         }
         Ok(())
     }
@@ -2111,13 +2150,7 @@ mod imp {
     fn hydrate_placeholder(path: &Path) -> Result<(), SmartSyncError> {
         let file = open_placeholder_handle(path)?;
         unsafe {
-            CfHydratePlaceholder(
-                as_handle(&file),
-                0,
-                i64::MAX,
-                CF_HYDRATE_FLAGS(0),
-                None,
-            )?;
+            CfHydratePlaceholder(as_handle(&file), 0, i64::MAX, CF_HYDRATE_FLAGS(0), None)?;
         }
         Ok(())
     }
@@ -2173,10 +2206,7 @@ mod imp {
     }
 
     fn starts_with_case_insensitive(path: &Path, prefix: &Path) -> bool {
-        let path_parts: Vec<String> = path
-            .components()
-            .filter_map(normalized_component)
-            .collect();
+        let path_parts: Vec<String> = path.components().filter_map(normalized_component).collect();
         let prefix_parts: Vec<String> = prefix
             .components()
             .filter_map(normalized_component)
@@ -2191,7 +2221,9 @@ mod imp {
 
     fn normalized_component(component: Component<'_>) -> Option<String> {
         match component {
-            Component::Prefix(prefix) => Some(prefix.as_os_str().to_string_lossy().to_ascii_lowercase()),
+            Component::Prefix(prefix) => {
+                Some(prefix.as_os_str().to_string_lossy().to_ascii_lowercase())
+            }
             Component::RootDir => Some("\\".to_string()),
             Component::Normal(value) => Some(value.to_string_lossy().to_ascii_lowercase()),
             _ => None,

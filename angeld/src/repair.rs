@@ -210,10 +210,7 @@ impl RepairWorker {
         worker.run_batch_now(RepairBatchMode::ReconcileOnly).await
     }
 
-    async fn run_batch_now(
-        self,
-        mode: RepairBatchMode,
-    ) -> Result<RepairBatchReport, RepairError> {
+    async fn run_batch_now(self, mode: RepairBatchMode) -> Result<RepairBatchReport, RepairError> {
         let mut report = RepairBatchReport {
             processed_packs: 0,
             repaired_packs: 0,
@@ -259,9 +256,7 @@ impl RepairWorker {
         }
         info!(
             "repair degraded pack start: pack={} mode={} status={}",
-            pack.pack_id,
-            pack.storage_mode,
-            pack.status
+            pack.pack_id, pack.storage_mode, pack.status
         );
         let shards = db::get_pack_shards(&self.pool, &pack.pack_id).await?;
         if shards.len() != TOTAL_SHARDS {
@@ -299,9 +294,7 @@ impl RepairWorker {
             .map_err(|_| RepairError::NumericOverflow("missing shard index"))?;
         info!(
             "repair degraded pack reconstructing shard: pack={} shard={} provider={}",
-            pack.pack_id,
-            missing.shard_index,
-            missing.provider
+            pack.pack_id, missing.shard_index, missing.provider
         );
         let shard_len = usize::try_from(pack.shard_size)
             .map_err(|_| RepairError::NumericOverflow("pack shard size"))?;
@@ -367,9 +360,7 @@ impl RepairWorker {
                 db::update_pack_status(&self.pool, &pack.pack_id, PackStatus::Healthy).await?;
                 info!(
                     "repair degraded pack complete: pack={} shard={} provider={}",
-                    pack.pack_id,
-                    missing.shard_index,
-                    missing.provider
+                    pack.pack_id, missing.shard_index, missing.provider
                 );
 
                 if let Some(job) = db::get_upload_job_by_pack_id(&self.pool, &pack.pack_id).await? {
@@ -453,17 +444,19 @@ impl RepairWorker {
         let gcm_tag = vec_to_array_16(&pack.gcm_tag, "gcm_tag")?;
         let logical_size = usize::try_from(pack.logical_size)
             .map_err(|_| RepairError::NumericOverflow("logical size"))?;
-        let manifest_bytes = build_manifest_bytes(chunk_id, nonce, &ciphertext, &gcm_tag, logical_size)
-            .map_err(|err| RepairError::Packer(err.to_string()))?;
+        let manifest_bytes =
+            build_manifest_bytes(chunk_id, nonce, &ciphertext, &gcm_tag, logical_size)
+                .map_err(|err| RepairError::Packer(err.to_string()))?;
         let new_pack_id = compute_pack_id(desired_mode, &manifest_bytes);
         let manifest_path = local_pack_path(&self.spool_dir, &new_pack_id);
         write_ephemeral_bytes(&manifest_path, &manifest_bytes)
             .await
             .map_err(|err| RepairError::Io(std::io::Error::other(err.to_string())))?;
 
-        let prepared_shards = build_shards(&self.spool_dir, &new_pack_id, &ciphertext, desired_mode)
-            .await
-            .map_err(|err| RepairError::Packer(err.to_string()))?;
+        let prepared_shards =
+            build_shards(&self.spool_dir, &new_pack_id, &ciphertext, desired_mode)
+                .await
+                .map_err(|err| RepairError::Packer(err.to_string()))?;
         let shard_size = prepared_shards.first().map(|shard| shard.size).unwrap_or(0);
         let manifest_size = i64::try_from(manifest_bytes.len())
             .map_err(|_| RepairError::NumericOverflow("manifest size"))?;
@@ -489,7 +482,11 @@ impl RepairWorker {
         )
         .await?;
 
-        if desired_mode != StorageMode::LocalOnly && db::get_pack_shards(&self.pool, &new_pack_id).await?.is_empty() {
+        if desired_mode != StorageMode::LocalOnly
+            && db::get_pack_shards(&self.pool, &new_pack_id)
+                .await?
+                .is_empty()
+        {
             for shard in &prepared_shards {
                 db::register_pack_shard(
                     &self.pool,
@@ -515,7 +512,8 @@ impl RepairWorker {
                 current_mode.as_str(),
                 desired_mode.as_str()
             );
-            db::link_chunk_to_pack(&self.pool, &pack.chunk_id, &new_pack_id, 0, manifest_size).await?;
+            db::link_chunk_to_pack(&self.pool, &pack.chunk_id, &new_pack_id, 0, manifest_size)
+                .await?;
             info!(
                 "repair reconcile SWAP complete: old_pack={} new_pack={} current_mode={} desired_mode={}",
                 pack.pack_id,
@@ -554,10 +552,17 @@ impl RepairWorker {
             .await
             {
                 Ok(Ok(_)) => {
-                    db::mark_pack_shard_completed(&self.pool, &new_pack_id, shard.shard_index).await?;
+                    db::mark_pack_shard_completed(&self.pool, &new_pack_id, shard.shard_index)
+                        .await?;
                 }
                 Ok(Err(err)) => {
-                    db::requeue_pack_shard(&self.pool, &new_pack_id, shard.shard_index, &err.to_string()).await?;
+                    db::requeue_pack_shard(
+                        &self.pool,
+                        &new_pack_id,
+                        shard.shard_index,
+                        &err.to_string(),
+                    )
+                    .await?;
                     let summary = db::summarize_pack_shards(&self.pool, &new_pack_id).await?;
                     let status = db::resolve_pack_status_for_mode(desired_mode, summary);
                     db::update_pack_status(&self.pool, &new_pack_id, status).await?;
@@ -568,7 +573,13 @@ impl RepairWorker {
                         provider: provider.provider_name,
                         duration: self.provider_timeout,
                     };
-                    db::requeue_pack_shard(&self.pool, &new_pack_id, shard.shard_index, &err.to_string()).await?;
+                    db::requeue_pack_shard(
+                        &self.pool,
+                        &new_pack_id,
+                        shard.shard_index,
+                        &err.to_string(),
+                    )
+                    .await?;
                     let summary = db::summarize_pack_shards(&self.pool, &new_pack_id).await?;
                     let status = db::resolve_pack_status_for_mode(desired_mode, summary);
                     db::update_pack_status(&self.pool, &new_pack_id, status).await?;
@@ -588,7 +599,8 @@ impl RepairWorker {
                 current_mode.as_str(),
                 desired_mode.as_str()
             );
-            db::link_chunk_to_pack(&self.pool, &pack.chunk_id, &new_pack_id, 0, manifest_size).await?;
+            db::link_chunk_to_pack(&self.pool, &pack.chunk_id, &new_pack_id, 0, manifest_size)
+                .await?;
             info!(
                 "repair reconcile SWAP complete: old_pack={} new_pack={} current_mode={} desired_mode={}",
                 pack.pack_id,
@@ -601,7 +613,10 @@ impl RepairWorker {
         Ok(())
     }
 
-    async fn load_ciphertext_for_pack(&self, pack: &db::PackRecord) -> Result<Vec<u8>, RepairError> {
+    async fn load_ciphertext_for_pack(
+        &self,
+        pack: &db::PackRecord,
+    ) -> Result<Vec<u8>, RepairError> {
         match StorageMode::from_str(&pack.storage_mode) {
             StorageMode::Ec2_1 => self.load_ec_ciphertext(pack).await,
             StorageMode::SingleReplica => self.load_single_replica_ciphertext(pack).await,
@@ -616,7 +631,10 @@ impl RepairWorker {
         let mut shard_set: Vec<Option<Vec<u8>>> = vec![None; TOTAL_SHARDS];
         let mut completed = 0usize;
 
-        for shard in shards.into_iter().filter(|shard| shard.status == "COMPLETED") {
+        for shard in shards
+            .into_iter()
+            .filter(|shard| shard.status == "COMPLETED")
+        {
             let provider = self
                 .providers
                 .get(&shard.provider)
@@ -651,9 +669,9 @@ impl RepairWorker {
                 .map_err(|_| RepairError::NumericOverflow("cipher size"))?,
         );
         for shard in shard_set.iter().take(DATA_SHARDS) {
-            let bytes = shard
-                .as_ref()
-                .ok_or(RepairError::MissingShardRecord("reconstructed data shard missing"))?;
+            let bytes = shard.as_ref().ok_or(RepairError::MissingShardRecord(
+                "reconstructed data shard missing",
+            ))?;
             ciphertext.extend_from_slice(bytes);
         }
         let cipher_size = usize::try_from(pack.cipher_size)
@@ -670,7 +688,9 @@ impl RepairWorker {
             .await?
             .into_iter()
             .find(|shard| shard.status == "COMPLETED")
-            .ok_or(RepairError::MissingShardRecord("single replica shard missing"))?;
+            .ok_or(RepairError::MissingShardRecord(
+                "single replica shard missing",
+            ))?;
         let provider = self
             .providers
             .get(&shard.provider)
@@ -782,10 +802,7 @@ impl RepairWorker {
 
         info!(
             "repair reconcile upload start: pack={} shard={} provider={} key={}",
-            pack_id,
-            shard_index,
-            provider.provider_name,
-            object_key
+            pack_id, shard_index, provider.provider_name, object_key
         );
         let body = ByteStream::from(bytes.to_vec());
         let response = provider
@@ -800,10 +817,7 @@ impl RepairWorker {
             .map_err(|err| provider_error(provider.provider_name, "put_object", err))?;
         info!(
             "repair reconcile upload complete: pack={} shard={} provider={} key={}",
-            pack_id,
-            shard_index,
-            provider.provider_name,
-            object_key
+            pack_id, shard_index, provider.provider_name, object_key
         );
 
         Ok((response.e_tag, response.version_id))

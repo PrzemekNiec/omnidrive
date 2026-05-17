@@ -13,17 +13,16 @@ use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::NamedPipeServer;
 use tracing::{error, info, warn};
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HANDLE, LocalFree, HLOCAL};
-use windows::Win32::Security::{SECURITY_ATTRIBUTES};
+use windows::Win32::Foundation::{HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
-    CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
-    PIPE_WAIT,
+    CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
+use windows::core::PCWSTR;
 
 const PIPE_NAME: &str = r"\\.\pipe\omnidrive_shellcmd";
 const PIPE_NAME_W: &str = "\\\\.\\pipe\\omnidrive_shellcmd\0";
@@ -81,8 +80,13 @@ fn create_pipe_instance(first: bool) -> Result<NamedPipeServer, String> {
             bInheritHandle: false.into(),
         };
 
-        let open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED
-            | if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0) };
+        let open_mode = PIPE_ACCESS_DUPLEX
+            | FILE_FLAG_OVERLAPPED
+            | if first {
+                FILE_FLAG_FIRST_PIPE_INSTANCE
+            } else {
+                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0)
+            };
 
         let pipe_name: Vec<u16> = PIPE_NAME_W.encode_utf16().collect();
         let handle = CreateNamedPipeW(
@@ -90,9 +94,9 @@ fn create_pipe_instance(first: bool) -> Result<NamedPipeServer, String> {
             open_mode,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES,
-            4096,  // out buffer
-            4096,  // in buffer
-            0,     // default timeout
+            4096, // out buffer
+            4096, // in buffer
+            0,    // default timeout
             Some(&sa),
         );
 
@@ -107,8 +111,7 @@ fn create_pipe_instance(first: bool) -> Result<NamedPipeServer, String> {
         }
 
         // Wrap in tokio NamedPipeServer (takes ownership of the handle).
-        NamedPipeServer::from_raw_handle(handle.0)
-            .map_err(|e| format!("from_raw_handle: {e}"))
+        NamedPipeServer::from_raw_handle(handle.0).map_err(|e| format!("from_raw_handle: {e}"))
     }
 }
 
@@ -283,13 +286,9 @@ struct ResolvedTarget {
 }
 
 /// Resolve an O:\ or SyncRoot path to inode_id + logical path + sync_root.
-async fn resolve_path(
-    pool: &SqlitePool,
-    raw_path: &str,
-) -> Result<ResolvedTarget, ShellResponse> {
-    let logical = normalize_path(raw_path).ok_or_else(|| {
-        ShellResponse::fail(format!("invalid path: {raw_path}"))
-    })?;
+async fn resolve_path(pool: &SqlitePool, raw_path: &str) -> Result<ResolvedTarget, ShellResponse> {
+    let logical = normalize_path(raw_path)
+        .ok_or_else(|| ShellResponse::fail(format!("invalid path: {raw_path}")))?;
 
     let inode_id = db::resolve_path(pool, &logical)
         .await
@@ -324,8 +323,7 @@ fn normalize_path(raw_path: &str) -> Option<String> {
         return None;
     }
 
-    let drive_letter =
-        std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
+    let drive_letter = std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
     let drive_prefix = format!(
         "{}\\",
         drive_letter

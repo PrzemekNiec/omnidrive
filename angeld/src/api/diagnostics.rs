@@ -12,6 +12,8 @@ use crate::shell_state;
 use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
 
+use super::error::ApiError;
+use super::{ApiState, MaintenanceLevel, MaintenanceStatus, unix_timestamp_millis};
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -19,8 +21,6 @@ use axum::{Json, Router};
 use serde::Serialize;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
-use super::{unix_timestamp_millis, ApiState, MaintenanceLevel, MaintenanceStatus};
-use super::error::ApiError;
 
 // ── Response structs ────────────────────────────────────────────────
 
@@ -161,7 +161,9 @@ async fn get_diagnostics_overview(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let snapshot = cloud_guard::snapshot(&state.pool)
         .await
-        .map_err(|e| ApiError::Internal { message: e.to_string() })?;
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
     Ok(Json(serde_json::json!({
         "cloud_guard_status": snapshot.status,
         "cloud_guard_message": snapshot.message,
@@ -345,9 +347,10 @@ async fn get_restore_state(
         .await?
         .unwrap_or_else(|| "idle".to_string());
 
-    let last_error_at = db::get_system_config_value(&state.pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT)
-        .await?
-        .and_then(|v| v.parse::<i64>().ok());
+    let last_error_at =
+        db::get_system_config_value(&state.pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_AT)
+            .await?
+            .and_then(|v| v.parse::<i64>().ok());
 
     let last_error_message =
         db::get_system_config_value(&state.pool, SYSTEM_CONFIG_RESTORE_LAST_ERROR_MSG).await?;
@@ -473,12 +476,16 @@ pub(super) fn build_sync_root_state_response()
     let (level, message) = if shell_mode == "local_only" {
         (
             MaintenanceLevel::Ok,
-            "Smart Sync jest celowo bezczynny do czasu skonfigurowania zdalnych dostawców.".to_string(),
+            "Smart Sync jest celowo bezczynny do czasu skonfigurowania zdalnych dostawców."
+                .to_string(),
         )
     } else if snapshot.registered && snapshot.connected && snapshot.registered_for_provider {
         (
             MaintenanceLevel::Ok,
-            format!("Sync-root {} jest zarejestrowany i połączony.", snapshot.path),
+            format!(
+                "Sync-root {} jest zarejestrowany i połączony.",
+                snapshot.path
+            ),
         )
     } else if snapshot.path_exists {
         (

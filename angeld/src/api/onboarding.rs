@@ -1,17 +1,17 @@
 // angeld/src/api/onboarding.rs — Onboarding API handlers (extracted from mod.rs)
 
 use super::error::ApiError;
-use super::{unix_timestamp_millis, ApiState, MaintenanceLevel, MaintenanceStatus};
+use super::{ApiState, MaintenanceLevel, MaintenanceStatus, unix_timestamp_millis};
 use crate::config::AppConfig;
 use crate::db;
 use crate::device_identity::ensure_local_device_identity;
 use crate::downloader::Downloader;
 use crate::onboarding::{
-    OnboardingMode, OnboardingState, ValidationReport, VaultRestoreReport,
-    SYSTEM_CONFIG_CLOUD_ENABLED, SYSTEM_CONFIG_DRAFT_ENV_DETECTED,
+    OnboardingMode, OnboardingState, SYSTEM_CONFIG_CLOUD_ENABLED, SYSTEM_CONFIG_DRAFT_ENV_DETECTED,
     SYSTEM_CONFIG_LAST_ONBOARDING_STEP, SYSTEM_CONFIG_ONBOARDING_MODE,
-    SYSTEM_CONFIG_ONBOARDING_STATE, cleanup_stale_uploads, perform_vault_restore,
-    reset_onboarding, seal_provider_secrets, validate_persisted_provider_connection,
+    SYSTEM_CONFIG_ONBOARDING_STATE, ValidationReport, VaultRestoreReport, cleanup_stale_uploads,
+    perform_vault_restore, reset_onboarding, seal_provider_secrets,
+    validate_persisted_provider_connection,
 };
 use crate::repair;
 use crate::runtime_paths::RuntimePaths;
@@ -24,10 +24,10 @@ use axum::extract::{ConnectInfo, Path, State};
 use axum::http::HeaderMap;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use std::net::SocketAddr;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -206,12 +206,11 @@ async fn post_setup_identity(
 
     let mut app_config = AppConfig::from_env();
     app_config.device_name_override = Some(device_name.to_string());
-    let local_device =
-        ensure_local_device_identity(&state.pool, &app_config)
-            .await
-            .map_err(|e| ApiError::Internal {
-                message: e.to_string(),
-            })?;
+    let local_device = ensure_local_device_identity(&state.pool, &app_config)
+        .await
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
     db::update_local_device_name(&state.pool, device_name).await?;
     db::set_system_config_value(
         &state.pool,
@@ -363,7 +362,9 @@ async fn post_setup_provider(
         if let Err(err) = downloader.reload_active_providers_from_db().await {
             tracing::warn!("[PROVIDER] hot-reload after setup-provider failed: {err}");
         } else {
-            tracing::info!("[PROVIDER] hot-reloaded providers after setup-provider for {provider_name}");
+            tracing::info!(
+                "[PROVIDER] hot-reloaded providers after setup-provider for {provider_name}"
+            );
         }
     }
 
@@ -559,13 +560,8 @@ async fn post_join_existing(
 
     for provider_id in &try_order {
         info!("[join-existing] trying provider '{provider_id}'");
-        let result = perform_vault_restore(
-            &state.pool,
-            &runtime_paths,
-            passphrase,
-            provider_id,
-        )
-        .await;
+        let result =
+            perform_vault_restore(&state.pool, &runtime_paths, passphrase, provider_id).await;
 
         match &result {
             Ok(_) => {
@@ -574,8 +570,12 @@ async fn post_join_existing(
                 break;
             }
             Err(crate::onboarding::RestoreError::IncorrectPassphrase(msg)) => {
-                warn!("[join-existing] provider '{provider_id}' could not decrypt with this passphrase (possibly stale snapshot): {msg}");
-                last_passphrase_errors.push(format!("{provider_id}: cannot decrypt (stale snapshot or wrong password)"));
+                warn!(
+                    "[join-existing] provider '{provider_id}' could not decrypt with this passphrase (possibly stale snapshot): {msg}"
+                );
+                last_passphrase_errors.push(format!(
+                    "{provider_id}: cannot decrypt (stale snapshot or wrong password)"
+                ));
                 // Continue — another provider might have a fresher snapshot decryptable with this passphrase.
             }
             Err(crate::onboarding::RestoreError::MetadataNotFound(msg)) => {
@@ -658,7 +658,9 @@ async fn post_join_existing(
         let message = err.to_string();
         match err {
             crate::onboarding::RestoreError::IncorrectPassphrase(_) => ApiError::BadRequest {
-                code: provider_restore_error_kind(&crate::onboarding::RestoreError::IncorrectPassphrase(String::new())),
+                code: provider_restore_error_kind(
+                    &crate::onboarding::RestoreError::IncorrectPassphrase(String::new()),
+                ),
                 message,
             },
             crate::onboarding::RestoreError::MetadataNotFound(_) => ApiError::BadRequest {
@@ -727,13 +729,14 @@ async fn post_join_existing(
                 "[join-existing] local device {} already registered or no owner found in grafted vault_members",
                 local_dev.device_id
             ),
-            Err(err) => warn!(
-                "[join-existing] ensure_local_device_in_vault failed: {err}"
-            ),
+            Err(err) => warn!("[join-existing] ensure_local_device_in_vault failed: {err}"),
         }
 
         // Resolve the adopted user_id (= snapshot owner) and confirm chain integrity.
-        let device_rec = db::get_device(&state.pool, &local_dev.device_id).await.ok().flatten();
+        let device_rec = db::get_device(&state.pool, &local_dev.device_id)
+            .await
+            .ok()
+            .flatten();
         if let Some(dev) = device_rec {
             let user_ok = matches!(db::get_user(&state.pool, &dev.user_id).await, Ok(Some(_)));
             let member_ok = matches!(
@@ -1101,7 +1104,8 @@ pub(super) async fn build_onboarding_status_response(
     let message = if onboarding_state == OnboardingState::Completed.as_str() {
         "Onboarding zakończony.".to_string()
     } else if draft_env_detected {
-        "Onboarding nie jest zakończony; szkice dostawców zaimportowano z .env do przeglądu.".to_string()
+        "Onboarding nie jest zakończony; szkice dostawców zaimportowano z .env do przeglądu."
+            .to_string()
     } else {
         "Onboarding nie został jeszcze zakończony.".to_string()
     };
