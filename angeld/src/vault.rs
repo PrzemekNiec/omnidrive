@@ -41,17 +41,6 @@ struct UnlockedVaultKeys {
 }
 
 impl UnlockedVaultKeys {
-    #[cfg(test)]
-    #[allow(dead_code)] // Task 2 (Faza 0): only used by set_key_for_tests below; both candidates for removal.
-    fn new(master_key: KeyBytes, vault_key: KeyBytes) -> Self {
-        Self {
-            master_key: SecretBox::new(Box::new(master_key)),
-            vault_key: SecretBox::new(Box::new(vault_key)),
-            envelope_vault_key: None,
-            previous_envelope_vault_key: None,
-        }
-    }
-
     fn with_envelope_key(master_key: KeyBytes, vault_key: KeyBytes, envelope_key: KeyBytes) -> Self {
         Self {
             master_key: SecretBox::new(Box::new(master_key)),
@@ -665,11 +654,6 @@ impl VaultKeyStore {
         Ok(processed)
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)] // Task 2 (Faza 0): no callers in tree as of 2026-05-17, candidate for removal.
-    pub async fn set_key_for_tests(&self, key: KeyBytes) {
-        *self.inner.write().await = Some(UnlockedVaultKeys::new(key, key));
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
