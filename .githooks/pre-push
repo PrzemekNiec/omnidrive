@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# OmniDrive pre-push hook — enforces fmt + clippy gate before push.
+#
+# Install once per clone:  pwsh scripts/install-git-hooks.ps1
+# Bypass for emergencies:  git push --no-verify   (do NOT bypass routinely)
+#
+# Skip the slow test suite here — CI runs `cargo test` on windows-latest.
+# Tests at pre-push would add minutes per push and discourage small commits.
+
+set -e
+
+echo "[pre-push] cargo fmt --all -- --check..."
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "[pre-push] X formatowanie nie jest czyste."
+    echo "[pre-push] Uruchom: cargo fmt --all"
+    echo "[pre-push] Potem zacommituj fmt-only i pushuj ponownie."
+    exit 1
+fi
+
+echo "[pre-push] cargo clippy --workspace -- -D warnings (CI command)..."
+if ! cargo clippy --workspace -- -D warnings; then
+    echo ""
+    echo "[pre-push] X clippy znalazl bledy (lib + bin)."
+    echo "[pre-push] Napraw je, nie push z --no-verify."
+    exit 1
+fi
+
+echo "[pre-push] OK wszystkie sprawdzenia zielone (fmt + clippy)"
+exit 0

@@ -1,5 +1,5 @@
 /target/
-Cargo.lock
+# Cargo.lock — committed (bin crate workspace; deterministic builds + faster CI cache).
 *.sqlite
 *.sqlite3
 *.db
