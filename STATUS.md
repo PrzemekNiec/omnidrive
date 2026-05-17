@@ -1,8 +1,8 @@
 # OmniDrive — Kronika projektu & Roadmapa (Single Source of Truth)
 
-> **Ostatnia aktualizacja:** 2026-05-10 (wieczór)
+> **Ostatnia aktualizacja:** 2026-05-17 (Faza 0 — 5/6 kroków DONE, 7 commitów na main; szczegóły §12.4)
 > **Aktualna wersja:** `v0.3.23` — instalator `OmniDrive-Setup-0.3.23.exe` gotowy. Lokalny daemon Lenovo działa z `target/release` workspace mode.
-> **Status:** Identity Grafting + Cloud Guard endpoint (Single-User-Multi-Device). Po sesji 2026-05-10 wydane 6 wersji w jednym dniu (v0.3.18–v0.3.23). **Decyzja Przemka po sesji:** koniec gaszenia pożarów, formalna roadmapa v0.4 zaakceptowana — patrz §12.
+> **Status:** Faza 0 (QA Foundation) prawie zamknięta — pozostał tylko krok 0.3 (perf baseline na Lenovo). Audyt wykrył **3 nowe security gapy** (P1-006 logout-locks-vault + P2-004 auto-lock + P2-005 Zeroize) — Faza α dostała 3 kroki α.0a/0b/0c PRZED α.1 (Argon2id bump). Pre-push hook aktywny lokalnie, CI z fmt-check gate.
 > **Zasada:** ten plik to jedyne źródło prawdy o roadmapie. Bugi w `docs/KNOWN_ISSUES.md`. Stare pliki planowania w `docs/archive/`.
 
 ---
@@ -543,33 +543,57 @@
 
 ---
 
-### 12.4 Faza 0 — QA Foundation *(START: jutro)*
+### 12.4 Faza 0 — QA Foundation *(2026-05-17 — 5/6 DONE, jedyny pozostały krok = 0.3 perf baseline)*
 
 > **Cel:** zanim cokolwiek nowego kodujemy, mamy infrastrukturę żeby _mierzyć_ jakość.
 
-| Krok | Zakres | DoD |
-|------|--------|-----|
-| **0.1** | Audyt kodu — pełen przegląd `angeld/src/` i `omnidrive-core/src/` pod kątem: TODOs, `unimplemented!()`, `unwrap()` na hot paths, dead code (`cargo +nightly udeps`). Każde znalezisko → wpis P3 w `KNOWN_ISSUES.md`. | Lista znalezisk w `KNOWN_ISSUES.md` |
-| **0.2** | `docs/SMOKE_CHECKLIST.md` — manualna lista 30–50 sprawdzeń do przejścia po każdym buildzie (przed Dell smoke). | Plik gotowy, użyty przy następnym buildzie |
-| **0.3** | Performance baseline benchmark (watcher, VFS cold/warm fetch, RAM, cold start) — _aktualne_ wartości na Lenovo. Bez tego nie wiemy jak daleko jesteśmy od SLA. | `docs/perf-baseline-2026-05-XX.md` z tabelą metryk |
-| **0.4** | CI: GitHub Actions (lub lokalny Windows runner) — `cargo test --workspace`, `cargo clippy -- -D warnings`, `cargo fmt --check`. Każdy push → pipeline. | Pipeline zielony na main |
-| **0.5** | Push lokalnych commitów (v0.3.19–v0.3.23) na `origin` (memory: niepushed) | `git push origin main` przeszedł |
+| Krok | Zakres | Status |
+|------|--------|--------|
+| **0.1** | Audyt kodu — pełen przegląd `angeld/src/` i `omnidrive-core/src/` pod kątem: TODOs, `unimplemented!()`, `unwrap()` na hot paths, dead code (`cargo +nightly udeps`). Każde znalezisko → wpis P3 (lub wyżej) w `KNOWN_ISSUES.md`. | ✅ DONE — raw metrics `9b874ed`, triage `cf6ae9b`; raport `docs/superpowers/specs/2026-05-11-code-audit.md` §1-4 wypełniony; **6 wpisów dodanych do KNOWN_ISSUES (P1-006, P2-003/004/005, P3-001/002).** |
+| **0.2** | `docs/SMOKE_CHECKLIST.md` — manualna lista 30–50 sprawdzeń do przejścia po każdym buildzie (przed Dell smoke). | ✅ DONE — `cd7a4f2`; **50 punktów w 8 sekcjach** (A build/instalacja, B nowy vault, C join-existing z safety-numbers Dell↔Lenovo, D upload/download/sync, E UI, F recovery/maintenance, G stabilność, H zero-knowledge security). Każdy 🚨 EXPECTED-FAIL ma ref do KNOWN_ISSUES + roadmap target. |
+| **0.3** | Performance baseline benchmark (watcher, VFS cold/warm fetch, RAM, cold start) — _aktualne_ wartości na Lenovo (dev box). Bez tego nie wiemy jak daleko jesteśmy od SLA z §12.2. | 🟡 PENDING — wymaga uruchomienia daemona na Lenovo z testowymi danymi. Może iść równolegle z α.0a. |
+| **0.4** | CI: GitHub Actions — `cargo test --workspace`, `cargo clippy -- -D warnings`, `cargo fmt --check`. Każdy push → pipeline. Plus lokalny pre-push hook (fmt+clippy). | ✅ DONE — fix CI red `06febb1` (clippy 1.94 lints), fmt baseline `0cbee99` (63 plików), pipeline hooks + CI fmt step + Cargo.lock `a95a338`. **Pre-push hook samo-przetestowany przy własnym pushu — działa.** |
+| **0.5** | Push lokalnych commitów (v0.3.19–v0.3.23) na `origin`. | ✅ DONE (już 2026-05-11 sesja "Clean Ark") |
 
-**Szacunek:** 2–3 sesje.
+**Wykonanie 2026-05-17 (7 commitów na main):**
+
+| Commit | Krok | Treść |
+|---|---|---|
+| `9b874ed` | 0.1a | raw metrics baseline (clippy/fmt/udeps/grep → audit report §1) |
+| `06febb1` | 0.4a | fix CI-red (clippy 1.94: collapsible_if + doc_lazy_continuation + misc, ~20 lintów lib+bin+testy) |
+| `11b3f3f` | 0.1b | cleanup dead vault test helpers (`set_key_for_tests` + `UnlockedVaultKeys::new`) + P2-003 (bin/lib duplikacja 27 modułów) |
+| `cf6ae9b` | 0.1c | Task 2 audit triage — §2-4 raportu + **3 security gaps** (P1-006/P2-004/P2-005) + AAD audit (P3-001) + unwrap triage (P3-002) |
+| `cd7a4f2` | 0.2 | SMOKE_CHECKLIST.md (50 punktów ready-to-tick) |
+| `0cbee99` | 0.4b | cargo fmt --all baseline (63 plików, mechaniczny commit) |
+| `a95a338` | 0.4c | .githooks/pre-push (bash: fmt+clippy gate) + scripts/install-git-hooks.ps1 + CI +rustfmt component +fmt --check step + Cargo.lock committed (deterministic builds) |
+
+**Bonus odkrycia (poza pierwotnym planem) — rebalansują kolejność Fazy α:**
+- **P1-006:** `/api/auth/logout` (api/auth.rs:189) nie wywołuje `vault_keys.lock()`. Klucze plaintext zostają w RAM po wylogowaniu. **Zero-knowledge gap.** Hot-fix-able do v0.3.24.
+- **P2-004:** Brak auto-lock po idle. 0 grep matches dla `auto_lock|idle_timeout|inactivity` w *.rs.
+- **P2-005:** Brak `Zeroize` impl. `KeyBytes = [u8; 32]` (omnidrive-core/src/crypto.rs:28) bez derive. `expose_secret()` zwraca un-zeroized kopię.
+- **P3-001:** AAD `&[]` na chunk encrypt — świadoma decyzja (WebCrypto compat Trybu B), brak udokumentowania w crypto-spec → §12 do dopisania.
+- **P3-002:** 23 prod unwrap (nie 24 z Task 1) → 2 eskalowane do P2: `peer.rs:159` (reqwest builder) + `ingest.rs:184` (packer init).
+
+**Szacunek pierwotny:** 2–3 sesje. **Faktyczne wykonanie:** 1 sesja (5 z 6 kroków) — pozostało tylko 0.3 perf baseline.
 
 ---
 
-### 12.5 Faza α — Crypto Hardening *(po Fazie 0)*
+### 12.5 Faza α — Crypto Hardening *(po Fazie 0; kolejność uaktualniona 2026-05-17 po Task 2 audytu)*
 
 > **Cel:** zamknąć wszystkie bramki krypto z §12.1 (a–f) zanim zaczniemy bug-fixy. Krypto = fundament; każdy fix do crypto po reszcie = ryzyko dataloss.
+>
+> **Nowe kroki α.0a/0b/0c** wstawione przed α.1 po audycie Fazy 0 — adresują 3 security gapy (P1-006/P2-004/P2-005) wykryte w audit triage. Bez tego nawet perfekcyjny α.1-α.5 zostawia klucze plaintext w RAM po logout.
 
 | Krok | Zakres | DoD |
 |------|--------|-----|
+| **α.0a** | **P1-006 fix: logout musi zablokować vault.** `api/auth.rs::post_auth_logout` (linia 189) dodać `state.vault_keys.lock().await` PRZED `delete_user_session`. Wzorzec do skopiowania: `api/vault.rs::post_vault_lock` (linia 915-928 — woła `state.vault_keys.lock().await` + dismount cfapi). Hot-fix-able do v0.3.24 (mały scope, security high impact, low regression risk). | Test e2e: unlock → POST /api/auth/logout → ProcDump nie znajduje hex-prefix klucza w memdumpie procesu. SMOKE H1 przechodzi. |
+| **α.0b** | **P2-004 fix: auto-lock po idle + Windows session-lock.** (1) konfig `vault.auto_lock_idle_minutes` (default 15), (2) reset timera per authenticated API call, (3) hook Windows `WM_WTSSESSION_CHANGE`/`SystemEvents.SessionSwitch` → natychmiastowy lock przy Win+L, (4) UI element ze status barem + warning toast przed lock. | SMOKE H2 (15min idle auto-lock) + H3 (Win+L auto-lock) przechodzą. |
+| **α.0c** | **P2-005 fix: Zeroize newtype dla KeyBytes.** Dodać `zeroize = { workspace = true, features = ["zeroize_derive"] }` jako explicit dep w `omnidrive-core`. `KeyBytes` w `omnidrive-core/src/crypto.rs:28` z type alias → newtype z `#[derive(Zeroize, ZeroizeOnDrop)]`. Audit call-sites `expose_secret()` w vault.rs/downloader.rs/packer.rs/migrator.rs/sharing.rs — zamienić plain copies na `SecretBox` lub krótkożyjące referencje. | SMOKE H4 (memdump po lock nie znajduje resztek klucza) przechodzi. |
 | **α.1** | **Argon2id 2026 params bump.** Zmiana defaultu (m=47MiB, t=1, p=1). Migracja: nowy unlock z istniejącym vault → re-derive KEK z nowymi params + re-wrap Vault Key + bump `parameter_set_version`. Stara generacja zachowana w schema (recovery z legacy). | Test e2e: vault z m=19 → unlock → re-key → unlock z m=47 OK |
 | **α.2** | **ML-KEM-768 hybrid wrap.** Crate `ml-kem = "0.2"` (audited, NIST FIPS 203). Schema: `devices.kyber_public_key BLOB` (1184 B), `devices.wrapped_vault_key_kyber BLOB` (~1100 B + AAD). Każde wrap operacji produkuje 2 ciphertexts. Unwrap: próbuje X25519 (default), failover na ML-KEM. Dla solo vault: 1 device, 1 user — wrap obu metod dla siebie. | Test e2e: vault z hybrid wrap → unlock → assert oba ciphertexty deszyfrują na ten sam VK |
 | **α.3** | **Real X25519 keypair generation** (zamiast `[0;32]` placeholder w `migrate_single_to_multi_user` i `post_join_existing`). Klucze trzymane: public w `devices.public_key`, private w `local_device_identity.encrypted_private_key` (sealed Vault Key). | Test: świeży vault → device.public_key ≠ `[0;32]`, `validate_x25519_pubkey` accept |
-| **α.4** | **Snapshot extension dla pełnej tożsamości.** Audit `graft_restored_metadata_snapshot` — czy kopiuje **wszystkie** tabele które potrzebne są dla kompletnej tożsamości: `data_encryption_keys` (P1-001!), `recovery_keys` (jeśli istnieją), `oauth_states` (NIE — to per-instance). Pełna lista w `docs/crypto-spec.md`. | P1-001 zamknięty; e2e test multi-device pliku end-to-end (wgranie Lenovo, hydration Dell) |
-| **α.5** | **Formal Claude crypto review** — przegląd całego pipeline (passphrase → Argon2id → KEK → AES-KW → VK → AES-KW → DEK → AES-GCM chunki). Sprawdzenie: AAD strings, nonce uniqueness, key zeroization, timing leaks (deklaratywnie). Output: `docs/superpowers/specs/2026-XX-XX-crypto-review.md`. **QG5.** | Dokument review zaakceptowany przez Przemka |
+| **α.4** | **P1-001+P1-005 fix: graft pełen identity bundle.** Lokalizacja: `angeld/src/db.rs::graft_restored_metadata_snapshot` (linia 1677). Obecnie kopiuje z `vault_state` TYLKO 3 pola (`master_key_salt`, `argon2_params`, `vault_id`) i POMIJA `encrypted_vault_key`/`vault_key_generation` + całą tabelę `data_encryption_keys` → Dell po join używa swojego gen=1 zamiast Lenovo's gen=N. Rozszerzyć graft o: (1) wszystkie pola `vault_state` poza per-instance KDF, (2) tabela `data_encryption_keys`, (3) tabela `recovery_keys` (jeśli istnieje), (4) audit pozostałych tabel w `docs/crypto-spec.md`. | P1-001+P1-005 zamknięte; SMOKE C3 (safety_numbers + mnemonic + identicon identyczne Dell↔Lenovo) przechodzi; D7 (Dell hydrate → SHA256 match z Lenovo) przechodzi. |
+| **α.5** | **crypto-spec.md update + Formal Claude crypto review** — dopisać do crypto-spec: §12 AAD semantics (P3-001: dlaczego `&[]` dla chunków = WebCrypto Tryb B compat; dlaczego `user_id` dla OAuth = cross-user tampering protection), §13 auto-lock policy + zeroize semantics. Plus przegląd całego pipeline (passphrase → Argon2id → KEK → AES-KW → VK → AES-KW → DEK → AES-GCM). Output: `docs/superpowers/specs/2026-XX-XX-crypto-review.md`. **QG5.** | Dokument review zaakceptowany przez Przemka |
 
 **Szacunek:** 5–8 sesji. Najcięższa faza — krypto + nowy algorytm + wiele testów.
 
