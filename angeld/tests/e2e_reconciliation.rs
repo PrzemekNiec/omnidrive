@@ -28,9 +28,11 @@ use tokio::time::sleep;
 
 const PASSPHRASE: &str = "reconcile-e2e-passphrase";
 
+type MockObjectStore = Arc<Mutex<HashMap<(String, String), Vec<u8>>>>;
+
 #[derive(Clone)]
 struct MockS3State {
-    objects: Arc<Mutex<HashMap<(String, String), Vec<u8>>>>,
+    objects: MockObjectStore,
 }
 
 struct ReconciliationEnv {
@@ -446,22 +448,20 @@ async fn wait_for_file_ingested(
         if let Some(file) = files
             .into_iter()
             .find(|file| file.path.replace('\\', "/").ends_with(expected_path))
+            && let Some(revision_id) = file.current_revision_id
+            && let Ok(active) = current_active_pack(pool, file.inode_id).await
         {
-            if let Some(revision_id) = file.current_revision_id {
-                if let Ok(active) = current_active_pack(pool, file.inode_id).await {
-                    last_active_details = Some(format!(
-                        "pack={} mode={} status={} shards={}",
-                        active.pack_id,
-                        active.mode.as_str(),
-                        active.status,
-                        active.shard_count
-                    ));
-                    if active.mode == db::StorageMode::Ec2_1
-                        && active.status == "COMPLETED_HEALTHY"
-                    {
-                        return Ok((file.inode_id, revision_id, file.path));
-                    }
-                }
+            last_active_details = Some(format!(
+                "pack={} mode={} status={} shards={}",
+                active.pack_id,
+                active.mode.as_str(),
+                active.status,
+                active.shard_count
+            ));
+            if active.mode == db::StorageMode::Ec2_1
+                && active.status == "COMPLETED_HEALTHY"
+            {
+                return Ok((file.inode_id, revision_id, file.path));
             }
         }
 

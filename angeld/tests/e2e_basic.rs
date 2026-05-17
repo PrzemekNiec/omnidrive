@@ -112,15 +112,15 @@ impl DaemonHarness {
     }
 
     async fn health(&self) -> Result<DiagnosticsHealth, Box<dyn std::error::Error>> {
-        Ok(http_get_json::<DiagnosticsHealth>(&format!(
+        http_get_json::<DiagnosticsHealth>(&format!(
             "{}/api/diagnostics/health",
             self.base_url
         ), None)
-        .await?)
+        .await
     }
 
     async fn connect_db(&self) -> Result<SqlitePool, Box<dyn std::error::Error>> {
-        Ok(SqlitePool::connect(&self.db_url).await?)
+        SqlitePool::connect(&self.db_url).await.map_err(Into::into)
     }
 
     fn failure_message(&self, prefix: &str) -> String {

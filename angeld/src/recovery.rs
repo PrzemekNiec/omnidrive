@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn parse_rejects_bad_checksum() {
         // 24 valid wordlist words but arranged to fail the checksum.
-        let bad = std::iter::repeat("abandon").take(24).collect::<Vec<_>>().join(" ");
+        let bad = std::iter::repeat_n("abandon", 24).collect::<Vec<_>>().join(" ");
         let err = parse_mnemonic(&bad).unwrap_err();
         assert!(matches!(err, RecoveryError::InvalidMnemonic(_)));
     }

@@ -401,20 +401,20 @@ impl FileWatcher {
         // bump, etc.) but file bytes may be unchanged. Hash before invoking the
         // packer so we don't waste CPU + I/O + create a redundant revision row.
         let content_hash = compute_content_hash(&file_path).await?;
-        if let Some(prev) = previous_state.as_ref() {
-            if prev.content_hash == Some(content_hash) {
-                // Bytes unchanged — refresh metadata in tracker without packing.
-                processed_files.insert(
-                    file_path.clone(),
-                    TrackedFileState {
-                        size: metadata.len(),
-                        mtime,
-                        base_revision_id: prev.base_revision_id,
-                        content_hash: Some(content_hash),
-                    },
-                );
-                return Ok(());
-            }
+        if let Some(prev) = previous_state.as_ref()
+            && prev.content_hash == Some(content_hash)
+        {
+            // Bytes unchanged — refresh metadata in tracker without packing.
+            processed_files.insert(
+                file_path.clone(),
+                TrackedFileState {
+                    size: metadata.len(),
+                    mtime,
+                    base_revision_id: prev.base_revision_id,
+                    content_hash: Some(content_hash),
+                },
+            );
+            return Ok(());
         }
 
         if policy.enable_versioning == 0 && current_revision.is_some() {

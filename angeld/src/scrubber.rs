@@ -306,15 +306,14 @@ impl ScrubberWorker {
                 let bytes = body.into_bytes();
                 let verified_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
                 let delta = verified_size.saturating_sub(shard.size);
-                if delta != 0 {
-                    if let Err(err) =
+                if delta != 0
+                    && let Err(err) =
                         cloud_guard::reconcile_read_bytes(&self.pool, delta).await
-                    {
-                        warn!(
-                            "scrubber egress reconcile failed pack={} shard={}: {}",
-                            shard.pack_id, shard.shard_index, err
-                        );
-                    }
+                {
+                    warn!(
+                        "scrubber egress reconcile failed pack={} shard={}: {}",
+                        shard.pack_id, shard.shard_index, err
+                    );
                 }
                 let checksum = hex_sha256(&bytes);
 

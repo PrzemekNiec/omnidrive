@@ -745,13 +745,13 @@ impl RepairWorker {
         let bytes = body.into_bytes().to_vec();
         let actual_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
         let delta = actual_size.saturating_sub(estimated_size.max(0));
-        if delta != 0 {
-            if let Err(err) = cloud_guard::reconcile_read_bytes(&self.pool, delta).await {
-                warn!(
-                    "repair egress reconcile failed pack={} shard={}: {}",
-                    pack_id, shard_index, err
-                );
-            }
+        if delta != 0
+            && let Err(err) = cloud_guard::reconcile_read_bytes(&self.pool, delta).await
+        {
+            warn!(
+                "repair egress reconcile failed pack={} shard={}: {}",
+                pack_id, shard_index, err
+            );
         }
 
         let shard_path = local_shard_path(

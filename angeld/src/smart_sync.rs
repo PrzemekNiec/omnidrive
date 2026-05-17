@@ -177,6 +177,7 @@ pub async fn dismount_after_lock(sync_root_path: &Path) -> Result<(), SmartSyncE
 /// Vault unlock sequence —
 /// 1. CfRegisterSyncRoot + CfConnectSyncRoot
 /// 2. Project all vault files as dehydrated placeholders
+///
 /// Caller is responsible for virtual drive hide + mount afterwards.
 pub async fn mount_after_unlock(
     pool: &SqlitePool,
@@ -831,12 +832,12 @@ mod imp {
             let path = entry.path();
             if path.is_dir() {
                 dehydrate_directory_recursive(&path);
-            } else if path.is_file() {
-                if let Err(err) = dehydrate_placeholder(&path) {
-                    // Non-placeholder files (e.g. user-dropped regular files) will fail here;
-                    // that's expected — log at trace level and continue.
-                    trace!("[LOCK] dehydrate skipped {}: {}", path.display(), err);
-                }
+            } else if path.is_file()
+                && let Err(err) = dehydrate_placeholder(&path)
+            {
+                // Non-placeholder files (e.g. user-dropped regular files) will fail here;
+                // that's expected — log at trace level and continue.
+                trace!("[LOCK] dehydrate skipped {}: {}", path.display(), err);
             }
         }
     }
@@ -845,6 +846,7 @@ mod imp {
     /// 1. Recursive dehydrate of every file under sync_root (wipes CF cache)
     /// 2. CfDisconnectSyncRoot (callbacks stop)
     /// 3. CfUnregisterSyncRoot (removes CF reparse state)
+    ///
     /// Virtual drive unmount is handled by the caller after this returns.
     pub async fn dismount_after_lock(sync_root_path: &Path) -> Result<(), SmartSyncError> {
         let sync_root = normalize_sync_root_path(sync_root_path)?;
@@ -870,6 +872,7 @@ mod imp {
     /// Vault unlock sequence:
     /// 1. CfRegisterSyncRoot + CfConnectSyncRoot
     /// 2. Project all vault files as dehydrated placeholders
+    ///
     /// Virtual drive hide + mount is handled by the caller after this returns.
     pub async fn mount_after_unlock(
         pool: &SqlitePool,

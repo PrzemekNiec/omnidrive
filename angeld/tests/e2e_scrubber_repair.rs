@@ -623,14 +623,13 @@ async fn wait_for_file_ingested(
         if let Some(file) = files
             .into_iter()
             .find(|file| file.path.replace('\\', "/").ends_with(expected_path))
+            && let Some(revision_id) = file.current_revision_id
         {
-            if let Some(revision_id) = file.current_revision_id {
-                let active = current_active_pack(pool, file.inode_id).await?;
-                if active.mode == db::StorageMode::Ec2_1
-                    && active.status == "COMPLETED_HEALTHY"
-                {
-                    return Ok((file.inode_id, revision_id, file.path));
-                }
+            let active = current_active_pack(pool, file.inode_id).await?;
+            if active.mode == db::StorageMode::Ec2_1
+                && active.status == "COMPLETED_HEALTHY"
+            {
+                return Ok((file.inode_id, revision_id, file.path));
             }
         }
 
@@ -691,14 +690,14 @@ async fn mock_put_object(
 ) -> impl IntoResponse {
     let (bucket, key) = split_bucket_and_key(&path);
     let object_path = object_path_under_root(state.root.as_ref(), bucket, key);
-    if let Some(parent) = object_path.parent() {
-        if let Err(err) = fs::create_dir_all(parent).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("create_dir_all failed: {err}"),
-            )
-                .into_response();
-        }
+    if let Some(parent) = object_path.parent()
+        && let Err(err) = fs::create_dir_all(parent).await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("create_dir_all failed: {err}"),
+        )
+            .into_response();
     }
     eprintln!("mock-s3 PUT {bucket}/{key} bytes={}", body.len());
     if let Err(err) = fs::write(&object_path, body).await {

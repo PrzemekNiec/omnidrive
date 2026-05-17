@@ -9,7 +9,6 @@
 ///
 /// Security boundary: same as Windows user session (DPAPI user-scope).
 /// The stored blob is useless without being logged in as the same Windows account.
-
 #[cfg(windows)]
 mod inner {
     use std::ffi::OsStr;
@@ -29,14 +28,14 @@ mod inner {
     }
 
     fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
-        let mut input = CRYPT_INTEGER_BLOB {
+        let input = CRYPT_INTEGER_BLOB {
             cbData: data.len() as u32,
             pbData: data.as_ptr() as *mut u8,
         };
         let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
         unsafe {
             CryptProtectData(
-                &mut input,
+                &input,
                 None,
                 None,
                 None,
@@ -55,14 +54,14 @@ mod inner {
     }
 
     fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
-        let mut input = CRYPT_INTEGER_BLOB {
+        let input = CRYPT_INTEGER_BLOB {
             cbData: data.len() as u32,
             pbData: data.as_ptr() as *mut u8,
         };
         let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
         unsafe {
             CryptUnprotectData(
-                &mut input,
+                &input,
                 None,
                 None,
                 None,

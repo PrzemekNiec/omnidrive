@@ -8498,7 +8498,7 @@ mod tests {
         assert!(active[0].revoked_at.is_none());
 
         // A second key for the same vault should also be active.
-        insert_recovery_key(&pool, "vault-a", &vec![0xCDu8; 40], 1, None)
+        insert_recovery_key(&pool, "vault-a", &[0xCDu8; 40], 1, None)
             .await
             .unwrap();
         assert_eq!(list_active_recovery_keys(&pool, "vault-a").await.unwrap().len(), 2);

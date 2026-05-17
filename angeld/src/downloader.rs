@@ -1069,13 +1069,13 @@ impl Downloader {
         let bytes = body.into_bytes();
         let actual_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
         let delta = actual_size.saturating_sub(estimated_size.max(0));
-        if delta != 0 {
-            if let Err(err) = cloud_guard::reconcile_read_bytes(&self.pool, delta).await {
-                tracing::warn!(
-                    "downloader egress reconcile failed pack={} shard={}: {}",
-                    pack_id, shard_index, err
-                );
-            }
+        if delta != 0
+            && let Err(err) = cloud_guard::reconcile_read_bytes(&self.pool, delta).await
+        {
+            tracing::warn!(
+                "downloader egress reconcile failed pack={} shard={}: {}",
+                pack_id, shard_index, err
+            );
         }
 
         let local_path = self
@@ -1433,9 +1433,11 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
 
+    type MockObjectStore = Arc<Mutex<HashMap<(String, String), Vec<u8>>>>;
+
     #[derive(Clone)]
     struct MockS3State {
-        objects: Arc<Mutex<HashMap<(String, String), Vec<u8>>>>,
+        objects: MockObjectStore,
         head_delay_by_bucket: Arc<HashMap<String, Duration>>,
     }
 

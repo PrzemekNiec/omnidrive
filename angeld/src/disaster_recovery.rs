@@ -911,14 +911,14 @@ impl MetadataBackupDownloadProvider {
         pool: Option<&SqlitePool>,
         object_key: &str,
     ) -> Result<Vec<u8>, DisasterRecoveryError> {
-        if let Some(pool) = pool {
-            if let Err(reason) = cloud_guard::try_authorize_read(pool, 0).await {
-                return Err(DisasterRecoveryError::Uploader(UploaderError::Upload {
-                    provider: self.provider_name,
-                    operation: "get_object",
-                    details: format!("cloud guard blocked read: {reason}"),
-                }));
-            }
+        if let Some(pool) = pool
+            && let Err(reason) = cloud_guard::try_authorize_read(pool, 0).await
+        {
+            return Err(DisasterRecoveryError::Uploader(UploaderError::Upload {
+                provider: self.provider_name,
+                operation: "get_object",
+                details: format!("cloud guard blocked read: {reason}"),
+            }));
         }
 
         let response = self
@@ -966,14 +966,14 @@ impl MetadataBackupDownloadProvider {
         pool: Option<&SqlitePool>,
         max_keys: i32,
     ) -> Result<Vec<String>, DisasterRecoveryError> {
-        if let Some(pool) = pool {
-            if let Err(reason) = cloud_guard::try_authorize_read(pool, 0).await {
-                return Err(DisasterRecoveryError::Uploader(UploaderError::Upload {
-                    provider: self.provider_name,
-                    operation: "list_objects_v2",
-                    details: format!("cloud guard blocked list: {reason}"),
-                }));
-            }
+        if let Some(pool) = pool
+            && let Err(reason) = cloud_guard::try_authorize_read(pool, 0).await
+        {
+            return Err(DisasterRecoveryError::Uploader(UploaderError::Upload {
+                provider: self.provider_name,
+                operation: "list_objects_v2",
+                details: format!("cloud guard blocked list: {reason}"),
+            }));
         }
 
         let response = self

@@ -108,11 +108,11 @@ impl SyncHarness {
     }
 
     async fn health(&self) -> Result<DiagnosticsHealth, Box<dyn std::error::Error>> {
-        Ok(http_get_json::<DiagnosticsHealth>(&format!(
+        http_get_json::<DiagnosticsHealth>(&format!(
             "{}/api/diagnostics/health",
             self.base_url
         ), None)
-        .await?)
+        .await
     }
 
     async fn shutdown(&mut self) {
