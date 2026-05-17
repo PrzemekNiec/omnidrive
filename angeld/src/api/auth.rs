@@ -209,6 +209,17 @@ async fn post_auth_logout(
         .ok()
         .flatten();
 
+    // P1-006: clear plaintext vault keys from RAM BEFORE deleting the session.
+    // Mirrors api/vault.rs::post_vault_lock. Gated on session_before.is_some()
+    // so unauthenticated callers can't lock the vault with a bogus token.
+    let was_unlocked = if session_before.is_some() {
+        let unlocked = state.vault_keys.require_key().await.is_ok();
+        state.vault_keys.lock().await;
+        unlocked
+    } else {
+        false
+    };
+
     let deleted = db::delete_user_session(&state.pool, token).await?;
     if deleted {
         if let (Some(session), Ok(Some(vault))) =
@@ -226,6 +237,23 @@ async fn post_auth_logout(
             )
             .await;
         }
+
+        // P1-006: full CF + virtual-drive teardown when we actually held keys.
+        // Matches post_vault_lock — spawn so the HTTP response returns first.
+        if was_unlocked {
+            tokio::spawn(async move {
+                let paths = RuntimePaths::detect();
+                if let Err(err) = smart_sync::dismount_after_lock(&paths.sync_root).await {
+                    warn!("[LOGOUT] CF dismount failed: {err}");
+                }
+                let drive_letter =
+                    std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
+                if let Err(err) = crate::virtual_drive::unmount_virtual_drive(&drive_letter) {
+                    warn!("[LOGOUT] virtual drive unmount warning: {err}");
+                }
+            });
+        }
+
         Ok(Json(serde_json::json!({ "status": "logged_out" })))
     } else {
         Err(ApiError::NotFound {
