@@ -3,7 +3,7 @@
 > **Cel:** Protokół ~45 punktów do odhaczania przed KAŻDYM buildem `OmniDrive-Setup-vX.Y.Z.exe` który ma trafić na Dell albo dalej. Nie zastępuje testów automatycznych — uzupełnia je o rzeczy, których cargo test nie wyłapie (cross-device, UI, security w runtime, integracja Windows API).
 >
 > **Wersja:** v1 (2026-05-17) — w trakcie Fazy 0 Task 3.
-> **Adresuje:** P1-001+P1-005 (safety numbers Dell↔Lenovo), P1-006 (logout-locks-vault), P2-004 (auto-lock), P2-005 (Zeroize). Punkty oznaczone `🚨 EXPECTED-FAIL` to znane luki — przejdą dopiero po implementacji α.0a/0b/0c.
+> **Adresuje:** P1-001+P1-005 (safety numbers Dell↔Lenovo), P1-006 (logout-locks-vault), P2-004 (auto-lock), P2-005 (Zeroize). Punkty oznaczone `🚨 EXPECTED-FAIL` to znane luki — przejdą dopiero po implementacji α.A.a/A.b/A.c.
 >
 > **Jak używać:**
 > 1. Skopiuj ten plik do `docs/smoke-runs/SMOKE-vX.Y.Z-YYYY-MM-DD.md` przed sesją.
@@ -47,9 +47,9 @@
   - `safety_numbers` — 60 cyfr identyczne
   - `mnemonic` — 12 słów identyczne
   - `identicon` — SHA256 bytes identyczne
-  - **Jeśli różne — `db.rs::graft_restored_metadata_snapshot` nadal pomija `vault_state.encrypted_vault_key`/`vault_key_generation`. EXPECTED-FAIL do α.4.**
+  - **Jeśli różne — `db.rs::graft_restored_metadata_snapshot` nadal pomija `vault_state.encrypted_vault_key`/`vault_key_generation`. EXPECTED-FAIL do α.C.b.**
 - [ ] **C4.** `/api/vault/status` na Dellu: `members_count >= 2`, `key_generation == ` (z Lenovo, np. 4 jeśli Lenovo gen=4), `vault_id` identyczne z Lenovo
-- [ ] **C5.** MultiDevice tab w UI Dell widzi OBA urządzenia (PN-THINKPAD + PN-OFFICE). Po refresh w UI Lenovo — czy Lenovo widzi Dell? **EXPECTED-FAIL do β.1 (P1-002 — brak periodic snapshot fetch worker; Lenovo zobaczy Dell dopiero po manualnym restart).**
+- [ ] **C5.** MultiDevice tab w UI Dell widzi OBA urządzenia (PN-THINKPAD + PN-OFFICE). Po refresh w UI Lenovo — czy Lenovo widzi Dell? **EXPECTED-FAIL do β.b (P1-002 — brak periodic snapshot fetch worker; Lenovo zobaczy Dell dopiero po manualnym restart).**
 - [ ] **C6.** Plik wgrany przez Lenovo (D7) widoczny na Dellu jako `ghost` placeholder w `O:\` (CFAPI status: `IO_REPARSE_TAG_CLOUD`)
 
 ## D. Upload / Download / Sync (8 pkt)
@@ -60,7 +60,7 @@
 - [ ] **D4.** Logi: analogicznie `provider=Scaleway`. Jeśli `403 AccessDenied` — sprawdź P1-003, EXPECTED-FAIL
 - [ ] **D5.** Restart daemona Lenovo (`taskkill /F /IM angeld.exe && start angeld.exe`) → po unlock plik nadal widoczny w `O:\` i `/api/files`
 - [ ] **D6.** Dell (już po C): hydrate `test-small.bin` (kliknięcie 2× w Explorerze) → pobiera z B2 + dekryptuje. Stan z `ghost` na `hydrated` w cfapi (`Get-Item test-small.bin` → no `Offline` attribute)
-- [ ] **D7.** Dell: `Get-FileHash test-small.bin -Algorithm SHA256` == hash oryginału z Lenovo. **Jeśli różne lub `aes-gcm operation failed` w logach — graft DEK nie zadziałał (P1-001), EXPECTED-FAIL do α.4.**
+- [ ] **D7.** Dell: `Get-FileHash test-small.bin -Algorithm SHA256` == hash oryginału z Lenovo. **Jeśli różne lub `aes-gcm operation failed` w logach — graft DEK nie zadziałał (P1-001), EXPECTED-FAIL do α.C.b.**
 - [ ] **D8.** Lenovo: wgranie pliku `test-large.bin` ~50MB → upload kończy się <5min, multi-pack jeśli >chunk_size, wszystkie packi `COMPLETED_HEALTHY`
 
 ## E. UI (Web) (5 pkt)
@@ -88,12 +88,12 @@
 
 ## H. Zero-Knowledge / Security (11 pkt — najważniejsze)
 
-> **Sekcja H pokrywa security gaps wykryte w Task 2 audytu Fazy 0 (P1-006, P2-004, P2-005). Punkty `🚨 EXPECTED-FAIL` przejdą dopiero po implementacji α.0a/0b/0c — do tego czasu są **dokumentowane jako znane** w każdym smoke runie.**
+> **Sekcja H pokrywa security gaps wykryte w Task 2 audytu Fazy 0 (P1-006, P2-004, P2-005). Punkty `🚨 EXPECTED-FAIL` przejdą dopiero po implementacji α.A.a/A.b/A.c — do tego czasu są **dokumentowane jako znane** w każdym smoke runie.**
 
-- [ ] **H1. 🚨 P1-006 (logout-locks-vault)**: unlock vault → `POST /api/auth/logout` → natychmiast `procdump -ma angeld.exe out.dmp` → `strings out.dmp | findstr /R "<hex-prefix-twojego-vault-key>"` → **NIE znaleziono** plain klucza. **EXPECTED-FAIL do α.0a** — obecnie `post_auth_logout` (api/auth.rs:189) tylko `delete_user_session`, klucze plain w RAM. Zacytuj fragment dmp pokazujący key.
-- [ ] **H2. 🚨 P2-004 (auto-lock idle)**: unlock vault → zostaw maszynę bez ruchu 15 min → `/api/vault/safety-numbers` → zwraca `null` (vault auto-locked). **EXPECTED-FAIL do α.0b** — obecnie brak timera, vault unlocked po N godzinach.
-- [ ] **H3. 🚨 P2-004 (Windows session lock)**: unlock vault → Win+L (zablokuj sesję Windows) → odblokuj sesję → `/api/vault/safety-numbers` → zwraca `null`. **EXPECTED-FAIL do α.0b** — brak `WM_WTSSESSION_CHANGE` hooka.
-- [ ] **H4. 🚨 P2-005 (Zeroize)**: unlock vault → zapisz hex-prefix klucza z H1 → `POST /api/vault/lock` → natychmiast `procdump -ma angeld.exe out.dmp` → `strings out.dmp | findstr /R "<hex-prefix>"` → **NIE znaleziono.** **EXPECTED-FAIL do α.0c** — `expose_secret()` w vault.rs:77-91 zwraca un-zeroized copy, klucz zostaje na stosie wywołującego po lock.
+- [ ] **H1. 🚨 P1-006 (logout-locks-vault)**: unlock vault → `POST /api/auth/logout` → natychmiast `procdump -ma angeld.exe out.dmp` → `strings out.dmp | findstr /R "<hex-prefix-twojego-vault-key>"` → **NIE znaleziono** plain klucza. **EXPECTED-FAIL do α.A.a** — obecnie `post_auth_logout` (api/auth.rs:189) tylko `delete_user_session`, klucze plain w RAM. Zacytuj fragment dmp pokazujący key.
+- [ ] **H2. 🚨 P2-004 (auto-lock idle)**: unlock vault → zostaw maszynę bez ruchu 15 min → `/api/vault/safety-numbers` → zwraca `null` (vault auto-locked). **EXPECTED-FAIL do α.A.b** — obecnie brak timera, vault unlocked po N godzinach.
+- [ ] **H3. 🚨 P2-004 (Windows session lock)**: unlock vault → Win+L (zablokuj sesję Windows) → odblokuj sesję → `/api/vault/safety-numbers` → zwraca `null`. **EXPECTED-FAIL do α.A.b** — brak `WM_WTSSESSION_CHANGE` hooka.
+- [ ] **H4. 🚨 P2-005 (Zeroize)**: unlock vault → zapisz hex-prefix klucza z H1 → `POST /api/vault/lock` → natychmiast `procdump -ma angeld.exe out.dmp` → `strings out.dmp | findstr /R "<hex-prefix>"` → **NIE znaleziono.** **EXPECTED-FAIL do α.A.c** — `expose_secret()` w vault.rs:77-91 zwraca un-zeroized copy, klucz zostaje na stosie wywołującego po lock.
 - [ ] **H5.** `findstr /S /M "DEK\|VK\|master_key" %LOCALAPPDATA%\OmniDrive\logs\*.log` → tylko `[REDACTED]`, brak hex bytes klucza. (CLAUDE.md zero-knowledge rule).
 - [ ] **H6.** Share-link tampering: `POST /api/share/create` na pliku → spróbuj decrypt z **zmodyfikowanym** DEK w URL fragment (zmień jedną literę) → browser pokazuje `aes-gcm tag verification failed`, brak partial plaintext, brak crash daemona.
 - [ ] **H7.** **AAD audit sanity** (P3-001 doc-only — tu sprawdzamy że spec matches code): `decrypt_chunk_v2(dek, &nonce, &[], ciphertext, &gcm_tag)` z **niepustym** AAD (np. `b"x"`) → `aes-gcm tag verification failed` (czyli AAD jest faktycznie autentykowany, nie ignorowany).
@@ -110,7 +110,7 @@
 **Data:** YYYY-MM-DD HH:MM
 **Tester:** Przemek + Claude
 **Total odhaczone:** ___ / 50
-**EXPECTED-FAIL:** ___ / 4 (H1, H2, H3, H4 do α; A3 do fmt commitu; ewentualnie C5/D3/D4/D7 do β/α.4)
+**EXPECTED-FAIL:** ___ / 4 (H1, H2, H3, H4 do α.A.a/A.b/A.c; A3 do fmt commitu; ewentualnie C5/D3/D4/D7 do β.b/β.c/α.C.b)
 **Other FAIL:** ___ (lista z opisem — każdy blokuje release, chyba że eskalowany do P0/P1 w KNOWN_ISSUES.md)
 
 ### Decyzja release

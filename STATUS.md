@@ -1,8 +1,10 @@
 # OmniDrive — Kronika projektu & Roadmapa (Single Source of Truth)
 
-> **Ostatnia aktualizacja:** 2026-05-17 wieczór (Faza α.0a — **DONE**, SMOKE H1 4/4 PASS na Lenovo, code w `ed35ecb`)
+> **Ostatnia aktualizacja:** 2026-05-17 wieczór (Faza α.A.a — **DONE**, SMOKE H1 4/4 PASS na Lenovo, code w `ed35ecb`)
 > **Aktualna wersja:** `v0.3.24` w kodzie (workspace bump). Ostatni gotowy instalator: `OmniDrive-Setup-0.3.23.exe` — `v0.3.24.exe` pending (build w osobnym etapie). Lokalny daemon Lenovo działa z `target/release` workspace mode.
-> **Status:** Faza 0 ZAMKNIĘTA + **Faza α.0a (P1-006 logout-locks-vault) DONE** — fix `api/auth.rs::post_auth_logout` woła `state.vault_keys.lock().await` przed `delete_user_session`. SMOKE H1 gate: logout=200, session=invalid, safety-numbers=401, O: not mounted — 4/4 zielone. Pre-push hook aktywny, CI z fmt-check gate. **Następna sesja → α.0b (P2-004 auto-lock + Win+L hook)** lub build instalatora `v0.3.24` przed α.0b.
+> **Status:** Faza 0 ZAMKNIĘTA + **Faza α.A.a (P1-006 logout-locks-vault) DONE** — fix `api/auth.rs::post_auth_logout` woła `state.vault_keys.lock().await` przed `delete_user_session`. SMOKE H1 gate: logout=200, session=invalid, safety-numbers=401, O: not mounted — 4/4 zielone. Pre-push hook aktywny, CI z fmt-check gate. **Następna sesja → α.A.b (P2-004 auto-lock + Win+L hook)** lub build instalatora `v0.3.24` przed α.A.b.
+>
+> **Schemat ID kroków (od 2026-05-17 wieczór):** etap = grecka litera (`α`, `β`, `γ`...) · grupa = duża łacińska (`A`, `B`, `C`...) tylko gdy etap ma podgrupy · zadanie = mała łacińska (`a`, `b`, `c`...) · sub-krok = cyfra (`1`, `2`, `3`...) tylko gdy zadanie ma kilka konkretnych implementacji. Przykłady: `α.A.b.2` (etap α, grupa A hot-fixy, zadanie b auto-lock, sub-krok 2 timer reset), `β.a` (faza β jednorodna, pierwsze zadanie), `0.c.1` (Faza 0 zadanie c perf, sub-krok 1 harness). Historyczne sekcje (Epic 19-36, Faza N, H-M.6) zostają w starym schemacie jako archeologia.
 > **Zasada:** ten plik to jedyne źródło prawdy o roadmapie. Bugi w `docs/KNOWN_ISSUES.md`. Stare pliki planowania w `docs/archive/`.
 
 ---
@@ -549,25 +551,25 @@
 
 | Krok | Zakres | Status |
 |------|--------|--------|
-| **0.1** | Audyt kodu — pełen przegląd `angeld/src/` i `omnidrive-core/src/` pod kątem: TODOs, `unimplemented!()`, `unwrap()` na hot paths, dead code (`cargo +nightly udeps`). Każde znalezisko → wpis P3 (lub wyżej) w `KNOWN_ISSUES.md`. | ✅ DONE — raw metrics `9b874ed`, triage `cf6ae9b`; raport `docs/superpowers/specs/2026-05-11-code-audit.md` §1-4 wypełniony; **6 wpisów dodanych do KNOWN_ISSUES (P1-006, P2-003/004/005, P3-001/002).** |
-| **0.2** | `docs/SMOKE_CHECKLIST.md` — manualna lista 30–50 sprawdzeń do przejścia po każdym buildzie (przed Dell smoke). | ✅ DONE — `cd7a4f2`; **50 punktów w 8 sekcjach** (A build/instalacja, B nowy vault, C join-existing z safety-numbers Dell↔Lenovo, D upload/download/sync, E UI, F recovery/maintenance, G stabilność, H zero-knowledge security). Każdy 🚨 EXPECTED-FAIL ma ref do KNOWN_ISSUES + roadmap target. |
-| **0.3** | Performance baseline benchmark (watcher, VFS cold/warm fetch, RAM, cold start) — _aktualne_ wartości na Lenovo (dev box). Bez tego nie wiemy jak daleko jesteśmy od SLA z §12.2. | ✅ DONE — `d2fa947`; **M1-M4 PASS 4/4** (Faza A+B; Faza C wstrzymana per decyzja). M1 cold start **1863 ms** (<3000 ms, 38% margin), M2 RAM idle **34.2 MB** (<150 MB, 4.4× margin), M3 watcher CPU idle **0%** (<1%), M4 watcher CPU load **avg 0.01% / max 0.14%** (<5%, ~500× margin). Raport: `docs/perf-baseline-2026-05-17.md`. Faza C (M5/M6 VFS fetch) wymaga vault unlock + mount T: → osobna sesja po β.4/β.5. |
-| **0.4** | CI: GitHub Actions — `cargo test --workspace`, `cargo clippy -- -D warnings`, `cargo fmt --check`. Każdy push → pipeline. Plus lokalny pre-push hook (fmt+clippy). | ✅ DONE — fix CI red `06febb1` (clippy 1.94 lints), fmt baseline `0cbee99` (63 plików), pipeline hooks + CI fmt step + Cargo.lock `a95a338`. **Pre-push hook samo-przetestowany przy własnym pushu — działa.** |
-| **0.5** | Push lokalnych commitów (v0.3.19–v0.3.23) na `origin`. | ✅ DONE (już 2026-05-11 sesja "Clean Ark") |
+| **0.a** | Audyt kodu — pełen przegląd `angeld/src/` i `omnidrive-core/src/` pod kątem: TODOs, `unimplemented!()`, `unwrap()` na hot paths, dead code (`cargo +nightly udeps`). Każde znalezisko → wpis P3 (lub wyżej) w `KNOWN_ISSUES.md`. | ✅ DONE — raw metrics `9b874ed`, triage `cf6ae9b`; raport `docs/superpowers/specs/2026-05-11-code-audit.md` §1-4 wypełniony; **6 wpisów dodanych do KNOWN_ISSUES (P1-006, P2-003/004/005, P3-001/002).** |
+| **0.b** | `docs/SMOKE_CHECKLIST.md` — manualna lista 30–50 sprawdzeń do przejścia po każdym buildzie (przed Dell smoke). | ✅ DONE — `cd7a4f2`; **50 punktów w 8 sekcjach** (A build/instalacja, B nowy vault, C join-existing z safety-numbers Dell↔Lenovo, D upload/download/sync, E UI, F recovery/maintenance, G stabilność, H zero-knowledge security). Każdy 🚨 EXPECTED-FAIL ma ref do KNOWN_ISSUES + roadmap target. |
+| **0.c** | Performance baseline benchmark (watcher, VFS cold/warm fetch, RAM, cold start) — _aktualne_ wartości na Lenovo (dev box). Bez tego nie wiemy jak daleko jesteśmy od SLA z §12.2. | ✅ DONE — `d2fa947`; **M1-M4 PASS 4/4** (Faza A+B; Faza C wstrzymana per decyzja). M1 cold start **1863 ms** (<3000 ms, 38% margin), M2 RAM idle **34.2 MB** (<150 MB, 4.4× margin), M3 watcher CPU idle **0%** (<1%), M4 watcher CPU load **avg 0.01% / max 0.14%** (<5%, ~500× margin). Raport: `docs/perf-baseline-2026-05-17.md`. Faza C (M5/M6 VFS fetch) wymaga vault unlock + mount T: → osobna sesja po β.d/β.e. |
+| **0.d** | CI: GitHub Actions — `cargo test --workspace`, `cargo clippy -- -D warnings`, `cargo fmt --check`. Każdy push → pipeline. Plus lokalny pre-push hook (fmt+clippy). | ✅ DONE — fix CI red `06febb1` (clippy 1.94 lints), fmt baseline `0cbee99` (63 plików), pipeline hooks + CI fmt step + Cargo.lock `a95a338`. **Pre-push hook samo-przetestowany przy własnym pushu — działa.** |
+| **0.e** | Push lokalnych commitów (v0.3.19–v0.3.23) na `origin`. | ✅ DONE (już 2026-05-11 sesja "Clean Ark") |
 
 **Wykonanie 2026-05-17 (9 commitów na main):**
 
 | Commit | Krok | Treść |
 |---|---|---|
-| `9b874ed` | 0.1a | raw metrics baseline (clippy/fmt/udeps/grep → audit report §1) |
-| `06febb1` | 0.4a | fix CI-red (clippy 1.94: collapsible_if + doc_lazy_continuation + misc, ~20 lintów lib+bin+testy) |
-| `11b3f3f` | 0.1b | cleanup dead vault test helpers (`set_key_for_tests` + `UnlockedVaultKeys::new`) + P2-003 (bin/lib duplikacja 27 modułów) |
-| `cf6ae9b` | 0.1c | Task 2 audit triage — §2-4 raportu + **3 security gaps** (P1-006/P2-004/P2-005) + AAD audit (P3-001) + unwrap triage (P3-002) |
-| `cd7a4f2` | 0.2 | SMOKE_CHECKLIST.md (50 punktów ready-to-tick) |
-| `0cbee99` | 0.4b | cargo fmt --all baseline (63 plików, mechaniczny commit) |
-| `a95a338` | 0.4c | .githooks/pre-push (bash: fmt+clippy gate) + scripts/install-git-hooks.ps1 + CI +rustfmt component +fmt --check step + Cargo.lock committed (deterministic builds) |
-| `d4497d4` | 0.3a | perf-baseline.ps1 — isolated test daemon harness (Phase A+B M1-M4, port 8788, --no-sync, LOCALAPPDATA override) |
-| `d2fa947` | 0.3b | perf baseline run executed: M1-M4 **PASS 4/4** + raport `docs/perf-baseline-2026-05-17.md` + script fixes (-Yes flag, TcpClient probe) |
+| `9b874ed` | 0.a.1 | raw metrics baseline (clippy/fmt/udeps/grep → audit report §1) |
+| `06febb1` | 0.d.1 | fix CI-red (clippy 1.94: collapsible_if + doc_lazy_continuation + misc, ~20 lintów lib+bin+testy) |
+| `11b3f3f` | 0.a.2 | cleanup dead vault test helpers (`set_key_for_tests` + `UnlockedVaultKeys::new`) + P2-003 (bin/lib duplikacja 27 modułów) |
+| `cf6ae9b` | 0.a.3 | Task 2 audit triage — §2-4 raportu + **3 security gaps** (P1-006/P2-004/P2-005) + AAD audit (P3-001) + unwrap triage (P3-002) |
+| `cd7a4f2` | 0.b | SMOKE_CHECKLIST.md (50 punktów ready-to-tick) |
+| `0cbee99` | 0.d.2 | cargo fmt --all baseline (63 plików, mechaniczny commit) |
+| `a95a338` | 0.d.3 | .githooks/pre-push (bash: fmt+clippy gate) + scripts/install-git-hooks.ps1 + CI +rustfmt component +fmt --check step + Cargo.lock committed (deterministic builds) |
+| `d4497d4` | 0.c.1 | perf-baseline.ps1 — isolated test daemon harness (Phase A+B M1-M4, port 8788, --no-sync, LOCALAPPDATA override) |
+| `d2fa947` | 0.c.2 | perf baseline run executed: M1-M4 **PASS 4/4** + raport `docs/perf-baseline-2026-05-17.md` + script fixes (-Yes flag, TcpClient probe) |
 
 **Bonus odkrycia (poza pierwotnym planem) — rebalansują kolejność Fazy α:**
 - **P1-006:** `/api/auth/logout` (api/auth.rs:189) nie wywołuje `vault_keys.lock()`. Klucze plaintext zostają w RAM po wylogowaniu. **Zero-knowledge gap.** Hot-fix-able do v0.3.24.
@@ -576,26 +578,59 @@
 - **P3-001:** AAD `&[]` na chunk encrypt — świadoma decyzja (WebCrypto compat Trybu B), brak udokumentowania w crypto-spec → §12 do dopisania.
 - **P3-002:** 23 prod unwrap (nie 24 z Task 1) → 2 eskalowane do P2: `peer.rs:159` (reqwest builder) + `ingest.rs:184` (packer init).
 
-**Szacunek pierwotny:** 2–3 sesje. **Faktyczne wykonanie:** 1 sesja (6/6 kroków) — **Faza 0 zamknięta**. Wszystkie SLA performance §12.2 (M1-M4) z marginesami 38%–500×. Bramka β.4 (watcher CPU fix) — bez akcji, wynik już PASS.
+**Szacunek pierwotny:** 2–3 sesje. **Faktyczne wykonanie:** 1 sesja (6/6 kroków) — **Faza 0 zamknięta**. Wszystkie SLA performance §12.2 (M1-M4) z marginesami 38%–500×. Bramka β.d (watcher CPU fix) — bez akcji, wynik już PASS.
 
 ---
 
-### 12.5 Faza α — Crypto Hardening *(po Fazie 0; kolejność uaktualniona 2026-05-17 po Task 2 audytu)*
+### 12.5 Faza α — Crypto Hardening *(po Fazie 0; struktura uaktualniona 2026-05-17 wieczór na schemat α.A.b.2)*
 
 > **Cel:** zamknąć wszystkie bramki krypto z §12.1 (a–f) zanim zaczniemy bug-fixy. Krypto = fundament; każdy fix do crypto po reszcie = ryzyko dataloss.
 >
-> **Nowe kroki α.0a/0b/0c** wstawione przed α.1 po audycie Fazy 0 — adresują 3 security gapy (P1-006/P2-004/P2-005) wykryte w audit triage. Bez tego nawet perfekcyjny α.1-α.5 zostawia klucze plaintext w RAM po logout.
+> **Grupa A (hot-fixy)** wstawiona przed B/C/D po audycie Fazy 0 — adresuje 3 security gapy (P1-006/P2-004/P2-005). Bez tego nawet perfekcyjne grupy B-D zostawiają klucze plaintext w RAM po logout.
+
+#### Drzewko orientacyjne
+
+```
+α — Crypto Hardening
+├── A. Security hot-fixes (pre-cryptodrop) ────── domyka P1/P2 z audytu Fazy 0
+│   ├── α.A.a — P1-006 logout-locks-vault       ✅ DONE (ed35ecb + dc4979f, SMOKE H1 4/4)
+│   ├── α.A.b — P2-004 auto-lock idle + Win+L hook
+│   │   ├── α.A.b.1   config `vault.auto_lock_idle_minutes` (default 15)
+│   │   ├── α.A.b.2   reset timera per authenticated API call
+│   │   ├── α.A.b.3   hook `WM_WTSSESSION_CHANGE` / `SessionSwitch`
+│   │   └── α.A.b.4   UI status bar + warning toast pre-lock
+│   └── α.A.c — P2-005 Zeroize newtype dla KeyBytes
+│
+├── B. KDF & wrap upgrades ─────────────────────── re-derive existing vault data
+│   ├── α.B.a — Argon2id 2026 params bump (m=47MiB, t=1, p=1)
+│   └── α.B.b — ML-KEM-768 hybrid wrap (NIST FIPS 203)
+│       ├── α.B.b.1   schema: `devices.kyber_public_key` + `wrapped_vault_key_kyber`
+│       ├── α.B.b.2   unwrap: X25519 default → ML-KEM failover
+│       └── α.B.b.3   e2e: hybrid wrap → 2× decrypt → ten sam VK
+│
+├── C. Identity & device keys ──────────────────── domyka P1-001+P1-005 (Dell ≠ Lenovo)
+│   ├── α.C.a — Real X25519 keypair (zamiast `[0;32]` placeholder)
+│   └── α.C.b — Graft pełen identity bundle (db.rs:1677)
+│       ├── α.C.b.1   wszystkie pola `vault_state` poza per-instance KDF
+│       ├── α.C.b.2   tabela `data_encryption_keys`
+│       └── α.C.b.3   tabela `recovery_keys` (jeśli istnieje)
+│
+└── D. Spec & formal review (QG5) ──────────────── zamknięcie fazy
+    └── α.D.a — crypto-spec.md §12 AAD + §13 auto-lock/zeroize + Claude review
+```
+
+#### Tabela DoD (per zadanie)
 
 | Krok | Zakres | DoD |
 |------|--------|-----|
-| **α.0a** ✅ | **P1-006 fix: logout musi zablokować vault.** `api/auth.rs::post_auth_logout` (linia 189) dodać `state.vault_keys.lock().await` PRZED `delete_user_session`. Wzorzec do skopiowania: `api/vault.rs::post_vault_lock` (linia 915-928 — woła `state.vault_keys.lock().await` + dismount cfapi). Hot-fix-able do v0.3.24 (mały scope, security high impact, low regression risk). | **DONE 2026-05-17** — code `ed35ecb`, workspace bump v0.3.23→v0.3.24. SMOKE H1 functional gate na Lenovo 4/4 PASS: logout HTTP 200 + `{"status":"logged_out"}`, session `valid:false` + `invalid_or_expired_session`, safety-numbers HTTP 401, O: not mounted. Memdump diff (ProcDump) odłożony do α.0c po Zeroize newtype — bez tego diff i tak nie byłby pełen. |
-| **α.0b** | **P2-004 fix: auto-lock po idle + Windows session-lock.** (1) konfig `vault.auto_lock_idle_minutes` (default 15), (2) reset timera per authenticated API call, (3) hook Windows `WM_WTSSESSION_CHANGE`/`SystemEvents.SessionSwitch` → natychmiastowy lock przy Win+L, (4) UI element ze status barem + warning toast przed lock. | SMOKE H2 (15min idle auto-lock) + H3 (Win+L auto-lock) przechodzą. |
-| **α.0c** | **P2-005 fix: Zeroize newtype dla KeyBytes.** Dodać `zeroize = { workspace = true, features = ["zeroize_derive"] }` jako explicit dep w `omnidrive-core`. `KeyBytes` w `omnidrive-core/src/crypto.rs:28` z type alias → newtype z `#[derive(Zeroize, ZeroizeOnDrop)]`. Audit call-sites `expose_secret()` w vault.rs/downloader.rs/packer.rs/migrator.rs/sharing.rs — zamienić plain copies na `SecretBox` lub krótkożyjące referencje. | SMOKE H4 (memdump po lock nie znajduje resztek klucza) przechodzi. |
-| **α.1** | **Argon2id 2026 params bump.** Zmiana defaultu (m=47MiB, t=1, p=1). Migracja: nowy unlock z istniejącym vault → re-derive KEK z nowymi params + re-wrap Vault Key + bump `parameter_set_version`. Stara generacja zachowana w schema (recovery z legacy). | Test e2e: vault z m=19 → unlock → re-key → unlock z m=47 OK |
-| **α.2** | **ML-KEM-768 hybrid wrap.** Crate `ml-kem = "0.2"` (audited, NIST FIPS 203). Schema: `devices.kyber_public_key BLOB` (1184 B), `devices.wrapped_vault_key_kyber BLOB` (~1100 B + AAD). Każde wrap operacji produkuje 2 ciphertexts. Unwrap: próbuje X25519 (default), failover na ML-KEM. Dla solo vault: 1 device, 1 user — wrap obu metod dla siebie. | Test e2e: vault z hybrid wrap → unlock → assert oba ciphertexty deszyfrują na ten sam VK |
-| **α.3** | **Real X25519 keypair generation** (zamiast `[0;32]` placeholder w `migrate_single_to_multi_user` i `post_join_existing`). Klucze trzymane: public w `devices.public_key`, private w `local_device_identity.encrypted_private_key` (sealed Vault Key). | Test: świeży vault → device.public_key ≠ `[0;32]`, `validate_x25519_pubkey` accept |
-| **α.4** | **P1-001+P1-005 fix: graft pełen identity bundle.** Lokalizacja: `angeld/src/db.rs::graft_restored_metadata_snapshot` (linia 1677). Obecnie kopiuje z `vault_state` TYLKO 3 pola (`master_key_salt`, `argon2_params`, `vault_id`) i POMIJA `encrypted_vault_key`/`vault_key_generation` + całą tabelę `data_encryption_keys` → Dell po join używa swojego gen=1 zamiast Lenovo's gen=N. Rozszerzyć graft o: (1) wszystkie pola `vault_state` poza per-instance KDF, (2) tabela `data_encryption_keys`, (3) tabela `recovery_keys` (jeśli istnieje), (4) audit pozostałych tabel w `docs/crypto-spec.md`. | P1-001+P1-005 zamknięte; SMOKE C3 (safety_numbers + mnemonic + identicon identyczne Dell↔Lenovo) przechodzi; D7 (Dell hydrate → SHA256 match z Lenovo) przechodzi. |
-| **α.5** | **crypto-spec.md update + Formal Claude crypto review** — dopisać do crypto-spec: §12 AAD semantics (P3-001: dlaczego `&[]` dla chunków = WebCrypto Tryb B compat; dlaczego `user_id` dla OAuth = cross-user tampering protection), §13 auto-lock policy + zeroize semantics. Plus przegląd całego pipeline (passphrase → Argon2id → KEK → AES-KW → VK → AES-KW → DEK → AES-GCM). Output: `docs/superpowers/specs/2026-XX-XX-crypto-review.md`. **QG5.** | Dokument review zaakceptowany przez Przemka |
+| **α.A.a** ✅ | **P1-006 fix: logout musi zablokować vault.** `api/auth.rs::post_auth_logout` (linia 189) dodać `state.vault_keys.lock().await` PRZED `delete_user_session`. Wzorzec do skopiowania: `api/vault.rs::post_vault_lock` (linia 915-928 — woła `state.vault_keys.lock().await` + dismount cfapi). Hot-fix-able do v0.3.24 (mały scope, security high impact, low regression risk). | **DONE 2026-05-17** — code `ed35ecb`, workspace bump v0.3.23→v0.3.24 (`dc4979f`). SMOKE H1 functional gate na Lenovo 4/4 PASS: logout HTTP 200 + `{"status":"logged_out"}`, session `valid:false` + `invalid_or_expired_session`, safety-numbers HTTP 401, O: not mounted. Memdump diff (ProcDump) odłożony do α.A.c po Zeroize newtype — bez tego diff i tak nie byłby pełen. |
+| **α.A.b** | **P2-004 fix: auto-lock po idle + Windows session-lock.** Sub-kroki α.A.b.1 (config `vault.auto_lock_idle_minutes`, default 15), α.A.b.2 (reset timera per authenticated API call), α.A.b.3 (hook Windows `WM_WTSSESSION_CHANGE` / `SystemEvents.SessionSwitch` → natychmiastowy lock przy Win+L), α.A.b.4 (UI element ze status barem + warning toast przed lock). | SMOKE H2 (15min idle auto-lock) + H3 (Win+L auto-lock) przechodzą. |
+| **α.A.c** | **P2-005 fix: Zeroize newtype dla KeyBytes.** Dodać `zeroize = { workspace = true, features = ["zeroize_derive"] }` jako explicit dep w `omnidrive-core`. `KeyBytes` w `omnidrive-core/src/crypto.rs:28` z type alias → newtype z `#[derive(Zeroize, ZeroizeOnDrop)]`. Audit call-sites `expose_secret()` w vault.rs/downloader.rs/packer.rs/migrator.rs/sharing.rs — zamienić plain copies na `SecretBox` lub krótkożyjące referencje. | SMOKE H4 (memdump po lock nie znajduje resztek klucza) przechodzi. |
+| **α.B.a** | **Argon2id 2026 params bump.** Zmiana defaultu (m=47MiB, t=1, p=1). Migracja: nowy unlock z istniejącym vault → re-derive KEK z nowymi params + re-wrap Vault Key + bump `parameter_set_version`. Stara generacja zachowana w schema (recovery z legacy). | Test e2e: vault z m=19 → unlock → re-key → unlock z m=47 OK |
+| **α.B.b** | **ML-KEM-768 hybrid wrap.** Crate `ml-kem = "0.2"` (audited, NIST FIPS 203). Sub-kroki: α.B.b.1 (schema `devices.kyber_public_key BLOB` 1184 B + `devices.wrapped_vault_key_kyber BLOB` ~1100 B + AAD), α.B.b.2 (unwrap: próbuje X25519 default, failover na ML-KEM), α.B.b.3 (e2e: hybrid wrap → 2× decrypt → ten sam VK). Dla solo vault: 1 device, 1 user — wrap obu metod dla siebie. | Test e2e: vault z hybrid wrap → unlock → assert oba ciphertexty deszyfrują na ten sam VK |
+| **α.C.a** | **Real X25519 keypair generation** (zamiast `[0;32]` placeholder w `migrate_single_to_multi_user` i `post_join_existing`). Klucze trzymane: public w `devices.public_key`, private w `local_device_identity.encrypted_private_key` (sealed Vault Key). | Test: świeży vault → device.public_key ≠ `[0;32]`, `validate_x25519_pubkey` accept |
+| **α.C.b** | **P1-001+P1-005 fix: graft pełen identity bundle.** Lokalizacja: `angeld/src/db.rs::graft_restored_metadata_snapshot` (linia 1677). Obecnie kopiuje z `vault_state` TYLKO 3 pola (`master_key_salt`, `argon2_params`, `vault_id`) i POMIJA `encrypted_vault_key`/`vault_key_generation` + całą tabelę `data_encryption_keys` → Dell po join używa swojego gen=1 zamiast Lenovo's gen=N. Sub-kroki: α.C.b.1 (wszystkie pola `vault_state` poza per-instance KDF), α.C.b.2 (tabela `data_encryption_keys`), α.C.b.3 (tabela `recovery_keys` jeśli istnieje); plus audit pozostałych tabel w `docs/crypto-spec.md`. | P1-001+P1-005 zamknięte; SMOKE C3 (safety_numbers + mnemonic + identicon identyczne Dell↔Lenovo) przechodzi; D7 (Dell hydrate → SHA256 match z Lenovo) przechodzi. |
+| **α.D.a** | **crypto-spec.md update + Formal Claude crypto review** — dopisać do crypto-spec: §12 AAD semantics (P3-001: dlaczego `&[]` dla chunków = WebCrypto Tryb B compat; dlaczego `user_id` dla OAuth = cross-user tampering protection), §13 auto-lock policy + zeroize semantics. Plus przegląd całego pipeline (passphrase → Argon2id → KEK → AES-KW → VK → AES-KW → DEK → AES-GCM). Output: `docs/superpowers/specs/2026-XX-XX-crypto-review.md`. **QG5.** | Dokument review zaakceptowany przez Przemka |
 
 **Szacunek:** 5–8 sesji. Najcięższa faza — krypto + nowy algorytm + wiele testów.
 
@@ -607,11 +642,11 @@
 
 | Krok | Zakres | DoD |
 |------|--------|-----|
-| **β.1** | **P1-001 AES-GCM hydration fail** — graft kopiuje DEK (zrobione w α.4); test: Lenovo wgra 5MB plik → Dell unlock → otwórz plik z O:\ → checksum match. | P1-001 → FIXED |
-| **β.2** | **P1-002 Snapshot fetch worker** — periodic refresh snapshotu na istniejących urządzeniach (co 1h). Lock wokół DB, lamport clock per snapshot, conflict resolve = newer wins (z audit log entry). | Test: Dell join, Lenovo czeka, Lenovo MultiDevice tab pokazuje Della po max 1h |
-| **β.3** | **P1-003+P1-004 Snapshot redundancy fix** — Scaleway IAM/policy debug; R2 ConnReset retry-with-fresh-pool. **QG kryterium:** snapshot _zawsze_ w ≥1 sprawnym miejscu, najlepiej w 2/3. | metadata-backup status: ≥2/3 providers zielone |
-| **β.4** | **Watcher CPU fix (P2-001)** — po pomiarach z 0.3 (perf baseline). Możliwe: debounce + batch + ReadDirectoryChangesW zamiast polling. | SLA `watcher idle < 1%` osiągnięty |
-| **β.5** | **VFS lag fix (P2-002)** — dekompozycja `smart_sync.rs` (2197 linii) na moduły. Streaming hydration zamiast fetch-all-then-decrypt. | SLA cold fetch §12.2 osiągnięte |
+| **β.a** | **P1-001 AES-GCM hydration fail** — graft kopiuje DEK (zrobione w α.C.b); test: Lenovo wgra 5MB plik → Dell unlock → otwórz plik z O:\ → checksum match. | P1-001 → FIXED |
+| **β.b** | **P1-002 Snapshot fetch worker** — periodic refresh snapshotu na istniejących urządzeniach (co 1h). Lock wokół DB, lamport clock per snapshot, conflict resolve = newer wins (z audit log entry). | Test: Dell join, Lenovo czeka, Lenovo MultiDevice tab pokazuje Della po max 1h |
+| **β.c** | **P1-003+P1-004 Snapshot redundancy fix** — Scaleway IAM/policy debug; R2 ConnReset retry-with-fresh-pool. **QG kryterium:** snapshot _zawsze_ w ≥1 sprawnym miejscu, najlepiej w 2/3. | metadata-backup status: ≥2/3 providers zielone |
+| **β.d** | **Watcher CPU fix (P2-001)** — po pomiarach z 0.c (perf baseline). Możliwe: debounce + batch + ReadDirectoryChangesW zamiast polling. | SLA `watcher idle < 1%` osiągnięty |
+| **β.e** | **VFS lag fix (P2-002)** — dekompozycja `smart_sync.rs` (2197 linii) na moduły. Streaming hydration zamiast fetch-all-then-decrypt. | SLA cold fetch §12.2 osiągnięte |
 
 **Szacunek:** 4–6 sesji.
 
@@ -623,10 +658,10 @@
 
 | Krok | Zakres | DoD |
 |------|--------|-----|
-| **γ.1** | **Resume upload after crash.** Multipart upload state persist w SQLite (`multipart_uploads` table z S3 upload_id, parts, completed_at). Daemon po crashu → wznowienie pending parts zamiast restart-from-zero. | Test: kill daemona w środku 1GB upload → restart → plik w chmurze kompletny |
-| **γ.2** | **Conflict copy.** Modyfikacja tego samego inode z 2 urządzeń → oba revisions zachowane, materialized w O:\ jako `file (Conflict from Dell).pdf`. (Faza S w starym roadmap to mobile; tutaj desktop-first.) | Test 2-device write conflict → 2 revisions w `file_revisions` + 2 pliki w O:\ |
-| **γ.3** | **Soft-delete grace period.** `inodes.deleted_at` + grace 7 dni. UI „Kosz" w sidebar. Twardy delete dopiero po grace. | Test: usuń plik → 7 dni odzyskiwalny → po 7 dniach gone |
-| **γ.4** | **Snapshot upload guard.** Daemon nie wgra nowego snapshotu jeśli wszystkie 3 providery odpowiedziały błędem; trzyma stary aktualny w cache. Backup `omnidrive.db.bak.YYYYMMDD_HHMMSS` co 24h lokalnie. | Test simulated 3-provider outage → snapshot lokalny kompletny po recovery |
+| **γ.a** | **Resume upload after crash.** Multipart upload state persist w SQLite (`multipart_uploads` table z S3 upload_id, parts, completed_at). Daemon po crashu → wznowienie pending parts zamiast restart-from-zero. | Test: kill daemona w środku 1GB upload → restart → plik w chmurze kompletny |
+| **γ.b** | **Conflict copy.** Modyfikacja tego samego inode z 2 urządzeń → oba revisions zachowane, materialized w O:\ jako `file (Conflict from Dell).pdf`. (Faza S w starym roadmap to mobile; tutaj desktop-first.) | Test 2-device write conflict → 2 revisions w `file_revisions` + 2 pliki w O:\ |
+| **γ.c** | **Soft-delete grace period.** `inodes.deleted_at` + grace 7 dni. UI „Kosz" w sidebar. Twardy delete dopiero po grace. | Test: usuń plik → 7 dni odzyskiwalny → po 7 dniach gone |
+| **γ.d** | **Snapshot upload guard.** Daemon nie wgra nowego snapshotu jeśli wszystkie 3 providery odpowiedziały błędem; trzyma stary aktualny w cache. Backup `omnidrive.db.bak.YYYYMMDD_HHMMSS` co 24h lokalnie. | Test simulated 3-provider outage → snapshot lokalny kompletny po recovery |
 
 **Szacunek:** 4–6 sesji.
 
@@ -638,10 +673,10 @@
 
 | Krok | Zakres | DoD |
 |------|--------|-----|
-| **δ.1** | **Per-user Vault Key wrap end-to-end.** Owner generuje, member dostaje wrapped VK (X25519+ML-KEM hybrid, faza α). Test: 2 userów, każdy unlock swoim hasłem, oba dostają ten sam plaintext VK. | E2E test passes |
-| **δ.2** | **Invite/accept_device flow** — pełen test: Owner generuje invite → kopiuje link → drugi user wkleja → wpisuje swoje hasło → device dostaje wrapped VK → unlock działa. ACL: drugi user = Member, nie Owner. | E2E test passes |
-| **δ.3** | **Recovery BIP-39 dla nietechnicznego usera.** Mnemonik 24-słowny → unlock bez znanego hasła. Action: druk karty A4 (już w Sesji G.6). Czy działa po α.2 (hybrid wrap)? | Test recovery na sklonowanym DB |
-| **δ.4** | **ACL roles enforcement audit.** Każdy `acl::require_role(Role::X)` audit pod kątem: Czy wybrane role to minimum potrzebne? Czy Owner może coś czego Admin nie? Czy Viewer naprawdę tylko reads? | Audit table `docs/superpowers/specs/2026-XX-XX-acl-audit.md` |
+| **δ.a** | **Per-user Vault Key wrap end-to-end.** Owner generuje, member dostaje wrapped VK (X25519+ML-KEM hybrid, faza α). Test: 2 userów, każdy unlock swoim hasłem, oba dostają ten sam plaintext VK. | E2E test passes |
+| **δ.b** | **Invite/accept_device flow** — pełen test: Owner generuje invite → kopiuje link → drugi user wkleja → wpisuje swoje hasło → device dostaje wrapped VK → unlock działa. ACL: drugi user = Member, nie Owner. | E2E test passes |
+| **δ.c** | **Recovery BIP-39 dla nietechnicznego usera.** Mnemonik 24-słowny → unlock bez znanego hasła. Action: druk karty A4 (już w Sesji G.6). Czy działa po α.B.b (hybrid wrap)? | Test recovery na sklonowanym DB |
+| **δ.d** | **ACL roles enforcement audit.** Każdy `acl::require_role(Role::X)` audit pod kątem: Czy wybrane role to minimum potrzebne? Czy Owner może coś czego Admin nie? Czy Viewer naprawdę tylko reads? | Audit table `docs/superpowers/specs/2026-XX-XX-acl-audit.md` |
 
 **Szacunek:** 3–5 sesji. Większość kodu istnieje (Epic 34 Sesje A–E DONE), tu chodzi o weryfikację i domknięcie luk.
 
@@ -653,10 +688,10 @@
 
 | Krok | Zakres | DoD |
 |------|--------|-----|
-| **ε.1** | Dekompozycja `smart_sync.rs` (2197 linii → 4–5 modułów: `placeholder.rs`, `hydration.rs`, `pin_state.rs`, `state_machine.rs`, `stream.rs`). Test coverage przed/po identyczne. | Compiles + tests pass + każdy moduł < 800 linii |
-| **ε.2** | Native cfapi state mapping (Epic 35.2c IPC) — `CfReportProviderProgress` + `CfUpdatePlaceholderInfo` dla ikon: cloud-only / local / pinned / syncing / error. Bez własnych shell overlay (per memory `feedback_no_custom_overlays.md`). | Eksplorator pokazuje natywne ikony dla 4 stanów |
-| **ε.3** | Drive O: stress test — file open/close storm (np. PowerShell `1..1000 \| % { Get-Item O:\test\$_.txt }`). Brak deadlock w cfapi. | Stress test passes 1000 cycles |
-| **ε.4** | Defender exclusion guidance (instalator + dokumentacja) — instrukcja dla użytkownika jak dodać `%LOCALAPPDATA%\OmniDrive\` do exclusion list (bez tego cfapi races z Defenderem). | README sekcja + opcjonalnie skrypt PS w instalatorze |
+| **ε.a** | Dekompozycja `smart_sync.rs` (2197 linii → 4–5 modułów: `placeholder.rs`, `hydration.rs`, `pin_state.rs`, `state_machine.rs`, `stream.rs`). Test coverage przed/po identyczne. | Compiles + tests pass + każdy moduł < 800 linii |
+| **ε.b** | Native cfapi state mapping (Epic 35.2c IPC) — `CfReportProviderProgress` + `CfUpdatePlaceholderInfo` dla ikon: cloud-only / local / pinned / syncing / error. Bez własnych shell overlay (per memory `feedback_no_custom_overlays.md`). | Eksplorator pokazuje natywne ikony dla 4 stanów |
+| **ε.c** | Drive O: stress test — file open/close storm (np. PowerShell `1..1000 \| % { Get-Item O:\test\$_.txt }`). Brak deadlock w cfapi. | Stress test passes 1000 cycles |
+| **ε.d** | Defender exclusion guidance (instalator + dokumentacja) — instrukcja dla użytkownika jak dodać `%LOCALAPPDATA%\OmniDrive\` do exclusion list (bez tego cfapi races z Defenderem). | README sekcja + opcjonalnie skrypt PS w instalatorze |
 
 **Szacunek:** 4–6 sesji.
 
@@ -675,19 +710,19 @@
 | F3 | Join Existing Vault (Dell scenario v0.3.23) | ⬜ |
 | F4 | Lock → Unlock cycle z passphrase i Windows Hello | ⬜ |
 | F5 | File upload + download integrity (1MB, 100MB, 1GB) | ⬜ |
-| F6 | Conflict resolution (γ.2 — 2-device write) | ⬜ |
+| F6 | Conflict resolution (γ.b — 2-device write) | ⬜ |
 | F7 | Recovery key BIP-39 generation + restore | ⬜ |
 | F8 | Multi-device add (invite + accept_device + per-user wrap, faza δ) | ⬜ |
 | F9 | Change passphrase + auto-snapshot upload (v0.3.15) | ⬜ |
 | F10 | Disaster recovery (kasacja DB → restore z chmury) | ⬜ |
-| F11 | Soft-delete + restore from trash (γ.3) | ⬜ |
+| F11 | Soft-delete + restore from trash (γ.c) | ⬜ |
 | F12 | Crypto re-key rotation (Vault Key generation bump) | ⬜ |
 
 | Krok | Zakres | DoD |
 |------|--------|-----|
-| **ζ.1** | Stress test harness — `scripts/stress-test.ps1` lub `cargo test --features stress` (1000 plików, 1 GB plik, 24h soak). | Stress test runnable, baseline metrics zapisane |
-| **ζ.2** | Każdy z F1–F12 → e2e test w `angeld/tests/`. | Każdy F# zielony |
-| **ζ.3** | Coverage report (`cargo tarpaulin` lub `grcov`) — nie celujemy w 100% line coverage, ale w 100% pokrycia _critical paths_. | Report w `docs/coverage-vYYY-MM-DD.html` |
+| **ζ.a** | Stress test harness — `scripts/stress-test.ps1` lub `cargo test --features stress` (1000 plików, 1 GB plik, 24h soak). | Stress test runnable, baseline metrics zapisane |
+| **ζ.b** | Każdy z F1–F12 → e2e test w `angeld/tests/`. | Każdy F# zielony |
+| **ζ.c** | Coverage report (`cargo tarpaulin` lub `grcov`) — nie celujemy w 100% line coverage, ale w 100% pokrycia _critical paths_. | Report w `docs/coverage-vYYY-MM-DD.html` |
 
 **Szacunek:** 6–10 sesji. To największy gap — aktualnie 13 unit + 7 integration testów na 41 638 linii kodu.
 
@@ -779,12 +814,12 @@ Niektóre items z poprzedniej wersji STATUS.md nie wpadły do roadmapy v0.4 ale 
 | Windows Defender blokuje hydrated files | MEDIUM | Early MotW testing + placeholder signature (post v0.3.0) |
 | Mobile conflict resolution | HIGH | Świadoma decyzja: version branching (Faza S) |
 | Multi-device formal lease/fencing brak | LOW | Produkt-first nad spec v1. Szczegóły: `docs/archive/spec_review.md` |
-| **DEK keymap nie kopiowany w grafcie (P1-001)** | HIGH | ⬜ OPEN — `KNOWN_ISSUES.md` P1-001. Faza β.1 v0.4. Skutek: hydration plików multi-device nie działa po join-existing. |
-| **Snapshot fetch jednokierunkowy (P1-002)** | MEDIUM | ⬜ OPEN — Faza β.2. Lenovo nie widzi nowych devices bez restart daemona. |
-| **Snapshot redundancja 1/3 providers żywych (P1-003+P1-004)** | MEDIUM | ⬜ OPEN — Faza β.3. Tylko B2 wgra, Scaleway 403, R2 ConnReset. |
-| **Watcher CPU mieli (P2-001)** | MEDIUM | ⬜ OPEN — Faza β.4 po pomiarach. SLA: < 1% idle. |
-| **VFS lag duże pliki (P2-002)** | MEDIUM | ⬜ OPEN — Faza β.5/ε. SLA: < 10s/100MB cold fetch. |
-| **ML-KEM crate maturity** | MEDIUM | Mitygacja: `ml-kem = "0.2"` to RustCrypto, audited; FIPS 203 reference. Plan: adopt + sandbox test w fazie α.2 przed wpięciem do produkcji. |
+| **DEK keymap nie kopiowany w grafcie (P1-001)** | HIGH | ⬜ OPEN — `KNOWN_ISSUES.md` P1-001. Faza β.a v0.4. Skutek: hydration plików multi-device nie działa po join-existing. |
+| **Snapshot fetch jednokierunkowy (P1-002)** | MEDIUM | ⬜ OPEN — Faza β.b. Lenovo nie widzi nowych devices bez restart daemona. |
+| **Snapshot redundancja 1/3 providers żywych (P1-003+P1-004)** | MEDIUM | ⬜ OPEN — Faza β.c. Tylko B2 wgra, Scaleway 403, R2 ConnReset. |
+| **Watcher CPU mieli (P2-001)** | MEDIUM | ⬜ OPEN — Faza β.d po pomiarach. SLA: < 1% idle. |
+| **VFS lag duże pliki (P2-002)** | MEDIUM | ⬜ OPEN — Faza β.e/ε. SLA: < 10s/100MB cold fetch. |
+| **ML-KEM crate maturity** | MEDIUM | Mitygacja: `ml-kem = "0.2"` to RustCrypto, audited; FIPS 203 reference. Plan: adopt + sandbox test w fazie α.B.b przed wpięciem do produkcji. |
 | **Test coverage < 5% lines** | HIGH | ⬜ OPEN — 13 unit + 7 integration testów na 41 638 linii. Faza ζ celuje w 100% kluczowych flow (F1–F12). |
 
 ---

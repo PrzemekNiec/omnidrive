@@ -1,8 +1,10 @@
-# OmniDrive — Code Audit (Faza 0, krok 0.1)
+# OmniDrive — Code Audit (Faza 0, krok 0.a)
 
 > Data: 2026-05-11 · Wersja: v0.3.23 (commit `bbcc643b0d8042eabc37a671c32811e8d7d36892`)
 > Zakres: `angeld/src/`, `omnidrive-core/src/`, oraz przegląd reszty crateów workspace.
 > Wynik: lista znalezisk → wpisy w `docs/KNOWN_ISSUES.md` (P3 lub wyżej); ten plik = mapa długu + surowe metryki.
+>
+> **Uwaga schematu ID (dopisek 2026-05-17 wieczór):** ID kroków Fazy α (`α.A.a`, `α.A.b`, `α.A.c`, `α.B.a`, `α.B.b`, `α.C.a`, `α.C.b`, `α.D.a`) zostały zaktualizowane w §4.1 zgodnie z nowym hierarchicznym schematem (etap.GRUPA.zadanie.subkrok — patrz STATUS.md header). Propozycje §4.2 (β.0-β.3) i §4.3 (γ.0, γ.1, ε.0) zostają w starym, audytowym nazewnictwie jako historia; aktualne ID dla Fazy β/γ/ε w STATUS.md §12.6-12.9 (β.a-β.e, γ.a-γ.d, ε.a-ε.d).
 
 ## 1. Raw metrics
 
@@ -114,7 +116,7 @@
   angeld/src/db/
     mod.rs          (init_db, pool helpers, common types)
     ingest.rs       (~210 linii)
-    vault_state.rs  (~600 linii) — krytyczne: trzymać razem `graft_restored_metadata_snapshot` + `vault_state` (P1-001 fix Faza α.4 = ten plik)
+    vault_state.rs  (~600 linii) — krytyczne: trzymać razem `graft_restored_metadata_snapshot` + `vault_state` (P1-001 fix Faza α.C.b = ten plik)
     system_config.rs (~160 linii)
     providers.rs    (~190 linii)
     device.rs       (~260 linii)
@@ -156,7 +158,7 @@
 
 | Plik | Linie | Sugestia |
 |---|---|---|
-| `downloader.rs` | 1712 | Częściowy split: chunk decryption (V1/V2), prefetcher, peer client wrapping, pack cache. Średni risk. **Faza ε.** |
+| `downloader.rs` | 1712 | Częściowy split: chunk decryption (V1/V2), prefetcher, peer client wrapping, pack cache. Średni risk. **Faza ε.a (dekompozycja smart_sync.rs).** |
 | `onboarding.rs` | 1293 | Już ma logiczny split na flow (Join Existing vs Bootstrap). Zostawić, ale audytować duplikacje. |
 | `main.rs` | 1165 | Bootstrap + arg parsing + worker spawn. Duplikacja `mod` deklaracji z lib (P2-003). Po fix P2-003 będzie mniejszy. |
 | `api/onboarding.rs` | 1153 | Spec axum routes for onboarding flow — naturalnie duży. Lekkie kandydaci do extract helpers. **Niska priorytetka.** |
@@ -188,20 +190,20 @@ Wpisane 2026-05-17 (Task 2):
 
 ## 4. Rekomendacje kolejności (input do Faza α/β/γ)
 
-> **Premise:** Faza 0 audit ujawnił 3 security gaps (P1-006, P2-004, P2-005) których nie planowaliśmy w roadmapie v0.4 Faza α. Te wymagają **wpisania do α** przed Argon2id bump / ML-KEM / X25519 / α.4 graft fix.
+> **Premise:** Faza 0 audit ujawnił 3 security gaps (P1-006, P2-004, P2-005) których nie planowaliśmy w roadmapie v0.4 Faza α. Te wymagają **wpisania do α** przed Argon2id bump / ML-KEM / X25519 / α.C.b graft fix.
 
 ### 4.1 Faza α (Crypto Hardening) — propozycja kolejności po audycie
 
 | Krok | Zadanie | Powód kolejności |
 |---|---|---|
-| **α.0a** | **P1-006 fix: `logout` musi wywołać `vault_keys.lock()`** | Najprostszy fix, największy security ROI. Hot-fix-able do v0.3.24 jeśli zdecydujesz. |
-| **α.0b** | **P2-004 fix: auto-lock po idle (config + timer + Windows session-lock hook)** | UI/UX feature + security defense. Wymaga config + Windows event API. Średni effort, wysoki user-visible value. |
-| **α.0c** | **P2-005 fix: Zeroize newtype dla `KeyBytes`** | Defense-in-depth. Average effort (refactor type alias + audit ~10 call-sites). Niski regression risk. |
-| α.1 | Argon2id parameter bump (3×64MiB → spec-current target) | Już planowane przed audytem. |
-| α.2 | ML-KEM (post-quantum readiness) | Planowane. |
-| α.3 | X25519 device key exchange | Planowane. |
-| **α.4** | **P1-001+P1-005 fix: graft pełen identity bundle** (vault_state crypto + DEK + recovery_keys) | Główny v0.4 multi-device blocker. Lokalizacja: `db.rs::graft_restored_metadata_snapshot` (line 1677-2150) — sekcja "vault state" w mapie §2.1. |
-| α.5 | crypto-spec.md update (P3-001 AAD section + α.0a-c security notes) | Doc. |
+| **α.A.a** | **P1-006 fix: `logout` musi wywołać `vault_keys.lock()`** | Najprostszy fix, największy security ROI. Hot-fix-able do v0.3.24 jeśli zdecydujesz. |
+| **α.A.b** | **P2-004 fix: auto-lock po idle (config + timer + Windows session-lock hook)** | UI/UX feature + security defense. Wymaga config + Windows event API. Średni effort, wysoki user-visible value. |
+| **α.A.c** | **P2-005 fix: Zeroize newtype dla `KeyBytes`** | Defense-in-depth. Average effort (refactor type alias + audit ~10 call-sites). Niski regression risk. |
+| α.B.a | Argon2id parameter bump (3×64MiB → spec-current target) | Już planowane przed audytem. |
+| α.B.b | ML-KEM (post-quantum readiness) | Planowane. |
+| α.C.a | X25519 device key exchange | Planowane. |
+| **α.C.b** | **P1-001+P1-005 fix: graft pełen identity bundle** (vault_state crypto + DEK + recovery_keys) | Główny v0.4 multi-device blocker. Lokalizacja: `db.rs::graft_restored_metadata_snapshot` (line 1677-2150) — sekcja "vault state" w mapie §2.1. |
+| α.D.a | crypto-spec.md update (P3-001 AAD section + α.A.a-c security notes) | Doc. |
 
 ### 4.2 Faza β (Bug Fixes P1)
 
@@ -219,6 +221,6 @@ Wpisane 2026-05-17 (Task 2):
 ### 4.4 Wpisy doc-only (nie blokujące)
 
 - crypto-spec.md §12 — AAD semantics (P3-001).
-- crypto-spec.md §13 — auto-lock policy + zeroize semantics (α.0a-c).
-- KNOWN_ISSUES.md → cleanup po α.0a fix (P1-006 → Closed).
+- crypto-spec.md §13 — auto-lock policy + zeroize semantics (α.A.a-c).
+- KNOWN_ISSUES.md → cleanup po α.A.a fix (P1-006 → Closed).
 

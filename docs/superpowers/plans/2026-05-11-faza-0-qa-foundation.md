@@ -143,7 +143,7 @@ Create `docs/superpowers/specs/2026-05-11-code-audit.md`:
 ```bash
 rm -f .audit_fmt.txt .audit_clippy.txt .audit_udeps.txt
 git add docs/superpowers/specs/2026-05-11-code-audit.md
-git commit -m "docs(audit): Faza 0.1 — raw metrics baseline (clippy/fmt/udeps/grep)
+git commit -m "docs(audit): Faza 0.a — raw metrics baseline (clippy/fmt/udeps/grep)
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
@@ -177,7 +177,7 @@ Expected: konkretne `file:line` dla najgroźniejszych, plus agregat.
 
 `mcp__jcodemunch__search_text(query="encrypt_secret")` i `decrypt_secret`, `wrap_dek`/`unwrap_dek`, `encrypt_chunk_v2` — znajdź wszystkie wywołania w `angeld/`. Dla każdego: jaki AAD jest przekazywany? Porównaj z `docs/crypto-spec.md` — spec definiuje jakie AAD powinny być (np. `user_id`, `vault_id`, `inode_id`, `chunk_index`). Każdy call site z `b""` lub niezgodny z spec = wpis. **Priorytet: P1 jeśli spec wymaga AAD a kod daje pusty** (osłabia authenticated encryption, ryzyko substitution attack między ciphertextami) — Przemek/crypto review (Faza α.5) potwierdza ostateczny priorytet.
 W raporcie sekcja 3: tabela `call site (file:line) | funkcja | AAD przekazany | AAD wg crypto-spec | zgodność | priorytet`.
-Expected: tabela. Jeśli wszystkie zgodne — świetnie, odnotuj „AAD OK" i zamknij wątek. Jeśli nie — wpisy w KNOWN_ISSUES + flaga do Faza α.5.
+Expected: tabela. Jeśli wszystkie zgodne — świetnie, odnotuj „AAD OK" i zamknij wątek. Jeśli nie — wpisy w KNOWN_ISSUES + flaga do Faza α.D.a.
 
 - [ ] **Step 4: Key zeroization audit**
 
@@ -203,17 +203,17 @@ W `docs/KNOWN_ISSUES.md` sekcja `## P3 — Drobne UX / kosmetyka` (i wyżej jeś
 Przykładowe wpisy (dostosuj do faktycznych znalezisk):
 ```markdown
 ### P3-001 — db.rs monolit (8592 linie)
-- **Wykryto:** Faza 0.1 code audit (2026-05-11)
+- **Wykryto:** Faza 0.a code audit (2026-05-11)
 - **Symptom:** `angeld/src/db.rs` = 8592 linie, ~N odrębnych obszarów odpowiedzialności w jednym pliku
 - **Impact:** trudność utrzymania, ryzyko regresji przy edycji (cały plik nie mieści się w kontekście), wolny rebuild incremental
 - **Fix scope:** rozbić na moduł `db/` per domena (migrations, vault_state, identity, inodes, packs, object_locations, upload_jobs, audit) — patrz audit report §2 po sugerowany podział. Bez zmian zachowania, tylko move + `pub use`.
-- **Status:** OPEN. Kandydat do Faza β.5 (razem z dekompozycją smart_sync.rs) albo osobnego refactor-batcha.
+- **Status:** OPEN. Kandydat do Faza β.e (razem z dekompozycją smart_sync.rs) albo osobnego refactor-batcha.
 ```
 (plus: P3 unwrap aggregate, P3 udeps cleanup, ew. P1/P2 dla AAD/zeroize/auto-lock/todo!() wedle triage)
 
 - [ ] **Step 8: Dokończ raport — sekcja 4 (rekomendacje kolejności)**
 
-W `docs/superpowers/specs/2026-05-11-code-audit.md §4`: krótka lista „co z tego idzie do której fazy v0.4" — np. AAD → α.5 (crypto review), zeroize → α, db.rs/smart_sync split → β.5, unwrap hot-path → β, auto-lock → δ. To input dla planów kolejnych faz.
+W `docs/superpowers/specs/2026-05-11-code-audit.md §4`: krótka lista „co z tego idzie do której fazy v0.4" — np. AAD → α.D.a (crypto review), zeroize → α.A.c, db.rs/smart_sync split → β.e/ε.a, unwrap hot-path → β, auto-lock → α.A.b. To input dla planów kolejnych faz.
 
 - [ ] **Step 9: Checkpoint z Przemkiem**
 
@@ -223,7 +223,7 @@ Pokaż Przemkowi listę nowych wpisów w KNOWN_ISSUES.md z proponowanymi prioryt
 
 ```bash
 git add docs/KNOWN_ISSUES.md docs/superpowers/specs/2026-05-11-code-audit.md
-git commit -m "docs(audit): Faza 0.1 — triage + KNOWN_ISSUES P3 entries + audit report
+git commit -m "docs(audit): Faza 0.a — triage + KNOWN_ISSUES P3 entries + audit report
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
@@ -309,7 +309,7 @@ Struktura (wypełnij konkretami — to NIE jest placeholder, każdy punkt ma by�
 
 ```bash
 git add docs/SMOKE_CHECKLIST.md
-git commit -m "docs: Faza 0.2 — SMOKE_CHECKLIST.md (manual post-build checklist)
+git commit -m "docs: Faza 0.b — SMOKE_CHECKLIST.md (manual post-build checklist)
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
@@ -366,7 +366,7 @@ Następnie ręcznie dopisz do `docs/perf-baseline-2026-05-11.md` nagłówek + ko
 - Watcher CPU idle: <zmierzone> vs cel <1% — <ile brakuje / czy P2-001 potwierdzony liczbowo>
 - VFS cold fetch 100MB: <zmierzone> vs cel <10s — <czy P2-002 potwierdzony>
 - ...
-- Wnioski do Faza β.4 / Faza ε: <...>
+- Wnioski do Faza β.d / Faza ε: <...>
 ```
 Jeśli któraś metryka = FAIL → upewnij się że odpowiedni wpis w KNOWN_ISSUES.md (P2-001/P2-002) ma teraz konkretne liczby zamiast „subiektywna obserwacja".
 
@@ -378,7 +378,7 @@ Run: `Remove-Item -Recurse -Force .tmp_perf -ErrorAction SilentlyContinue` (jest
 
 ```bash
 git add scripts/perf-baseline.ps1 docs/perf-baseline-2026-05-11.md
-git commit -m "perf: Faza 0.3 — perf-baseline harness + Lenovo baseline measurements
+git commit -m "perf: Faza 0.c — perf-baseline harness + Lenovo baseline measurements
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
@@ -415,7 +415,7 @@ Run: `cargo fmt --all -- --check; echo "exit=$?"` (powinno być znane z Task 1 S
 
 - [ ] **Step 3 (warunkowo): Zafiksuj formatowanie LUB dodaj rustfmt.toml**
 
-Opcja A (preferowana jeśli diff niewielki): `cargo fmt --all` → osobny commit `style: cargo fmt --all (Faza 0.4 — przed włączeniem fmt --check w CI)`. Sprawdź `cargo build --workspace` po fmt (czasem fmt rozbija makra — rzadko, ale sprawdź).
+Opcja A (preferowana jeśli diff niewielki): `cargo fmt --all` → osobny commit `style: cargo fmt --all (Faza 0.d — przed włączeniem fmt --check w CI)`. Sprawdź `cargo build --workspace` po fmt (czasem fmt rozbija makra — rzadko, ale sprawdź).
 Opcja B (jeśli diff ogromny / kontrowersyjny): utwórz `rustfmt.toml` z ustawieniami zbliżonymi do obecnego stylu (np. `max_width`, `use_small_heuristics`), żeby `--check` przechodził bez wielkiego diffa. Mniej idealne — odłóż pełny reformat na osobny batch.
 Decyzja A vs B = wg rozmiaru diffa z Step 2; przy wątpliwości zapytaj Przemka.
 
@@ -476,7 +476,7 @@ Expected: `exit=0`. Jeśli nie — napraw zanim commitujesz (albo, jeśli to zna
 ```bash
 git add .github/workflows/ci.yml .githooks/pre-push scripts/install-git-hooks.ps1
 # warunkowo: .gitignore Cargo.lock rustfmt.toml
-git commit -m "ci: Faza 0.4 — add fmt --check to CI + local pre-push hook + commit Cargo.lock
+git commit -m "ci: Faza 0.d — add fmt --check to CI + local pre-push hook + commit Cargo.lock
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 git push origin main   # ← test: pre-push hook powinien się odpalić i przejść

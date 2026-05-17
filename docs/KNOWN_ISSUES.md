@@ -42,13 +42,13 @@
   - Różny EVK → różne `safety_numbers` (P1-005)
   - DEK chunków (wrapped Lenovo's gen=4 VK) nie unwrap pod Dell's gen=1 → fallback tworzy gen=1 DEK → próba decrypt obcych chunków → `aes-gcm operation failed` (P1-001)
 - **Impact:** **P0-style severity** dla single-user-multi-device (główny use case v0.4) — multi-device nie działa funkcjonalnie. UI pokazuje device w MultiDevice tab (cosmetic ok), ale ŻADEN plik nie da się pobrać na Dellu, a UI security verification (safety numbers) bezużyteczne. Nadal P1 bo pojedyncze urządzenie działa, tylko cross-device broken.
-- **Fix scope (Faza α.4 z roadmapy v0.4):** Rozszerzyć graft o pełen „identity bundle" krypto:
+- **Fix scope (Faza α.C.b z roadmapy v0.4):** Rozszerzyć graft o pełen „identity bundle" krypto:
   1. `vault_state.encrypted_vault_key` + `vault_key_generation` + `previous_envelope_key` (cała tabela poza KDF params i vault_id)
   2. Cała tabela `data_encryption_keys` (DEK per-plik, wrapped pod source's VK)
   3. Cała tabela `recovery_keys` (BIP-39, jeśli istnieje, Sesja 34.6a)
   4. **Audit pozostałych tabel** w `docs/crypto-spec.md` żeby nie zostawić jeszcze jakiegoś pola
   5. Test e2e: Lenovo wgra plik → Dell join → Dell otwiera plik z O:\ → checksum match → safety numbers identyczne na obu
-- **Status:** OPEN. **Faza α.4** roadmapy v0.4 (po Argon2id bump α.1, ML-KEM α.2, X25519 α.3). Faza α formalnie wystartuje po Fazie 0 (QA Foundation) — nie robimy hot-fix v0.3.24, bo trzeba to zrobić systematycznie z testem e2e (kluczowy flow F5).
+- **Status:** OPEN. **Faza α.C.b** roadmapy v0.4 (po Argon2id bump α.B.a, ML-KEM α.B.b, X25519 α.C.a). Faza α formalnie wystartuje po Fazie 0 (QA Foundation) — nie robimy hot-fix v0.3.24, bo trzeba to zrobić systematycznie z testem e2e (kluczowy flow F5).
 
 ### P1-006 — `/api/auth/logout` nie blokuje vaulta (klucze zostają w RAM)
 
@@ -60,7 +60,7 @@
   1. `post_auth_logout` musi wywołać `state.vault_keys.lock().await` PRZED `delete_user_session` (analogicznie do `post_vault_lock`).
   2. Decyzja: czy logout = full vault lock (z dismount cfapi P0 sequence) czy tylko key zero? Pełny lock jest spójny z user mental model i security best practice.
   3. Audit innych endpointów: czy są inne ścieżki które kasują sesję ale nie lockują vaulta (np. session expiry timer w db, jeśli istnieje).
-- **Status:** OPEN. **Faza α (Crypto Hardening) — α.5 lub osobny task α.6**. Może iść jako hot-fix v0.3.24 (mały scope, security high impact, low regression risk).
+- **Status:** OPEN. **Faza α.A.a** (Crypto Hardening, grupa A hot-fixes). Może iść jako hot-fix v0.3.24 (mały scope, security high impact, low regression risk).
 
 ### P1-002 — Lenovo nie widzi Della w MultiDevice po join
 
@@ -70,7 +70,7 @@
 - **Hipoteza root cause:** Daemon ma snapshot **upload** worker (`MetadataBackupWorker`) ale nie ma symetrycznego snapshot **fetch** workera dla istniejących urządzeń. Tylko join-existing flow pobiera snapshot.
 - **Impact:** Multi-device awareness jednokierunkowy. Gdy ktoś z rodziny dołącza nowy laptop (v5.0), admin nie zobaczy go bez restart daemona albo manual refresh.
 - **Fix scope:** Periodic snapshot fetch worker (np. co 1h) w angeld. Decyzja: tylko gdy snapshot jest nowszy + lock wokół DB (nie nadpisuj jeśli były lokalne zmiany). Może wymagać per-device sequence number / lamport clock.
-- **Status:** OPEN. Planowany w **Faza β.2** roadmapy v0.4.
+- **Status:** OPEN. Planowany w **Faza β.b** roadmapy v0.4.
 
 ### P1-005 → MERGED z P1-001 (2026-05-10 wieczór)
 
@@ -83,7 +83,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **Hipoteza:** Bucket policy / access key uprawnienia do prefix `_omnidrive/system/metadata/snapshots/` — może bucket nie pozwala PUT pod system/. Inny prefix (`packs/...`) działa wg logów.
 - **Impact:** Brak redundancji metadanych: jedyna kopia snapshot na B2. Awaria B2 = utrata metadata, mimo że chunki są na 3 providerach.
 - **Fix scope:** Sprawdzić Scaleway IAM policy + bucket policy + key permissions. Jeśli OK, zbadać dlaczego prefix `_omnidrive/system/` jest blokowany. Naprawić konfigurację albo udokumentować workaround.
-- **Status:** OPEN. **Quality Gate 2.e** ("snapshot zawsze w ≥1 sprawnym miejscu") nie spełniony, ale technically B2 jest sprawny → tolerowalne tymczasowo. P1 bo bezpieczeństwo redundancji.
+- **Status:** OPEN. **Faza β.c** roadmapy v0.4 (snapshot redundancy fix). **Quality Gate 2.e** ("snapshot zawsze w ≥1 sprawnym miejscu") nie spełniony, ale technically B2 jest sprawny → tolerowalne tymczasowo. P1 bo bezpieczeństwo redundancji.
 
 ### P1-004 — Snapshot upload do R2 zwraca ConnectionReset
 
@@ -92,7 +92,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **Hipoteza:** R2 hyper-1.x compatibility issue (memory: rustls/hyper consolidation odłożona). Może `keep-alive` pool trzyma wygasłe połączenie.
 - **Impact:** Tak samo jak P1-003 — brak redundancji.
 - **Fix scope:** Najpierw retry z fresh connection (`force-close` po 1 ConnReset). Drugorzędnie: Batch 7 C.3 (rustls/hyper consolidation z Backlog).
-- **Status:** OPEN. Powiązany z C.3 (Backlog).
+- **Status:** OPEN. **Faza β.c** roadmapy v0.4 (snapshot redundancy fix). Powiązany z C.3 (Backlog).
 
 ---
 
@@ -104,7 +104,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **Symptom:** `angeld.exe` w taskmgr pokazuje wysokie CPU nawet w idle (do potwierdzenia liczbowego)
 - **SLA cel:** < 1% CPU idle, < 5% active (per roadmap v0.4)
 - **Fix scope:** (1) Mierzenie: profiling 60s idle + 60s active. (2) Audit `angeld/src/watcher.rs` (643 linie). Sprawdzić: polling vs event-driven? debounce? batch? file system event API (Windows ReadDirectoryChangesW)?
-- **Status:** OPEN. **Faza β** (po pomiarach).
+- **Status:** OPEN. **Faza β.d** (po pomiarach).
 
 ### P2-002 — VFS laguje przy dużych plikach
 
@@ -112,7 +112,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **Symptom:** Otwarcie dużego pliku (>50MB?) z O:\ trwa zauważalnie długo
 - **SLA cel:** Cold fetch < 2s/10MB, < 10s/100MB; warm < 100ms (per roadmap v0.4)
 - **Fix scope:** (1) Benchmark: cold fetch 1MB/10MB/100MB/1GB; warm fetch tych samych. (2) Audit `angeld/src/smart_sync.rs` (2197 linii — monolit do dekomponozycji). Sprawdzić: streaming hydration czy fetch-all-then-decrypt? EC reconstruction blokująca? Cache hit path?
-- **Status:** OPEN. **Faza ε** (po pomiarach).
+- **Status:** OPEN. **Faza ε.a/β.e** (po pomiarach — dekompozycja smart_sync.rs).
 
 ### P2-004 — Brak auto-lock po idle
 
@@ -126,7 +126,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
   3. Hook na Windows session-lock event (`WM_WTSSESSION_CHANGE` / `SystemEvents.SessionSwitch`) — natychmiastowy lock przy zablokowaniu sesji Windows.
   4. UI: pasek statusu „odblokowany na 14:32 min" + warning przed auto-lock (np. 1 min wcześniej toast).
 - **Impact:** Nie security data loss (klucze są w pamięci procesu, nie na dysku), ale user-facing security feature missing. Blokuje v0.4 (Faza ε UX/Stability).
-- **Status:** OPEN. **Faza α** (security) lub **β** (UX) — przekładać na ε. Wymaga: hook Windows event API + config + UI element.
+- **Status:** OPEN. **Faza α.A.b** (security hot-fix, grupa A). Wymaga: hook Windows event API + config + UI element.
 
 ### P2-005 — Brak Zeroize na temp kopiach kluczy (klucze zostają w pamięci poza SecretBox)
 
@@ -139,7 +139,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
   2. `KeyBytes` opakować w newtype z `#[derive(Zeroize, ZeroizeOnDrop)]` (zamiast type alias) — wymusi zeroize na każdej kopii.
   3. Audit call-sites `expose_secret()` w `vault.rs`, `downloader.rs`, `packer.rs`, `migrator.rs`, `sharing.rs` — zamienić plain copies na `SecretBox<KeyBytes>` lub krótkożyjące referencje.
   4. Test: po `vault.lock()`, memscan procesu nie znajduje znanych key patterns.
-- **Status:** OPEN. **Faza α** (Crypto Hardening). Powiązane z P1-006 (security key handling) ale niezależne.
+- **Status:** OPEN. **Faza α.A.c** (Crypto Hardening, grupa A hot-fixes). Powiązane z P1-006 (α.A.a) ale niezależne.
 
 ### P2-003 — Bin `angeld` duplikuje 27 modułów z lib (dual-compile)
 
@@ -156,7 +156,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
   - **Opcja B:** Skasować `angeld/src/lib.rs` całkowicie (bin-only crate). Tracimy library API dla testów e2e i przyszłej integracji.
   - **Opcja C (status quo + safeguard):** Zostawić duplikację, ale dodać do CI sztywne `cargo clippy --workspace --all-targets -- -D warnings` żeby zawsze sprawdzać obie konfiguracje.
 - **Impact:** Dług techniczny. Nie blokuje funkcjonalności, ale zwiększa risk regresji (jeden review nie wystarczy — trzeba uruchomić oba targety) + 2× czas CI + utrudnia świadome projektowanie API biblioteki.
-- **Status:** OPEN. P2 — blokuje v0.4 (clean architecture przed mobile). Decyzja Opcja A vs B vs C → Task 2 Fazy 0 lub Faza α/β.
+- **Status:** OPEN. P2 — blokuje v0.4 (clean architecture przed mobile). Decyzja Opcja A vs B vs C → Faza α lub β (wstawić jako β.f lub γ.a-pre, do decyzji).
 
 ---
 
@@ -202,7 +202,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
   - UI tray + idiomy: nic do roboty.
   - Argon2 hardcoded: zostawić (sanity expect).
   - **Eskalowane (2):** zrefaktorować `peer.rs::Peer::new` i `ingest.rs::IngestWorker::new` do zwrotu `Result<Self, E>` zamiast panic. Wymaga zmiany sygnatury wywoływaczy (callerze już mają `?` Pattern).
-- **Status:** OPEN dla 2 eskalowanych do P2 — pozostałe 21 udokumentowane jako świadome decyzje. **Eskalowane 2 → Faza α/β.**
+- **Status:** OPEN dla 2 eskalowanych do P2 — pozostałe 21 udokumentowane jako świadome decyzje. **Eskalowane 2 → Faza β** (kandydat do β.f jako P2-003 quick wins batch, do decyzji).
 
 
 
