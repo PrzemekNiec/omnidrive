@@ -44,7 +44,9 @@ param(
     [int]$LoadFileCount = 100,
 
     [ValidateRange(1, 1024)]
-    [int]$LoadFileSizeKb = 1
+    [int]$LoadFileSizeKb = 1,
+
+    [switch]$Yes
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,6 +66,7 @@ $script:AuditLog       = Join-Path $script:TestDir "perf-run.log"
 $script:DaemonProcess  = $null
 $script:EnvBackup      = @{}
 $script:Results        = @{}
+$script:AutoYes        = [bool]$Yes
 
 # ===== Helpers =====
 function Write-Step($msg) { Write-Host "`n[STEP] $msg" -ForegroundColor Cyan }
@@ -73,8 +76,26 @@ function Write-Err($msg)  { Write-Host "[ERR]  $msg" -ForegroundColor Red }
 
 function Confirm-Action {
     param([string]$Prompt)
+    if ($script:AutoYes) {
+        Write-Host "`n>>> $Prompt [Y/N] -> Y (auto, -Yes)" -ForegroundColor DarkGray
+        return $true
+    }
     $response = Read-Host "`n>>> $Prompt [Y/N]"
     return ($response -eq "Y" -or $response -eq "y")
+}
+
+function Test-PortInUse {
+    param([int]$Port)
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $task = $client.ConnectAsync("127.0.0.1", $Port)
+        if ($task.Wait(500)) { return $client.Connected }
+        return $false
+    } catch {
+        return $false
+    } finally {
+        $client.Close()
+    }
 }
 
 function Write-Audit {
@@ -100,16 +121,12 @@ function Assert-Safety {
     }
     Write-Ok "Prod daemon: nie dziala"
 
-    # 2. Porty wolne
-    $port8787 = Test-NetConnection -ComputerName 127.0.0.1 -Port $script:ProdPort `
-                                    -InformationLevel Quiet -WarningAction SilentlyContinue
-    if ($port8787) {
+    # 2. Porty wolne (TcpClient direct probe — Test-NetConnection hanged in non-interactive hosts)
+    if (Test-PortInUse -Port $script:ProdPort) {
         Write-Err "Port $($script:ProdPort) zajety mimo ze prod daemon nie dziala. Sprawdz: netstat -ano | findstr :$($script:ProdPort)"
         throw "Port $($script:ProdPort) in use"
     }
-    $port8788 = Test-NetConnection -ComputerName 127.0.0.1 -Port $script:TestPort `
-                                    -InformationLevel Quiet -WarningAction SilentlyContinue
-    if ($port8788) {
+    if (Test-PortInUse -Port $script:TestPort) {
         Write-Err "Port $($script:TestPort) (test) zajety. Inny test daemon? Sprawdz: netstat -ano | findstr :$($script:TestPort)"
         throw "Port $($script:TestPort) in use"
     }
