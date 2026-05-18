@@ -66,6 +66,10 @@ impl AutoLockMonitor {
     pub fn remaining_secs(&self) -> u64 {
         let last = self.last_activity.load(Ordering::Relaxed);
         let timeout = self.idle_timeout_secs();
+        if last == 0 {
+            // No touch recorded yet — countdown has not started.
+            return timeout;
+        }
         timeout.saturating_sub(self.now_secs().saturating_sub(last))
     }
 
@@ -201,6 +205,8 @@ mod tests {
 
     #[tokio::test]
     async fn init_loads_stored_preset() {
+        let _guard = ENV_LOCK.lock().await;
+
         let pool = fresh_pool().await;
         crate::db::set_system_config_value(&pool, SYSTEM_CONFIG_KEY, "30")
             .await
@@ -213,6 +219,8 @@ mod tests {
 
     #[tokio::test]
     async fn init_clamps_invalid_value_to_nearest_preset() {
+        let _guard = ENV_LOCK.lock().await;
+
         let pool = fresh_pool().await;
         crate::db::set_system_config_value(&pool, SYSTEM_CONFIG_KEY, "7")
             .await
@@ -229,6 +237,8 @@ mod tests {
 
     #[tokio::test]
     async fn init_falls_back_to_default_on_unparseable_value() {
+        let _guard = ENV_LOCK.lock().await;
+
         let pool = fresh_pool().await;
         crate::db::set_system_config_value(&pool, SYSTEM_CONFIG_KEY, "abc")
             .await
@@ -290,6 +300,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_timeout_accepts_each_preset() {
+        let _guard = ENV_LOCK.lock().await;
+
         let pool = fresh_pool().await;
         let mon = AutoLockMonitor::init(pool, VaultKeyStore::default())
             .await
@@ -302,6 +314,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_timeout_rejects_non_preset() {
+        let _guard = ENV_LOCK.lock().await;
+
         let pool = fresh_pool().await;
         let mon = AutoLockMonitor::init(pool, VaultKeyStore::default())
             .await
@@ -315,6 +329,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_timeout_persists_to_db() {
+        let _guard = ENV_LOCK.lock().await;
+
         let pool = fresh_pool().await;
         let mon = AutoLockMonitor::init(pool.clone(), VaultKeyStore::default())
             .await
@@ -324,5 +340,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stored.as_deref(), Some("60"));
+    }
+
+    // ── Fix 1: remaining_secs sentinel for fresh-start state ─────────
+
+    #[tokio::test]
+    async fn remaining_secs_full_timeout_when_no_touch_yet() {
+        let _guard = ENV_LOCK.lock().await;
+
+        let pool = fresh_pool().await;
+        let mon = AutoLockMonitor::init(pool, VaultKeyStore::default())
+            .await
+            .unwrap();
+        // Sleep so now_secs() advances past 0.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            mon.remaining_secs(),
+            15 * 60,
+            "no-touch state should report full timeout"
+        );
     }
 }

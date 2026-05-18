@@ -288,27 +288,28 @@ async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
     Ok(port)
 }
 
+fn parse_http_url(url: &str) -> std::io::Result<(String, String)> {
+    let rest = url.strip_prefix("http://").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "expected http:// URL")
+    })?;
+    let (host_port, path_rest) = rest
+        .split_once('/')
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "URL missing path"))?;
+    Ok((host_port.to_string(), format!("/{path_rest}")))
+}
+
 async fn http_get_json<T: for<'de> Deserialize<'de>>(
     url: &str,
     token: Option<&str>,
 ) -> Result<T, Box<dyn std::error::Error>> {
-    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "only http:// URLs are supported",
-        )
-    })?;
-    let (host_port, path) = without_scheme
-        .split_once('/')
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
-    let path = format!("/{}", path);
+    let (host_port, path) = parse_http_url(url)?;
 
     let auth = match token {
         Some(t) => format!("Authorization: Bearer {t}\r\n"),
         None => String::new(),
     };
 
-    let mut stream = TcpStream::connect(host_port).await?;
+    let mut stream = TcpStream::connect(host_port.as_str()).await?;
     let request =
         format!("GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
@@ -339,22 +340,13 @@ async fn http_post_raw(
     body: &serde_json::Value,
     token: Option<&str>,
 ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
-    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "only http:// URLs are supported",
-        )
-    })?;
-    let (host_port, path) = without_scheme
-        .split_once('/')
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
-    let path = format!("/{}", path);
+    let (host_port, path) = parse_http_url(url)?;
     let body_text = body.to_string();
     let auth = match token {
         Some(t) => format!("Authorization: Bearer {t}\r\n"),
         None => String::new(),
     };
-    let mut stream = TcpStream::connect(host_port).await?;
+    let mut stream = TcpStream::connect(host_port.as_str()).await?;
     let request = format!(
         "POST {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body_text.len(),
@@ -424,6 +416,25 @@ async fn auto_lock_timeout_endpoint_rejects_invalid() -> Result<(), Box<dyn std:
         resp.body.contains("invalid_preset"),
         "body missing 'invalid_preset': {}",
         resp.body
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_lock_timeout_endpoint_rejects_unauthenticated()
+-> Result<(), Box<dyn std::error::Error>> {
+    let h = DaemonHarness::spawn().await?;
+    // Do NOT call h.unlock() — session_token remains None.
+    let resp = h
+        .post_json(
+            "/api/auto-lock/timeout",
+            serde_json::json!({"idle_timeout_min": 30}),
+        )
+        .await?;
+    assert_eq!(
+        resp.status, 401,
+        "expected 401 unauthenticated; got {}; body: {}",
+        resp.status, resp.body
     );
     Ok(())
 }
