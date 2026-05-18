@@ -125,6 +125,26 @@ impl AutoLockMonitor {
         info!("[AUTO-LOCK] timeout updated to {}min", m);
         Ok(())
     }
+
+    /// Wait-free activity stamp.  Hot-path safe: single relaxed store on an
+    /// AtomicU64 (seconds since `daemon_start`).  `_source` is reserved for
+    /// telemetry in α.A.b.4 and intentionally unused here.
+    pub fn touch(&self, _source: TouchSource) {
+        self.last_activity.store(self.now_secs(), Ordering::Relaxed);
+    }
+}
+
+/// Wait-free top-level touch — no-op when `MONITOR` is not yet initialised
+/// (testing, startup before `init`, cfapi callback firing before run).
+pub fn touch(source: TouchSource) {
+    if let Some(mon) = MONITOR.get() {
+        mon.touch(source);
+    }
+}
+
+/// Returns a clone of the global `AutoLockMonitor` handle once initialised.
+pub fn monitor() -> Option<Arc<AutoLockMonitor>> {
+    MONITOR.get().cloned()
 }
 
 fn resolve_minutes_from_db(value: Option<&str>) -> u32 {
@@ -359,5 +379,42 @@ mod tests {
             15 * 60,
             "no-touch state should report full timeout"
         );
+    }
+
+    // ── Task α.A.b.2.1: touch() + top-level helpers ─────────────────
+
+    // NOTE: plan §α.A.b.2.1 specifies `#[tokio::test(start_paused = true)]` and
+    // `tokio::time::advance(...)`, both gated behind tokio's `test-util` feature
+    // which is NOT enabled in this workspace (and per scope rules this sub-task
+    // is forbidden from touching Cargo.toml).  We assert the same contract —
+    // `touch()` stores `now_secs()` into `last_activity` with relaxed ordering —
+    // using real wall-clock readings as inclusive bounds.
+    #[tokio::test]
+    async fn touch_updates_last_activity_to_now_secs() {
+        let _guard = ENV_LOCK.lock().await;
+
+        let pool = fresh_pool().await;
+        let mon = AutoLockMonitor::init(pool, VaultKeyStore::default())
+            .await
+            .unwrap();
+        // Sleep so now_secs() has a non-zero value distinguishable from the
+        // initial last_activity = 0 sentinel.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let before = mon.now_secs();
+        mon.touch(TouchSource::AuthApi);
+        let after = mon.now_secs();
+        let stored = mon.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            stored >= before && stored <= after,
+            "touch should store now_secs(); stored={stored} before={before} after={after}"
+        );
+        assert!(stored >= 1, "stored should reflect real elapsed seconds");
+    }
+
+    #[test]
+    fn top_level_touch_is_noop_when_monitor_uninitialized() {
+        // MONITOR is OnceLock — if other tests set it, this is best-effort.
+        // The key contract: touch() never panics when MONITOR is unset.
+        crate::auto_lock::touch(TouchSource::AuthApi);
     }
 }
