@@ -203,7 +203,25 @@ mod tests {
     // ── Task 1.2: init tests ─────────────────────────────────────────
 
     async fn fresh_pool() -> SqlitePool {
-        crate::db::init_db("sqlite::memory:").await.unwrap()
+        // Some tests in this module run under `#[tokio::test(start_paused = true)]`.
+        // `crate::db::init_db` uses sqlx-sqlite which internally awaits on
+        // `tokio::task::spawn_blocking`; under a paused clock tokio auto-advances
+        // to the next pending timer (sqlx's 30s `acquire_timeout`) before the
+        // blocking task completes, producing a spurious `PoolTimedOut`.
+        // Temporarily resume the clock for the duration of init, then re-pause
+        // if (and only if) the caller had started paused.
+        //
+        // Detect paused state by attempting to pause: `tokio::time::pause()`
+        // panics ("time is already frozen") iff the clock is already paused.
+        let was_paused =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokio::time::pause()))
+                .is_err();
+        tokio::time::resume();
+        let pool = crate::db::init_db("sqlite::memory:").await.unwrap();
+        if was_paused {
+            tokio::time::pause();
+        }
+        pool
     }
 
     #[tokio::test]
@@ -383,32 +401,18 @@ mod tests {
 
     // ── Task α.A.b.2.1: touch() + top-level helpers ─────────────────
 
-    // NOTE: plan §α.A.b.2.1 specifies `#[tokio::test(start_paused = true)]` and
-    // `tokio::time::advance(...)`, both gated behind tokio's `test-util` feature
-    // which is NOT enabled in this workspace (and per scope rules this sub-task
-    // is forbidden from touching Cargo.toml).  We assert the same contract —
-    // `touch()` stores `now_secs()` into `last_activity` with relaxed ordering —
-    // using real wall-clock readings as inclusive bounds.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn touch_updates_last_activity_to_now_secs() {
-        let _guard = ENV_LOCK.lock().await;
-
         let pool = fresh_pool().await;
         let mon = AutoLockMonitor::init(pool, VaultKeyStore::default())
             .await
             .unwrap();
-        // Sleep so now_secs() has a non-zero value distinguishable from the
-        // initial last_activity = 0 sentinel.
-        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-        let before = mon.now_secs();
+        tokio::time::advance(std::time::Duration::from_secs(42)).await;
         mon.touch(TouchSource::AuthApi);
-        let after = mon.now_secs();
-        let stored = mon.last_activity.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            stored >= before && stored <= after,
-            "touch should store now_secs(); stored={stored} before={before} after={after}"
+        assert_eq!(
+            mon.last_activity.load(std::sync::atomic::Ordering::Relaxed),
+            42
         );
-        assert!(stored >= 1, "stored should reflect real elapsed seconds");
     }
 
     #[test]
