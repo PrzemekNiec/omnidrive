@@ -5,6 +5,7 @@
 mod acl;
 mod api;
 mod api_error;
+mod auto_lock;
 mod autostart;
 mod aws_http;
 mod cache;

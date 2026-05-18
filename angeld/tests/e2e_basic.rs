@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde_json::Value;
 use sqlx::SqlitePool;
 use std::fs::File;
 use std::io;
@@ -9,6 +10,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
+
+const E2E_PASSPHRASE: &str = "e2e-basic-passphrase";
+
+struct HttpResponse {
+    status: u16,
+    body: String,
+}
 
 #[derive(Debug, Deserialize)]
 struct DiagnosticsHealth {
@@ -36,6 +44,7 @@ struct DaemonHarness {
     base_url: String,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
+    session_token: Option<String>,
 }
 
 impl DaemonHarness {
@@ -86,6 +95,7 @@ impl DaemonHarness {
             base_url,
             stdout_path,
             stderr_path,
+            session_token: None,
         };
 
         harness.wait_for_api_ready().await?;
@@ -119,6 +129,33 @@ impl DaemonHarness {
         http_get_json::<DiagnosticsHealth>(
             &format!("{}/api/diagnostics/health", self.base_url),
             None,
+        )
+        .await
+    }
+
+    /// Unlock the vault and store the session token for subsequent requests.
+    /// Lifted from `e2e_recovery.rs::DaemonHandle::unlock` (option a per α.A.b.1 plan).
+    async fn unlock(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        let resp = http_post_json(
+            &format!("{}/api/unlock", self.base_url),
+            &serde_json::json!({ "passphrase": E2E_PASSPHRASE }),
+            None,
+        )
+        .await?;
+        self.session_token = resp["session_token"].as_str().map(|s| s.to_string());
+        Ok(resp)
+    }
+
+    /// POST JSON body to `path` and return the raw HTTP status code + body string.
+    async fn post_json(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+        http_post_raw(
+            &format!("{}{}", self.base_url, path),
+            &body,
+            self.session_token.as_deref(),
         )
         .await
     }
@@ -284,6 +321,111 @@ async fn http_get_json<T: for<'de> Deserialize<'de>>(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid HTTP response"))?;
 
     Ok(serde_json::from_str(body)?)
+}
+
+/// POST JSON to `url` and parse response body as JSON (used for unlock).
+async fn http_post_json(
+    url: &str,
+    body: &serde_json::Value,
+    token: Option<&str>,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let raw = http_post_raw(url, body, token).await?;
+    Ok(serde_json::from_str(&raw.body)?)
+}
+
+/// POST JSON to `url` and return raw status + body (used for endpoint assertions).
+async fn http_post_raw(
+    url: &str,
+    body: &serde_json::Value,
+    token: Option<&str>,
+) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only http:// URLs are supported",
+        )
+    })?;
+    let (host_port, path) = without_scheme
+        .split_once('/')
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
+    let path = format!("/{}", path);
+    let body_text = body.to_string();
+    let auth = match token {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
+    let mut stream = TcpStream::connect(host_port).await?;
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body_text.len(),
+        body_text
+    );
+    stream.write_all(request.as_bytes()).await?;
+
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await?;
+    let response_str = String::from_utf8(response)?;
+
+    // Parse HTTP status line: "HTTP/1.1 204 No Content\r\n..."
+    let status_line = response_str
+        .lines()
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "empty HTTP response"))?;
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no status code"))?
+        .parse()?;
+
+    let body = response_str
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+
+    Ok(HttpResponse { status, body })
+}
+
+// ── α.A.b.1 integration tests ──────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_lock_timeout_endpoint_accepts_preset() -> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+    let resp = h
+        .post_json(
+            "/api/auto-lock/timeout",
+            serde_json::json!({"idle_timeout_min": 30}),
+        )
+        .await?;
+    assert_eq!(
+        resp.status, 204,
+        "expected 204 but got {}; body: {}",
+        resp.status, resp.body
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_lock_timeout_endpoint_rejects_invalid() -> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+    let resp = h
+        .post_json(
+            "/api/auto-lock/timeout",
+            serde_json::json!({"idle_timeout_min": 7}),
+        )
+        .await?;
+    assert_eq!(
+        resp.status, 400,
+        "expected 400 but got {}; body: {}",
+        resp.status, resp.body
+    );
+    assert!(
+        resp.body.contains("invalid_preset"),
+        "body missing 'invalid_preset': {}",
+        resp.body
+    );
+    Ok(())
 }
 
 fn create_temp_root() -> io::Result<PathBuf> {

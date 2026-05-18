@@ -3,6 +3,11 @@
 //! Owns wait-free activity state (AtomicU64), the tick loop, and the
 //! REST-facing config setter.  Touch hooks live in `acl.rs` and
 //! `smart_sync.rs`; the lock teardown lives in `lock_flow.rs`.
+//!
+//! Several items in this module are forward-declared for α.A.b.2–α.A.b.4
+//! and are not yet called from production code; `dead_code` is suppressed
+//! module-wide for the duration of the skeleton phase.
+#![allow(dead_code)]
 
 use crate::vault::VaultKeyStore;
 use sqlx::SqlitePool;
@@ -37,6 +42,8 @@ pub struct AutoLockMonitor {
     pub(crate) idle_timeout_secs: AtomicU64,
     pub(crate) daemon_start: tokio::time::Instant,
     pub(crate) pool: SqlitePool,
+    /// Used by `force_lock` in α.A.b.2 — kept in the skeleton for API completeness.
+    #[allow(dead_code)]
     pub(crate) vault_keys: VaultKeyStore,
 }
 
@@ -109,7 +116,8 @@ impl AutoLockMonitor {
             return Err(AutoLockError::InvalidPreset(m));
         }
         crate::db::set_system_config_value(&self.pool, SYSTEM_CONFIG_KEY, &m.to_string()).await?;
-        self.idle_timeout_secs.store(u64::from(m) * 60, Ordering::Relaxed);
+        self.idle_timeout_secs
+            .store(u64::from(m) * 60, Ordering::Relaxed);
         info!("[AUTO-LOCK] timeout updated to {}min", m);
         Ok(())
     }
@@ -124,7 +132,10 @@ fn resolve_minutes_from_db(value: Option<&str>) -> u32 {
         }
         None => {
             if let Some(raw) = value {
-                warn!("[AUTO-LOCK] db value {:?} unparseable, defaulting to 15", raw);
+                warn!(
+                    "[AUTO-LOCK] db value {:?} unparseable, defaulting to 15",
+                    raw
+                );
             }
             DEFAULT_IDLE_MIN
         }
@@ -146,7 +157,8 @@ mod tests {
     // OMNIDRIVE_AUTO_LOCK_TEST_MIN.  cargo runs unit tests in parallel
     // by default, so any test that observes or sets this var must hold
     // this lock for its entire duration.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // tokio::sync::Mutex is used because the guard is held across .await points.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     // ── Task 1.1: type existence tests ──────────────────────────────
 
@@ -174,17 +186,16 @@ mod tests {
     async fn init_uses_default_15_when_db_empty() {
         // Acquire ENV_LOCK so we don't race with the debug env-override tests
         // that temporarily set OMNIDRIVE_AUTO_LOCK_TEST_MIN.
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
 
         let pool = fresh_pool().await;
         let mon = AutoLockMonitor::init(pool.clone(), VaultKeyStore::default())
             .await
             .unwrap();
         assert_eq!(mon.idle_timeout_secs(), 15 * 60);
-        let stored =
-            crate::db::get_system_config_value(&pool, SYSTEM_CONFIG_KEY)
-                .await
-                .unwrap();
+        let stored = crate::db::get_system_config_value(&pool, SYSTEM_CONFIG_KEY)
+            .await
+            .unwrap();
         assert_eq!(stored.as_deref(), Some("15"));
     }
 
@@ -210,10 +221,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(mon.idle_timeout_secs(), 5 * 60);
-        let stored =
-            crate::db::get_system_config_value(&pool, SYSTEM_CONFIG_KEY)
-                .await
-                .unwrap();
+        let stored = crate::db::get_system_config_value(&pool, SYSTEM_CONFIG_KEY)
+            .await
+            .unwrap();
         assert_eq!(stored.as_deref(), Some("5"));
     }
 
@@ -227,10 +237,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(mon.idle_timeout_secs(), 15 * 60);
-        let stored =
-            crate::db::get_system_config_value(&pool, SYSTEM_CONFIG_KEY)
-                .await
-                .unwrap();
+        let stored = crate::db::get_system_config_value(&pool, SYSTEM_CONFIG_KEY)
+            .await
+            .unwrap();
         assert_eq!(stored.as_deref(), Some("15"));
     }
 
@@ -241,7 +250,7 @@ mod tests {
     async fn init_env_override_takes_precedence_over_db() {
         // Serialize env-var manipulation: cargo runs tests in parallel by default,
         // but env::set_var is process-global.  Use the module-level ENV_LOCK.
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
 
         let pool = fresh_pool().await;
         crate::db::set_system_config_value(&pool, SYSTEM_CONFIG_KEY, "30")
@@ -256,17 +265,16 @@ mod tests {
 
         // Env override wins (1min), DB value untouched (still 30).
         assert_eq!(mon.idle_timeout_secs(), 60);
-        let stored =
-            crate::db::get_system_config_value(&pool, SYSTEM_CONFIG_KEY)
-                .await
-                .unwrap();
+        let stored = crate::db::get_system_config_value(&pool, SYSTEM_CONFIG_KEY)
+            .await
+            .unwrap();
         assert_eq!(stored.as_deref(), Some("30"));
     }
 
     #[cfg(debug_assertions)]
     #[tokio::test]
     async fn init_env_override_ignored_when_unparseable() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
 
         let pool = fresh_pool().await;
         unsafe { std::env::set_var("OMNIDRIVE_AUTO_LOCK_TEST_MIN", "junk") };
@@ -312,10 +320,9 @@ mod tests {
             .await
             .unwrap();
         mon.set_timeout_minutes(60).await.unwrap();
-        let stored =
-            crate::db::get_system_config_value(&pool, SYSTEM_CONFIG_KEY)
-                .await
-                .unwrap();
+        let stored = crate::db::get_system_config_value(&pool, SYSTEM_CONFIG_KEY)
+            .await
+            .unwrap();
         assert_eq!(stored.as_deref(), Some("60"));
     }
 }

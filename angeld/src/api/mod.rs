@@ -1,5 +1,6 @@
 mod audit;
 mod auth;
+mod auto_lock;
 mod diagnostics;
 pub mod error;
 mod files;
@@ -243,6 +244,15 @@ impl ApiServer {
             recovery_limiter: Arc::new(RecoveryRateLimiter::new()),
             join_limiter: Arc::new(JoinRateLimiter::new()),
         };
+        // ── α.A.b.1: init AutoLockMonitor (config layer) ─────────────────
+        let monitor =
+            crate::auto_lock::AutoLockMonitor::init(state.pool.clone(), state.vault_keys.clone())
+                .await
+                .map_err(|e| ApiServerError::Io(std::io::Error::other(e.to_string())))?;
+        // Ignore Err: daemon restarts may hit DoubleInit if tests re-use the process;
+        // graceful degradation (monitor already set from previous init call).
+        let _ = crate::auto_lock::MONITOR.set(monitor);
+
         let app = Router::new()
             .route("/", get(get_index))
             .route("/legacy", get(get_legacy))
@@ -271,6 +281,8 @@ impl ApiServer {
             .merge(settings::routes())
             // ── Google OAuth2 (Sesja C) ──
             .merge(oauth::routes())
+            // ── Auto-lock config (α.A.b.1) ──
+            .merge(auto_lock::routes())
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
