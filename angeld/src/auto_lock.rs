@@ -1,7 +1,7 @@
 //! α.A.b — central monitor for idle-timeout auto-lock.
 //!
 //! Owns wait-free activity state (AtomicU64), the tick loop, and the
-//! REST-facing config setter.  Touch hooks live in `acl.rs` and
+//! REST-facing config setter. Touch hooks live in `acl.rs` and
 //! `smart_sync.rs`; the lock teardown lives in `lock_flow.rs`.
 //!
 //! Several items in this module are forward-declared for α.A.b.2–α.A.b.4
@@ -54,6 +54,19 @@ pub static MONITOR: OnceLock<Arc<AutoLockMonitor>> = OnceLock::new();
 use std::sync::atomic::Ordering;
 use tracing::{info, warn};
 
+/// Wait-free top-level touch — no-op when `MONITOR` is not yet initialised
+/// (testing, startup before `init`, cfapi callback firing before run).
+pub fn touch(source: TouchSource) {
+    if let Some(mon) = MONITOR.get() {
+        mon.touch(source);
+    }
+}
+
+/// Returns a clone of the global `AutoLockMonitor` handle once initialised.
+pub fn monitor() -> Option<Arc<AutoLockMonitor>> {
+    MONITOR.get().cloned()
+}
+
 impl AutoLockMonitor {
     pub fn now_secs(&self) -> u64 {
         self.daemon_start.elapsed().as_secs()
@@ -77,7 +90,7 @@ impl AutoLockMonitor {
         pool: SqlitePool,
         vault_keys: VaultKeyStore,
     ) -> Result<Arc<Self>, AutoLockError> {
-        // Debug-only override for SMOKE H2 (spec §5.5).  When the env var
+        // Debug-only override for SMOKE H2 (spec §5.5). When the env var
         // parses to a valid positive u32 we use it as the active timeout
         // WITHOUT touching the DB — DB remains the source of truth for the
         // user's persisted preference.
@@ -126,25 +139,13 @@ impl AutoLockMonitor {
         Ok(())
     }
 
-    /// Wait-free activity stamp.  Hot-path safe: single relaxed store on an
-    /// AtomicU64 (seconds since `daemon_start`).  `_source` is reserved for
+    /// Wait-free activity stamp. Hot-path safe: single relaxed store on an
+    /// AtomicU64 (seconds since `daemon_start`). `_source` is reserved for
     /// telemetry in α.A.b.4 and intentionally unused here.
     pub fn touch(&self, _source: TouchSource) {
+        // TODO(α.A.b.4): forward TouchSource to telemetry counter
         self.last_activity.store(self.now_secs(), Ordering::Relaxed);
     }
-}
-
-/// Wait-free top-level touch — no-op when `MONITOR` is not yet initialised
-/// (testing, startup before `init`, cfapi callback firing before run).
-pub fn touch(source: TouchSource) {
-    if let Some(mon) = MONITOR.get() {
-        mon.touch(source);
-    }
-}
-
-/// Returns a clone of the global `AutoLockMonitor` handle once initialised.
-pub fn monitor() -> Option<Arc<AutoLockMonitor>> {
-    MONITOR.get().cloned()
 }
 
 fn resolve_minutes_from_db(value: Option<&str>) -> u32 {
@@ -203,25 +204,7 @@ mod tests {
     // ── Task 1.2: init tests ─────────────────────────────────────────
 
     async fn fresh_pool() -> SqlitePool {
-        // Some tests in this module run under `#[tokio::test(start_paused = true)]`.
-        // `crate::db::init_db` uses sqlx-sqlite which internally awaits on
-        // `tokio::task::spawn_blocking`; under a paused clock tokio auto-advances
-        // to the next pending timer (sqlx's 30s `acquire_timeout`) before the
-        // blocking task completes, producing a spurious `PoolTimedOut`.
-        // Temporarily resume the clock for the duration of init, then re-pause
-        // if (and only if) the caller had started paused.
-        //
-        // Detect paused state by attempting to pause: `tokio::time::pause()`
-        // panics ("time is already frozen") iff the clock is already paused.
-        let was_paused =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tokio::time::pause()))
-                .is_err();
-        tokio::time::resume();
-        let pool = crate::db::init_db("sqlite::memory:").await.unwrap();
-        if was_paused {
-            tokio::time::pause();
-        }
-        pool
+        crate::db::init_db("sqlite::memory:").await.unwrap()
     }
 
     #[tokio::test]
@@ -401,24 +384,27 @@ mod tests {
 
     // ── Task α.A.b.2.1: touch() + top-level helpers ─────────────────
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn touch_updates_last_activity_to_now_secs() {
+        let _guard = ENV_LOCK.lock().await;
+
         let pool = fresh_pool().await;
         let mon = AutoLockMonitor::init(pool, VaultKeyStore::default())
             .await
             .unwrap();
+        // Pause AFTER pool + monitor construction so sqlx's internal timers
+        // run against a real clock. `daemon_start` is captured during init,
+        // so advancing the paused clock 42s makes `now_secs()` deterministic.
+        tokio::time::pause();
         tokio::time::advance(std::time::Duration::from_secs(42)).await;
         mon.touch(TouchSource::AuthApi);
-        assert_eq!(
-            mon.last_activity.load(std::sync::atomic::Ordering::Relaxed),
-            42
-        );
+        assert_eq!(mon.last_activity.load(Ordering::Relaxed), 42);
     }
 
     #[test]
-    fn top_level_touch_is_noop_when_monitor_uninitialized() {
-        // MONITOR is OnceLock — if other tests set it, this is best-effort.
-        // The key contract: touch() never panics when MONITOR is unset.
+    fn top_level_touch_never_panics() {
+        // MONITOR is OnceLock — if other tests set it, the call still must not panic.
+        // The key contract: top-level touch() never panics regardless of MONITOR state.
         crate::auto_lock::touch(TouchSource::AuthApi);
     }
 }

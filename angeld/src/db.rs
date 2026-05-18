@@ -587,7 +587,10 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
         .map_err(|err| sqlx::Error::Configuration(Box::new(err)))?
         .create_if_missing(true)
         .foreign_keys(true);
-    let pool = SqlitePoolOptions::new().connect_with(options).await?;
+    let pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .connect_with(options)
+        .await?;
     sqlx::query("PRAGMA foreign_keys = ON")
         .execute(&pool)
         .await?;
