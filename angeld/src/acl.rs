@@ -92,6 +92,8 @@ pub async fn require_role(
         });
     }
 
+    crate::auto_lock::touch(crate::auto_lock::TouchSource::AuthApi);
+
     Ok(AuthorizedCaller {
         user_id: session.user_id,
         device_id: session.device_id,
@@ -103,8 +105,18 @@ pub async fn require_role(
 /// Like `require_role` but only authenticates (any valid session, no
 /// vault membership required).  Used for endpoints that don't need
 /// role-based authorization (e.g. health checks with auth).
-#[allow(dead_code)]
 pub async fn require_session(
+    pool: &SqlitePool,
+    headers: &HeaderMap,
+) -> Result<db::UserSession, ApiError> {
+    let s = extract_session_or_401(pool, headers).await?;
+    crate::auto_lock::touch(crate::auto_lock::TouchSource::AuthApi);
+    Ok(s)
+}
+
+/// Wired into auto-lock status endpoints in α.A.b.2.7 — polling-safe variant.
+#[allow(dead_code)]
+pub async fn require_session_no_touch(
     pool: &SqlitePool,
     headers: &HeaderMap,
 ) -> Result<db::UserSession, ApiError> {
@@ -286,5 +298,56 @@ mod tests {
 
         // Even Viewer-level access is denied for non-members
         assert!(require_role(&pool, &headers, Role::Viewer).await.is_err());
+    }
+
+    async fn setup_acl_monitor() -> (sqlx::SqlitePool, HeaderMap) {
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        let mon = crate::auto_lock::AutoLockMonitor::init(
+            pool.clone(),
+            crate::vault::VaultKeyStore::default(),
+        )
+        .await
+        .unwrap();
+        let _ = crate::auto_lock::MONITOR.set(mon);
+
+        db::set_vault_params(&pool, b"salt1234567890ab", "argon2id", "vault-acl")
+            .await
+            .unwrap();
+        db::create_user(&pool, "u-acl", "ACL Tester", None, "local", None)
+            .await
+            .unwrap();
+        db::create_device(&pool, "dev-acl", "u-acl", "ACLPC", &[0u8; 32])
+            .await
+            .unwrap();
+        db::add_vault_member(&pool, "u-acl", "vault-acl", "member", None)
+            .await
+            .unwrap();
+        let token = db::generate_session_token();
+        db::create_user_session(&pool, &token, "u-acl", "dev-acl", db::SESSION_TTL_SECONDS)
+            .await
+            .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        (pool, headers)
+    }
+
+    #[tokio::test]
+    async fn require_session_variants_touch_or_skip() {
+        let (pool, headers) = setup_acl_monitor().await;
+        let mon = crate::auto_lock::MONITOR.get().unwrap();
+
+        let before = mon.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+        require_session_no_touch(&pool, &headers).await.unwrap();
+        let after_no_touch = mon.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(before, after_no_touch, "no_touch variant must not touch");
+
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        require_session(&pool, &headers).await.unwrap();
+        let after_touch = mon.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            after_touch > after_no_touch,
+            "require_session must touch monitor (after={after_touch}, before={after_no_touch})"
+        );
     }
 }

@@ -1133,7 +1133,7 @@ git commit -m "feat(auto-lock): tick loop locks vault on idle timeout (α.A.b.2)
 **Files:**
 - Modify: `angeld/src/acl.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `acl::tests`:
 
@@ -1202,7 +1202,7 @@ async fn require_session_variants_touch_or_skip() {
 
 `setup_acl_monitor()` lives in `acl::tests` as a private helper; uses `OnceLock::get_or_init` semantics (set if unset, otherwise reuse).
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 ```
 cargo test -p angeld --lib acl::tests::require_session_variants_touch_or_skip
@@ -1210,7 +1210,7 @@ cargo test -p angeld --lib acl::tests::require_session_variants_touch_or_skip
 
 Expected: compile error — `require_session_no_touch` not defined.
 
-- [ ] **Step 3: Implement the touch hooks + the new variant**
+- [x] **Step 3: Implement the touch hooks + the new variant**
 
 In `angeld/src/acl.rs:107-133`:
 
@@ -1238,7 +1238,7 @@ In `require_role`, after the privilege check passes (just before `Ok(AuthorizedC
 crate::auto_lock::touch(crate::auto_lock::TouchSource::AuthApi);
 ```
 
-- [ ] **Step 4: Run, expect green**
+- [x] **Step 4: Run, expect green**
 
 ```
 cargo test -p angeld --lib acl::tests
@@ -1246,7 +1246,7 @@ cargo test -p angeld --lib acl::tests
 
 Expected: all green (including pre-existing tests — verify no regression).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add angeld/src/acl.rs
