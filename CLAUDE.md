@@ -16,6 +16,25 @@ Nie pytaj użytkownika o pozwolenie — po prostu to zrób. Jeśli indeks już i
 
 ---
 
+## ✂️ Workflow i Styl Pracy (Surgical & Simple)
+
+Reguły obowiązują na każdej zmianie kodu w tym repozytorium, niezależnie od skali zadania.
+
+1. **Chirurgiczne zmiany.** Dotykaj wyłącznie linii, które wprost wynikają z żądania. Nie formatuj, nie refaktoruj, nie zmieniaj importów ani nazw w sąsiednim kodzie, który nie jest zepsuty. Każdy hunk w diffie musi mieć uzasadnienie w treści zadania — jeśli go nie ma, wycofaj go z commita.
+
+2. **Minimum kodu (Simplicity First).** Pisz najprostszy kod, który rozwiązuje *bieżący* problem. Żadnych warstw abstrakcji dla hipotetycznych przyszłych przypadków, żadnych feature flag „na zapas", żadnych helperów używanych tylko raz. Jeśli funkcja ma 200 linii, a starszy inżynier napisałby ją w 50 — przepisz. Trzy podobne linie są lepsze niż przedwczesna abstrakcja.
+
+3. **Zakaz komentarzy w kodzie produkcyjnym.** Bez wyjątków, chyba że użytkownik jawnie poprosi. Kod ma być samoopisujący się przez nazwy zmiennych, funkcji i typów. Dozwolone wyjątki:
+   - Krótki docstring `///` nad publicznym API, **tylko gdy WHY jest nieoczywiste** (subtelny invariant, obejście znanego buga z numerem, niejawne założenie o porządku wywołań).
+   - Komentarze WHAT-style („this function does X") są **zabronione** — nazwa funkcji już to mówi.
+   - Komentarze wskazujące na bieżące zadanie / commit / PR (np. `// added for issue #123`, `// removed by α.A.b.2`) są **zabronione** — historię trzyma git, nie pliki źródłowe.
+
+4. **Zakaz autopromocji.** Po edycji pliku raportuj fakty (stan testów, SHA commita, liczbę zmienionych linii) i milknij. Bez wstępów typu „Oto co zrobiłem…", bez podsumowań typu „Implementacja gotowa, oto co osiągnąłem…". Krótkie zdanie + dane techniczne wystarczą — użytkownik widzi diff i wyniki testów, nie potrzebuje narracji.
+
+5. **TDD + odznaczanie planów.** Przed implementacją zdefiniuj sukces testem (zgodnie z `superpowers:test-driven-development`). Jeśli zadanie ma plan w `docs/superpowers/plans/`, odhaczaj checkboxy `- [x]` natychmiast po ukończeniu kroku, nigdy batchowo na końcu — to pozwala parking-and-resume bez gubienia stanu.
+
+---
+
 ## 🛠️ Stack techniczny
 
 - **Backend / Core:** Rust (Edition 2024)
@@ -44,6 +63,8 @@ Nie pytaj użytkownika o pozwolenie — po prostu to zrób. Jeśli indeks już i
 | `angeld/src/db.rs`         | Główny interfejs bazy danych SQLite i migracje schematu.            |
 | `angeld/src/onboarding.rs` | Logika `Join Existing Vault`, odtwarzanie metadanych (Grafting).    |
 | `angeld/src/cfapi/`        | Integracja z Windows Cloud Files (Ghost Shell).                     |
+| `angeld/src/auto_lock.rs`  | Monitor bezczynności (wait-free `AtomicU64`, idle timeout α.A.b).   |
+| `angeld/src/lock_flow.rs`  | DRY helper `force_lock_and_dismount` — logout/idle/Win+L → lock vault + audit + CF dismount + drive unmount. |
 | `dist/installer/`          | Skrypty Inno Setup (`.iss`) i folder `payload/`.                    |
 | `docs/crypto-spec.md`      | Single Source of Truth dla Envelope Encryption i formatu V2.        |
 
