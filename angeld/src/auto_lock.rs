@@ -146,6 +146,42 @@ impl AutoLockMonitor {
         // TODO(α.A.b.4): forward TouchSource to telemetry counter
         self.last_activity.store(self.now_secs(), Ordering::Relaxed);
     }
+
+    pub async fn run_tick_loop(self: Arc<Self>) {
+        use futures::FutureExt;
+        use std::panic::AssertUnwindSafe;
+
+        let tick = std::time::Duration::from_secs(TICK_INTERVAL_SECS);
+        loop {
+            let me = Arc::clone(&self);
+            let _ = AssertUnwindSafe(async move {
+                tokio::time::sleep(tick).await;
+                let now = me.now_secs();
+                let last = me.last_activity.load(Ordering::Relaxed);
+                let timeout = me.idle_timeout_secs.load(Ordering::Relaxed);
+                let elapsed = now.saturating_sub(last);
+                if elapsed < timeout {
+                    return;
+                }
+                if me.vault_keys.require_key().await.is_err() {
+                    return;
+                }
+                info!(
+                    "[AUTO-LOCK] idle exceeded ({}s >= {}s) — forcing lock",
+                    elapsed, timeout
+                );
+                crate::lock_flow::force_lock_and_dismount(
+                    &me.pool,
+                    &me.vault_keys,
+                    crate::lock_flow::LockReason::IdleTimeout,
+                    None,
+                )
+                .await;
+            })
+            .catch_unwind()
+            .await;
+        }
+    }
 }
 
 fn resolve_minutes_from_db(value: Option<&str>) -> u32 {
@@ -406,5 +442,103 @@ mod tests {
         // MONITOR is OnceLock — if other tests set it, the call still must not panic.
         // The key contract: top-level touch() never panics regardless of MONITOR state.
         crate::auto_lock::touch(TouchSource::AuthApi);
+    }
+
+    // ── Task α.A.b.2.4: run_tick_loop + catch_unwind ────────────────
+
+    async fn setup_unlocked() -> (sqlx::SqlitePool, VaultKeyStore) {
+        let pool = fresh_pool().await;
+        crate::db::set_vault_params(&pool, b"saltsaltsaltsalt", "argon2id", "vault-test")
+            .await
+            .unwrap();
+        let keys = VaultKeyStore::default();
+        keys.unlock(&pool, "passphrase-for-test").await.unwrap();
+        (pool, keys)
+    }
+
+    #[tokio::test]
+    async fn tick_loop_locks_vault_after_timeout() {
+        let _guard = ENV_LOCK.lock().await;
+
+        let (pool, keys) = setup_unlocked().await;
+        let mon = AutoLockMonitor::init(pool, keys.clone()).await.unwrap();
+        mon.set_timeout_minutes(5).await.unwrap();
+
+        tokio::time::pause();
+        let task = tokio::spawn(Arc::clone(&mon).run_tick_loop());
+        // Yield so the spawned task is polled and registers its sleep BEFORE
+        // we advance the clock — otherwise `advance()` moves time past a sleep
+        // that hasn't started, and the sleep's deadline (now+tick) lands in
+        // the future relative to the advanced clock.
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(5 * 60 + TICK_INTERVAL_SECS + 1))
+            .await;
+        // Resume real time so the spawned task's sqlx queries inside
+        // `force_lock_and_dismount` can complete — sqlx's internal pool
+        // timers do not fire while tokio::time is paused.
+        tokio::time::resume();
+
+        let mut locked = false;
+        for _ in 0..200 {
+            if keys.require_key().await.is_err() {
+                locked = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        task.abort();
+        assert!(locked, "vault should be locked after idle timeout");
+    }
+
+    #[tokio::test]
+    async fn tick_loop_touch_resets_countdown() {
+        let _guard = ENV_LOCK.lock().await;
+
+        let (pool, keys) = setup_unlocked().await;
+        let mon = AutoLockMonitor::init(pool, keys.clone()).await.unwrap();
+        mon.set_timeout_minutes(5).await.unwrap();
+
+        tokio::time::pause();
+        let task = tokio::spawn(Arc::clone(&mon).run_tick_loop());
+        // See `tick_loop_locks_vault_after_timeout` for why this yield is
+        // required: the spawned task must register its sleep before `advance`.
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(std::time::Duration::from_secs(290)).await;
+        mon.touch(TouchSource::AuthApi);
+        tokio::time::advance(std::time::Duration::from_secs(290)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            keys.require_key().await.is_ok(),
+            "touch must reset the idle countdown"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn tick_loop_skips_when_vault_already_locked() {
+        let _guard = ENV_LOCK.lock().await;
+
+        let (pool, keys) = setup_unlocked().await;
+        keys.lock().await;
+        let mon = AutoLockMonitor::init(pool, keys.clone()).await.unwrap();
+        mon.set_timeout_minutes(5).await.unwrap();
+
+        tokio::time::pause();
+        let task = tokio::spawn(Arc::clone(&mon).run_tick_loop());
+        // See `tick_loop_locks_vault_after_timeout` for why this yield is
+        // required: the spawned task must register its sleep before `advance`.
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(10 * 60)).await;
+        tokio::task::yield_now().await;
+
+        let (cnt,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM audit_logs WHERE action = 'auto_lock'")
+                .fetch_one(&mon.pool)
+                .await
+                .unwrap();
+        assert_eq!(cnt, 0, "idempotent skip: no auto_lock audit when already locked");
+        task.abort();
     }
 }

@@ -1005,7 +1005,7 @@ git commit -m "refactor(auth): post_auth_logout uses lock_flow with actor (α.A.
 **Files:**
 - Modify: `angeld/src/auto_lock.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `auto_lock::tests`:
 
@@ -1068,7 +1068,7 @@ async fn tick_loop_skips_when_vault_already_locked() {
 }
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 ```
 cargo test -p angeld --lib auto_lock::tests::tick_loop_
@@ -1076,7 +1076,7 @@ cargo test -p angeld --lib auto_lock::tests::tick_loop_
 
 Expected: compile error — `run_tick_loop` not defined.
 
-- [ ] **Step 3: Implement `run_tick_loop`**
+- [x] **Step 3: Implement `run_tick_loop`**
 
 Append to `impl AutoLockMonitor`:
 
@@ -1111,7 +1111,7 @@ pub async fn run_tick_loop(self: Arc<Self>) {
 
 **Take option 1** — add `futures = "0.3"` to `[dependencies]`. Justify in the commit: catch_unwind on async is non-trivial without it.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```
 cargo test -p angeld --lib auto_lock::tests::tick_loop_
@@ -1119,7 +1119,7 @@ cargo test -p angeld --lib auto_lock::tests::tick_loop_
 
 Expected: 3 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add angeld/src/auto_lock.rs angeld/Cargo.toml
