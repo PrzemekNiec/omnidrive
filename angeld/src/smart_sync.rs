@@ -466,6 +466,8 @@ mod imp {
             return;
         };
 
+        crate::auto_lock::touch(crate::auto_lock::TouchSource::CfApi);
+
         let request = HydrationRequest {
             connection_key: callback_info.ConnectionKey,
             transfer_key: callback_info.TransferKey,
@@ -607,6 +609,8 @@ mod imp {
             return;
         }
         let info = unsafe { &*callback_info };
+
+        crate::auto_lock::touch(crate::auto_lock::TouchSource::CfApi);
 
         trace!("smart-sync: FETCH_PLACEHOLDERS callback invoked, completing with zero entries");
 

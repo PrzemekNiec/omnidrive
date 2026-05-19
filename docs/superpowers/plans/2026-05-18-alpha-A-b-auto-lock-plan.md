@@ -1260,11 +1260,11 @@ git commit -m "feat(acl): touch monitor on require_session/role + add no_touch v
 **Files:**
 - Modify: `angeld/src/smart_sync.rs`
 
-- [ ] **Step 1: Visual diff first**
+- [x] **Step 1: Visual diff first**
 
 These callbacks are `unsafe extern "system"` and Win32-driven; no clean unit test exists today. Coverage comes from `e2e_files_call_touches_timer` in Task 2.9.
 
-- [ ] **Step 2: Add the touch calls**
+- [x] **Step 2: Add the touch calls**
 
 In `smart_sync.rs::fetch_data_callback_inner` (current line ~454), after the `let Some(identity) = decode_file_identity(...) else { ... };` block and **before** `let request = HydrationRequest { ... };`:
 
@@ -1280,7 +1280,7 @@ crate::auto_lock::touch(crate::auto_lock::TouchSource::CfApi);
 
 Do **not** touch in `cancel_fetch_data_callback_inner` — explicit decision in spec §3.2.
 
-- [ ] **Step 3: Build + clippy**
+- [x] **Step 3: Build + clippy**
 
 ```
 cargo build -p angeld --release
@@ -1289,7 +1289,7 @@ cargo clippy -p angeld --all-targets -- -D warnings
 
 Expected: both succeed.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add angeld/src/smart_sync.rs
