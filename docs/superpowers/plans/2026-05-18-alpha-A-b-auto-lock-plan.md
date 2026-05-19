@@ -1493,7 +1493,7 @@ git commit -m "feat(auto-lock): GET /status (no-touch) + POST /touch endpoints (
 **Files:**
 - Modify: `angeld/src/api/mod.rs`
 
-- [ ] **Step 1: Edit `ApiServer::run`**
+- [x] **Step 1: Edit `ApiServer::run`**
 
 After `MONITOR.set(monitor)` from Task 1.4, before `let app = Router::new()`:
 
@@ -1502,7 +1502,7 @@ let monitor_for_ticks = Arc::clone(crate::auto_lock::MONITOR.get().expect("just 
 tokio::spawn(monitor_for_ticks.run_tick_loop());
 ```
 
-- [ ] **Step 2: Build + clippy**
+- [x] **Step 2: Build + clippy**
 
 ```
 cargo build -p angeld --release
@@ -1511,7 +1511,7 @@ cargo clippy -p angeld --all-targets -- -D warnings
 
 Expected: both succeed.
 
-- [ ] **Step 3: Run full test suite**
+- [x] **Step 3: Run full test suite**
 
 ```
 cargo test -p angeld --workspace
@@ -1519,7 +1519,7 @@ cargo test -p angeld --workspace
 
 Expected: all green. **No regression in `e2e_basic`, `e2e_recovery`, `e2e_sync`, etc.**
 
-- [ ] **Step 4: α.A.b.2 checkpoint commit + push**
+- [x] **Step 4: α.A.b.2 checkpoint commit + push**
 
 ```bash
 git add angeld/src/api/mod.rs
@@ -1527,7 +1527,7 @@ git commit -m "feat(auto-lock): spawn tick loop at daemon startup (α.A.b.2)"
 git push origin main
 ```
 
-- [ ] **Step 5: CHECKPOINT — pause and ask Przemek**
+- [x] **Step 5: CHECKPOINT — pause and ask Przemek**
 
 Report:
 - α.A.b.2 done: full activity tracking + tick loop + manual-logout refactor.

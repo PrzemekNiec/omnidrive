@@ -252,6 +252,8 @@ impl ApiServer {
         // Ignore Err: daemon restarts may hit DoubleInit if tests re-use the process;
         // graceful degradation (monitor already set from previous init call).
         let _ = crate::auto_lock::MONITOR.set(monitor);
+        let monitor_for_ticks = Arc::clone(crate::auto_lock::MONITOR.get().expect("just set"));
+        tokio::spawn(monitor_for_ticks.run_tick_loop());
 
         let app = Router::new()
             .route("/", get(get_index))
