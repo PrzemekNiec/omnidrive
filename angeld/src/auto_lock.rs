@@ -471,8 +471,10 @@ mod tests {
         // that hasn't started, and the sleep's deadline (now+tick) lands in
         // the future relative to the advanced clock.
         tokio::task::yield_now().await;
-        tokio::time::advance(std::time::Duration::from_secs(5 * 60 + TICK_INTERVAL_SECS + 1))
-            .await;
+        tokio::time::advance(std::time::Duration::from_secs(
+            5 * 60 + TICK_INTERVAL_SECS + 1,
+        ))
+        .await;
         // Resume real time so the spawned task's sqlx queries inside
         // `force_lock_and_dismount` can complete — sqlx's internal pool
         // timers do not fire while tokio::time is paused.
@@ -538,7 +540,10 @@ mod tests {
                 .fetch_one(&mon.pool)
                 .await
                 .unwrap();
-        assert_eq!(cnt, 0, "idempotent skip: no auto_lock audit when already locked");
+        assert_eq!(
+            cnt, 0,
+            "idempotent skip: no auto_lock audit when already locked"
+        );
         task.abort();
     }
 }
