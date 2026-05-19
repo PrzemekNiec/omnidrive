@@ -1,0 +1,374 @@
+<!--
+============================================================================
+  AUTO-LOCK FRONTEND BLUEPRINT — α.A.b.4
+============================================================================
+
+  STATUS: tymczasowy artefakt projektowy.
+  AUTOR:  α.A.b.2.3 cleanup session (2026-05-19).
+  USUŃ PO: pomyślnym wdrożeniu α.A.b.4 i SMOKE H2.
+
+  CEL: copy-paste-ready komponent UI dla auto-lock z spec α.A.b §2.
+  Plik ten NIE jest serwowany ani przez include_str!() ani przez routing
+  daemona — to czysty asset projektowy. Aby zobaczyć podgląd:
+
+      start chrome docs/superpowers/plans/auto_lock_frontend_blueprint.html
+
+  (preview używa mocków fetch — nie wymaga uruchomionego daemona).
+
+  ============================================================================
+  ARCHITEKTURA
+  ============================================================================
+
+  Integracja z `angeld/static/index.html` w α.A.b.4 składa się z 3 snippetów:
+
+    SNIPPET A — Settings card (radio preset + save) → wstaw do <div id="view-ustawienia">
+    SNIPPET B — Header countdown chip            → wstaw do <header>
+    SNIPPET C — JS bootstrap (~140 LoC, vanilla)    → dolej do istniejącego <script>
+
+  API contract — endpoint shape per spec α.A.b §2:
+
+    POST /api/auto-lock/timeout
+      headers: Authorization: Bearer <session_token>
+      body:    {"minutes": 5} | {"minutes": 0}    (0 == wyłączone)
+      response 200: {"status":"ok"}
+      response 400: invalid_minutes (akceptowane: 0, 1, 5, 15, 30, 60)
+      ACL: require_session (NIE require_role) — patrz memory `auto_lock_acl_policy`.
+
+    GET /api/auto-lock/status
+      headers: Authorization: Bearer <session_token>
+      response 200: {
+        "enabled":               true,
+        "idle_timeout_min":      5,
+        "seconds_remaining":     287,
+        "last_activity_secs":    1747654321,
+        "now_secs":              1747654608,
+        "locked":                false
+      }
+      UWAGA: response shape FINAL po α.A.b.2.7 — przed wdrożeniem snippeta C
+      sprawdź dokładny JSON w `angeld/src/api/auto_lock.rs::get_status` i dostosuj
+      mapowanie pól w `applyStatus(s)`.
+      ACL: require_session_no_touch (polling NIE resetuje countdown — krytyczne).
+
+    POST /api/auto-lock/touch
+      headers: Authorization: Bearer <session_token>
+      body:    {} (puste)
+      response 200: {"status":"ok"}
+      Wywołanie powoduje TouchSource::ManualExtend w monitor + reset last_activity.
+      Frontend wywołuje go z throttle co najwyżej raz na 10s na zdarzenia aktywności.
+
+  Lokalizacja: polski; ZAKAZ skrótów `mies.`, `MB/s`, `sek.` (CLAUDE.md UI §1).
+
+  ============================================================================
+-->
+<!DOCTYPE html>
+<html lang="pl" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <title>OmniDrive — Auto-lock blueprint</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: linear-gradient(135deg,#1a1a1a,#262626); color: #e2e8f0; font-family: ui-sans-serif, system-ui; min-height: 100vh; }
+    .glass-panel { background: rgba(255,255,255,0.04); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.06); }
+    .preset-radio:checked + label { background: rgba(59,130,246,0.15); border-color: rgba(59,130,246,0.4); color: #cbd5e1; }
+    .preset-radio + label { transition: all 0.15s ease; }
+  </style>
+</head>
+<body class="p-8 space-y-8 max-w-5xl mx-auto">
+
+  <!-- ======================================================================
+       PREVIEW HARNESS — usunąć przy kopiowaniu do index.html
+       ====================================================================== -->
+  <h1 class="text-2xl text-slate-200 font-light">Auto-lock blueprint preview</h1>
+  <p class="text-sm text-slate-500">Otwórz w przeglądarce. Mock <code>fetch</code> w SNIPPET C zwraca <code>seconds_remaining=287</code> (≈4 min 47 s).</p>
+
+  <!-- ======================================================================
+       SNIPPET B — Header countdown chip
+       cel: pojawia się w nagłówku gdy seconds_remaining < THRESHOLD_WARN_SEC (60s)
+            i zmienia kolor na czerwony gdy seconds_remaining < THRESHOLD_CRIT_SEC (10s).
+       w index.html: wstaw do <header> obok status indicatora po linii 282.
+       ====================================================================== -->
+  <div id="autolock-chip"
+       class="hidden inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm border bg-amber-500/10 border-amber-500/30 text-amber-300">
+    <span class="material-symbols-outlined text-[16px]">timer</span>
+    <span>Skarbiec zablokuje się za</span>
+    <span id="autolock-chip-countdown" class="font-medium tabular-nums">--</span>
+  </div>
+
+  <!-- ======================================================================
+       SNIPPET A — Settings card (Ustawienia → Skarbiec → Auto-lock)
+       cel: panel w widoku 'ustawienia'.
+       w index.html: wstaw jako kolejną sekcję <div class="glass-panel ...">
+            wewnątrz <div id="view-ustawienia" data-view="ustawienia">.
+       ====================================================================== -->
+  <section class="glass-panel rounded-3xl p-8 space-y-6">
+    <div class="flex items-start justify-between gap-6">
+      <div class="space-y-2">
+        <h2 class="text-xl text-slate-100 font-light">Automatyczne wylogowanie</h2>
+        <p class="text-sm text-slate-400 max-w-lg">
+          Po wybranym okresie bezczynności skarbiec zostanie zablokowany — klucze
+          szyfrujące zostaną usunięte z pamięci, a wirtualny dysk odmontowany.
+          Pliki w chmurze pozostają nietknięte; ponowne odblokowanie wymaga hasła.
+        </p>
+      </div>
+      <div id="autolock-status-badge"
+           class="shrink-0 inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs border bg-slate-500/10 border-slate-500/30 text-slate-400">
+        <span class="w-2 h-2 rounded-full bg-slate-500"></span>
+        <span data-state-label>Ładowanie…</span>
+      </div>
+    </div>
+
+    <fieldset class="grid grid-cols-2 sm:grid-cols-3 gap-3" aria-label="Wybierz okres bezczynności">
+      <!-- preset values in MINUTES; 0 == wyłączone -->
+      <template id="autolock-presets-template">
+        <div>
+          <input type="radio" name="autolock-preset" class="preset-radio sr-only" id="preset-{m}" value="{m}" />
+          <label for="preset-{m}"
+                 class="block cursor-pointer rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10
+                        px-4 py-3 text-center text-sm text-slate-300">
+            {label}
+          </label>
+        </div>
+      </template>
+    </fieldset>
+
+    <div class="flex items-center justify-between pt-2 border-t border-white/5">
+      <p id="autolock-meta" class="text-xs text-slate-500">
+        Pozostały czas do zablokowania: <span data-remaining>—</span>
+      </p>
+      <button id="autolock-save"
+              class="px-5 py-2.5 rounded-full bg-blue-500/90 hover:bg-blue-500 text-white text-sm font-medium
+                     disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+        Zapisz wybór
+      </button>
+    </div>
+
+    <div id="autolock-toast"
+         class="hidden text-xs px-3 py-2 rounded-lg border bg-emerald-500/10 border-emerald-500/30 text-emerald-300">
+      Zaktualizowano ustawienie auto-lock.
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       SNIPPET C — JS bootstrap
+       w index.html: dolej do istniejącego <script> przed </body>,
+       albo do osobnego pliku jeśli wolisz separację.
+       ====================================================================== -->
+  <script>
+  (function () {
+    "use strict";
+
+    const PRESETS = [
+      { m: 0,  label: "Wyłączone" },
+      { m: 1,  label: "1 minuta" },
+      { m: 5,  label: "5 minut" },
+      { m: 15, label: "15 minut" },
+      { m: 30, label: "30 minut" },
+      { m: 60, label: "1 godzina" },
+    ];
+
+    const POLL_INTERVAL_MS    = 30_000;
+    const TOUCH_THROTTLE_MS   = 10_000;
+    const THRESHOLD_WARN_SEC  = 60;
+    const THRESHOLD_CRIT_SEC  = 10;
+
+    let pollTimer       = null;
+    let lastTouchSentAt = 0;
+    let lastStatus      = null;
+
+    function sessionToken() {
+      return window.sessionStorage.getItem("session_token")
+          || window.localStorage.getItem("session_token")
+          || null;
+    }
+
+    function authHeaders() {
+      const t = sessionToken();
+      return t ? { "Authorization": "Bearer " + t, "Content-Type": "application/json" }
+               : { "Content-Type": "application/json" };
+    }
+
+    async function apiGet(path) {
+      const r = await fetch(path, { headers: authHeaders() });
+      if (!r.ok) throw new Error(path + " -> " + r.status);
+      return r.json();
+    }
+
+    async function apiPost(path, body) {
+      const r = await fetch(path, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(body ?? {}),
+      });
+      if (!r.ok) throw new Error(path + " -> " + r.status);
+      return r.json();
+    }
+
+    function renderPresets(currentMinutes) {
+      const fs = document.querySelector('fieldset[aria-label="Wybierz okres bezczynności"]');
+      if (!fs) return;
+      fs.innerHTML = PRESETS.map(p => `
+        <div>
+          <input type="radio" name="autolock-preset" class="preset-radio sr-only"
+                 id="preset-${p.m}" value="${p.m}"
+                 ${p.m === currentMinutes ? "checked" : ""} />
+          <label for="preset-${p.m}"
+                 class="block cursor-pointer rounded-2xl border border-white/10 bg-white/5
+                        hover:bg-white/10 px-4 py-3 text-center text-sm text-slate-300">
+            ${p.label}
+          </label>
+        </div>
+      `).join("");
+    }
+
+    function formatRemaining(seconds) {
+      if (seconds == null) return "—";
+      if (seconds <= 0) return "0 sekund";
+      if (seconds < 60) return seconds + " sekund";
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return m + " minut " + (s > 0 ? s + " sekund" : "").trim();
+    }
+
+    function applyStatus(s) {
+      lastStatus = s;
+      const badge = document.getElementById("autolock-status-badge");
+      const meta  = document.getElementById("autolock-meta");
+      const chip  = document.getElementById("autolock-chip");
+      const cnt   = document.getElementById("autolock-chip-countdown");
+
+      if (badge) {
+        const dot   = badge.querySelector("span.rounded-full");
+        const label = badge.querySelector("[data-state-label]");
+        const cls   = badge.classList;
+        cls.remove("bg-slate-500/10","border-slate-500/30","text-slate-400",
+                   "bg-emerald-500/10","border-emerald-500/30","text-emerald-300",
+                   "bg-red-500/10","border-red-500/30","text-red-300");
+        if (s.locked) {
+          cls.add("bg-red-500/10","border-red-500/30","text-red-300");
+          dot.className = "w-2 h-2 rounded-full bg-red-400";
+          label.textContent = "Zablokowano";
+        } else if (s.enabled) {
+          cls.add("bg-emerald-500/10","border-emerald-500/30","text-emerald-300");
+          dot.className = "w-2 h-2 rounded-full bg-emerald-400";
+          label.textContent = "Aktywne (" + s.idle_timeout_min + " minut)";
+        } else {
+          cls.add("bg-slate-500/10","border-slate-500/30","text-slate-400");
+          dot.className = "w-2 h-2 rounded-full bg-slate-500";
+          label.textContent = "Wyłączone";
+        }
+      }
+
+      if (meta) {
+        const span = meta.querySelector("[data-remaining]");
+        if (span) span.textContent = s.enabled ? formatRemaining(s.seconds_remaining) : "—";
+      }
+
+      if (chip && cnt) {
+        if (s.enabled && !s.locked && s.seconds_remaining != null && s.seconds_remaining < THRESHOLD_WARN_SEC) {
+          chip.classList.remove("hidden");
+          cnt.textContent = formatRemaining(s.seconds_remaining);
+          const isCrit = s.seconds_remaining < THRESHOLD_CRIT_SEC;
+          chip.classList.toggle("bg-amber-500/10",   !isCrit);
+          chip.classList.toggle("border-amber-500/30", !isCrit);
+          chip.classList.toggle("text-amber-300",     !isCrit);
+          chip.classList.toggle("bg-red-500/10",       isCrit);
+          chip.classList.toggle("border-red-500/30",   isCrit);
+          chip.classList.toggle("text-red-300",        isCrit);
+        } else {
+          chip.classList.add("hidden");
+        }
+      }
+
+      if (s.locked) handleLockedState();
+    }
+
+    function handleLockedState() {
+      // Spec α.A.b §3: po lock daemon zwraca 401 na chronione endpointy.
+      // Frontend powinien przejść do ekranu odblokowania.
+      // W index.html prawdopodobnie odpowiednikiem jest legacy.html lub modal wizard.
+      // TODO α.A.b.4: zweryfikować docelową ścieżkę przekierowania.
+      if (window.location.pathname !== "/legacy" && window.location.pathname !== "/") {
+        window.location.href = "/";
+      }
+    }
+
+    async function fetchStatus() {
+      try {
+        const s = await apiGet("/api/auto-lock/status");
+        applyStatus(s);
+      } catch (e) {
+        console.warn("[auto-lock] status fetch failed:", e.message);
+      }
+    }
+
+    function schedulePolling() {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(fetchStatus, POLL_INTERVAL_MS);
+    }
+
+    async function saveSelection() {
+      const checked = document.querySelector('input[name="autolock-preset"]:checked');
+      if (!checked) return;
+      const minutes = parseInt(checked.value, 10);
+      const btn = document.getElementById("autolock-save");
+      const toast = document.getElementById("autolock-toast");
+      btn.disabled = true;
+      try {
+        await apiPost("/api/auto-lock/timeout", { minutes });
+        if (toast) {
+          toast.classList.remove("hidden");
+          setTimeout(() => toast.classList.add("hidden"), 2500);
+        }
+        await fetchStatus();
+      } catch (e) {
+        console.error("[auto-lock] save failed:", e.message);
+        alert("Nie udało się zapisać ustawienia: " + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function touchOnActivity() {
+      const now = Date.now();
+      if (now - lastTouchSentAt < TOUCH_THROTTLE_MS) return;
+      if (!lastStatus || !lastStatus.enabled || lastStatus.locked) return;
+      lastTouchSentAt = now;
+      apiPost("/api/auto-lock/touch", {}).catch(() => {});
+    }
+
+    function bindActivityListeners() {
+      ["mousemove","mousedown","keydown","scroll","touchstart"].forEach(ev => {
+        window.addEventListener(ev, touchOnActivity, { passive: true });
+      });
+    }
+
+    function init() {
+      renderPresets(5);
+      document.getElementById("autolock-save").addEventListener("click", saveSelection);
+      bindActivityListeners();
+      fetchStatus();
+      schedulePolling();
+    }
+
+    // ====================================================================
+    // PREVIEW MOCK — usunąć przy kopiowaniu do index.html
+    // ====================================================================
+    const isPreview = window.location.protocol === "file:";
+    if (isPreview) {
+      window.fetch = async function (url) {
+        if (url.endsWith("/status")) {
+          return new Response(JSON.stringify({
+            enabled: true, idle_timeout_min: 5, seconds_remaining: 287,
+            last_activity_secs: 0, now_secs: 287, locked: false,
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ status: "ok" }),
+          { status: 200, headers: { "Content-Type": "application/json" } });
+      };
+    }
+
+    document.addEventListener("DOMContentLoaded", init);
+  })();
+  </script>
+</body>
+</html>
