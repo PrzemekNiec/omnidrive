@@ -114,8 +114,7 @@ pub async fn require_session(
     Ok(s)
 }
 
-/// Wired into auto-lock status endpoints in α.A.b.2.7 — polling-safe variant.
-#[allow(dead_code)]
+/// Like `require_session` but does NOT touch the auto-lock timer (for status polling).
 pub async fn require_session_no_touch(
     pool: &SqlitePool,
     headers: &HeaderMap,

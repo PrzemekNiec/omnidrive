@@ -1303,7 +1303,7 @@ git commit -m "feat(smart-sync): touch auto-lock monitor on cfapi hydration call
 **Files:**
 - Modify: `angeld/src/api/auto_lock.rs`
 
-- [ ] **Step 1: Write the integration tests**
+- [x] **Step 1: Write the integration tests**
 
 Create `angeld/tests/e2e_auto_lock.rs` (mirroring `e2e_basic.rs` style — copy harness or extract shared helper):
 
@@ -1412,7 +1412,7 @@ Create `angeld/tests/helpers.rs` (or `mod.rs` if Cargo prefers a folder) with th
 
 (Plan permits this helper extraction as a prerequisite micro-commit. If you do it: separate commit `test(harness): extract shared DaemonHarness to tests/helpers.rs` BEFORE writing `e2e_auto_lock.rs`.)
 
-- [ ] **Step 2: Verify failures**
+- [x] **Step 2: Verify failures**
 
 ```
 cargo test -p angeld --test e2e_auto_lock
@@ -1420,7 +1420,7 @@ cargo test -p angeld --test e2e_auto_lock
 
 Expected: route 404s.
 
-- [ ] **Step 3: Implement endpoints**
+- [x] **Step 3: Implement endpoints**
 
 Extend `angeld/src/api/auto_lock.rs::routes()`:
 
@@ -1471,7 +1471,7 @@ async fn post_touch(
 }
 ```
 
-- [ ] **Step 4: Run e2e tests**
+- [x] **Step 4: Run e2e tests**
 
 ```
 cargo test -p angeld --test e2e_auto_lock
@@ -1479,7 +1479,7 @@ cargo test -p angeld --test e2e_auto_lock
 
 Expected: 7 passed, 1 with `Ok(())` stub (the locked-state test deferred to SMOKE H2).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add angeld/src/api/auto_lock.rs angeld/tests/e2e_auto_lock.rs angeld/tests/helpers.rs angeld/tests/e2e_basic.rs

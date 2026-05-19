@@ -17,6 +17,7 @@ use std::sync::atomic::AtomicU64;
 
 pub const DEFAULT_IDLE_MIN: u32 = 15;
 pub const ALLOWED_PRESETS: [u32; 4] = [5, 15, 30, 60];
+pub const WARNING_THRESHOLD_SECS: u64 = 60;
 pub const SYSTEM_CONFIG_KEY: &str = "vault.auto_lock_idle_min";
 pub const TICK_INTERVAL_SECS: u64 = 10;
 
