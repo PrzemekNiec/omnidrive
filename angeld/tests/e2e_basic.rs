@@ -439,6 +439,36 @@ async fn auto_lock_timeout_endpoint_rejects_unauthenticated()
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn logout_emits_logout_audit_not_auto_lock() -> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+    let resp = h
+        .post_json("/api/auth/logout", serde_json::Value::Null)
+        .await?;
+    assert_eq!(
+        resp.status, 200,
+        "expected 200 but got {}; body: {}",
+        resp.status, resp.body
+    );
+    let pool = h.connect_db().await?;
+    let row: (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT action, actor_user_id, actor_device_id FROM audit_logs ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(row.0, "logout");
+    assert!(
+        row.1.is_some(),
+        "actor_user_id must be populated on logout audit"
+    );
+    assert!(
+        row.2.is_some(),
+        "actor_device_id must be populated on logout audit"
+    );
+    Ok(())
+}
+
 fn create_temp_root() -> io::Result<PathBuf> {
     let unique = format!(
         "angeld-e2e-{}-{}",
@@ -446,7 +476,7 @@ fn create_temp_root() -> io::Result<PathBuf> {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis()
+            .as_nanos()
     );
     let path = std::env::temp_dir().join(unique);
     std::fs::create_dir_all(&path)?;

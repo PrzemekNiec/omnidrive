@@ -19,6 +19,7 @@ mod downloader;
 mod gc;
 mod identity;
 mod ingest;
+mod lock_flow;
 mod logging;
 mod migrator;
 mod onboarding;
