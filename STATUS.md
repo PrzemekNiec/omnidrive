@@ -1,8 +1,8 @@
 # OmniDrive — Kronika projektu & Roadmapa (Single Source of Truth)
 
-> **Ostatnia aktualizacja:** 2026-05-17 wieczór (Faza α.A.a — **DONE**, SMOKE H1 4/4 PASS na Lenovo, code w `ed35ecb`)
+> **Ostatnia aktualizacja:** 2026-05-19 wieczór (α.A.b.2 — **DONE 8/8**, HEAD `ef5d529` na origin/main; α.A.b.1 + activity tracking + tick loop + Win+L observer w next sesji)
 > **Aktualna wersja:** `v0.3.24` w kodzie (workspace bump). Ostatni gotowy instalator: `OmniDrive-Setup-0.3.23.exe` — `v0.3.24.exe` pending (build w osobnym etapie). Lokalny daemon Lenovo działa z `target/release` workspace mode.
-> **Status:** Faza 0 ZAMKNIĘTA + **Faza α.A.a (P1-006 logout-locks-vault) DONE** — fix `api/auth.rs::post_auth_logout` woła `state.vault_keys.lock().await` przed `delete_user_session`. SMOKE H1 gate: logout=200, session=invalid, safety-numbers=401, O: not mounted — 4/4 zielone. Pre-push hook aktywny, CI z fmt-check gate. **Następna sesja → α.A.b (P2-004 auto-lock + Win+L hook)** lub build instalatora `v0.3.24` przed α.A.b.
+> **Status:** Faza 0 ZAMKNIĘTA + **Faza α.A.a (P1-006 logout-locks-vault) DONE** — fix `api/auth.rs::post_auth_logout` woła `state.vault_keys.lock().await` przed `delete_user_session`. SMOKE H1 gate: logout=200, session=invalid, safety-numbers=401, O: not mounted — 4/4 zielone. Pre-push hook aktywny, CI z fmt-check gate. **Następna sesja → α.A.b.3 (Win+L observer)** — audyt research-only gotowy w memory `📦 Przygotowane dla 3.0`. Build instalatora `v0.3.24` nadal pending.
 >
 > **Schemat ID kroków (od 2026-05-17 wieczór):** etap = grecka litera (`α`, `β`, `γ`...) · grupa = duża łacińska (`A`, `B`, `C`...) tylko gdy etap ma podgrupy · zadanie = mała łacińska (`a`, `b`, `c`...) · sub-krok = cyfra (`1`, `2`, `3`...) tylko gdy zadanie ma kilka konkretnych implementacji. Przykłady: `α.A.b.2` (etap α, grupa A hot-fixy, zadanie b auto-lock, sub-krok 2 timer reset), `β.a` (faza β jednorodna, pierwsze zadanie), `0.c.1` (Faza 0 zadanie c perf, sub-krok 1 harness). Historyczne sekcje (Epic 19-36, Faza N, H-M.6) zostają w starym schemacie jako archeologia.
 > **Zasada:** ten plik to jedyne źródło prawdy o roadmapie. Bugi w `docs/KNOWN_ISSUES.md`. Stare pliki planowania w `docs/archive/`.
@@ -594,11 +594,11 @@
 α — Crypto Hardening
 ├── A. Security hot-fixes (pre-cryptodrop) ────── domyka P1/P2 z audytu Fazy 0
 │   ├── α.A.a — P1-006 logout-locks-vault       ✅ DONE (ed35ecb + dc4979f, SMOKE H1 4/4)
-│   ├── α.A.b — P2-004 auto-lock idle + Win+L hook
-│   │   ├── α.A.b.1   config `vault.auto_lock_idle_minutes` (default 15)
-│   │   ├── α.A.b.2   reset timera per authenticated API call
-│   │   ├── α.A.b.3   hook `WM_WTSSESSION_CHANGE` / `SessionSwitch`
-│   │   └── α.A.b.4   UI status bar + warning toast pre-lock
+│   ├── α.A.b — P2-004 auto-lock idle + Win+L hook (W TRAKCIE)
+│   │   ├── α.A.b.1   config `vault.auto_lock_idle_minutes` (default 15)     ✅ DONE (5dc498d)
+│   │   ├── α.A.b.2   activity tracking + tick loop + lock_flow refactor      ✅ DONE 8/8 (ef5d529)
+│   │   ├── α.A.b.3   hook `WM_WTSSESSION_CHANGE` / `SessionSwitch`           ⏭️ NEXT
+│   │   └── α.A.b.4   UI status bar + warning toast pre-lock                  ⏸️
 │   └── α.A.c — P2-005 Zeroize newtype dla KeyBytes
 │
 ├── B. KDF & wrap upgrades ─────────────────────── re-derive existing vault data
@@ -624,7 +624,7 @@
 | Krok | Zakres | DoD |
 |------|--------|-----|
 | **α.A.a** ✅ | **P1-006 fix: logout musi zablokować vault.** `api/auth.rs::post_auth_logout` (linia 189) dodać `state.vault_keys.lock().await` PRZED `delete_user_session`. Wzorzec do skopiowania: `api/vault.rs::post_vault_lock` (linia 915-928 — woła `state.vault_keys.lock().await` + dismount cfapi). Hot-fix-able do v0.3.24 (mały scope, security high impact, low regression risk). | **DONE 2026-05-17** — code `ed35ecb`, workspace bump v0.3.23→v0.3.24 (`dc4979f`). SMOKE H1 functional gate na Lenovo 4/4 PASS: logout HTTP 200 + `{"status":"logged_out"}`, session `valid:false` + `invalid_or_expired_session`, safety-numbers HTTP 401, O: not mounted. Memdump diff (ProcDump) odłożony do α.A.c po Zeroize newtype — bez tego diff i tak nie byłby pełen. |
-| **α.A.b** | **P2-004 fix: auto-lock po idle + Windows session-lock.** Sub-kroki α.A.b.1 (config `vault.auto_lock_idle_minutes`, default 15), α.A.b.2 (reset timera per authenticated API call), α.A.b.3 (hook Windows `WM_WTSSESSION_CHANGE` / `SystemEvents.SessionSwitch` → natychmiastowy lock przy Win+L), α.A.b.4 (UI element ze status barem + warning toast przed lock). | SMOKE H2 (15min idle auto-lock) + H3 (Win+L auto-lock) przechodzą. |
+| **α.A.b** | **P2-004 fix: auto-lock po idle + Windows session-lock.** α.A.b.1 ✅ DONE (config `vault.auto_lock_idle_minutes`, default 15, HEAD `5dc498d`). α.A.b.2 ✅ DONE 8/8 (activity tracking + ACL hooks + cfapi hooks + lock_flow refactor + tick loop + GET /status no-touch + POST /touch, HEAD `ef5d529`). α.A.b.3 ⏭️ NEXT (Win+L observer, audyt research-only w memory `📦 Przygotowane dla 3.0`). α.A.b.4 (UI status bar + warning toast). | SMOKE H2 (15min idle auto-lock) + H3 (Win+L auto-lock) przechodzą. |
 | **α.A.c** | **P2-005 fix: Zeroize newtype dla KeyBytes.** Dodać `zeroize = { workspace = true, features = ["zeroize_derive"] }` jako explicit dep w `omnidrive-core`. `KeyBytes` w `omnidrive-core/src/crypto.rs:28` z type alias → newtype z `#[derive(Zeroize, ZeroizeOnDrop)]`. Audit call-sites `expose_secret()` w vault.rs/downloader.rs/packer.rs/migrator.rs/sharing.rs — zamienić plain copies na `SecretBox` lub krótkożyjące referencje. | SMOKE H4 (memdump po lock nie znajduje resztek klucza) przechodzi. |
 | **α.B.a** | **Argon2id 2026 params bump.** Zmiana defaultu (m=47MiB, t=1, p=1). Migracja: nowy unlock z istniejącym vault → re-derive KEK z nowymi params + re-wrap Vault Key + bump `parameter_set_version`. Stara generacja zachowana w schema (recovery z legacy). | Test e2e: vault z m=19 → unlock → re-key → unlock z m=47 OK |
 | **α.B.b** | **ML-KEM-768 hybrid wrap.** Crate `ml-kem = "0.2"` (audited, NIST FIPS 203). Sub-kroki: α.B.b.1 (schema `devices.kyber_public_key BLOB` 1184 B + `devices.wrapped_vault_key_kyber BLOB` ~1100 B + AAD), α.B.b.2 (unwrap: próbuje X25519 default, failover na ML-KEM), α.B.b.3 (e2e: hybrid wrap → 2× decrypt → ten sam VK). Dla solo vault: 1 device, 1 user — wrap obu metod dla siebie. | Test e2e: vault z hybrid wrap → unlock → assert oba ciphertexty deszyfrują na ten sam VK |
