@@ -1,8 +1,8 @@
 # OmniDrive — Kronika projektu & Roadmapa (Single Source of Truth)
 
-> **Ostatnia aktualizacja:** 2026-05-19 wieczór (α.A.b.2 — **DONE 8/8**, HEAD `ef5d529` na origin/main; α.A.b.1 + activity tracking + tick loop + Win+L observer w next sesji)
+> **Ostatnia aktualizacja:** 2026-05-20 (α.A.b.3 — **3.1 scaffold + 3.2 message pump DONE**, HEAD `6b24917` na origin/main; 3.3 test-helpers bridge + 3.4 spawn w next sesji)
 > **Aktualna wersja:** `v0.3.24` w kodzie (workspace bump). Ostatni gotowy instalator: `OmniDrive-Setup-0.3.23.exe` — `v0.3.24.exe` pending (build w osobnym etapie). Lokalny daemon Lenovo działa z `target/release` workspace mode.
-> **Status:** Faza 0 ZAMKNIĘTA + **Faza α.A.a (P1-006 logout-locks-vault) DONE** — fix `api/auth.rs::post_auth_logout` woła `state.vault_keys.lock().await` przed `delete_user_session`. SMOKE H1 gate: logout=200, session=invalid, safety-numbers=401, O: not mounted — 4/4 zielone. Pre-push hook aktywny, CI z fmt-check gate. **Następna sesja → α.A.b.3 (Win+L observer)** — audyt research-only gotowy w memory `📦 Przygotowane dla 3.0`. Build instalatora `v0.3.24` nadal pending.
+> **Status:** Faza 0 ZAMKNIĘTA + **Faza α.A.a (P1-006 logout-locks-vault) DONE** — fix `api/auth.rs::post_auth_logout` woła `state.vault_keys.lock().await` przed `delete_user_session`. SMOKE H1 gate: logout=200, session=invalid, safety-numbers=401, O: not mounted — 4/4 zielone. Pre-push hook aktywny, CI z fmt-check gate. **α.A.b.3 W TRAKCIE** — 3.1 scaffold (`204b287`) + 3.2 message pump (`241030b`: kanoniczne WNDCLASSW + feature `Win32_Graphics_Gdi`, `catch_unwind` trampoline, `OBSERVER_CTX` OnceLock, `WTS_SESSION_LOCK`→`force_lock_and_dismount(WinSessionLock)`, UNLOCK ignored zero-trust) DONE+pushed. **Następna sesja → α.A.b.3.3** (test-helpers bridge + e2e). Build instalatora `v0.3.24` nadal pending.
 >
 > **Schemat ID kroków (od 2026-05-17 wieczór):** etap = grecka litera (`α`, `β`, `γ`...) · grupa = duża łacińska (`A`, `B`, `C`...) tylko gdy etap ma podgrupy · zadanie = mała łacińska (`a`, `b`, `c`...) · sub-krok = cyfra (`1`, `2`, `3`...) tylko gdy zadanie ma kilka konkretnych implementacji. Przykłady: `α.A.b.2` (etap α, grupa A hot-fixy, zadanie b auto-lock, sub-krok 2 timer reset), `β.a` (faza β jednorodna, pierwsze zadanie), `0.c.1` (Faza 0 zadanie c perf, sub-krok 1 harness). Historyczne sekcje (Epic 19-36, Faza N, H-M.6) zostają w starym schemacie jako archeologia.
 > **Zasada:** ten plik to jedyne źródło prawdy o roadmapie. Bugi w `docs/KNOWN_ISSUES.md`. Stare pliki planowania w `docs/archive/`.
@@ -597,7 +597,7 @@
 │   ├── α.A.b — P2-004 auto-lock idle + Win+L hook (W TRAKCIE)
 │   │   ├── α.A.b.1   config `vault.auto_lock_idle_minutes` (default 15)     ✅ DONE (5dc498d)
 │   │   ├── α.A.b.2   activity tracking + tick loop + lock_flow refactor      ✅ DONE 8/8 (ef5d529)
-│   │   ├── α.A.b.3   hook `WM_WTSSESSION_CHANGE` / `SessionSwitch`           ⏭️ NEXT
+│   │   ├── α.A.b.3   hook `WM_WTSSESSION_CHANGE` / `SessionSwitch`           🔄 3.1+3.2 DONE · 3.3 NEXT
 │   │   └── α.A.b.4   UI status bar + warning toast pre-lock                  ⏸️
 │   └── α.A.c — P2-005 Zeroize newtype dla KeyBytes
 │
