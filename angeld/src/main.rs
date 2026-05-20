@@ -40,6 +40,9 @@ mod vault;
 mod virtual_drive;
 mod watcher;
 mod win_acl;
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+mod win_session;
 mod windows_hello;
 
 use crate::api::ApiServer;

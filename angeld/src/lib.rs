@@ -28,3 +28,5 @@ pub mod uploader;
 pub mod vault;
 pub mod virtual_drive;
 mod win_acl;
+#[cfg(target_os = "windows")]
+pub mod win_session;
