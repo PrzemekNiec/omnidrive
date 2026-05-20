@@ -499,6 +499,34 @@
 
 > **Decyzje przyjęte 2026-05-10 wieczorem (Przemek + Claude).** Koniec gaszenia pożarów. Każdy etap ma jasne **Definition of Done** (DoD). Sekcja zastąpiła stary „Co przed nami" (dotyczył v0.3.18 — już osiągnięte i wyprzedzone).
 
+#### 🧭 Drzewko orientacyjne — cała Roadmapa (you are here)
+
+```
+v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
+│
+✅ Faza 0 — QA Foundation — ZAMKNIĘTA (6/6, perf M1–M4 PASS, marginesy 38%–500×)
+│
+🔄 α — Crypto Hardening — W TRAKCIE
+│   ├── α.A.a  logout-locks-vault (P1-006) ......... ✅ DONE (SMOKE H1 4/4)
+│   ├── α.A.b  auto-lock idle + Win+L hook ......... 🔄 b1✅ b2✅ b3✅ b4🔜  ◄── JESTEŚMY TU
+│   ├── α.A.c  Zeroize newtype KeyBytes (P2-005) ... ⏸️
+│   ├── α.B    KDF & wrap (Argon2id + ML-KEM-768) .. ⏸️
+│   ├── α.C    Identity & device keys (P1-001/005) . ⏸️
+│   └── α.D    Spec + formal crypto review (QG5) ... ⏸️
+│
+⏸️ β — Critical Bug Fixes  (β.d Watcher CPU już ✅ PASS)
+⏸️ γ — Zero Data Loss Hardening
+⏸️ δ — Multi-User Infra Closure (pod maską, bez UI)
+⏸️ ε — VFS Stability (pancerne O:)
+⏸️ ζ — Test Automation (F1–F12 e2e)
+│
+🏁 v0.4.0 Release Gate (QG1–QG6) → tag + instalator + CHANGELOG
+   v5.0 — Family Cloud (aktywacja UI multi-user, nadbudówka na δ)
+   v6.0 — Mobile Ecosystem (Android-first, UniFFI, QR pairing)
+```
+
+(Szczegóły per faza: drzewka i tabele DoD w §12.4–12.10 niżej.)
+
 ### 12.0 Wizja docelowa (3 milestones)
 
 | Wersja | Nazwa robocza | Zakres |
