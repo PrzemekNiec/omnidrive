@@ -1560,7 +1560,7 @@ Report:
 - Create: `angeld/src/win_session.rs`
 - Modify: `angeld/src/lib.rs`
 
-- [ ] **Step 1: Add windows-rs features**
+- [x] **Step 1: Add windows-rs features**
 
 In `angeld/Cargo.toml`, inside `[target.'cfg(windows)'.dependencies]` `windows = { ... features = [` list, add (if absent — verify current contents):
 
@@ -1570,7 +1570,7 @@ In `angeld/Cargo.toml`, inside `[target.'cfg(windows)'.dependencies]` `windows =
 "Win32_System_LibraryLoader",   // for GetModuleHandleW
 ```
 
-- [ ] **Step 2: Skeleton `win_session.rs`**
+- [x] **Step 2: Skeleton `win_session.rs`**
 
 ```rust
 //! α.A.b.3 — WTS session lock observer (Win+L hard-lock).
@@ -1627,7 +1627,7 @@ In `angeld/src/lib.rs`:
 pub mod win_session;
 ```
 
-- [ ] **Step 3: Verify build**
+- [x] **Step 3: Verify build**
 
 ```
 cargo build -p angeld --release
@@ -1635,7 +1635,7 @@ cargo build -p angeld --release
 
 Expected: builds (skeleton only — no behavior yet).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add angeld/src/win_session.rs angeld/src/lib.rs angeld/Cargo.toml
@@ -1649,7 +1649,7 @@ git commit -m "feat(win-session): scaffold observer module + windows-rs features
 **Files:**
 - Modify: `angeld/src/win_session.rs`
 
-- [ ] **Step 1: Implement `spawn_observer` body**
+- [x] **Step 1: Implement `spawn_observer` body**
 
 Full implementation (Win32 boilerplate; reference cargo docs for `windows` 0.62 module paths if any name drifts):
 
@@ -1852,7 +1852,7 @@ impl Drop for ObserverHandle {
 }
 ```
 
-- [ ] **Step 2: Build + clippy on Windows**
+- [x] **Step 2: Build + clippy on Windows**
 
 ```
 cargo build -p angeld --release
@@ -1861,7 +1861,7 @@ cargo clippy -p angeld --all-targets -- -D warnings
 
 Expected: success. Address any windows-rs binding name changes (the 0.62 API surface may differ in trivial ways from this draft — fix inline).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add angeld/src/win_session.rs
