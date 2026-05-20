@@ -51,6 +51,12 @@ const CLASS_NAME: &[u16] = &[
 ];
 
 static OBSERVER_CTX: OnceLock<ThreadCtx> = OnceLock::new();
+pub static OBSERVER_HANDLE: OnceLock<ObserverHandle> = OnceLock::new();
+
+#[cfg(feature = "test-helpers")]
+pub fn test_dispatcher_tx() -> Option<tokio::sync::mpsc::UnboundedSender<SessionEvent>> {
+    OBSERVER_HANDLE.get().map(|h| h.test_dispatcher_tx.clone())
+}
 
 struct ThreadCtx {
     pool: SqlitePool,

@@ -84,3 +84,34 @@ async fn post_touch(
     crate::auto_lock::touch(crate::auto_lock::TouchSource::ManualExtend);
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(feature = "test-helpers")]
+pub(crate) fn test_routes() -> Router<ApiState> {
+    Router::new().route(
+        "/api/auto-lock/_test/simulate-session-lock",
+        post(post_test_simulate),
+    )
+}
+
+#[cfg(feature = "test-helpers")]
+async fn post_test_simulate(State(state): State<ApiState>) -> Result<StatusCode, ApiError> {
+    #[cfg(target_os = "windows")]
+    let dispatched = crate::win_session::test_dispatcher_tx()
+        .map(|tx| {
+            let _ = tx.send(crate::win_session::SessionEvent::Lock);
+        })
+        .is_some();
+    #[cfg(not(target_os = "windows"))]
+    let dispatched = false;
+
+    if !dispatched {
+        crate::lock_flow::force_lock_and_dismount(
+            &state.pool,
+            &state.vault_keys,
+            crate::lock_flow::LockReason::WinSessionLock,
+            None,
+        )
+        .await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}

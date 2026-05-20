@@ -138,3 +138,25 @@ async fn e2e_status_endpoint_rejects_unauthenticated() -> Result<(), Box<dyn std
     );
     Ok(())
 }
+
+#[cfg(all(target_os = "windows", feature = "test-helpers"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_win_session_lock_triggers_force_lock() -> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+    let resp = h.get_json("/api/auth/session").await?;
+    assert_eq!(resp["valid"].as_bool(), Some(true));
+
+    let r = h.post("/api/auto-lock/_test/simulate-session-lock").await?;
+    assert_eq!(
+        r.status, 204,
+        "simulate-session-lock must return 204; got {} body={}",
+        r.status, r.body
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let status = h.get_json("/api/auto-lock/status").await?;
+    assert_eq!(status["state"].as_str(), Some("locked"));
+    Ok(())
+}

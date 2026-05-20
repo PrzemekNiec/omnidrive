@@ -255,6 +255,11 @@ impl ApiServer {
         let monitor_for_ticks = Arc::clone(crate::auto_lock::MONITOR.get().expect("just set"));
         tokio::spawn(monitor_for_ticks.run_tick_loop());
 
+        #[cfg(feature = "test-helpers")]
+        let auto_lock_routes = auto_lock::routes().merge(auto_lock::test_routes());
+        #[cfg(not(feature = "test-helpers"))]
+        let auto_lock_routes = auto_lock::routes();
+
         let app = Router::new()
             .route("/", get(get_index))
             .route("/legacy", get(get_legacy))
@@ -284,7 +289,7 @@ impl ApiServer {
             // ── Google OAuth2 (Sesja C) ──
             .merge(oauth::routes())
             // ── Auto-lock config (α.A.b.1) ──
-            .merge(auto_lock::routes())
+            .merge(auto_lock_routes)
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
