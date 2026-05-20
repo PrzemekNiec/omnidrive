@@ -640,6 +640,17 @@
 
 > **Cel:** zamknąć wszystkie P1 z `KNOWN_ISSUES.md`. Po Fazie α mamy poprawne krypto i tożsamość — fixujemy resztę.
 
+#### Drzewko orientacyjne
+
+```
+β — Critical Bug Fixes (po α)
+├── β.a — P1-001 AES-GCM hydration fail (graft DEK z α.C.b)     ⏸️
+├── β.b — P1-002 Snapshot fetch worker (refresh co 1h)          ⏸️
+├── β.c — P1-003+004 Snapshot redundancy (Scaleway+R2, ≥2/3)    ⏸️
+├── β.d — P2-001 Watcher CPU fix                                ✅ PASS (perf baseline 0.c, bez akcji)
+└── β.e — P2-002 VFS lag fix + smart_sync.rs decompose          ⏸️ (overlap z ε.a)
+```
+
 | Krok | Zakres | DoD |
 |------|--------|-----|
 | **β.a** | **P1-001 AES-GCM hydration fail** — graft kopiuje DEK (zrobione w α.C.b); test: Lenovo wgra 5MB plik → Dell unlock → otwórz plik z O:\ → checksum match. | P1-001 → FIXED |
@@ -656,6 +667,16 @@
 
 > **Cel:** spełnić wszystkie 5 kryteriów Zero Data Loss zaakceptowanych w decyzji 2026-05-10.
 
+#### Drzewko orientacyjne
+
+```
+γ — Zero Data Loss Hardening (po β)
+├── γ.a — Resume upload after crash (multipart state w SQLite)  ⏸️
+├── γ.b — Conflict copy (2-device write → 2 revisions w O:)     ⏸️
+├── γ.c — Soft-delete grace 7 dni + UI „Kosz"                   ⏸️
+└── γ.d — Snapshot upload guard (3-provider outage → .bak/24h)  ⏸️
+```
+
 | Krok | Zakres | DoD |
 |------|--------|-----|
 | **γ.a** | **Resume upload after crash.** Multipart upload state persist w SQLite (`multipart_uploads` table z S3 upload_id, parts, completed_at). Daemon po crashu → wznowienie pending parts zamiast restart-from-zero. | Test: kill daemona w środku 1GB upload → restart → plik w chmurze kompletny |
@@ -670,6 +691,16 @@
 ### 12.8 Faza δ — Multi-User Infra Closure *(pod maską, bez UI)*
 
 > **Cel:** zamknąć Epic 34 — multi-user/Family Cloud infrastruktura w pełni działa _pod maską_, ale UI single-user. v5.0 = włączenie UI, żadnego dotykania krypto/schema.
+
+#### Drzewko orientacyjne
+
+```
+δ — Multi-User Infra Closure (pod maską, bez UI; po γ)
+├── δ.a — Per-user Vault Key wrap e2e (hybrid z α.B.b)          ⏸️
+├── δ.b — Invite/accept_device flow (Member ≠ Owner)            ⏸️
+├── δ.c — Recovery BIP-39 nietechniczny user (po α.B.b)         ⏸️
+└── δ.d — ACL roles enforcement audit (require_role minimum)    ⏸️
+```
 
 | Krok | Zakres | DoD |
 |------|--------|-----|
@@ -686,6 +717,16 @@
 
 > **Cel:** „Arka musi płynąć gładko" — VFS bez zająknień, native cfapi state mapping, Defender-friendly.
 
+#### Drzewko orientacyjne
+
+```
+ε — VFS Stability (pancerne O:; po δ)
+├── ε.a — Dekompozycja smart_sync.rs (2197 → 4-5 modułów <800)  ⏸️ (overlap z β.e)
+├── ε.b — Native cfapi state mapping (4 stany, 0 own overlay)   ⏸️
+├── ε.c — Drive O: stress (open/close storm 1000×, 0 deadlock)  ⏸️
+└── ε.d — Defender exclusion guidance (instalator + README)     ⏸️
+```
+
 | Krok | Zakres | DoD |
 |------|--------|-----|
 | **ε.a** | Dekompozycja `smart_sync.rs` (2197 linii → 4–5 modułów: `placeholder.rs`, `hydration.rs`, `pin_state.rs`, `state_machine.rs`, `stream.rs`). Test coverage przed/po identyczne. | Compiles + tests pass + każdy moduł < 800 linii |
@@ -700,6 +741,15 @@
 ### 12.10 Faza ζ — Test Automation 100% kluczowych flow
 
 > **Cel:** każdy krytyczny user flow ma e2e test. „Głupie błędy podczas testów" — niedopuszczalne na etapie ręcznym.
+
+#### Drzewko orientacyjne
+
+```
+ζ — Test Automation 100% krytycznych flow (po ε)
+├── ζ.a — Stress harness (1000 plików / 1 GB / 24h soak)        ⏸️
+├── ζ.b — F1–F12 e2e w angeld/tests/                            ⏸️ 0/12
+└── ζ.c — Coverage report critical paths (tarpaulin/grcov)      ⏸️
+```
 
 **Lista kluczowych flow do automatyzacji:**
 
