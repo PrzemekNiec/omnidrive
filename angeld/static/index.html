@@ -271,6 +271,11 @@
         <div class="w-2 h-2 rounded-full bg-slate-400 pulse-secondary" id="systemStatusDot"></div>
         <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider" id="systemStatusLabel">Skarbiec: ładowanie</span>
       </div>
+      <div id="autolock-chip" class="hidden inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs border bg-amber-500/10 border-amber-500/30 text-amber-300">
+        <span class="material-symbols-outlined text-[14px]">timer</span>
+        <span>Blokada za</span>
+        <span id="autolock-chip-countdown" class="font-medium tabular-nums">—</span>
+      </div>
     </div>
     <div class="flex items-center gap-6">
       <div class="flex items-center gap-4 text-slate-400">
@@ -1111,6 +1116,35 @@
             </div>
             <span id="oauthStatusBadge" class="px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400">—</span>
             <a id="googleLoginBtn" href="/api/auth/google/start" style="display:none" class="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"><span class="material-symbols-outlined text-lg">account_circle</span>&nbsp;Zaloguj przez Google</a>
+          </div>
+        </section>
+
+        <!-- Sekcja: Automatyczna blokada -->
+        <section class="glass-panel rounded-2xl p-6 space-y-6">
+          <div class="flex items-center justify-between border-b border-white/5 pb-3">
+            <h2 class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Automatyczna blokada</h2>
+            <span id="autolock-status-badge" class="px-3 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase border border-white/10 text-slate-400">
+              <span data-state-label>—</span>
+            </span>
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-sm font-semibold text-on-surface">Czas bezczynności</p>
+            <p class="text-xs text-slate-400">Skarbiec zablokuje się automatycznie po wybranym czasie bez aktywności. Pozostały czas: <span id="autolock-meta"><span data-remaining class="font-medium text-slate-300">—</span></span></p>
+          </div>
+
+          <fieldset id="autolock-presets" class="grid grid-cols-2 sm:grid-cols-4 gap-3"></fieldset>
+
+          <div class="flex items-center gap-4">
+            <button id="autolock-save"
+              class="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors disabled:opacity-50">
+              <span class="material-symbols-outlined text-base">save</span>
+              <span>Zapisz</span>
+            </button>
+            <span id="autolock-toast" class="hidden flex items-center gap-1.5 text-xs font-semibold text-secondary" role="status" aria-live="polite" aria-atomic="true">
+              <span class="material-symbols-outlined text-base" aria-hidden="true">check_circle</span>
+              <span>Zapisano</span>
+            </span>
           </div>
         </section>
 
@@ -2249,6 +2283,141 @@
       renderVaultRecovery();
       renderVaultStatus();
     }
+
+    // ── Automatyczna blokada (auto-lock) ──────────────────────
+    (function () {
+      const PRESETS = [5, 15, 30, 60];
+      const LABELS = { 5: '5 minut', 15: '15 minut', 30: '30 minut', 60: '1 godzina' };
+      const DEFAULT_MIN = 15;
+      const POLL_MS = 5000;
+      const TOUCH_THROTTLE_MS = 10000;
+      const WARN_SEC = 60;
+      const CRIT_SEC = 10;
+      let lastTouch = 0;
+      let lastStatus = null;
+      let presetsSynced = false;
+
+      function fmtDuration(total) {
+        if (total == null) return '—';
+        const s = Math.max(0, Math.floor(total));
+        if (s < 60) return `${s} ${pluralPl(s, 'sekunda', 'sekundy', 'sekund')}`;
+        const m = Math.floor(s / 60);
+        const r = s % 60;
+        const mm = `${m} ${pluralPl(m, 'minuta', 'minuty', 'minut')}`;
+        return r ? `${mm} ${r} ${pluralPl(r, 'sekunda', 'sekundy', 'sekund')}` : mm;
+      }
+
+      function onLocked() {
+        if (VAULT_STATE.unlocked === false) return;
+        VAULT_STATE.unlocked = false;
+        VAULT_STATE.sessionToken = null;
+        renderVaultStatus();
+        if (typeof fetchSystemStatus === 'function') fetchSystemStatus();
+        if (typeof showLockScreen === 'function') showLockScreen();
+      }
+
+      function renderChip(s) {
+        const chip = document.getElementById('autolock-chip');
+        const countdown = document.getElementById('autolock-chip-countdown');
+        if (!chip || !countdown) return;
+        const show = s.state !== 'locked' && s.remaining_seconds < WARN_SEC;
+        chip.classList.toggle('hidden', !show);
+        if (!show) return;
+        countdown.textContent = fmtDuration(s.remaining_seconds);
+        const crit = s.remaining_seconds < CRIT_SEC;
+        chip.classList.toggle('bg-amber-500/10', !crit);
+        chip.classList.toggle('border-amber-500/30', !crit);
+        chip.classList.toggle('text-amber-300', !crit);
+        chip.classList.toggle('bg-red-500/10', crit);
+        chip.classList.toggle('border-red-500/30', crit);
+        chip.classList.toggle('text-red-300', crit);
+      }
+
+      function renderCard(s) {
+        const label = document.querySelector('#autolock-status-badge [data-state-label]');
+        if (label) {
+          label.textContent = s.state === 'locked'
+            ? 'Zablokowano'
+            : `Aktywne, ${LABELS[s.idle_timeout_min] || `${s.idle_timeout_min} minut`}`;
+        }
+        const remaining = document.querySelector('#autolock-meta [data-remaining]');
+        if (remaining) remaining.textContent = s.state === 'locked' ? '—' : fmtDuration(s.remaining_seconds);
+      }
+
+      function apply(s) {
+        lastStatus = s;
+        if (!presetsSynced) { renderPresets(s.idle_timeout_min); presetsSynced = true; }
+        renderChip(s);
+        renderCard(s);
+        if (s.state === 'locked') onLocked();
+      }
+
+      async function poll() {
+        if (!VAULT_STATE.sessionToken) return;
+        try {
+          const res = await fetch('/api/auto-lock/status', { headers: vaultAuthHeaders() });
+          if (res.status === 401) { onLocked(); return; }
+          if (!res.ok) return;
+          apply(await res.json());
+        } catch (err) {
+          console.warn('[auto-lock] poll', err.message);
+        }
+      }
+
+      async function save() {
+        const checked = document.querySelector('input[name="autolock-preset"]:checked');
+        const btn = document.getElementById('autolock-save');
+        if (!checked || !btn) return;
+        const idle_timeout_min = parseInt(checked.value, 10);
+        btn.disabled = true;
+        try {
+          const res = await fetch('/api/auto-lock/timeout', {
+            method: 'POST',
+            headers: vaultAuthHeaders(),
+            body: JSON.stringify({ idle_timeout_min }),
+          });
+          if (res.status !== 204) throw new Error(`HTTP ${res.status}`);
+          const toast = document.getElementById('autolock-toast');
+          if (toast) {
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 2500);
+          }
+          poll();
+        } catch (err) {
+          alert('Nie udało się zapisać ustawienia blokady: ' + (err.message || 'nieznany błąd'));
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      function touchOnActivity() {
+        const now = Date.now();
+        if (now - lastTouch < TOUCH_THROTTLE_MS) return;
+        if (!lastStatus || lastStatus.state === 'locked' || !VAULT_STATE.sessionToken) return;
+        lastTouch = now;
+        fetch('/api/auto-lock/touch', { method: 'POST', headers: vaultAuthHeaders() }).catch(() => {});
+      }
+
+      function renderPresets(current) {
+        const fs = document.getElementById('autolock-presets');
+        if (!fs) return;
+        fs.innerHTML = '<legend class="sr-only">Czas bezczynności do automatycznej blokady</legend>' + PRESETS.map((m) => `
+          <div>
+            <input type="radio" name="autolock-preset" id="autolock-preset-${m}" value="${m}" class="peer sr-only"${m === current ? ' checked' : ''} />
+            <label for="autolock-preset-${m}" class="block cursor-pointer rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-center text-sm text-slate-300 transition-colors hover:bg-white/10 peer-checked:border-primary peer-checked:bg-primary/10 peer-checked:text-primary peer-focus-visible:ring-2 peer-focus-visible:ring-primary">${LABELS[m]}</label>
+          </div>`).join('');
+      }
+
+      window.initAutoLock = function () {
+        renderPresets(DEFAULT_MIN);
+        const saveBtn = document.getElementById('autolock-save');
+        if (saveBtn) saveBtn.addEventListener('click', save);
+        ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart'].forEach((ev) =>
+          window.addEventListener(ev, touchOnActivity, { passive: true }));
+        poll();
+        setInterval(poll, POLL_MS);
+      };
+    })();
 
     async function postVaultUnlock(passphrase) {
       const errEl = document.getElementById('vaultUnlockError');
@@ -3498,6 +3667,7 @@
     function startDashboard() {
       if (window._dashboardStarted) return;
       window._dashboardStarted = true;
+      if (typeof window.initAutoLock === 'function') window.initAutoLock();
       const _iv = parseInt(localStorage.getItem('omnidrive.refreshInterval') || '30000', 10) || 30000;
       onHashChange();
       fetchSystemStatus();
