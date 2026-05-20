@@ -37,16 +37,19 @@ async fn e2e_status_polling_does_not_touch() -> Result<(), Box<dyn std::error::E
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_authenticated_call_touches_timer() -> Result<(), Box<dyn std::error::Error>> {
+async fn e2e_authenticated_call_does_not_touch() -> Result<(), Box<dyn std::error::Error>> {
+    // Regression: authenticated, non-/touch API calls (e.g. the dashboard's 30s
+    // background poll of /api/audit) MUST NOT reset the idle timer. Only real user
+    // activity (POST /touch) and file access (CfApi) count as presence — otherwise
+    // auto-lock never fires while a polling dashboard tab is open.
     let mut h = DaemonHarness::spawn().await?;
     h.unlock().await?;
-    // Seed last_activity, then wait so remaining_secs() is counting down.
     let _ = h.post("/api/auto-lock/touch").await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
     let r1 = h.get_json("/api/auto-lock/status").await?;
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    // POST /api/auto-lock/timeout is require_session-gated. set_timeout_minutes
-    // does NOT explicitly touch — any reset proves the ACL hook is wired.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    // POST /api/auto-lock/timeout is require_session-gated but does not explicitly
+    // touch; with the ACL hook removed it must leave the timer counting down.
     let _ = h
         .post_json(
             "/api/auto-lock/timeout",
@@ -57,8 +60,8 @@ async fn e2e_authenticated_call_touches_timer() -> Result<(), Box<dyn std::error
     let rem1 = r1["remaining_seconds"].as_u64().unwrap();
     let rem2 = r2["remaining_seconds"].as_u64().unwrap();
     assert!(
-        rem2 >= rem1.saturating_sub(1),
-        "ACL-hook-only call should reset timer (or stay within 1s); rem1={rem1} rem2={rem2}"
+        rem2 < rem1,
+        "authenticated non-touch call must NOT reset timer; rem1={rem1} rem2={rem2}"
     );
     Ok(())
 }

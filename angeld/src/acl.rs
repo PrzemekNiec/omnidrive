@@ -92,8 +92,6 @@ pub async fn require_role(
         });
     }
 
-    crate::auto_lock::touch(crate::auto_lock::TouchSource::AuthApi);
-
     Ok(AuthorizedCaller {
         user_id: session.user_id,
         device_id: session.device_id,
@@ -110,7 +108,6 @@ pub async fn require_session(
     headers: &HeaderMap,
 ) -> Result<db::UserSession, ApiError> {
     let s = extract_session_or_401(pool, headers).await?;
-    crate::auto_lock::touch(crate::auto_lock::TouchSource::AuthApi);
     Ok(s)
 }
 
@@ -332,7 +329,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn require_session_variants_touch_or_skip() {
+    async fn require_session_variants_do_not_touch() {
         let (pool, headers) = setup_acl_monitor().await;
         let mon = crate::auto_lock::MONITOR.get().unwrap();
 
@@ -343,10 +340,10 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         require_session(&pool, &headers).await.unwrap();
-        let after_touch = mon.last_activity.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            after_touch > after_no_touch,
-            "require_session must touch monitor (after={after_touch}, before={after_no_touch})"
+        let after_session = mon.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            after_no_touch, after_session,
+            "auth checks must NOT touch the idle timer; before={after_no_touch} after={after_session}"
         );
     }
 }
