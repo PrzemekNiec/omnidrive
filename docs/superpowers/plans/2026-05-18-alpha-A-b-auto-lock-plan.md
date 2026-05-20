@@ -1875,7 +1875,7 @@ git commit -m "feat(win-session): message pump + WTSRegisterSessionNotification 
 **Files:**
 - Modify: `angeld/tests/e2e_auto_lock.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append:
 
@@ -1906,7 +1906,7 @@ async fn e2e_win_session_lock_triggers_force_lock() -> Result<(), Box<dyn std::e
 }
 ```
 
-- [ ] **Step 2: Add the test endpoint (feature-gated)**
+- [x] **Step 2: Add the test endpoint (feature-gated)**
 
 In `angeld/src/api/auto_lock.rs`, append:
 
@@ -1945,7 +1945,7 @@ pub fn test_dispatcher_tx() -> Option<tokio::sync::mpsc::UnboundedSender<Session
 
 And add `OBSERVER_HANDLE: OnceLock<ObserverHandle>` at module level (Task 3.4 will set it).
 
-- [ ] **Step 3: Run the gated test**
+- [x] **Step 3: Run the gated test**
 
 ```
 cargo test -p angeld --features test-helpers --test e2e_auto_lock e2e_win_session_lock_triggers_force_lock
@@ -1953,7 +1953,7 @@ cargo test -p angeld --features test-helpers --test e2e_auto_lock e2e_win_sessio
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add angeld/src/api/auto_lock.rs angeld/src/win_session.rs angeld/tests/e2e_auto_lock.rs
@@ -1967,7 +1967,7 @@ git commit -m "test(win-session): integration test via test-helpers mpsc bridge 
 **Files:**
 - Modify: `angeld/src/api/mod.rs`
 
-- [ ] **Step 1: Edit `ApiServer::run`**
+- [x] **Step 1: Edit `ApiServer::run`**
 
 After `tokio::spawn(monitor_for_ticks.run_tick_loop())`:
 
@@ -2005,7 +2005,7 @@ let app = Router::new()
 
 Add `pub static OBSERVER_HANDLE: std::sync::OnceLock<ObserverHandle> = std::sync::OnceLock::new();` in `win_session.rs`.
 
-- [ ] **Step 2: Build + full test suite (including features)**
+- [x] **Step 2: Build + full test suite (including features)**
 
 ```
 cargo build -p angeld --release
@@ -2017,7 +2017,7 @@ cargo clippy -p angeld --all-targets --features test-helpers -- -D warnings
 
 Expected: all green.
 
-- [ ] **Step 3: α.A.b.3 checkpoint commit + push**
+- [x] **Step 3: α.A.b.3 checkpoint commit + push**
 
 ```bash
 git add angeld/src/api/mod.rs angeld/src/win_session.rs
@@ -2025,7 +2025,7 @@ git commit -m "feat(auto-lock): spawn Win+L observer at startup with graceful de
 git push origin main
 ```
 
-- [ ] **Step 4: CHECKPOINT — pause and ask Przemek**
+- [x] **Step 4: CHECKPOINT — pause and ask Przemek**
 
 Report:
 - α.A.b.3 done: Win+L observer + test-helpers bridge.
