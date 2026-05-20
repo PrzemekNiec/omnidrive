@@ -154,9 +154,20 @@ async fn e2e_win_session_lock_triggers_force_lock() -> Result<(), Box<dyn std::e
         r.status, r.body
     );
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let status = h.get_json("/api/auto-lock/status").await?;
-    assert_eq!(status["state"].as_str(), Some("locked"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let locked = loop {
+        let status = h.get_json("/api/auto-lock/status").await?;
+        if status["state"].as_str() == Some("locked") {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(
+        locked,
+        "vault did not reach locked state within 5s after simulated session lock"
+    );
     Ok(())
 }

@@ -31,6 +31,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::info;
+#[cfg(target_os = "windows")]
+use tracing::warn;
 
 // ── Recovery rate limiter ──────────────────────────────────────────────
 
@@ -254,6 +256,25 @@ impl ApiServer {
         let _ = crate::auto_lock::MONITOR.set(monitor);
         let monitor_for_ticks = Arc::clone(crate::auto_lock::MONITOR.get().expect("just set"));
         tokio::spawn(monitor_for_ticks.run_tick_loop());
+
+        #[cfg(target_os = "windows")]
+        {
+            let pool_ws = state.pool.clone();
+            let keys_ws = state.vault_keys.clone();
+            let rt_handle = tokio::runtime::Handle::current();
+            match crate::win_session::spawn_observer(rt_handle, pool_ws, keys_ws) {
+                Ok(handle) => {
+                    let _ = crate::win_session::OBSERVER_HANDLE.set(handle);
+                    info!("[AUTO-LOCK] Win+L observer active");
+                }
+                Err(e) => {
+                    warn!(
+                        "[AUTO-LOCK] Win+L observer unavailable, timer-only mode: {:?}",
+                        e
+                    );
+                }
+            }
+        }
 
         #[cfg(feature = "test-helpers")]
         let auto_lock_routes = auto_lock::routes().merge(auto_lock::test_routes());
