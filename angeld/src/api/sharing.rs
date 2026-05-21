@@ -139,8 +139,7 @@ async fn create_share_link(
 
     let _ = envelope_key; // used to verify vault is unlocked
 
-    let dek_bytes: &[u8; 32] = dek_secret.expose_secret();
-    let dek_base64url = crate::sharing::encode_dek_for_url(dek_bytes);
+    let dek_base64url = crate::sharing::encode_dek_for_url(dek_secret.expose_secret().as_ref());
     let share_id = crate::sharing::generate_share_id();
 
     let expires_at = request.expires_in_hours.map(|hours| {

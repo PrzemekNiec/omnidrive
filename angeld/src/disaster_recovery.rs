@@ -442,7 +442,7 @@ pub fn derive_metadata_backup_key(master_key: &[u8]) -> Result<KeyBytes, Disaste
         .map_err(|_| DisasterRecoveryError::InvalidOutputPath("master key length"))?;
     let mut key = [0u8; 32];
     hkdf.expand(METADATA_BACKUP_INFO, &mut key)?;
-    Ok(key)
+    Ok(key.into())
 }
 
 #[allow(dead_code)]

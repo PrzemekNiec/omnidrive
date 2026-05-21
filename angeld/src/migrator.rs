@@ -168,7 +168,7 @@ impl MigrationManager {
             .vault_keys
             .get_or_create_dek(&self.pool, v1_pack.inode_id)
             .await?;
-        let dek: KeyBytes = *dek_secret.expose_secret();
+        let dek: KeyBytes = dek_secret.expose_secret().clone();
 
         // ── Step 4: Re-encrypt with V2 ──
         let v2_encrypted = encrypt_chunk_v2(&dek, &plaintext, &[])?;
@@ -536,7 +536,7 @@ mod tests {
 
         // Decrypt with V2 DEK and verify plaintext
         let (_, dek_secret) = vault_keys.get_or_create_dek(&pool, inode_id).await.unwrap();
-        let dek: KeyBytes = *dek_secret.expose_secret();
+        let dek: KeyBytes = dek_secret.expose_secret().clone();
 
         let cipher_len = u64::from_be_bytes(v2_pack_bytes[48..56].try_into().unwrap()) as usize;
         let ct_start = ChunkRecordPrefix::SIZE;

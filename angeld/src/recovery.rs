@@ -76,7 +76,7 @@ pub fn derive_recovery_key(mnemonic: &Mnemonic) -> KeyBytes {
     let seed = mnemonic.to_seed("");
     let mut key = [0u8; KEY_LEN];
     key.copy_from_slice(&seed[..KEY_LEN]);
-    key
+    key.into()
 }
 
 /// Wrap a vault key with the recovery key using AES-256-KW.
@@ -184,7 +184,7 @@ mod tests {
         store.unlock(&pool, "original-passphrase").await?;
         let envelope_before = store.require_envelope_key().await?;
         let (_, dek_before) = store.get_or_create_dek(&pool, 42).await?;
-        let dek_bytes = *dek_before.expose_secret();
+        let dek_bytes = dek_before.expose_secret().clone();
 
         // 2. Generate recovery key record (mimics POST /api/recovery/generate).
         let vault = db::get_vault_params(&pool).await?.unwrap();
@@ -255,7 +255,7 @@ mod tests {
         store_new.unlock(&pool, "new-passphrase").await?;
         assert_eq!(store_new.require_envelope_key().await?, envelope_before);
         let (_, dek_after) = store_new.get_or_create_dek(&pool, 42).await?;
-        assert_eq!(*dek_after.expose_secret(), dek_bytes);
+        assert_eq!(dek_after.expose_secret(), &dek_bytes);
 
         // 6. Wrong mnemonic cannot restore.
         let other_key = derive_recovery_key(&generate_mnemonic());

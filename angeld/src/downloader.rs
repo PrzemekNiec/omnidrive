@@ -285,7 +285,7 @@ impl Downloader {
             .get_or_create_dek(&self.pool, inode_id)
             .await
             .ok()
-            .map(|(_, secret)| *secret.expose_secret());
+            .map(|(_, secret)| secret.expose_secret().clone());
         let chunk_locations = db::get_file_chunk_locations(&self.pool, inode_id).await?;
         if chunk_locations.is_empty() {
             return Err(DownloaderError::NoChunksForInode(inode_id));
@@ -380,7 +380,7 @@ impl Downloader {
             .get_or_create_dek(&self.pool, inode_id)
             .await
             .ok()
-            .map(|(_, secret)| *secret.expose_secret());
+            .map(|(_, secret)| secret.expose_secret().clone());
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         let mut result = Vec::with_capacity(
             usize::try_from(length)
@@ -500,7 +500,7 @@ impl Downloader {
             .get_or_create_dek(&self.pool, inode_id)
             .await
             .ok()
-            .map(|(_, secret)| *secret.expose_secret());
+            .map(|(_, secret)| secret.expose_secret().clone());
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         let first_chunk_index = chunk_locations.first().map(|chunk| chunk.chunk_index);
         let last_chunk_index = chunk_locations.last().map(|chunk| chunk.chunk_index);
@@ -675,7 +675,7 @@ impl Downloader {
             .get_or_create_dek(&self.pool, chunk.inode_id)
             .await
             .ok()
-            .map(|(_, secret)| *secret.expose_secret());
+            .map(|(_, secret)| secret.expose_secret().clone());
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         let file_chunk = db::FileChunkLocation {
             chunk_id: chunk.chunk_id,
@@ -794,7 +794,7 @@ impl Downloader {
             .get_or_create_dek(&self.pool, inode_id)
             .await
             .ok()
-            .map(|(_, secret)| *secret.expose_secret());
+            .map(|(_, secret)| secret.expose_secret().clone());
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         for chunk in chunk_locations
             .into_iter()

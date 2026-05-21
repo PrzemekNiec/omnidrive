@@ -176,10 +176,10 @@ fn validate_x25519_pubkey(pk: &[u8; 32]) -> Result<(), IdentityError> {
 /// Derives the AES-256 wrapping key from an X25519 shared secret via HKDF.
 fn derive_wrapping_key(shared_secret: &[u8; 32]) -> Result<KeyBytes, IdentityError> {
     let hkdf = Hkdf::<Sha256>::new(None, shared_secret);
-    let mut wrapping_key: KeyBytes = [0u8; 32];
+    let mut wrapping_key = [0u8; 32];
     hkdf.expand(VAULT_KEY_WRAP_INFO, &mut wrapping_key)
         .map_err(|e| IdentityError::Crypto(format!("HKDF-expand wrapping key: {e}")))?;
-    Ok(wrapping_key)
+    Ok(wrapping_key.into())
 }
 
 /// Wraps a Vault Key for a target device using ECDH + AES-KW.
@@ -380,7 +380,7 @@ mod tests {
         let member_pub = x25519_dalek::PublicKey::from(&member_secret).to_bytes();
 
         // Vault key to wrap
-        let vault_key: KeyBytes = [0x42u8; 32];
+        let vault_key: KeyBytes = [0x42u8; 32].into();
 
         // Owner wraps VK for member
         let wrapped = wrap_vault_key_for_device(&owner_priv, &member_pub, &vault_key).unwrap();
@@ -403,7 +403,7 @@ mod tests {
         let member_secret = x25519_dalek::StaticSecret::from(member_priv);
         let member_pub = x25519_dalek::PublicKey::from(&member_secret).to_bytes();
 
-        let vault_key: KeyBytes = [0x42u8; 32];
+        let vault_key: KeyBytes = [0x42u8; 32].into();
         let wrapped = wrap_vault_key_for_device(&owner_priv, &member_pub, &vault_key).unwrap();
 
         // Third party tries to unwrap — should fail
@@ -434,7 +434,7 @@ mod tests {
         let member_pubkey = x25519_dalek::PublicKey::from(&member_secret).to_bytes();
 
         // The vault key that needs to be distributed
-        let vault_key: KeyBytes = [0xAB; 32];
+        let vault_key: KeyBytes = [0xAB; 32].into();
 
         // Owner wraps VK for member's public key
         let wrapped =
@@ -461,7 +461,7 @@ mod tests {
         let owner_pubkey = ensure_device_keypair(&pool, &master_key).await.unwrap();
         let owner_privkey = get_device_private_key(&pool, &master_key).await.unwrap();
 
-        let vault_key: KeyBytes = [0xAB; 32];
+        let vault_key: KeyBytes = [0xAB; 32].into();
 
         // Device 1 for member
         let mut dev1_priv = [0u8; 32];
@@ -613,7 +613,7 @@ mod tests {
         let member_secret = x25519_dalek::StaticSecret::from(member_priv);
         let member_pubkey = x25519_dalek::PublicKey::from(&member_secret).to_bytes();
 
-        let vault_key: KeyBytes = [0xAB; 32];
+        let vault_key: KeyBytes = [0xAB; 32].into();
         let wrapped =
             wrap_vault_key_for_device(&owner_privkey, &member_pubkey, &vault_key).unwrap();
 

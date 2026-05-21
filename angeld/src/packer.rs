@@ -215,7 +215,7 @@ impl Packer {
             .vault_keys
             .get_or_create_dek(&self.pool, inode_id)
             .await?;
-        let dek: KeyBytes = *dek_secret.expose_secret();
+        let dek: KeyBytes = dek_secret.expose_secret().clone();
         let storage_mode = db::get_storage_mode_for_inode(&self.pool, inode_id).await?;
         let mut file = File::open(&source_path).await?;
         let mut read_buffer = vec![0u8; self.config.chunk_size];

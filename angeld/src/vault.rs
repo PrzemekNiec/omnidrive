@@ -68,21 +68,23 @@ impl UnlockedVaultKeys {
     }
 
     fn master_key(&self) -> KeyBytes {
-        *self.master_key.expose_secret()
+        self.master_key.expose_secret().clone()
     }
 
     fn vault_key(&self) -> KeyBytes {
-        *self.vault_key.expose_secret()
+        self.vault_key.expose_secret().clone()
     }
 
     fn envelope_vault_key(&self) -> Option<KeyBytes> {
-        self.envelope_vault_key.as_ref().map(|k| *k.expose_secret())
+        self.envelope_vault_key
+            .as_ref()
+            .map(|k| k.expose_secret().clone())
     }
 
     fn previous_envelope_vault_key(&self) -> Option<KeyBytes> {
         self.previous_envelope_vault_key
             .as_ref()
-            .map(|k| *k.expose_secret())
+            .map(|k| k.expose_secret().clone())
     }
 
     /// Deterministic 32-byte SHA-256 fingerprint of `envelope_vault_key || user_id`.
@@ -766,7 +768,7 @@ pub fn derive_cache_key(master_key: &[u8]) -> Result<KeyBytes, VaultError> {
     let mut derived_key = [0u8; 32];
     hkdf.expand(LOCAL_CACHE_KEY_INFO, &mut derived_key)
         .map_err(CryptoError::HkdfExpand)?;
-    Ok(derived_key)
+    Ok(derived_key.into())
 }
 
 fn hex_prefix(bytes: &[u8]) -> String {
@@ -831,9 +833,9 @@ mod tests {
         let cache_key_a = store.derive_cache_key().await?;
         let cache_key_b = store.derive_cache_key().await?;
 
-        assert_eq!(*cache_key_a.expose_secret(), *cache_key_b.expose_secret());
-        assert_ne!(*cache_key_a.expose_secret(), master_key);
-        assert_ne!(*cache_key_a.expose_secret(), vault_key);
+        assert_eq!(cache_key_a.expose_secret(), cache_key_b.expose_secret());
+        assert_ne!(cache_key_a.expose_secret(), &master_key);
+        assert_ne!(cache_key_a.expose_secret(), &vault_key);
 
         Ok(())
     }
@@ -900,7 +902,7 @@ mod tests {
         // Second call — should return the same DEK (from DB, not generate new)
         let (dek_id_b, dek_b) = store.get_or_create_dek(&pool, inode_id).await?;
         assert_eq!(dek_id_a, dek_id_b);
-        assert_eq!(*dek_a.expose_secret(), *dek_b.expose_secret());
+        assert_eq!(dek_a.expose_secret(), dek_b.expose_secret());
 
         Ok(())
     }
@@ -923,8 +925,8 @@ mod tests {
         let (_id2, dek2) = store2.get_or_create_dek(&pool, inode_id).await?;
 
         assert_eq!(
-            *dek1.expose_secret(),
-            *dek2.expose_secret(),
+            dek1.expose_secret(),
+            dek2.expose_secret(),
             "DEK must survive lock/unlock cycle"
         );
 
@@ -941,9 +943,9 @@ mod tests {
         let (_, dek_b) = store.get_or_create_dek(&pool, 2).await?;
         let (_, dek_c) = store.get_or_create_dek(&pool, 3).await?;
 
-        assert_ne!(*dek_a.expose_secret(), *dek_b.expose_secret());
-        assert_ne!(*dek_b.expose_secret(), *dek_c.expose_secret());
-        assert_ne!(*dek_a.expose_secret(), *dek_c.expose_secret());
+        assert_ne!(dek_a.expose_secret(), dek_b.expose_secret());
+        assert_ne!(dek_b.expose_secret(), dek_c.expose_secret());
+        assert_ne!(dek_a.expose_secret(), dek_c.expose_secret());
 
         Ok(())
     }
@@ -980,8 +982,8 @@ mod tests {
 
         let (_, dek_a_before) = store.get_or_create_dek(&pool, 10).await?;
         let (_, dek_b_before) = store.get_or_create_dek(&pool, 20).await?;
-        let dek_a_bytes = *dek_a_before.expose_secret();
-        let dek_b_bytes = *dek_b_before.expose_secret();
+        let dek_a_bytes = dek_a_before.expose_secret().clone();
+        let dek_b_bytes = dek_b_before.expose_secret().clone();
 
         // ── 2. Rotate to new passphrase ──
         let result = store.rotate_vault_key(&pool, "new-passphrase").await?;
@@ -1000,13 +1002,13 @@ mod tests {
         let (_, dek_b_after) = store_new.get_or_create_dek(&pool, 20).await?;
 
         assert_eq!(
-            *dek_a_after.expose_secret(),
-            dek_a_bytes,
+            dek_a_after.expose_secret(),
+            &dek_a_bytes,
             "DEK A must survive rotation"
         );
         assert_eq!(
-            *dek_b_after.expose_secret(),
-            dek_b_bytes,
+            dek_b_after.expose_secret(),
+            &dek_b_bytes,
             "DEK B must survive rotation"
         );
 
@@ -1028,8 +1030,8 @@ mod tests {
 
         let (_, dek_a) = store.get_or_create_dek(&pool, 10).await?;
         let (_, dek_b) = store.get_or_create_dek(&pool, 20).await?;
-        let dek_a_bytes = *dek_a.expose_secret();
-        let dek_b_bytes = *dek_b.expose_secret();
+        let dek_a_bytes = dek_a.expose_secret().clone();
+        let dek_b_bytes = dek_b.expose_secret().clone();
 
         // ── 2. Setup owner device identity (X25519 keypair) ──
         db::upsert_local_device_identity(&pool, "dev-owner", "OwnerPC", "tok").await?;
@@ -1053,13 +1055,13 @@ mod tests {
         let (_, dek_a_during) = store.get_or_create_dek(&pool, 10).await?;
         let (_, dek_b_during) = store.get_or_create_dek(&pool, 20).await?;
         assert_eq!(
-            *dek_a_during.expose_secret(),
-            dek_a_bytes,
+            dek_a_during.expose_secret(),
+            &dek_a_bytes,
             "DEK A must be readable during rewrap"
         );
         assert_eq!(
-            *dek_b_during.expose_secret(),
-            dek_b_bytes,
+            dek_b_during.expose_secret(),
+            &dek_b_bytes,
             "DEK B must be readable during rewrap"
         );
 
@@ -1083,13 +1085,13 @@ mod tests {
         let (_, dek_a_after) = store.get_or_create_dek(&pool, 10).await?;
         let (_, dek_b_after) = store.get_or_create_dek(&pool, 20).await?;
         assert_eq!(
-            *dek_a_after.expose_secret(),
-            dek_a_bytes,
+            dek_a_after.expose_secret(),
+            &dek_a_bytes,
             "DEK A must survive full rotation"
         );
         assert_eq!(
-            *dek_b_after.expose_secret(),
-            dek_b_bytes,
+            dek_b_after.expose_secret(),
+            &dek_b_bytes,
             "DEK B must survive full rotation"
         );
 
@@ -1102,7 +1104,7 @@ mod tests {
         let store2 = VaultKeyStore::new();
         store2.unlock(&pool, "vault-pass").await?;
         let (_, dek_a_relock) = store2.get_or_create_dek(&pool, 10).await?;
-        assert_eq!(*dek_a_relock.expose_secret(), dek_a_bytes);
+        assert_eq!(dek_a_relock.expose_secret(), &dek_a_bytes);
 
         Ok(())
     }
