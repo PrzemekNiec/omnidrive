@@ -26,13 +26,14 @@ pub fn ffi_unwrap_key(
     wrapping_key: Vec<u8>,
     wrapped_key: Vec<u8>,
 ) -> Result<Vec<u8>, OmniCoreError> {
-    let wk: KeyBytes = wrapping_key
+    let wk_bytes: [u8; 32] = wrapping_key
         .try_into()
         .map_err(|_| OmniCoreError::InvalidKeyLength)?;
-    let wk_arr: [u8; WRAPPED_KEY_LEN] = wrapped_key
+    let wk = KeyBytes::from(wk_bytes);
+    let wrapped_arr: [u8; WRAPPED_KEY_LEN] = wrapped_key
         .try_into()
         .map_err(|_| OmniCoreError::InvalidKeyLength)?;
-    crypto::unwrap_key(&wk, &wk_arr)
+    crypto::unwrap_key(&wk, &wrapped_arr)
         .map(|k| k.to_vec())
         .map_err(|_| OmniCoreError::KeyUnwrap)
 }
@@ -52,9 +53,10 @@ pub fn ffi_decrypt_chunk_v2(
     ciphertext: Vec<u8>,
     gcm_tag: Vec<u8>,
 ) -> Result<Vec<u8>, OmniCoreError> {
-    let dek_arr: KeyBytes = dek
+    let dek_bytes: [u8; 32] = dek
         .try_into()
         .map_err(|_| OmniCoreError::InvalidKeyLength)?;
+    let dek_arr = KeyBytes::from(dek_bytes);
     let nonce_arr: ChunkNonce = nonce
         .try_into()
         .map_err(|_| OmniCoreError::InvalidKeyLength)?;

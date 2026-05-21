@@ -7,6 +7,8 @@ use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::Sha256;
 use std::fmt;
+use std::ops::Deref;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -25,7 +27,40 @@ pub const LOCAL_ANCHOR_KEY_INFO: &[u8] = b"local-anchor-key-v1";
 /// AES-KW wrapped key length: 32-byte key + 8-byte integrity check = 40 bytes.
 pub const WRAPPED_KEY_LEN: usize = KEY_LEN + 8;
 
-pub type KeyBytes = [u8; KEY_LEN];
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub struct KeyBytes(pub(crate) [u8; KEY_LEN]);
+
+impl fmt::Debug for KeyBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("KeyBytes([REDACTED])")
+    }
+}
+
+impl Deref for KeyBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for KeyBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8; KEY_LEN]> for KeyBytes {
+    fn as_ref(&self) -> &[u8; KEY_LEN] {
+        &self.0
+    }
+}
+
+impl From<[u8; KEY_LEN]> for KeyBytes {
+    fn from(bytes: [u8; KEY_LEN]) -> Self {
+        KeyBytes(bytes)
+    }
+}
+
 pub type ChunkId = [u8; KEY_LEN];
 pub type ChunkNonce = [u8; CHUNK_NONCE_LEN];
 pub type GcmTag = [u8; GCM_TAG_LEN];
@@ -129,19 +164,19 @@ pub fn derive_root_keys(
         params.to_argon2_params()?,
     );
 
-    let mut master_key = [0u8; KEY_LEN];
+    let mut master = KeyBytes([0u8; KEY_LEN]);
     argon2
-        .hash_password_into(passphrase, &params.salt, &mut master_key)
+        .hash_password_into(passphrase, &params.salt, &mut master.0)
         .map_err(CryptoError::Argon2)?;
 
-    let vault_key = expand_labeled_key(&master_key, VAULT_KEY_INFO)?;
-    let kek = expand_labeled_key(&master_key, KEK_V2_INFO)?;
-    let manifest_mac_key = expand_labeled_key(&master_key, MANIFEST_MAC_KEY_INFO)?;
-    let lease_mac_key = expand_labeled_key(&master_key, LEASE_MAC_KEY_INFO)?;
-    let local_anchor_key = expand_labeled_key(&master_key, LOCAL_ANCHOR_KEY_INFO)?;
+    let vault_key = expand_labeled_key(&master.0, VAULT_KEY_INFO)?;
+    let kek = expand_labeled_key(&master.0, KEK_V2_INFO)?;
+    let manifest_mac_key = expand_labeled_key(&master.0, MANIFEST_MAC_KEY_INFO)?;
+    let lease_mac_key = expand_labeled_key(&master.0, LEASE_MAC_KEY_INFO)?;
+    let local_anchor_key = expand_labeled_key(&master.0, LOCAL_ANCHOR_KEY_INFO)?;
 
     Ok(RootKeys {
-        master_key,
+        master_key: master,
         vault_key,
         kek,
         manifest_mac_key,
@@ -293,8 +328,8 @@ pub fn decrypt_chunk_v2(
 
 fn expand_labeled_key(input_key_material: &[u8], info: &[u8]) -> Result<KeyBytes, CryptoError> {
     let hkdf = Hkdf::<Sha256>::from_prk(input_key_material).map_err(CryptoError::HkdfPrk)?;
-    let mut key = [0u8; KEY_LEN];
-    hkdf.expand(info, &mut key)
+    let mut key = KeyBytes([0u8; KEY_LEN]);
+    hkdf.expand(info, &mut key.0)
         .map_err(CryptoError::HkdfExpand)?;
     Ok(key)
 }
@@ -303,8 +338,8 @@ fn expand_labeled_key(input_key_material: &[u8], info: &[u8]) -> Result<KeyBytes
 
 /// Generate a random 256-bit key (used for Vault Key and DEK generation).
 pub fn generate_random_key() -> KeyBytes {
-    let mut key = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut key);
+    let mut key = KeyBytes([0u8; KEY_LEN]);
+    rand::rngs::OsRng.fill_bytes(&mut key.0);
     key
 }
 
@@ -314,7 +349,7 @@ pub fn wrap_key(
     wrapping_key: &KeyBytes,
     plaintext_key: &KeyBytes,
 ) -> Result<[u8; WRAPPED_KEY_LEN], CryptoError> {
-    let kek = Kek::from(*wrapping_key);
+    let kek = Kek::from(wrapping_key.0);
     let mut output = [0u8; WRAPPED_KEY_LEN];
     kek.wrap(plaintext_key, &mut output)
         .map_err(CryptoError::KeyWrap)?;
@@ -326,9 +361,9 @@ pub fn unwrap_key(
     wrapping_key: &KeyBytes,
     wrapped_key: &[u8; WRAPPED_KEY_LEN],
 ) -> Result<KeyBytes, CryptoError> {
-    let kek = Kek::from(*wrapping_key);
-    let mut output = [0u8; KEY_LEN];
-    kek.unwrap(wrapped_key, &mut output)
+    let kek = Kek::from(wrapping_key.0);
+    let mut output = KeyBytes([0u8; KEY_LEN]);
+    kek.unwrap(wrapped_key, &mut output.0)
         .map_err(CryptoError::KeyWrap)?;
     Ok(output)
 }
@@ -389,6 +424,29 @@ pub fn decrypt_secret(key: &KeyBytes, blob: &[u8], aad: &[u8]) -> Result<Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keybytes_zeroize_wipes_bytes() {
+        use zeroize::Zeroize;
+        let mut k = KeyBytes([0xAB; KEY_LEN]);
+        k.zeroize();
+        assert_eq!(&k[..], [0u8; KEY_LEN].as_slice());
+    }
+
+    #[test]
+    fn keybytes_is_zeroize_on_drop() {
+        fn assert_zod<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zod::<KeyBytes>();
+    }
+
+    #[test]
+    fn keybytes_from_and_deref_round_trip() {
+        let raw = [0x11u8; KEY_LEN];
+        let k = KeyBytes::from(raw);
+        assert_eq!(&k[..], raw.as_slice());
+        let r: &[u8] = k.as_ref();
+        assert_eq!(r, raw.as_slice());
+    }
 
     #[test]
     fn wrap_unwrap_round_trip() {
@@ -468,11 +526,13 @@ mod tests {
             0x1A, 0x99, 0xF4, 0x3B, 0xFB, 0x98, 0x8B, 0x9B, 0x7A, 0x02, 0xDD, 0x21,
         ];
 
-        let wrapped = wrap_key(&kek_bytes, &plaintext).unwrap();
+        let kek = KeyBytes::from(kek_bytes);
+        let plaintext_key = KeyBytes::from(plaintext);
+        let wrapped = wrap_key(&kek, &plaintext_key).unwrap();
         assert_eq!(wrapped, expected_wrapped);
 
-        let unwrapped = unwrap_key(&kek_bytes, &wrapped).unwrap();
-        assert_eq!(unwrapped, plaintext);
+        let unwrapped = unwrap_key(&kek, &wrapped).unwrap();
+        assert_eq!(unwrapped, plaintext_key);
     }
 
     #[test]
