@@ -20,6 +20,7 @@ rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 zerocopy = { version = "0.7", features = ["derive"] }
+zeroize = { workspace = true, features = ["derive"] }
 uniffi = { version = "0.28", features = ["cli"], optional = true }
 
 [[bin]]
