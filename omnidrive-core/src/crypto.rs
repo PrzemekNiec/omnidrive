@@ -446,6 +446,8 @@ mod tests {
         assert_eq!(&k[..], raw.as_slice());
         let r: &[u8] = k.as_ref();
         assert_eq!(r, raw.as_slice());
+        let r32: &[u8; KEY_LEN] = k.as_ref();
+        assert_eq!(r32, &raw);
     }
 
     #[test]
