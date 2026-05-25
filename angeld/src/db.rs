@@ -6618,6 +6618,82 @@ pub async fn rotate_vault_key_only(
     Ok(())
 }
 
+pub struct KdfMigrationWrites<'a> {
+    pub new_salt: &'a [u8],
+    pub new_argon2_params_json: &'a str,
+    pub new_param_version: i64,
+    pub new_memory_cost_kib: i64,
+    pub new_time_cost: i64,
+    pub new_lanes: i64,
+    pub new_encrypted_vault_key: &'a [u8],
+    pub legacy_read_key_blob: &'a [u8],
+    pub new_encrypted_device_private_key: Option<&'a [u8]>,
+}
+
+#[cfg(feature = "test-helpers")]
+static MIGRATION_FAILPOINT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "test-helpers")]
+static MIGRATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(feature = "test-helpers")]
+pub fn set_migration_failpoint(on: bool) {
+    MIGRATION_FAILPOINT.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub async fn get_legacy_read_key(pool: &SqlitePool) -> Result<Option<Vec<u8>>, sqlx::Error> {
+    let row: Option<(Option<Vec<u8>>,)> =
+        sqlx::query_as("SELECT legacy_read_key FROM vault_state WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|r| r.0))
+}
+
+pub async fn migrate_kdf_params_tx(
+    pool: &SqlitePool,
+    w: KdfMigrationWrites<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "UPDATE vault_config SET salt = ?, parameter_set_version = ?, \
+         memory_cost_kib = ?, time_cost = ?, lanes = ? WHERE id = 1",
+    )
+    .bind(w.new_salt)
+    .bind(w.new_param_version)
+    .bind(w.new_memory_cost_kib)
+    .bind(w.new_time_cost)
+    .bind(w.new_lanes)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE vault_state SET master_key_salt = ?, argon2_params = ?, \
+         encrypted_vault_key = ?, legacy_read_key = ? WHERE id = 1",
+    )
+    .bind(w.new_salt)
+    .bind(w.new_argon2_params_json)
+    .bind(w.new_encrypted_vault_key)
+    .bind(w.legacy_read_key_blob)
+    .execute(&mut *tx)
+    .await?;
+
+    if let Some(blob) = w.new_encrypted_device_private_key {
+        sqlx::query("UPDATE local_device_identity SET encrypted_private_key = ? WHERE id = 1")
+            .bind(blob)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    #[cfg(feature = "test-helpers")]
+    if MIGRATION_FAILPOINT.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(sqlx::Error::Protocol("migration failpoint".into()));
+    }
+
+    tx.commit().await
+}
+
 // ── DEK re-wrap queue (Epic 34.2b) ──────────────────────────────────
 
 #[derive(Debug, Clone, FromRow)]
@@ -8941,5 +9017,97 @@ mod tests {
         let after = get_device_safety_verified_at(&pool, "d1").await.unwrap();
         assert!(after.is_some());
         assert!(after.unwrap() > 0);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    async fn test_pool() -> SqlitePool {
+        init_db("sqlite::memory:").await.unwrap()
+    }
+
+    #[cfg(feature = "test-helpers")]
+    async fn seed_vault_state_v1(pool: &SqlitePool) {
+        set_vault_config(pool, &[1u8; 16], 1, 65_536, 3, 1)
+            .await
+            .unwrap();
+        set_vault_params(
+            pool,
+            &[2u8; 32],
+            r#"{"mode":"LOCAL_VAULT","parameter_set_version":1,"memory_cost_kib":65536,"time_cost":3,"lanes":1}"#,
+            "vault-test-001",
+        )
+        .await
+        .unwrap();
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[tokio::test]
+    async fn migrate_kdf_params_tx_writes_all_fields() {
+        use omnidrive_core::crypto::WRAPPED_KEY_LEN;
+
+        let _guard = MIGRATION_TEST_LOCK.lock().unwrap();
+        set_migration_failpoint(false);
+        let pool = test_pool().await;
+        seed_vault_state_v1(&pool).await;
+
+        let writes = KdfMigrationWrites {
+            new_salt: &[7u8; 16],
+            new_argon2_params_json: r#"{"mode":"LOCAL_VAULT","parameter_set_version":2,"memory_cost_kib":262144,"time_cost":3,"lanes":1}"#,
+            new_param_version: 2,
+            new_memory_cost_kib: 262_144,
+            new_time_cost: 3,
+            new_lanes: 1,
+            new_encrypted_vault_key: &[9u8; WRAPPED_KEY_LEN],
+            legacy_read_key_blob: &[5u8; 60],
+            new_encrypted_device_private_key: Some(&[6u8; 60]),
+        };
+        migrate_kdf_params_tx(&pool, writes).await.unwrap();
+
+        let cfg = get_vault_config(&pool).await.unwrap().unwrap();
+        assert_eq!(cfg.parameter_set_version, 2);
+        assert_eq!(cfg.memory_cost_kib, 262_144);
+        assert_eq!(cfg.salt, vec![7u8; 16]);
+        let v = get_vault_params(&pool).await.unwrap().unwrap();
+        assert_eq!(v.encrypted_vault_key.unwrap(), vec![9u8; WRAPPED_KEY_LEN]);
+        assert_eq!(
+            get_legacy_read_key(&pool).await.unwrap().unwrap(),
+            vec![5u8; 60]
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[tokio::test]
+    async fn migrate_kdf_params_tx_rolls_back_on_failure() {
+        use omnidrive_core::crypto::WRAPPED_KEY_LEN;
+
+        let _guard = MIGRATION_TEST_LOCK.lock().unwrap();
+        let pool = test_pool().await;
+        seed_vault_state_v1(&pool).await;
+
+        set_migration_failpoint(true);
+        let writes = KdfMigrationWrites {
+            new_salt: &[7u8; 16],
+            new_argon2_params_json: "{}",
+            new_param_version: 2,
+            new_memory_cost_kib: 262_144,
+            new_time_cost: 3,
+            new_lanes: 1,
+            new_encrypted_vault_key: &[9u8; WRAPPED_KEY_LEN],
+            legacy_read_key_blob: &[5u8; 60],
+            new_encrypted_device_private_key: Some(&[6u8; 60]),
+        };
+        let result = migrate_kdf_params_tx(&pool, writes).await;
+        set_migration_failpoint(false);
+
+        assert!(result.is_err());
+        let cfg = get_vault_config(&pool).await.unwrap().unwrap();
+        assert_eq!(
+            cfg.parameter_set_version,
+            1,
+            "version must be unchanged after rollback"
+        );
+        assert!(
+            get_legacy_read_key(&pool).await.unwrap().is_none(),
+            "no legacy key written on rollback"
+        );
     }
 }
