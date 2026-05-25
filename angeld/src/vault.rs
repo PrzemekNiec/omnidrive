@@ -6,11 +6,12 @@ use omnidrive_core::crypto::{
     derive_root_keys, derive_subkey, encrypt_secret, generate_random_key, unwrap_key, wrap_key,
 };
 use rand::RngCore;
-use secrecy::{ExposeSecret, SecretBox};
+use secrecy::{ExposeSecret, SecretBox, SecretString};
 use sha2::Sha256;
 use sqlx::SqlitePool;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -75,6 +76,7 @@ fn open_legacy_read_key(
 #[derive(Clone, Default)]
 pub struct VaultKeyStore {
     inner: Arc<RwLock<Option<UnlockedVaultKeys>>>,
+    kdf_migration_inflight: Arc<AtomicBool>,
 }
 
 #[allow(dead_code)]
@@ -847,6 +849,36 @@ impl VaultKeyStore {
             None => self.require_key().await,
         }
     }
+
+    pub fn spawn_kdf_migration_if_needed(&self, pool: &SqlitePool, passphrase: &str) {
+        if self
+            .kdf_migration_inflight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let store = self.clone();
+        let pool = pool.clone();
+        let passphrase = SecretString::from(passphrase.to_owned());
+        tokio::spawn(async move {
+            let outcome = store
+                .migrate_kdf_params_if_needed(&pool, passphrase.expose_secret())
+                .await;
+            store.kdf_migration_inflight.store(false, Ordering::Release);
+            match outcome {
+                Ok(MigrationOutcome::Migrated { from, to }) => {
+                    info!("[KDF-MIGRATION] params upgraded v{from} -> v{to}");
+                }
+                Ok(MigrationOutcome::Declined { reason }) => {
+                    warn!("[KDF-MIGRATION] declined: {reason}");
+                }
+                Ok(MigrationOutcome::Skipped) => {}
+                Err(e) => warn!("[KDF-MIGRATION] failed (will retry next unlock): {e}"),
+            }
+        });
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1541,6 +1573,31 @@ mod tests {
         let current = store.require_key().await?;
         let v1 = store.vault_key_for_v1_read(&pool).await?;
         assert_eq!(v1.as_ref() as &[u8], current.as_ref() as &[u8]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn spawn_migration_upgrades_params_to_v2() -> Result<(), VaultError> {
+        let pool = test_pool_v1().await;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+
+        store.spawn_kdf_migration_if_needed(&pool, "pass-123");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let v = db::get_vault_config(&pool)
+                .await?
+                .unwrap()
+                .parameter_set_version;
+            if v == 2 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("background migration did not complete: params still v{v}");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         Ok(())
     }
 }

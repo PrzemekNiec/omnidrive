@@ -53,6 +53,10 @@ async fn post_unlock(
             message: e.to_string(),
         })?;
 
+    state
+        .vault_keys
+        .spawn_kdf_migration_if_needed(&state.pool, request.passphrase.expose_secret());
+
     // Silently store passphrase in Windows Credential Manager (DPAPI-encrypted) so
     // that subsequent unlocks can use Windows Hello without retyping the passphrase.
     if let Err(err) = windows_hello::store_passphrase(request.passphrase.expose_secret()) {
@@ -416,6 +420,10 @@ async fn post_windows_hello_unlock(
             code: "unlock_failed",
             message: e.to_string(),
         })?;
+
+    state
+        .vault_keys
+        .spawn_kdf_migration_if_needed(&state.pool, &passphrase);
 
     // Lazy mount (same as passphrase unlock)
     let pool2 = state.pool.clone();
