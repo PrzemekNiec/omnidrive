@@ -278,7 +278,7 @@ impl Downloader {
         output_path: impl AsRef<Path>,
     ) -> Result<RestoreResult, DownloaderError> {
         let output_path = output_path.as_ref().to_path_buf();
-        let vault_key = self.vault_keys.require_key().await?;
+        let vault_key = self.vault_keys.vault_key_for_v1_read(&self.pool).await?;
         // Try to get V2 DEK for this inode (may not exist for V1-only files)
         let dek_option = self
             .vault_keys
@@ -374,7 +374,7 @@ impl Downloader {
         let inode_path = db::get_inode_path(&self.pool, inode_id)
             .await?
             .unwrap_or_else(|| format!("inode/{inode_id}"));
-        let vault_key = self.vault_keys.require_key().await?;
+        let vault_key = self.vault_keys.vault_key_for_v1_read(&self.pool).await?;
         let dek_option = self
             .vault_keys
             .get_or_create_dek(&self.pool, inode_id)
@@ -494,7 +494,7 @@ impl Downloader {
         let inode_path = db::get_inode_path(&self.pool, inode_id)
             .await?
             .unwrap_or_else(|| format!("inode/{inode_id}"));
-        let vault_key = self.vault_keys.require_key().await?;
+        let vault_key = self.vault_keys.vault_key_for_v1_read(&self.pool).await?;
         let dek_option = self
             .vault_keys
             .get_or_create_dek(&self.pool, inode_id)
@@ -669,7 +669,7 @@ impl Downloader {
             return Ok(Some(bytes));
         }
 
-        let vault_key = self.vault_keys.require_key().await?;
+        let vault_key = self.vault_keys.vault_key_for_v1_read(&self.pool).await?;
         let dek_option = self
             .vault_keys
             .get_or_create_dek(&self.pool, chunk.inode_id)
@@ -788,7 +788,7 @@ impl Downloader {
             return Ok(());
         }
 
-        let vault_key = self.vault_keys.require_key().await?;
+        let vault_key = self.vault_keys.vault_key_for_v1_read(&self.pool).await?;
         let dek_option = self
             .vault_keys
             .get_or_create_dek(&self.pool, inode_id)

@@ -834,7 +834,6 @@ impl VaultKeyStore {
         })
     }
 
-    #[allow(dead_code)]
     pub async fn vault_key_for_v1_read(&self, pool: &SqlitePool) -> Result<KeyBytes, VaultError> {
         let blob = db::get_legacy_read_key(pool).await?;
         match blob {
@@ -1530,6 +1529,18 @@ mod tests {
             cfg.parameter_set_version, 1,
             "declined migration must not touch params"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn vault_key_for_v1_read_falls_back_to_current_when_no_legacy() -> Result<(), VaultError>
+    {
+        let pool = test_pool_v1().await;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+        let current = store.require_key().await?;
+        let v1 = store.vault_key_for_v1_read(&pool).await?;
+        assert_eq!(v1.as_ref() as &[u8], current.as_ref() as &[u8]);
         Ok(())
     }
 }
