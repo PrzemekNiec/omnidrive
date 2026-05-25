@@ -25,12 +25,10 @@ const TARGET_MEMORY_COST_KIB: u32 = 262_144;
 const TARGET_TIME_COST: u32 = 3;
 const TARGET_LANES: u32 = 1;
 
-#[allow(dead_code)]
 fn needs_kdf_migration(current_parameter_set_version: i64) -> bool {
     current_parameter_set_version < i64::from(TARGET_PARAMETER_SET_VERSION)
 }
 
-#[allow(dead_code)]
 fn target_kdf_params(new_salt: Vec<u8>) -> RootKdfParams {
     RootKdfParams::new(
         TARGET_PARAMETER_SET_VERSION,
@@ -44,10 +42,8 @@ fn target_kdf_params(new_salt: Vec<u8>) -> RootKdfParams {
 #[allow(dead_code)]
 const LOCAL_CACHE_KEY_INFO: &[u8] = b"omnidrive-local-cache-v1";
 const OAUTH_REFRESH_TOKEN_INFO: &[u8] = b"omnidrive-oauth-refresh-tokens-v1";
-#[allow(dead_code)]
 const LEGACY_READ_KEY_INFO: &[u8] = b"legacy-read-key-v1";
 
-#[allow(dead_code)]
 fn seal_legacy_read_key(
     envelope_key: &KeyBytes,
     old_vault_key: &KeyBytes,
@@ -58,7 +54,6 @@ fn seal_legacy_read_key(
     Ok(blob)
 }
 
-#[allow(dead_code)]
 fn open_legacy_read_key(
     envelope_key: &KeyBytes,
     blob: &[u8],
@@ -325,7 +320,6 @@ impl VaultKeyStore {
 
     /// Return the V2 envelope Vault Key (random, unwrapped from DB).
     /// Returns `None` if the vault was unlocked before V2 key was generated.
-    #[allow(dead_code)]
     pub async fn require_envelope_key(&self) -> Result<KeyBytes, VaultError> {
         match self.inner.read().await.as_ref() {
             Some(keys) => keys.envelope_vault_key().ok_or(VaultError::Locked),
@@ -754,7 +748,6 @@ impl VaultKeyStore {
         Ok(processed)
     }
 
-    #[allow(dead_code)]
     pub async fn migrate_kdf_params_if_needed(
         &self,
         pool: &SqlitePool,
@@ -1598,6 +1591,45 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn migration_reseals_device_private_key() -> Result<(), VaultError> {
+        let pool = test_pool_v1().await;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+
+        db::upsert_local_device_identity(&pool, "dev-resealed", "Test Device", "peer-tok")
+            .await
+            .unwrap();
+        let old_master = store.require_master_key().await?;
+        identity::ensure_device_keypair(&pool, old_master.as_ref())
+            .await
+            .unwrap();
+        let priv_before = identity::get_device_private_key(&pool, old_master.as_ref())
+            .await
+            .unwrap();
+
+        let outcome = store
+            .migrate_kdf_params_if_needed(&pool, "pass-123")
+            .await?;
+        assert!(matches!(outcome, MigrationOutcome::Migrated { .. }));
+
+        let new_master = store.require_master_key().await?;
+        let priv_after = identity::get_device_private_key(&pool, new_master.as_ref())
+            .await
+            .expect("device key must unseal under the new master after reseal");
+        assert_eq!(
+            priv_after, priv_before,
+            "device private key value preserved"
+        );
+        assert!(
+            identity::get_device_private_key(&pool, old_master.as_ref())
+                .await
+                .is_err(),
+            "old master must no longer unseal the re-sealed device key"
+        );
         Ok(())
     }
 }
