@@ -157,6 +157,17 @@ pub async fn get_device_private_key(
     decrypt_private_key(&kek, &encrypted)
 }
 
+pub fn reseal_local_device_private_key(
+    old_master: &[u8],
+    new_master: &[u8],
+    current_blob: &[u8],
+) -> Result<Vec<u8>, IdentityError> {
+    let old_kek = derive_identity_kek(old_master)?;
+    let private_key = decrypt_private_key(&old_kek, current_blob)?;
+    let new_kek = derive_identity_kek(new_master)?;
+    encrypt_private_key(&new_kek, &private_key)
+}
+
 // ── ECDH key wrapping for vault key distribution ─────────────────────
 
 /// Rejects public keys that are known to produce a zero shared secret with X25519.
@@ -233,6 +244,22 @@ pub fn unwrap_vault_key_from_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reseal_private_key_rebinds_to_new_master() {
+        let old_master = [0x11u8; 32];
+        let new_master = [0x22u8; 32];
+        let private_key = [0x33u8; 32];
+
+        let old_kek = derive_identity_kek(&old_master).unwrap();
+        let old_blob = encrypt_private_key(&old_kek, &private_key).unwrap();
+
+        let new_blob = reseal_local_device_private_key(&old_master, &new_master, &old_blob).unwrap();
+
+        let new_kek = derive_identity_kek(&new_master).unwrap();
+        assert_eq!(decrypt_private_key(&new_kek, &new_blob).unwrap(), private_key);
+        assert!(decrypt_private_key(&old_kek, &new_blob).is_err());
+    }
 
     #[test]
     fn encrypt_decrypt_private_key_roundtrip() {
