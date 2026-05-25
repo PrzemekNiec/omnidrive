@@ -6631,15 +6631,13 @@ pub struct KdfMigrationWrites<'a> {
 }
 
 #[cfg(feature = "test-helpers")]
-static MIGRATION_FAILPOINT: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-#[cfg(feature = "test-helpers")]
-static MIGRATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+thread_local! {
+    static MIGRATION_FAILPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 #[cfg(feature = "test-helpers")]
 pub fn set_migration_failpoint(on: bool) {
-    MIGRATION_FAILPOINT.store(on, std::sync::atomic::Ordering::SeqCst);
+    MIGRATION_FAILPOINT.with(|f| f.set(on));
 }
 
 pub async fn get_legacy_read_key(pool: &SqlitePool) -> Result<Option<Vec<u8>>, sqlx::Error> {
@@ -6687,7 +6685,7 @@ pub async fn migrate_kdf_params_tx(
     }
 
     #[cfg(feature = "test-helpers")]
-    if MIGRATION_FAILPOINT.load(std::sync::atomic::Ordering::SeqCst) {
+    if MIGRATION_FAILPOINT.with(|f| f.get()) {
         return Err(sqlx::Error::Protocol("migration failpoint".into()));
     }
 
@@ -9044,8 +9042,6 @@ mod tests {
     async fn migrate_kdf_params_tx_writes_all_fields() {
         use omnidrive_core::crypto::WRAPPED_KEY_LEN;
 
-        let _guard = MIGRATION_TEST_LOCK.lock().unwrap();
-        set_migration_failpoint(false);
         let pool = test_pool().await;
         seed_vault_state_v1(&pool).await;
 
@@ -9079,7 +9075,6 @@ mod tests {
     async fn migrate_kdf_params_tx_rolls_back_on_failure() {
         use omnidrive_core::crypto::WRAPPED_KEY_LEN;
 
-        let _guard = MIGRATION_TEST_LOCK.lock().unwrap();
         let pool = test_pool().await;
         seed_vault_state_v1(&pool).await;
 
@@ -9107,6 +9102,16 @@ mod tests {
         assert!(
             get_legacy_read_key(&pool).await.unwrap().is_none(),
             "no legacy key written on rollback"
+        );
+        let v = get_vault_params(&pool).await.unwrap().unwrap();
+        assert_eq!(
+            v.master_key_salt,
+            vec![2u8; 32],
+            "salt unchanged after rollback"
+        );
+        assert!(
+            v.encrypted_vault_key.is_none(),
+            "encrypted_vault_key untouched after rollback"
         );
     }
 }
