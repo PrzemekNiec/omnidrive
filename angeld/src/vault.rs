@@ -2,7 +2,7 @@ use crate::{db, identity};
 use bip39::Mnemonic;
 use hkdf::Hkdf;
 use omnidrive_core::crypto::{
-    CryptoError, KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, decrypt_secret, derive_kek,
+    CryptoError, KEY_LEN, KeyBytes, RootKdfParams, WRAPPED_KEY_LEN, decrypt_secret, derive_kek,
     derive_root_keys, derive_subkey, encrypt_secret, generate_random_key, unwrap_key, wrap_key,
 };
 use rand::RngCore;
@@ -24,10 +24,12 @@ const TARGET_MEMORY_COST_KIB: u32 = 262_144;
 const TARGET_TIME_COST: u32 = 3;
 const TARGET_LANES: u32 = 1;
 
+#[allow(dead_code)]
 fn needs_kdf_migration(current_parameter_set_version: i64) -> bool {
     current_parameter_set_version < i64::from(TARGET_PARAMETER_SET_VERSION)
 }
 
+#[allow(dead_code)]
 fn target_kdf_params(new_salt: Vec<u8>) -> RootKdfParams {
     RootKdfParams::new(
         TARGET_PARAMETER_SET_VERSION,
@@ -41,6 +43,34 @@ fn target_kdf_params(new_salt: Vec<u8>) -> RootKdfParams {
 #[allow(dead_code)]
 const LOCAL_CACHE_KEY_INFO: &[u8] = b"omnidrive-local-cache-v1";
 const OAUTH_REFRESH_TOKEN_INFO: &[u8] = b"omnidrive-oauth-refresh-tokens-v1";
+#[allow(dead_code)]
+const LEGACY_READ_KEY_INFO: &[u8] = b"legacy-read-key-v1";
+
+#[allow(dead_code)]
+fn seal_legacy_read_key(
+    envelope_key: &KeyBytes,
+    old_vault_key: &KeyBytes,
+    vault_id: &str,
+) -> Result<Vec<u8>, VaultError> {
+    let subkey = derive_subkey(envelope_key, LEGACY_READ_KEY_INFO)?;
+    let blob = encrypt_secret(&subkey, old_vault_key.as_ref(), vault_id.as_bytes())?;
+    Ok(blob)
+}
+
+#[allow(dead_code)]
+fn open_legacy_read_key(
+    envelope_key: &KeyBytes,
+    blob: &[u8],
+    vault_id: &str,
+) -> Result<KeyBytes, VaultError> {
+    let subkey = derive_subkey(envelope_key, LEGACY_READ_KEY_INFO)?;
+    let plaintext = decrypt_secret(&subkey, blob, vault_id.as_bytes())?;
+    let bytes: [u8; KEY_LEN] = plaintext
+        .as_slice()
+        .try_into()
+        .map_err(|_| VaultError::InvalidConfig("legacy_read_key has invalid length"))?;
+    Ok(KeyBytes::from(bytes))
+}
 
 #[derive(Clone, Default)]
 pub struct VaultKeyStore {
@@ -1262,5 +1292,31 @@ mod tests {
         assert!(needs_kdf_migration(1));
         assert!(!needs_kdf_migration(2));
         assert!(!needs_kdf_migration(3));
+    }
+
+    #[test]
+    fn legacy_read_key_round_trips_under_envelope() {
+        let envelope = generate_random_key();
+        let old_vault_key = generate_random_key();
+        let blob = seal_legacy_read_key(&envelope, &old_vault_key, "vault-abc").unwrap();
+        let opened = open_legacy_read_key(&envelope, &blob, "vault-abc").unwrap();
+        assert_eq!(opened.as_ref() as &[u8], old_vault_key.as_ref() as &[u8]);
+    }
+
+    #[test]
+    fn legacy_read_key_rejects_wrong_aad() {
+        let envelope = generate_random_key();
+        let old_vault_key = generate_random_key();
+        let blob = seal_legacy_read_key(&envelope, &old_vault_key, "vault-abc").unwrap();
+        assert!(open_legacy_read_key(&envelope, &blob, "vault-XYZ").is_err());
+    }
+
+    #[test]
+    fn legacy_read_key_rejects_wrong_envelope() {
+        let envelope = generate_random_key();
+        let other = generate_random_key();
+        let old_vault_key = generate_random_key();
+        let blob = seal_legacy_read_key(&envelope, &old_vault_key, "vault-abc").unwrap();
+        assert!(open_legacy_read_key(&other, &blob, "vault-abc").is_err());
     }
 }
