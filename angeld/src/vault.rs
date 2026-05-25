@@ -751,6 +751,110 @@ impl VaultKeyStore {
 
         Ok(processed)
     }
+
+    #[allow(dead_code)]
+    pub async fn migrate_kdf_params_if_needed(
+        &self,
+        pool: &SqlitePool,
+        passphrase: &str,
+    ) -> Result<MigrationOutcome, VaultError> {
+        let cfg = db::get_vault_config(pool)
+            .await?
+            .ok_or(VaultError::InvalidConfig("no vault_config found"))?;
+        if !needs_kdf_migration(cfg.parameter_set_version) {
+            return Ok(MigrationOutcome::Skipped);
+        }
+        if db::count_active_devices(pool).await? > 1 {
+            return Ok(MigrationOutcome::Declined {
+                reason: "multi-device vault: per-device KDF params deferred to α.C",
+            });
+        }
+
+        let old_master = self.require_master_key().await?;
+        let envelope_key = self.require_envelope_key().await?;
+        let old_vault_key = self.require_key().await?;
+        let vault = db::get_vault_params(pool)
+            .await?
+            .ok_or(VaultError::InvalidConfig("no vault_state found"))?;
+
+        let new_salt = RootKdfParams::random_salt();
+        let new_params = target_kdf_params(new_salt.to_vec());
+        let new_root = derive_root_keys(passphrase.as_bytes(), &new_params)?;
+        let new_encrypted_vault_key = wrap_key(&new_root.kek, &envelope_key)?;
+        let legacy_blob = seal_legacy_read_key(&envelope_key, &old_vault_key, &vault.vault_id)?;
+
+        let new_device_blob = match db::get_local_device_identity(pool).await? {
+            Some(d) => match d.encrypted_private_key {
+                Some(old_blob) => Some(
+                    identity::reseal_local_device_private_key(
+                        old_master.as_ref(),
+                        new_root.master_key.as_ref(),
+                        &old_blob,
+                    )
+                    .map_err(|_| VaultError::InvalidConfig("device key reseal failed"))?,
+                ),
+                None => None,
+            },
+            None => None,
+        };
+
+        let argon2_params_json = format!(
+            r#"{{"mode":"LOCAL_VAULT","parameter_set_version":{},"memory_cost_kib":{},"time_cost":{},"lanes":{}}}"#,
+            new_params.parameter_set_version,
+            new_params.memory_cost_kib,
+            new_params.time_cost,
+            new_params.lanes
+        );
+
+        db::migrate_kdf_params_tx(
+            pool,
+            db::KdfMigrationWrites {
+                new_salt: &new_salt,
+                new_argon2_params_json: &argon2_params_json,
+                new_param_version: i64::from(new_params.parameter_set_version),
+                new_memory_cost_kib: i64::from(new_params.memory_cost_kib),
+                new_time_cost: i64::from(new_params.time_cost),
+                new_lanes: i64::from(new_params.lanes),
+                new_encrypted_vault_key: &new_encrypted_vault_key,
+                legacy_read_key_blob: &legacy_blob,
+                new_encrypted_device_private_key: new_device_blob.as_deref(),
+            },
+        )
+        .await?;
+
+        *self.inner.write().await = Some(UnlockedVaultKeys::with_envelope_key(
+            new_root.master_key,
+            new_root.vault_key,
+            envelope_key,
+        ));
+
+        Ok(MigrationOutcome::Migrated {
+            from: cfg.parameter_set_version,
+            to: i64::from(TARGET_PARAMETER_SET_VERSION),
+        })
+    }
+
+    #[allow(dead_code)]
+    pub async fn vault_key_for_v1_read(&self, pool: &SqlitePool) -> Result<KeyBytes, VaultError> {
+        let blob = db::get_legacy_read_key(pool).await?;
+        match blob {
+            Some(blob) => {
+                let envelope_key = self.require_envelope_key().await?;
+                let vault = db::get_vault_params(pool)
+                    .await?
+                    .ok_or(VaultError::InvalidConfig("no vault_state found"))?;
+                open_legacy_read_key(&envelope_key, &blob, &vault.vault_id)
+            }
+            None => self.require_key().await,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MigrationOutcome {
+    Migrated { from: i64, to: i64 },
+    Skipped,
+    Declined { reason: &'static str },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1318,5 +1422,114 @@ mod tests {
         let old_vault_key = generate_random_key();
         let blob = seal_legacy_read_key(&envelope, &old_vault_key, "vault-abc").unwrap();
         assert!(open_legacy_read_key(&other, &blob, "vault-abc").is_err());
+    }
+
+    async fn test_pool_v1() -> SqlitePool {
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        VaultKeyStore::new()
+            .unlock(&pool, "pass-123")
+            .await
+            .unwrap();
+        pool
+    }
+
+    async fn seed_two_active_devices(pool: &SqlitePool) {
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u-seed', 'Seed', NULL, 'local', NULL, 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('dev-a', 'u-seed', 'DevA', X'0102', 0), \
+                    ('dev-b', 'u-seed', 'DevB', X'0304', 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn migration_upgrades_params_and_preserves_envelope() -> Result<(), VaultError> {
+        let pool = test_pool_v1().await;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+
+        let evk_before = store.require_envelope_key().await?;
+        let outcome = store
+            .migrate_kdf_params_if_needed(&pool, "pass-123")
+            .await?;
+        assert!(matches!(
+            outcome,
+            MigrationOutcome::Migrated { from: 1, to: 2 }
+        ));
+
+        let cfg = db::get_vault_config(&pool).await?.unwrap();
+        assert_eq!(cfg.parameter_set_version, 2);
+        assert_eq!(cfg.memory_cost_kib, 262_144);
+
+        let store2 = VaultKeyStore::new();
+        store2.unlock(&pool, "pass-123").await?;
+        assert_eq!(
+            store2.require_envelope_key().await?.as_ref() as &[u8],
+            evk_before.as_ref() as &[u8]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn migration_is_idempotent() -> Result<(), VaultError> {
+        let pool = test_pool_v1().await;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+        assert!(matches!(
+            store
+                .migrate_kdf_params_if_needed(&pool, "pass-123")
+                .await?,
+            MigrationOutcome::Migrated { .. }
+        ));
+        assert!(matches!(
+            store
+                .migrate_kdf_params_if_needed(&pool, "pass-123")
+                .await?,
+            MigrationOutcome::Skipped
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn migration_preserves_legacy_v1_read_key() -> Result<(), VaultError> {
+        let pool = test_pool_v1().await;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+        let v1_key_before = store.require_key().await?;
+
+        store
+            .migrate_kdf_params_if_needed(&pool, "pass-123")
+            .await?;
+
+        let recovered = store.vault_key_for_v1_read(&pool).await?;
+        assert_eq!(recovered.as_ref() as &[u8], v1_key_before.as_ref() as &[u8]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn migration_declines_on_multi_device() -> Result<(), VaultError> {
+        let pool = test_pool_v1().await;
+        seed_two_active_devices(&pool).await;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+        let outcome = store
+            .migrate_kdf_params_if_needed(&pool, "pass-123")
+            .await?;
+        assert!(matches!(outcome, MigrationOutcome::Declined { .. }));
+        let cfg = db::get_vault_config(&pool).await?.unwrap();
+        assert_eq!(
+            cfg.parameter_set_version, 1,
+            "declined migration must not touch params"
+        );
+        Ok(())
     }
 }

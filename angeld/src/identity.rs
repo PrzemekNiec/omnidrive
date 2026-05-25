@@ -254,10 +254,14 @@ mod tests {
         let old_kek = derive_identity_kek(&old_master).unwrap();
         let old_blob = encrypt_private_key(&old_kek, &private_key).unwrap();
 
-        let new_blob = reseal_local_device_private_key(&old_master, &new_master, &old_blob).unwrap();
+        let new_blob =
+            reseal_local_device_private_key(&old_master, &new_master, &old_blob).unwrap();
 
         let new_kek = derive_identity_kek(&new_master).unwrap();
-        assert_eq!(decrypt_private_key(&new_kek, &new_blob).unwrap(), private_key);
+        assert_eq!(
+            decrypt_private_key(&new_kek, &new_blob).unwrap(),
+            private_key
+        );
         assert!(decrypt_private_key(&old_kek, &new_blob).is_err());
     }
 

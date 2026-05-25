@@ -9101,8 +9101,7 @@ mod tests {
         assert!(result.is_err());
         let cfg = get_vault_config(&pool).await.unwrap().unwrap();
         assert_eq!(
-            cfg.parameter_set_version,
-            1,
+            cfg.parameter_set_version, 1,
             "version must be unchanged after rollback"
         );
         assert!(
