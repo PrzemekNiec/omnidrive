@@ -1,6 +1,6 @@
 # α.B.a — Argon2id 2026 Params Bump (Atomic Re-Key on Unlock)
 
-**Status:** DESIGN — awaiting review
+**Status:** RATIFIED 2026-05-25 — proceeding to implementation plan (α.B.a)
 **Date:** 2026-05-25
 **Phase:** α.B (KDF & wrap upgrades), task `a`
 **Scope:** Phase 1 only (atomic, in-memory + DB-metadata key migration). Bulk V1→V2 chunk re-encryption (Phase 2/3) is explicitly out of scope — see [§9 Future Contract](#9-future-contract-αbc).
@@ -10,7 +10,7 @@
 
 ## 1. Problem & Goal
 
-OmniDrive derives the vault `master_key` via `Argon2id(passphrase, salt, params)`. The shipped default cost is **`parameter_set_version=1`, m=65536 KiB (64 MiB), t=3, p=1** (`angeld/src/vault.rs:17-20`). We are bumping the default to the **OWASP-2024 floor: `parameter_set_version=2`, m=48128 KiB (47 MiB), t=1, p=1**.
+OmniDrive derives the vault `master_key` via `Argon2id(passphrase, salt, params)`. The shipped default cost is **`parameter_set_version=1`, m=65536 KiB (64 MiB), t=3, p=1** (`angeld/src/vault.rs:17-20`). We are bumping the default to the **Desktop High Security profile: `parameter_set_version=2`, m=262144 KiB (256 MiB), t=3, p=1** — a 4× memory hardening over v1 (64 → 256 MiB); `t` and `p` unchanged. `p=1` (single lane) is retained deliberately for cross-device determinism: the same passphrase must derive the same `master_key` on every device regardless of core count.
 
 Existing vaults were created under v1. When such a vault is unlocked under the new build, the daemon must transparently upgrade the on-disk KDF parameters to v2 — **without** re-encrypting bulk chunk data, **without** changing the random envelope Vault Key (so DEKs and safety numbers are preserved), and with **absolute all-or-nothing safety**: any failure leaves the vault byte-for-byte as it was before the attempt, still fully unlockable under v1.
 
@@ -101,7 +101,7 @@ A params bump changes `master_key`. Every secret derived from or wrapped by `mas
 ### 5.1 Target param-set
 A single source of truth constant (e.g. `omnidrive-core`):
 ```
-TARGET_KDF: parameter_set_version = 2, memory_cost_kib = 48128, time_cost = 1, lanes = 1
+TARGET_KDF: parameter_set_version = 2, memory_cost_kib = 262144, time_cost = 3, lanes = 1
 ```
 A vault "needs migration" iff its stored `parameter_set_version < TARGET_KDF.parameter_set_version`. The comparison is by version number, not by raw params, so the target can evolve monotonically.
 
@@ -175,7 +175,7 @@ The salt lives in a **single shared** `vault_state`/`vault_config` row. A naive 
 | Multi-device condition detected | Migration declines (no writes). Vault stays v1, fully functional. |
 
 ### 8.2 Acceptance criteria (DoD — to be turned into tests by the writing-plans step, not here)
-- e2e: create vault under v1 (e.g. m=19456 test params) → unlock → migration runs → DB shows `parameter_set_version=2`, m=48128/t=1/p=1, single param-set.
+- e2e: create vault under v1 (e.g. m=19456 test params) → unlock → migration runs → DB shows `parameter_set_version=2`, m=262144/t=3/p=1, single param-set. (Tests may override `TARGET_KDF` to a low-memory value to keep Argon2 fast; the *migration logic* is what's under test, not the specific cost.)
 - Post-migration unlock with the **same passphrase** succeeds under v2.
 - `envelope_key` value unchanged across migration: existing DEKs unwrap, a V2 chunk written pre-migration decrypts post-migration, safety numbers identical.
 - Device private key unseals post-migration (X25519 identity preserved).
@@ -199,8 +199,9 @@ The salt lives in a **single shared** `vault_state`/`vault_config` row. A naive 
 
 ---
 
-## 11. Open Items for Reviewer
-1. Confirm target params **m=48128 KiB / t=1 / p=1, version=2** (OWASP-2024 floor) — vs. a higher memory target given the dev box has 95 GB RAM (trade-off: unlock latency on weakest future device, incl. mobile).
-2. Confirm **single-device scope** for α.B.a with multi-device declined-and-deferred to α.C (§7).
-3. Confirm migration runs as a **spawned post-unlock task** (vs. inline in `unlock()` adding one Argon2 hash to unlock latency).
-4. Confirm `legacy_read_key` as a **`vault_state` column** (vs. a dedicated table) — single legacy key suffices because V1 chunks were only ever written under the original deterministic `vault_key`.
+## 11. Ratified Decisions (2026-05-25)
+1. **Target params = Desktop High Security: `parameter_set_version=2`, m=262144 KiB (256 MiB), t=3, p=1.** A 4× memory hardening over v1. `p=1` for cross-device determinism (§1). Expected unlock latency ≈ 0.7–1.5 s on a desktop — an accepted, conscious cost for one-time-per-session unlock. A lighter **mobile profile** is deferred to **α.C** (per-device param-sets), not introduced here.
+2. **Single-device scope** ratified: multi-device condition → migration **declines** (fail-safe, vault stays v1); per-device param-sets deferred to α.C (§7).
+3. **Migration = spawned post-unlock task** ratified (non-blocking UX; failure → log + retry next unlock; never gates unlock success).
+4. **`legacy_read_key` = nullable `vault_state` column** ratified (single legacy key suffices — V1 chunks were only ever written under the original deterministic `vault_key`).
+5. **Re-key set ratified complete** (§3): `{envelope_key re-wrap, device private key re-seal, legacy_read_key capture+seal, param-set in-place}`; MAC = no-op (zero consumers); local cache = invalidate (rebuildable).
