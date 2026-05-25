@@ -1020,6 +1020,7 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     )
     .await?;
     ensure_column_exists(&pool, "vault_state", "encrypted_vault_key", "BLOB").await?;
+    ensure_column_exists(&pool, "vault_state", "legacy_read_key", "BLOB").await?;
     ensure_column_exists(
         &pool,
         "vault_state",

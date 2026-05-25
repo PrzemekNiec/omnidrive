@@ -18,6 +18,26 @@ const DEFAULT_PARAMETER_SET_VERSION: u32 = 1;
 const DEFAULT_MEMORY_COST_KIB: u32 = 65_536;
 const DEFAULT_TIME_COST: u32 = 3;
 const DEFAULT_LANES: u32 = 1;
+
+const TARGET_PARAMETER_SET_VERSION: u32 = 2;
+const TARGET_MEMORY_COST_KIB: u32 = 262_144;
+const TARGET_TIME_COST: u32 = 3;
+const TARGET_LANES: u32 = 1;
+
+fn needs_kdf_migration(current_parameter_set_version: i64) -> bool {
+    current_parameter_set_version < i64::from(TARGET_PARAMETER_SET_VERSION)
+}
+
+fn target_kdf_params(new_salt: Vec<u8>) -> RootKdfParams {
+    RootKdfParams::new(
+        TARGET_PARAMETER_SET_VERSION,
+        new_salt,
+        TARGET_MEMORY_COST_KIB,
+        TARGET_TIME_COST,
+        TARGET_LANES,
+    )
+}
+
 #[allow(dead_code)]
 const LOCAL_CACHE_KEY_INFO: &[u8] = b"omnidrive-local-cache-v1";
 const OAUTH_REFRESH_TOKEN_INFO: &[u8] = b"omnidrive-oauth-refresh-tokens-v1";
@@ -1227,5 +1247,20 @@ mod tests {
         let b = store.seal_oauth_token("user", "token").await?;
         assert_ne!(a, b, "each seal must use a fresh random nonce");
         Ok(())
+    }
+
+    #[test]
+    fn target_params_are_desktop_high_security() {
+        assert_eq!(TARGET_PARAMETER_SET_VERSION, 2);
+        assert_eq!(TARGET_MEMORY_COST_KIB, 262_144);
+        assert_eq!(TARGET_TIME_COST, 3);
+        assert_eq!(TARGET_LANES, 1);
+    }
+
+    #[test]
+    fn needs_migration_compares_version() {
+        assert!(needs_kdf_migration(1));
+        assert!(!needs_kdf_migration(2));
+        assert!(!needs_kdf_migration(3));
     }
 }
