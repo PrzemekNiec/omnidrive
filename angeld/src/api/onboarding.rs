@@ -475,6 +475,29 @@ async fn post_complete_onboarding(
     }))
 }
 
+/// Generates this device's real X25519 keypair after join, replacing the `[0;32]`
+/// bootstrap placeholder in `devices.public_key`.  The shared `state.vault_keys`
+/// stays locked through join, so a transient `VaultKeyStore` derives `master_key`
+/// from the passphrase (+ grafted KDF params) to seal the private key at rest.
+async fn generate_local_device_keypair(
+    pool: &sqlx::SqlitePool,
+    passphrase: &str,
+) -> Result<(), String> {
+    let store = crate::vault::VaultKeyStore::new();
+    store
+        .unlock(pool, passphrase)
+        .await
+        .map_err(|e| format!("transient unlock failed: {e}"))?;
+    let master_key = store
+        .require_master_key()
+        .await
+        .map_err(|e| format!("master key unavailable: {e}"))?;
+    crate::identity::ensure_device_keypair(pool, master_key.as_ref())
+        .await
+        .map_err(|e| format!("keypair generation failed: {e}"))?;
+    Ok(())
+}
+
 async fn post_join_existing(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -730,6 +753,15 @@ async fn post_join_existing(
                 local_dev.device_id
             ),
             Err(err) => warn!("[join-existing] ensure_local_device_in_vault failed: {err}"),
+        }
+
+        if let Err(err) = generate_local_device_keypair(&state.pool, passphrase).await {
+            warn!("[join-existing] device keypair generation failed (non-fatal): {err}");
+        } else {
+            info!(
+                "[join-existing] generated real X25519 keypair for device {}",
+                local_dev.device_id
+            );
         }
 
         // Resolve the adopted user_id (= snapshot owner) and confirm chain integrity.
@@ -1153,5 +1185,54 @@ fn provider_restore_error_kind(err: &crate::onboarding::RestoreError) -> &'stati
         crate::onboarding::RestoreError::SnapshotApply(_) => "SnapshotApply",
         crate::onboarding::RestoreError::Runtime(_) => "Runtime",
         crate::onboarding::RestoreError::Io(_) => "Io",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+    use crate::identity;
+
+    #[tokio::test]
+    async fn join_keypair_replaces_placeholder_with_real_key() {
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+
+        let store = crate::vault::VaultKeyStore::new();
+        store.unlock(&pool, "join-pass").await.unwrap();
+        db::upsert_local_device_identity(&pool, "dev-join", "JoinPC", "peer-tok")
+            .await
+            .unwrap();
+        let vault = db::get_vault_params(&pool).await.unwrap().unwrap();
+        db::migrate_single_to_multi_user(&pool, &vault.vault_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            db::get_device(&pool, "dev-join")
+                .await
+                .unwrap()
+                .unwrap()
+                .public_key,
+            vec![0u8; 32]
+        );
+
+        generate_local_device_keypair(&pool, "join-pass")
+            .await
+            .expect("keypair generation must succeed");
+
+        let dev = db::get_device(&pool, "dev-join").await.unwrap().unwrap();
+        assert_ne!(
+            dev.public_key,
+            vec![0u8; 32],
+            "join must publish a real pubkey"
+        );
+        assert_eq!(dev.public_key.len(), 32);
+
+        let master = store.require_master_key().await.unwrap();
+        let priv_key = identity::get_device_private_key(&pool, master.as_ref())
+            .await
+            .expect("private key must unseal");
+        let derived = x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(priv_key));
+        assert_eq!(derived.to_bytes().to_vec(), dev.public_key);
     }
 }
