@@ -71,7 +71,7 @@ fn open_legacy_read_key(
 #[derive(Clone, Default)]
 pub struct VaultKeyStore {
     inner: Arc<RwLock<Option<UnlockedVaultKeys>>>,
-    kdf_migration_inflight: Arc<AtomicBool>,
+    post_unlock_inflight: Arc<AtomicBool>,
 }
 
 #[allow(dead_code)]
@@ -843,9 +843,36 @@ impl VaultKeyStore {
         }
     }
 
-    pub fn spawn_kdf_migration_if_needed(&self, pool: &SqlitePool, passphrase: &str) {
+    /// Runs the post-unlock maintenance sequence: first the α.B.a KDF-params
+    /// migration (re-keys the in-memory master), then device-keypair generation —
+    /// in that order so the X25519 private key is sealed under the *final* master.
+    pub async fn run_post_unlock_maintenance(
+        &self,
+        pool: &SqlitePool,
+        passphrase: &str,
+    ) -> Result<(), VaultError> {
+        match self.migrate_kdf_params_if_needed(pool, passphrase).await {
+            Ok(MigrationOutcome::Migrated { from, to }) => {
+                info!("[KDF-MIGRATION] params upgraded v{from} -> v{to}");
+            }
+            Ok(MigrationOutcome::Declined { reason }) => {
+                warn!("[KDF-MIGRATION] declined: {reason}");
+            }
+            Ok(MigrationOutcome::Skipped) => {}
+            Err(e) => warn!("[KDF-MIGRATION] failed (will retry next unlock): {e}"),
+        }
+
+        let master_key = self.require_master_key().await?;
+        match crate::identity::ensure_device_keypair(pool, master_key.as_ref()).await {
+            Ok(_) => info!("[DEVICE-KEY] X25519 keypair ensured for local device"),
+            Err(e) => warn!("[DEVICE-KEY] keypair generation failed (will retry next unlock): {e}"),
+        }
+        Ok(())
+    }
+
+    pub fn spawn_post_unlock_maintenance(&self, pool: &SqlitePool, passphrase: &str) {
         if self
-            .kdf_migration_inflight
+            .post_unlock_inflight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
@@ -856,20 +883,10 @@ impl VaultKeyStore {
         let pool = pool.clone();
         let passphrase = SecretString::from(passphrase.to_owned());
         tokio::spawn(async move {
-            let outcome = store
-                .migrate_kdf_params_if_needed(&pool, passphrase.expose_secret())
+            let _ = store
+                .run_post_unlock_maintenance(&pool, passphrase.expose_secret())
                 .await;
-            store.kdf_migration_inflight.store(false, Ordering::Release);
-            match outcome {
-                Ok(MigrationOutcome::Migrated { from, to }) => {
-                    info!("[KDF-MIGRATION] params upgraded v{from} -> v{to}");
-                }
-                Ok(MigrationOutcome::Declined { reason }) => {
-                    warn!("[KDF-MIGRATION] declined: {reason}");
-                }
-                Ok(MigrationOutcome::Skipped) => {}
-                Err(e) => warn!("[KDF-MIGRATION] failed (will retry next unlock): {e}"),
-            }
+            store.post_unlock_inflight.store(false, Ordering::Release);
         });
     }
 }
@@ -1575,7 +1592,7 @@ mod tests {
         let store = VaultKeyStore::new();
         store.unlock(&pool, "pass-123").await?;
 
-        store.spawn_kdf_migration_if_needed(&pool, "pass-123");
+        store.spawn_post_unlock_maintenance(&pool, "pass-123");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
@@ -1591,6 +1608,79 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn post_unlock_maintenance_migrates_then_generates_keypair() -> Result<(), VaultError> {
+        let pool = test_pool_v1().await;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+
+        db::upsert_local_device_identity(&pool, "dev-fresh", "Fresh Device", "peer-tok")
+            .await
+            .unwrap();
+        let vault = db::get_vault_params(&pool).await?.unwrap();
+        let migrated = db::migrate_single_to_multi_user(&pool, &vault.vault_id)
+            .await
+            .unwrap();
+        assert!(
+            migrated,
+            "single→multi migration should run on a fresh vault"
+        );
+        let before = db::get_device(&pool, "dev-fresh").await.unwrap().unwrap();
+        assert_eq!(
+            before.public_key,
+            vec![0u8; 32],
+            "device must start with the placeholder pubkey"
+        );
+
+        let ld = db::get_local_device_identity(&pool).await?.unwrap();
+        assert!(
+            ld.encrypted_private_key.is_none(),
+            "precondition: device must have no keypair before maintenance"
+        );
+
+        store.run_post_unlock_maintenance(&pool, "pass-123").await?;
+
+        assert_eq!(
+            db::get_vault_config(&pool)
+                .await?
+                .unwrap()
+                .parameter_set_version,
+            2,
+            "KDF params must be upgraded to v2"
+        );
+
+        let after = db::get_device(&pool, "dev-fresh").await.unwrap().unwrap();
+        assert_ne!(
+            after.public_key,
+            vec![0u8; 32],
+            "pubkey must no longer be the placeholder"
+        );
+        assert_eq!(after.public_key.len(), 32);
+
+        let master = store.require_master_key().await?;
+        let priv_key = identity::get_device_private_key(&pool, master.as_ref())
+            .await
+            .expect("device private key must unseal under the post-migration master");
+        let derived_pub =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(priv_key));
+        assert_eq!(
+            derived_pub.to_bytes().to_vec(),
+            after.public_key,
+            "stored public key must match the sealed private key"
+        );
+
+        // Idempotency: a second maintenance pass must not regenerate the keypair
+        // (regeneration would invalidate any vault keys already wrapped to the old pubkey).
+        store.run_post_unlock_maintenance(&pool, "pass-123").await?;
+        let after2 = db::get_device(&pool, "dev-fresh").await.unwrap().unwrap();
+        assert_eq!(
+            after2.public_key, after.public_key,
+            "second maintenance pass must not regenerate the keypair"
+        );
+
         Ok(())
     }
 

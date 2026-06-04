@@ -55,7 +55,7 @@ async fn post_unlock(
 
     state
         .vault_keys
-        .spawn_kdf_migration_if_needed(&state.pool, request.passphrase.expose_secret());
+        .spawn_post_unlock_maintenance(&state.pool, request.passphrase.expose_secret());
 
     // Silently store passphrase in Windows Credential Manager (DPAPI-encrypted) so
     // that subsequent unlocks can use Windows Hello without retyping the passphrase.
@@ -423,7 +423,7 @@ async fn post_windows_hello_unlock(
 
     state
         .vault_keys
-        .spawn_kdf_migration_if_needed(&state.pool, &passphrase);
+        .spawn_post_unlock_maintenance(&state.pool, &passphrase);
 
     // Lazy mount (same as passphrase unlock)
     let pool2 = state.pool.clone();
