@@ -8234,7 +8234,10 @@ mod tests {
         std::env::temp_dir().join(format!(
             "omnidrive-acb-{}-{}",
             tag,
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ))
     }
 
@@ -8257,7 +8260,10 @@ mod tests {
 
         let source_path = dir.join("source.db");
         let snapshot_path = dir.join("snapshot.db");
-        let source_url = format!("sqlite://{}", source_path.to_string_lossy().replace('\\', "/"));
+        let source_url = format!(
+            "sqlite://{}",
+            source_path.to_string_lossy().replace('\\', "/")
+        );
 
         let source_pool = init_db(&source_url).await?;
 
@@ -8271,17 +8277,15 @@ mod tests {
 
         let inode_id = create_inode(&source_pool, None, "graft-test.txt", "FILE", 42).await?;
         store.get_or_create_dek(&source_pool, inode_id).await?;
-        let wrapped_dek: Vec<u8> = sqlx::query_scalar(
-            "SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?",
-        )
-        .bind(inode_id)
-        .fetch_one(&source_pool)
-        .await?;
-
-        let vault_id: String =
-            sqlx::query_scalar("SELECT vault_id FROM vault_state WHERE id = 1")
+        let wrapped_dek: Vec<u8> =
+            sqlx::query_scalar("SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
                 .fetch_one(&source_pool)
                 .await?;
+
+        let vault_id: String = sqlx::query_scalar("SELECT vault_id FROM vault_state WHERE id = 1")
+            .fetch_one(&source_pool)
+            .await?;
 
         insert_recovery_key(&source_pool, &vault_id, &[0xABu8; 40], 1, Some("test")).await?;
 
@@ -8292,7 +8296,15 @@ mod tests {
 
         create_metadata_snapshot(&source_pool, &snapshot_path).await?;
 
-        Ok((source_pool, snapshot_path, envelope_key, safety, inode_id, wrapped_dek, vault_id))
+        Ok((
+            source_pool,
+            snapshot_path,
+            envelope_key,
+            safety,
+            inode_id,
+            wrapped_dek,
+            vault_id,
+        ))
     }
 
     #[tokio::test]
@@ -9323,9 +9335,16 @@ mod tests {
                 .await?;
 
         assert_eq!(after_evk, source_evk, "EVK must be adopted from snapshot");
-        assert_ne!(after_evk, dell_evk_before, "EVK must overwrite the device's own");
+        assert_ne!(
+            after_evk, dell_evk_before,
+            "EVK must overwrite the device's own"
+        );
         assert_eq!(after_gen, source_gen, "generation must be adopted");
-        assert_eq!(after_legacy, Some(vec![0x5Au8; 60]), "legacy_read_key must be grafted");
+        assert_eq!(
+            after_legacy,
+            Some(vec![0x5Au8; 60]),
+            "legacy_read_key must be grafted"
+        );
 
         let _ = fs::remove_dir_all(&dir).await;
         Ok(())
@@ -9339,10 +9358,9 @@ mod tests {
 
         let (source_pool, snapshot_path, _evk, _safety, inode_id, wrapped_dek, _vid) =
             build_source_vault(&dir).await?;
-        let source_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
-                .fetch_one(&source_pool)
-                .await?;
+        let source_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&source_pool)
+            .await?;
         assert_eq!(source_count, 1, "source has exactly one DEK");
 
         let target_url = format!(
@@ -9355,21 +9373,25 @@ mod tests {
 
         let got = get_wrapped_dek(&target_pool, inode_id).await?;
         let got = got.expect("DEK must be grafted for the inode");
-        assert_eq!(got.wrapped_dek, wrapped_dek, "wrapped DEK bytes must match source");
+        assert_eq!(
+            got.wrapped_dek, wrapped_dek,
+            "wrapped DEK bytes must match source"
+        );
 
-        let src_dek_id: i64 = sqlx::query_scalar(
-            "SELECT dek_id FROM data_encryption_keys WHERE inode_id = ?",
-        )
-        .bind(inode_id)
-        .fetch_one(&source_pool)
-        .await?;
+        let src_dek_id: i64 =
+            sqlx::query_scalar("SELECT dek_id FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&source_pool)
+                .await?;
         assert_eq!(got.dek_id, src_dek_id, "dek_id must be preserved verbatim");
 
-        let target_dek_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
-                .fetch_one(&target_pool)
-                .await?;
-        assert_eq!(target_dek_count, 1, "exactly one DEK must be grafted (no dupes/misses)");
+        let target_dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&target_pool)
+            .await?;
+        assert_eq!(
+            target_dek_count, 1,
+            "exactly one DEK must be grafted (no dupes/misses)"
+        );
 
         let _ = fs::remove_dir_all(&dir).await;
         Ok(())
@@ -9402,11 +9424,13 @@ mod tests {
         assert_eq!(active[0].wrapped_vault_key, vec![0xABu8; 40]);
         assert_eq!(active[0].vk_generation, 1);
 
-        let target_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM vault_recovery_keys")
-                .fetch_one(&target_pool)
-                .await?;
-        assert_eq!(target_count, 1, "exactly one recovery key grafted (no dupes/misses)");
+        let target_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault_recovery_keys")
+            .fetch_one(&target_pool)
+            .await?;
+        assert_eq!(
+            target_count, 1,
+            "exactly one recovery key grafted (no dupes/misses)"
+        );
 
         let tgt_id: i64 =
             sqlx::query_scalar("SELECT id FROM vault_recovery_keys WHERE vault_id = ?")
