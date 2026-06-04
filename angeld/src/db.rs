@@ -1793,6 +1793,16 @@ struct RestoredVaultMember {
     joined_at: i64,
 }
 
+#[derive(sqlx::FromRow)]
+struct RestoredDek {
+    dek_id: i64,
+    inode_id: i64,
+    wrapped_dek: Vec<u8>,
+    key_version: i64,
+    vault_key_gen: i64,
+    created_at: i64,
+}
+
 pub async fn graft_restored_metadata_snapshot(
     pool: &SqlitePool,
     restored_db_path: &Path,
@@ -1941,6 +1951,14 @@ pub async fn graft_restored_metadata_snapshot(
     .await
     .unwrap_or(None);
 
+    let r_deks = sqlx::query_as::<_, RestoredDek>(
+        "SELECT dek_id, inode_id, wrapped_dek, key_version, vault_key_gen, created_at \
+         FROM data_encryption_keys",
+    )
+    .fetch_all(&restored_pool)
+    .await
+    .unwrap_or_default();
+
     // Done reading — close the restored pool before we touch the main DB.
     // Explicit drop after close() releases the Arc<PoolInner> reference synchronously;
     // yield_now() then gives tokio a slot to flush any deferred cleanup (memory-mapped
@@ -2055,6 +2073,7 @@ pub async fn graft_restored_metadata_snapshot(
             "DELETE FROM file_revisions",
             "DELETE FROM metadata_backups",
             "DELETE FROM sync_policies",
+            "DELETE FROM data_encryption_keys",
             "DELETE FROM inodes",
             // v0.3.23: identity tables — wipe local migration phantoms before adopting
             // the source vault's owner/devices/membership. Order matters w.r.t. FKs
@@ -2137,6 +2156,22 @@ pub async fn graft_restored_metadata_snapshot(
             .bind(row.size)
             .bind(row.mode)
             .bind(row.mtime)
+            .execute(&mut *conn)
+            .await?;
+        }
+
+        for row in &r_deks {
+            sqlx::query(
+                "INSERT INTO data_encryption_keys \
+                 (dek_id, inode_id, wrapped_dek, key_version, vault_key_gen, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(row.dek_id)
+            .bind(row.inode_id)
+            .bind(&row.wrapped_dek)
+            .bind(row.key_version)
+            .bind(row.vault_key_gen)
+            .bind(row.created_at)
             .execute(&mut *conn)
             .await?;
         }
@@ -9253,6 +9288,50 @@ mod tests {
         assert_ne!(after_evk, dell_evk_before, "EVK must overwrite the device's own");
         assert_eq!(after_gen, source_gen, "generation must be adopted");
         assert_eq!(after_legacy, Some(vec![0x5Au8; 60]), "legacy_read_key must be grafted");
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_copies_data_encryption_keys() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("deks");
+        fs::create_dir_all(&dir).await?;
+
+        let (source_pool, snapshot_path, _evk, _safety, inode_id, wrapped_dek, _vid) =
+            build_source_vault(&dir).await?;
+        let source_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+                .fetch_one(&source_pool)
+                .await?;
+        assert_eq!(source_count, 1, "source has exactly one DEK");
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target_pool = init_db(&target_url).await?;
+
+        graft_restored_metadata_snapshot(&target_pool, &snapshot_path).await?;
+
+        let got = get_wrapped_dek(&target_pool, inode_id).await?;
+        let got = got.expect("DEK must be grafted for the inode");
+        assert_eq!(got.wrapped_dek, wrapped_dek, "wrapped DEK bytes must match source");
+
+        let src_dek_id: i64 = sqlx::query_scalar(
+            "SELECT dek_id FROM data_encryption_keys WHERE inode_id = ?",
+        )
+        .bind(inode_id)
+        .fetch_one(&source_pool)
+        .await?;
+        assert_eq!(got.dek_id, src_dek_id, "dek_id must be preserved verbatim");
+
+        let target_dek_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+                .fetch_one(&target_pool)
+                .await?;
+        assert_eq!(target_dek_count, 1, "exactly one DEK must be grafted (no dupes/misses)");
 
         let _ = fs::remove_dir_all(&dir).await;
         Ok(())
