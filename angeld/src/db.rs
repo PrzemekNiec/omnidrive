@@ -7540,7 +7540,6 @@ pub async fn migrate_single_to_multi_user(
     let now = epoch_secs();
     let owner_user_id = new_user_id();
 
-    // Placeholder 32-byte zero public key — replaced in Epic 34.1a with real X25519 keypair
     let placeholder_pubkey = vec![0u8; 32];
 
     // Create owner user
