@@ -631,14 +631,14 @@ v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
 │
 ├── B. KDF & wrap upgrades ─────────────────────── re-derive existing vault data
 │   ├── α.B.a — Argon2id 2026 params bump (m=256MiB, t=3, p=1)  ✅ DONE (LIVE SMOKE PASS, v0.3.27)
-│   └── α.B.b — ML-KEM-768 hybrid wrap (NIST FIPS 203)  ◄── NEXT (α.C.a done)
+│   └── α.B.b — ML-KEM-768 hybrid wrap (NIST FIPS 203)  ⏸️ (po α.C.b)
 │       ├── α.B.b.1   schema: `devices.kyber_public_key` + `wrapped_vault_key_kyber`
 │       ├── α.B.b.2   unwrap: X25519 default → ML-KEM failover
 │       └── α.B.b.3   e2e: hybrid wrap → 2× decrypt → ten sam VK
 │
 ├── C. Identity & device keys ──────────────────── domyka P1-001+P1-005 (Dell ≠ Lenovo)
 │   ├── α.C.a — Real X25519 keypair (zamiast `[0;32]` placeholder)  ✅ DONE
-│   └── α.C.b — Graft pełen identity bundle (db.rs:1677)  ⏸️ (po α.B.b)
+│   └── α.C.b — Graft pełen identity bundle (db.rs:1677)  ◄── NEXT (P1-001/005)
 │       ├── α.C.b.1   wszystkie pola `vault_state` poza per-instance KDF
 │       ├── α.C.b.2   tabela `data_encryption_keys`
 │       └── α.C.b.3   tabela `recovery_keys` (jeśli istnieje)
