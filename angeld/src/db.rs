@@ -1806,7 +1806,6 @@ pub async fn graft_restored_metadata_snapshot(
     );
     let restored_pool = SqlitePool::connect(&restored_url).await?;
 
-    // Use a minimal struct — the restored snapshot may be V1 (no V2 columns).
     #[allow(dead_code)]
     #[derive(sqlx::FromRow)]
     struct RestoreVaultRecord {
@@ -1814,9 +1813,13 @@ pub async fn graft_restored_metadata_snapshot(
         master_key_salt: Vec<u8>,
         argon2_params: String,
         vault_id: String,
+        encrypted_vault_key: Option<Vec<u8>>,
+        vault_key_generation: Option<i64>,
+        legacy_read_key: Option<Vec<u8>>,
     }
     let remote_vault = sqlx::query_as::<_, RestoreVaultRecord>(
-        "SELECT id, master_key_salt, argon2_params, vault_id FROM vault_state WHERE id = 1",
+        "SELECT id, master_key_salt, argon2_params, vault_id, encrypted_vault_key, \
+         vault_key_generation, legacy_read_key FROM vault_state WHERE id = 1",
     )
     .fetch_optional(&restored_pool)
     .await?
@@ -1960,9 +1963,9 @@ pub async fn graft_restored_metadata_snapshot(
             .execute(&mut *conn)
             .await?;
 
-        // Graft vault_id from remote, keep local KDF params if present
         let local_vault = sqlx::query_as::<_, RestoreVaultRecord>(
-            "SELECT id, master_key_salt, argon2_params, vault_id FROM vault_state WHERE id = 1",
+            "SELECT id, master_key_salt, argon2_params, vault_id, encrypted_vault_key, \
+             vault_key_generation, legacy_read_key FROM vault_state WHERE id = 1",
         )
         .fetch_optional(&mut *conn)
         .await?;
@@ -1970,31 +1973,47 @@ pub async fn graft_restored_metadata_snapshot(
         match local_vault {
             Some(local) => {
                 sqlx::query(
-                    "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
-                     VALUES (1, ?, ?, ?) \
+                    "INSERT INTO vault_state \
+                     (id, master_key_salt, argon2_params, vault_id, encrypted_vault_key, \
+                      vault_key_generation, legacy_read_key) \
+                     VALUES (1, ?, ?, ?, ?, ?, ?) \
                      ON CONFLICT(id) DO UPDATE SET \
                          master_key_salt = excluded.master_key_salt, \
                          argon2_params = excluded.argon2_params, \
-                         vault_id = excluded.vault_id",
+                         vault_id = excluded.vault_id, \
+                         encrypted_vault_key = excluded.encrypted_vault_key, \
+                         vault_key_generation = excluded.vault_key_generation, \
+                         legacy_read_key = excluded.legacy_read_key",
                 )
                 .bind(local.master_key_salt)
                 .bind(local.argon2_params)
                 .bind(&remote_vault.vault_id)
+                .bind(&remote_vault.encrypted_vault_key)
+                .bind(remote_vault.vault_key_generation)
+                .bind(&remote_vault.legacy_read_key)
                 .execute(&mut *conn)
                 .await?;
             }
             None => {
                 sqlx::query(
-                    "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
-                     VALUES (1, ?, ?, ?) \
+                    "INSERT INTO vault_state \
+                     (id, master_key_salt, argon2_params, vault_id, encrypted_vault_key, \
+                      vault_key_generation, legacy_read_key) \
+                     VALUES (1, ?, ?, ?, ?, ?, ?) \
                      ON CONFLICT(id) DO UPDATE SET \
                          master_key_salt = excluded.master_key_salt, \
                          argon2_params = excluded.argon2_params, \
-                         vault_id = excluded.vault_id",
+                         vault_id = excluded.vault_id, \
+                         encrypted_vault_key = excluded.encrypted_vault_key, \
+                         vault_key_generation = excluded.vault_key_generation, \
+                         legacy_read_key = excluded.legacy_read_key",
                 )
-                .bind(remote_vault.master_key_salt)
-                .bind(remote_vault.argon2_params)
+                .bind(&remote_vault.master_key_salt)
+                .bind(&remote_vault.argon2_params)
                 .bind(&remote_vault.vault_id)
+                .bind(&remote_vault.encrypted_vault_key)
+                .bind(remote_vault.vault_key_generation)
+                .bind(&remote_vault.legacy_read_key)
                 .execute(&mut *conn)
                 .await?;
             }
@@ -8134,6 +8153,75 @@ pub async fn clear_plaintext_refresh_token(
 mod tests {
     use super::*;
 
+    // ── α.C.b graft test helpers ──
+    const USER_FIXTURE: &str = "user-fixture";
+
+    fn temp_test_dir(tag: &str) -> std::path::PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        std::env::temp_dir().join(format!(
+            "omnidrive-acb-{}-{}",
+            tag,
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ))
+    }
+
+    async fn build_source_vault(
+        dir: &std::path::Path,
+    ) -> Result<
+        (
+            sqlx::SqlitePool,
+            std::path::PathBuf,
+            Vec<u8>,
+            String,
+            i64,
+            Vec<u8>,
+            String,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        use crate::disaster_recovery::create_metadata_snapshot;
+        use crate::vault::VaultKeyStore;
+
+        let source_path = dir.join("source.db");
+        let snapshot_path = dir.join("snapshot.db");
+        let source_url = format!("sqlite://{}", source_path.to_string_lossy().replace('\\', "/"));
+
+        let source_pool = init_db(&source_url).await?;
+
+        let store = VaultKeyStore::new();
+        store.unlock(&source_pool, "test-pass").await?;
+        let envelope_key = store.require_envelope_key().await?.to_vec();
+        let safety = store
+            .safety_numbers(USER_FIXTURE)
+            .await
+            .expect("source must produce safety numbers");
+
+        let inode_id = create_inode(&source_pool, None, "graft-test.txt", "FILE", 42).await?;
+        store.get_or_create_dek(&source_pool, inode_id).await?;
+        let wrapped_dek: Vec<u8> = sqlx::query_scalar(
+            "SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?",
+        )
+        .bind(inode_id)
+        .fetch_one(&source_pool)
+        .await?;
+
+        let vault_id: String =
+            sqlx::query_scalar("SELECT vault_id FROM vault_state WHERE id = 1")
+                .fetch_one(&source_pool)
+                .await?;
+
+        insert_recovery_key(&source_pool, &vault_id, &[0xABu8; 40], 1, Some("test")).await?;
+
+        sqlx::query("UPDATE vault_state SET legacy_read_key = ? WHERE id = 1")
+            .bind(vec![0x5Au8; 60])
+            .execute(&source_pool)
+            .await?;
+
+        create_metadata_snapshot(&source_pool, &snapshot_path).await?;
+
+        Ok((source_pool, snapshot_path, envelope_key, safety, inode_id, wrapped_dek, vault_id))
+    }
+
     #[tokio::test]
     async fn shared_link_crud_lifecycle() {
         let pool = init_db("sqlite::memory:").await.unwrap();
@@ -9112,5 +9200,61 @@ mod tests {
             v.encrypted_vault_key.is_none(),
             "encrypted_vault_key untouched after rollback"
         );
+    }
+
+    #[tokio::test]
+    async fn graft_copies_encrypted_vault_key_generation_and_legacy_read_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("vaultstate");
+        fs::create_dir_all(&dir).await?;
+
+        let (source_pool, snapshot_path, _evk, _safety, _inode, _dek, _vid) =
+            build_source_vault(&dir).await?;
+        let source_evk: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&source_pool)
+                .await?;
+        let source_gen: Option<i64> =
+            sqlx::query_scalar("SELECT vault_key_generation FROM vault_state WHERE id = 1")
+                .fetch_one(&source_pool)
+                .await?;
+        assert!(source_evk.is_some(), "source must have an envelope key");
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target_pool = init_db(&target_url).await?;
+        crate::vault::VaultKeyStore::new()
+            .unlock(&target_pool, "test-pass")
+            .await?;
+        let dell_evk_before: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target_pool)
+                .await?;
+
+        graft_restored_metadata_snapshot(&target_pool, &snapshot_path).await?;
+
+        let after_evk: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target_pool)
+                .await?;
+        let after_gen: Option<i64> =
+            sqlx::query_scalar("SELECT vault_key_generation FROM vault_state WHERE id = 1")
+                .fetch_one(&target_pool)
+                .await?;
+        let after_legacy: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT legacy_read_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target_pool)
+                .await?;
+
+        assert_eq!(after_evk, source_evk, "EVK must be adopted from snapshot");
+        assert_ne!(after_evk, dell_evk_before, "EVK must overwrite the device's own");
+        assert_eq!(after_gen, source_gen, "generation must be adopted");
+        assert_eq!(after_legacy, Some(vec![0x5Au8; 60]), "legacy_read_key must be grafted");
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
     }
 }
