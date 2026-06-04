@@ -1803,6 +1803,17 @@ struct RestoredDek {
     created_at: i64,
 }
 
+#[derive(sqlx::FromRow)]
+struct RestoredRecoveryKey {
+    id: i64,
+    vault_id: String,
+    wrapped_vault_key: Vec<u8>,
+    vk_generation: i64,
+    created_at: i64,
+    created_by: Option<String>,
+    revoked_at: Option<i64>,
+}
+
 pub async fn graft_restored_metadata_snapshot(
     pool: &SqlitePool,
     restored_db_path: &Path,
@@ -1959,6 +1970,14 @@ pub async fn graft_restored_metadata_snapshot(
     .await
     .unwrap_or_default();
 
+    let r_recovery_keys = sqlx::query_as::<_, RestoredRecoveryKey>(
+        "SELECT id, vault_id, wrapped_vault_key, vk_generation, created_at, created_by, \
+         revoked_at FROM vault_recovery_keys",
+    )
+    .fetch_all(&restored_pool)
+    .await
+    .unwrap_or_default();
+
     // Done reading — close the restored pool before we touch the main DB.
     // Explicit drop after close() releases the Arc<PoolInner> reference synchronously;
     // yield_now() then gives tokio a slot to flush any deferred cleanup (memory-mapped
@@ -2074,6 +2093,7 @@ pub async fn graft_restored_metadata_snapshot(
             "DELETE FROM metadata_backups",
             "DELETE FROM sync_policies",
             "DELETE FROM data_encryption_keys",
+            "DELETE FROM vault_recovery_keys",
             "DELETE FROM inodes",
             // v0.3.23: identity tables — wipe local migration phantoms before adopting
             // the source vault's owner/devices/membership. Order matters w.r.t. FKs
@@ -2172,6 +2192,24 @@ pub async fn graft_restored_metadata_snapshot(
             .bind(row.key_version)
             .bind(row.vault_key_gen)
             .bind(row.created_at)
+            .execute(&mut *conn)
+            .await?;
+        }
+
+        for row in &r_recovery_keys {
+            sqlx::query(
+                "INSERT INTO vault_recovery_keys \
+                 (id, vault_id, wrapped_vault_key, vk_generation, created_at, created_by, \
+                  revoked_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(row.id)
+            .bind(&row.vault_id)
+            .bind(&row.wrapped_vault_key)
+            .bind(row.vk_generation)
+            .bind(row.created_at)
+            .bind(&row.created_by)
+            .bind(row.revoked_at)
             .execute(&mut *conn)
             .await?;
         }
@@ -9332,6 +9370,50 @@ mod tests {
                 .fetch_one(&target_pool)
                 .await?;
         assert_eq!(target_dek_count, 1, "exactly one DEK must be grafted (no dupes/misses)");
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_copies_vault_recovery_keys() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("recovery");
+        fs::create_dir_all(&dir).await?;
+
+        let (source_pool, snapshot_path, _evk, _safety, _inode, _dek, vault_id) =
+            build_source_vault(&dir).await?;
+        let src_id: i64 =
+            sqlx::query_scalar("SELECT id FROM vault_recovery_keys WHERE vault_id = ?")
+                .bind(&vault_id)
+                .fetch_one(&source_pool)
+                .await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target_pool = init_db(&target_url).await?;
+
+        graft_restored_metadata_snapshot(&target_pool, &snapshot_path).await?;
+
+        let active = list_active_recovery_keys(&target_pool, &vault_id).await?;
+        assert_eq!(active.len(), 1, "the source recovery key must be grafted");
+        assert_eq!(active[0].wrapped_vault_key, vec![0xABu8; 40]);
+        assert_eq!(active[0].vk_generation, 1);
+
+        let target_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM vault_recovery_keys")
+                .fetch_one(&target_pool)
+                .await?;
+        assert_eq!(target_count, 1, "exactly one recovery key grafted (no dupes/misses)");
+
+        let tgt_id: i64 =
+            sqlx::query_scalar("SELECT id FROM vault_recovery_keys WHERE vault_id = ?")
+                .bind(&vault_id)
+                .fetch_one(&target_pool)
+                .await?;
+        assert_eq!(tgt_id, src_id, "recovery key id must be preserved verbatim");
 
         let _ = fs::remove_dir_all(&dir).await;
         Ok(())
