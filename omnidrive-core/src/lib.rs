@@ -3,5 +3,6 @@ pub mod crypto;
 pub mod ffi;
 pub mod layout;
 pub mod payloads;
+pub mod pqkem;
 #[cfg(feature = "ffi")]
 uniffi::setup_scaffolding!();
