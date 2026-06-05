@@ -823,13 +823,449 @@ Expected: all green. Watch for any new `AsRef`/`Array` ambiguity surfaced by the
 
 ---
 
-## Task 3 (α.B.b.3) — DEFERRED outline (integration + e2e)
+## Task 3 (α.B.b.3): Integration — keygen wiring, hybrid wrap at accept, unwrap selection, e2e
 
-> **Not yet broken into TDD steps.** Detailed plan to be written before execution, after Task 2.
+**Scope:** `angeld` only. Wire kyber keygen into post-unlock maintenance; add identity-layer bridges that compute the X25519 shared secret (ECDH stays in `angeld`) and delegate to the core `hybrid` primitives; populate `devices.wrapped_vault_key_kyber` at `accept_device`; add an unwrap selection helper (prefer v3-hybrid, fall back to v2-x25519). DoD = an in-process e2e proving both wraps decrypt to the same Vault Key.
 
-**Scope:** wire `identity::ensure_device_kyber_keypair` into `vault::run_post_unlock_maintenance` alongside the X25519 keygen (the α.C.a sequencing point); populate `devices.wrapped_vault_key_kyber` at device enroll/accept; unwrap selection path (try X25519/v2 default → prefer v3-hybrid when present).
+### Context (grounded against current code)
+- `vault::run_post_unlock_maintenance` (`vault.rs:849`) runs KDF migration → `identity::ensure_device_keypair` (X25519). We append the kyber keygen here.
+- `identity::wrap_vault_key_for_device` / `unwrap_vault_key_from_device` (`identity.rs:265`, `:289`) do X25519 ECDH + AES-KW. The hybrid bridges mirror them: ECDH → `x25519_ss`, then call `omnidrive_core::hybrid::{hybrid_wrap_vault_key, hybrid_unwrap_vault_key}`.
+- `api/vault.rs::post_accept_device` (`:334`) wraps the VK for a target device (X25519) and calls `db::set_device_wrapped_vault_key` (`:420`). We add the hybrid wrap alongside it, non-fatally.
+- `db::DeviceRecord` (`db.rs:536`) + three `query_as::<_, DeviceRecord>` SELECTs (`db.rs:7306`, `:7345`, `:7377`) need the two kyber columns added (additive; the columns already exist in the schema from Task 1B).
+- `identity::open_secret_blob` (Task 1C) unseals the kyber decapsulation key; `db::get_local_device_identity` returns `kyber_public_key` + `encrypted_kyber_private_key` (Task 1B).
 
-**DoD (phase α.B.b):** e2e — a solo vault produces both an X25519 wrap and a hybrid wrap of the VK; both decrypt to the **same** Vault Key. Live SMOKE (real Dell↔Lenovo enroll) is separate acceptance and does not gate code DONE.
+---
+
+### Task 3A — wire kyber keygen into post-unlock maintenance
+
+**Files:** Modify `angeld/src/vault.rs` (`run_post_unlock_maintenance`, `:865-870`); test in `vault.rs mod tests`.
+
+- [ ] **Step 1: Write the failing test.** Add to `vault.rs mod tests`:
+
+```rust
+    #[tokio::test]
+    async fn post_unlock_maintenance_ensures_both_keypairs() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+        db::upsert_local_device_identity(&pool, "dev-1", "PC", "tok").await?;
+
+        store.run_post_unlock_maintenance(&pool, "pass-123").await?;
+
+        let dev = db::get_local_device_identity(&pool).await?.unwrap();
+        assert!(dev.public_key.is_some(), "X25519 pubkey present");
+        assert_eq!(
+            dev.kyber_public_key.as_deref().map(<[u8]>::len),
+            Some(omnidrive_core::pqkem::ML_KEM_768_ENCAPS_KEY_LEN),
+            "kyber encaps key generated and persisted"
+        );
+        assert!(dev.encrypted_kyber_private_key.is_some(), "kyber decaps sealed");
+        Ok(())
+    }
+```
+
+- [ ] **Step 2: Run, expect FAIL:** `cargo test -p angeld --lib post_unlock_maintenance_ensures_both_keypairs` (kyber columns stay NULL — keygen not wired).
+
+- [ ] **Step 3: Implement.** In `run_post_unlock_maintenance`, immediately after the existing X25519 `match` block (`vault.rs:866-869`), add:
+
+```rust
+        match crate::identity::ensure_device_kyber_keypair(pool, master_key.as_ref()).await {
+            Ok(_) => info!("[DEVICE-KEY] ML-KEM keypair ensured for local device"),
+            Err(e) => {
+                warn!("[DEVICE-KEY] kyber keypair generation failed (will retry next unlock): {e}")
+            }
+        }
+```
+
+- [ ] **Step 4: Run, expect PASS.** `cargo fmt --all`.
+
+- [ ] **Step 5: Commit:** `git commit -am "feat(vault): α.B.b ensure ML-KEM keypair in post-unlock maintenance"`
+
+---
+
+### Task 3B — DeviceRecord kyber columns + wrapped-kyber setter
+
+**Files:** Modify `angeld/src/db.rs` (struct `:536`; SELECTs `:7306`, `:7345`, `:7377`; new setter after `set_device_wrapped_vault_key` `:7354`); test in `db.rs mod tests`.
+
+- [ ] **Step 1: Write the failing test.** Add to `db.rs mod tests`:
+
+```rust
+    #[tokio::test]
+    async fn set_and_read_device_wrapped_kyber() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        let vault = get_vault_params(&pool).await.unwrap().unwrap();
+        migrate_single_to_multi_user(&pool, &vault.vault_id).await.unwrap();
+        let user = list_users(&pool).await.unwrap().pop().unwrap();
+        upsert_device(&pool, "dev-x", &user.user_id, "PC", &[9u8; 32], 1).await.unwrap();
+
+        let kyber_pub = vec![0x22u8; 1184];
+        let wrapped_kyber = vec![0x44u8; 1128];
+        set_device_kyber_public_key(&pool, "dev-x", &kyber_pub).await.unwrap();
+        set_device_wrapped_vault_key_kyber(&pool, "dev-x", &wrapped_kyber).await.unwrap();
+
+        let dev = get_device(&pool, "dev-x").await.unwrap().unwrap();
+        assert_eq!(dev.kyber_public_key.as_deref(), Some(kyber_pub.as_slice()));
+        assert_eq!(dev.wrapped_vault_key_kyber.as_deref(), Some(wrapped_kyber.as_slice()));
+    }
+```
+
+> If `upsert_device` / `list_users` / `migrate_single_to_multi_user` signatures differ, mirror an existing `db.rs` device test (e.g. near `set_device_wrapped_vault_key` tests in `identity.rs:657`) for the exact setup calls. The assertion target is what matters: the two kyber columns round-trip through `DeviceRecord`.
+
+- [ ] **Step 2: Run, expect FAIL (compile):** `cargo test -p angeld --lib set_and_read_device_wrapped_kyber` — `wrapped_vault_key_kyber` field and `set_device_wrapped_vault_key_kyber` do not exist.
+
+- [ ] **Step 3: Extend `DeviceRecord`.** After `pub enrolled_at: Option<i64>,` (`db.rs:546`) add:
+
+```rust
+    pub kyber_public_key: Option<Vec<u8>>,
+    pub wrapped_vault_key_kyber: Option<Vec<u8>>,
+```
+
+- [ ] **Step 4: Extend all three SELECTs.** In each of the three `query_as::<_, DeviceRecord>` queries (`db.rs:7306`, `:7345`, `:7377`), append the two columns to the column list (before `FROM devices`), e.g.:
+
+```rust
+        "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
+         vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at, \
+         kyber_public_key, wrapped_vault_key_kyber \
+         FROM devices WHERE device_id = ?",
+```
+(apply the same column addition to the `WHERE user_id = ?` and `WHERE user_id = ? AND revoked_at IS NULL …` variants — the `FROM`/`WHERE`/`ORDER BY` tails stay unchanged).
+
+- [ ] **Step 5: Add the setter.** After `set_device_wrapped_vault_key` (`db.rs` ~`:7370`) add:
+
+```rust
+pub async fn set_device_wrapped_vault_key_kyber(
+    pool: &SqlitePool,
+    device_id: &str,
+    wrapped_vault_key_kyber: &[u8],
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE devices SET wrapped_vault_key_kyber = ? WHERE device_id = ?")
+        .bind(wrapped_vault_key_kyber)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+```
+
+> Note: the `revoke_device` path (`db.rs:7390`) NULLs `wrapped_vault_key` on revoke. For α.B.b.3 we do **not** extend revoke to also NULL `wrapped_vault_key_kyber` — flag it as a follow-up in the report (revoked devices already lose the X25519 wrap; the kyber wrap is dead without the X25519 path being usable, but a tidy revoke should clear both — out of scope here to keep the change surgical).
+
+- [ ] **Step 6: Run, expect PASS.** `cargo fmt --all`.
+
+- [ ] **Step 7: Commit:** `git commit -am "feat(db): α.B.b DeviceRecord kyber columns + set_device_wrapped_vault_key_kyber"`
+
+---
+
+### Task 3C — identity bridges (ECDH + core hybrid) + kyber private reader + selection
+
+**Files:** Modify `angeld/src/identity.rs` (after `unwrap_vault_key_from_device` `:306`); tests in `identity.rs mod tests`.
+
+- [ ] **Step 1: Write the failing tests.** Add to `identity.rs mod tests`:
+
+```rust
+    #[test]
+    fn hybrid_wrap_unwrap_for_device_roundtrip() {
+        let (ek, dk) = omnidrive_core::pqkem::generate_ml_kem_768_keypair();
+        let owner_priv = [0x11u8; 32];
+        let owner_pub = x25519_dalek::PublicKey::from(
+            &x25519_dalek::StaticSecret::from(owner_priv),
+        )
+        .to_bytes();
+        let vault_key = KeyBytes::from([0x33u8; 32]);
+
+        let blob = hybrid_wrap_vault_key_for_device(
+            &owner_priv, &owner_pub, &ek, &vault_key, "vault-1", "dev-1",
+        )
+        .unwrap();
+        let out = hybrid_unwrap_vault_key_from_device(
+            &owner_priv, &owner_pub, &dk, &ek, &blob, "vault-1", "dev-1",
+        )
+        .unwrap();
+        assert_eq!(out, vault_key);
+    }
+
+    #[test]
+    fn hybrid_unwrap_for_device_rejects_wrong_vault_id() {
+        let (ek, dk) = omnidrive_core::pqkem::generate_ml_kem_768_keypair();
+        let owner_priv = [0x11u8; 32];
+        let owner_pub = x25519_dalek::PublicKey::from(
+            &x25519_dalek::StaticSecret::from(owner_priv),
+        )
+        .to_bytes();
+        let vault_key = KeyBytes::from([0x33u8; 32]);
+        let blob = hybrid_wrap_vault_key_for_device(
+            &owner_priv, &owner_pub, &ek, &vault_key, "vault-1", "dev-1",
+        )
+        .unwrap();
+        assert!(
+            hybrid_unwrap_vault_key_from_device(
+                &owner_priv, &owner_pub, &dk, &ek, &blob, "vault-OTHER", "dev-1",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn selection_prefers_hybrid_then_falls_back() {
+        let (ek, dk) = omnidrive_core::pqkem::generate_ml_kem_768_keypair();
+        let owner_priv = [0x11u8; 32];
+        let owner_pub = x25519_dalek::PublicKey::from(
+            &x25519_dalek::StaticSecret::from(owner_priv),
+        )
+        .to_bytes();
+        let vk = KeyBytes::from([0x33u8; 32]);
+
+        let wrapped_x = wrap_vault_key_for_device(&owner_priv, &owner_pub, &vk).unwrap();
+        let wrapped_h = hybrid_wrap_vault_key_for_device(
+            &owner_priv, &owner_pub, &ek, &vk, "vault-1", "dev-1",
+        )
+        .unwrap();
+
+        // Hybrid available → uses hybrid.
+        let via_hybrid = select_and_unwrap_vault_key(
+            &owner_priv, &owner_pub, Some(&dk), Some(&ek),
+            &wrapped_x, Some(&wrapped_h), "vault-1", "dev-1",
+        )
+        .unwrap();
+        assert_eq!(via_hybrid, vk);
+
+        // No hybrid → falls back to X25519.
+        let via_x25519 = select_and_unwrap_vault_key(
+            &owner_priv, &owner_pub, Some(&dk), Some(&ek),
+            &wrapped_x, None, "vault-1", "dev-1",
+        )
+        .unwrap();
+        assert_eq!(via_x25519, vk);
+    }
+```
+
+- [ ] **Step 2: Run, expect FAIL (undefined):** `cargo test -p angeld --lib hybrid_wrap_unwrap_for_device_roundtrip`
+
+- [ ] **Step 3: Implement.** Add `use omnidrive_core::hybrid::{HybridWrapContext, HYBRID_WRAP_VERSION, hybrid_unwrap_vault_key, hybrid_wrap_vault_key};` to the top imports of `identity.rs`. After `unwrap_vault_key_from_device` (`identity.rs:306`) add:
+
+```rust
+/// Wraps a Vault Key for a target device under the hybrid X25519 + ML-KEM scheme.
+/// Computes the X25519 shared secret here (ECDH stays in `angeld`) and delegates the
+/// combiner + AES-KW to `omnidrive_core::hybrid`. Returns `kyber_ct ‖ wrapped` (1128 B).
+pub fn hybrid_wrap_vault_key_for_device(
+    my_private_key: &[u8; 32],
+    their_public_key: &[u8; 32],
+    their_kyber_encaps_key: &[u8],
+    vault_key: &KeyBytes,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<Vec<u8>, IdentityError> {
+    validate_x25519_pubkey(their_public_key)?;
+    let secret = x25519_dalek::StaticSecret::from(*my_private_key);
+    let their_pub = x25519_dalek::PublicKey::from(*their_public_key);
+    let shared = secret.diffie_hellman(&their_pub);
+    if shared.as_bytes() == &[0u8; 32] {
+        return Err(IdentityError::Crypto(
+            "ECDH produced all-zero shared secret: low-order point attack rejected".into(),
+        ));
+    }
+    let ctx = HybridWrapContext { version: HYBRID_WRAP_VERSION, vault_id, device_id };
+    hybrid_wrap_vault_key(shared.as_bytes(), their_kyber_encaps_key, vault_key, &ctx)
+        .map_err(|e| IdentityError::Crypto(format!("hybrid wrap: {e}")))
+}
+
+/// Unwraps a Vault Key produced by `hybrid_wrap_vault_key_for_device`. `my_kyber_encaps_key`
+/// is the recipient's own encapsulation key (bound into the transcript at wrap time).
+pub fn hybrid_unwrap_vault_key_from_device(
+    my_private_key: &[u8; 32],
+    their_public_key: &[u8; 32],
+    my_kyber_decaps_key: &[u8],
+    my_kyber_encaps_key: &[u8],
+    wrapped_blob: &[u8],
+    vault_id: &str,
+    device_id: &str,
+) -> Result<KeyBytes, IdentityError> {
+    validate_x25519_pubkey(their_public_key)?;
+    let secret = x25519_dalek::StaticSecret::from(*my_private_key);
+    let their_pub = x25519_dalek::PublicKey::from(*their_public_key);
+    let shared = secret.diffie_hellman(&their_pub);
+    if shared.as_bytes() == &[0u8; 32] {
+        return Err(IdentityError::Crypto(
+            "ECDH produced all-zero shared secret: low-order point attack rejected".into(),
+        ));
+    }
+    let ctx = HybridWrapContext { version: HYBRID_WRAP_VERSION, vault_id, device_id };
+    hybrid_unwrap_vault_key(
+        shared.as_bytes(),
+        my_kyber_decaps_key,
+        my_kyber_encaps_key,
+        wrapped_blob,
+        &ctx,
+    )
+    .map_err(|e| IdentityError::Crypto(format!("hybrid unwrap: {e}")))
+}
+
+/// Unwraps the device's Vault Key, preferring the post-quantum hybrid wrap when the
+/// kyber ciphertext and the local kyber keypair are all present, else the X25519 wrap.
+#[allow(clippy::too_many_arguments)]
+pub fn select_and_unwrap_vault_key(
+    my_private_key: &[u8; 32],
+    their_public_key: &[u8; 32],
+    my_kyber_decaps_key: Option<&[u8]>,
+    my_kyber_encaps_key: Option<&[u8]>,
+    wrapped_x25519: &[u8; WRAPPED_KEY_LEN],
+    wrapped_hybrid: Option<&[u8]>,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<KeyBytes, IdentityError> {
+    if let (Some(blob), Some(dk), Some(ek)) =
+        (wrapped_hybrid, my_kyber_decaps_key, my_kyber_encaps_key)
+    {
+        return hybrid_unwrap_vault_key_from_device(
+            my_private_key, their_public_key, dk, ek, blob, vault_id, device_id,
+        );
+    }
+    unwrap_vault_key_from_device(my_private_key, their_public_key, wrapped_x25519)
+}
+
+/// Retrieves and unseals the local device's ML-KEM decapsulation key. Requires the
+/// vault to be unlocked (needs `master_key` to derive the identity KEK).
+pub async fn get_device_kyber_private_key(
+    pool: &SqlitePool,
+    master_key: &[u8],
+) -> Result<Vec<u8>, IdentityError> {
+    let device = db::get_local_device_identity(pool)
+        .await?
+        .ok_or(IdentityError::NoDeviceIdentity)?;
+    let encrypted = device
+        .encrypted_kyber_private_key
+        .ok_or(IdentityError::Crypto("no encrypted kyber private key stored".into()))?;
+    let kek = derive_identity_kek(master_key)?;
+    open_secret_blob(&kek, &encrypted)
+}
+```
+
+- [ ] **Step 4: Run, expect PASS** (all 3 tests). `cargo fmt --all`.
+
+- [ ] **Step 5: Commit:** `git commit -am "feat(identity): α.B.b hybrid wrap/unwrap-for-device bridges + selection + kyber private reader"`
+
+---
+
+### Task 3D — produce the hybrid wrap at `accept_device`
+
+**Files:** Modify `angeld/src/api/vault.rs` (`post_accept_device`, after `:424`). No new test here (covered by 3C unit tests + the 3E e2e); the change is additive wiring.
+
+- [ ] **Step 1: Implement.** In `post_accept_device`, immediately after the `db::set_device_wrapped_vault_key(...)?` call (`api/vault.rs:420-424`), add a non-fatal hybrid wrap (only when the target has published a kyber key):
+
+```rust
+    if let Some(kyber_ek) = target_device.kyber_public_key.as_deref() {
+        match identity::hybrid_wrap_vault_key_for_device(
+            &owner_private,
+            &member_pubkey,
+            kyber_ek,
+            &envelope_key,
+            &vault_id,
+            &target_device_id,
+        ) {
+            Ok(wrapped_kyber) => {
+                if let Err(e) = db::set_device_wrapped_vault_key_kyber(
+                    &state.pool,
+                    &target_device_id,
+                    &wrapped_kyber,
+                )
+                .await
+                {
+                    warn!("hybrid wrap persist failed for {target_device_id}: {e}");
+                }
+            }
+            Err(e) => warn!("hybrid wrap failed for {target_device_id} (X25519 wrap still applied): {e}"),
+        }
+    }
+```
+
+> `warn!` is already imported in `api/vault.rs` (it logs elsewhere); if not, use `tracing::warn!`. `envelope_key` is the same `&KeyBytes` already passed to the X25519 wrap. `target_device.kyber_public_key` is now available via the 3B `DeviceRecord` extension. The hybrid wrap is **best-effort**: a device that has not yet published a kyber key (pre-α.B.b) still gets its X25519 wrap and is unaffected.
+
+- [ ] **Step 2: Build check:** `cargo build -p angeld` (no panic paths added). `cargo fmt --all`.
+
+- [ ] **Step 3: Commit:** `git commit -am "feat(api): α.B.b emit hybrid wrapped vault key at accept_device"`
+
+---
+
+### Task 3E — DoD e2e: solo vault, both wraps decrypt to the same VK
+
+**Files:** Test only — `angeld/src/identity.rs mod tests` (it has `db`, `vault`, and `x25519_dalek` in scope).
+
+- [ ] **Step 1: Write the e2e test.** Add to `identity.rs mod tests`:
+
+```rust
+    #[tokio::test]
+    async fn e2e_solo_vault_both_wraps_decrypt_to_same_vault_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use secrecy::ExposeSecret;
+
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = crate::vault::VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+        db::upsert_local_device_identity(&pool, "dev-solo", "PC", "tok").await?;
+
+        // Generates both X25519 and ML-KEM keypairs for the local device.
+        store.run_post_unlock_maintenance(&pool, "pass-123").await?;
+
+        let master = store.require_master_key().await?;
+        let envelope = store.require_envelope_key().await?;
+        let vk = KeyBytes::from(<[u8; 32]>::try_from(envelope.expose_secret().as_ref())?);
+
+        let device = db::get_local_device_identity(&pool).await?.unwrap();
+        let mut owner_pub = [0u8; 32];
+        owner_pub.copy_from_slice(device.public_key.as_ref().unwrap());
+        let kyber_ek = device.kyber_public_key.unwrap();
+
+        let owner_priv = get_device_private_key(&pool, master.as_ref()).await?;
+        let kyber_dk = get_device_kyber_private_key(&pool, master.as_ref()).await?;
+
+        // Solo vault wraps the VK for itself under BOTH schemes.
+        let wrapped_x = wrap_vault_key_for_device(&owner_priv, &owner_pub, &vk)?;
+        let wrapped_h = hybrid_wrap_vault_key_for_device(
+            &owner_priv, &owner_pub, &kyber_ek, &vk, "vault-solo", "dev-solo",
+        )?;
+
+        let vk_x = unwrap_vault_key_from_device(&owner_priv, &owner_pub, &wrapped_x)?;
+        let vk_h = hybrid_unwrap_vault_key_from_device(
+            &owner_priv, &owner_pub, &kyber_dk, &kyber_ek, &wrapped_h, "vault-solo", "dev-solo",
+        )?;
+
+        assert_eq!(vk_x, vk, "X25519 wrap must decrypt to the Vault Key");
+        assert_eq!(vk_h, vk, "hybrid wrap must decrypt to the Vault Key");
+        assert_eq!(vk_x, vk_h, "both wraps must yield the identical Vault Key");
+        Ok(())
+    }
+```
+
+> `require_envelope_key()` returns the VK guard (same accessor `post_accept_device` uses). If `expose_secret().as_ref()` typing differs, mirror the α.C.b round-trip test (`db.rs`) which does `require_envelope_key().await?.to_vec()` — then `KeyBytes::from(<[u8;32]>::try_from(&vec[..])?)`. Keep the three assertions: both unwraps equal `vk` and equal each other.
+
+- [ ] **Step 2: Run, expect PASS:** `cargo test -p angeld --lib e2e_solo_vault_both_wraps_decrypt_to_same_vault_key`
+
+- [ ] **Step 3: Commit:** `git commit -am "test(identity): α.B.b e2e solo vault — X25519 + hybrid wraps decrypt to same VK"`
+
+---
+
+### Final verification (after Task 3 — closes α.B.b)
+
+- [ ] **Full workspace gate** (mirrors pre-push, all `--all-targets`):
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
+cargo build --release --workspace
+cargo test -p omnidrive-core
+cargo test -p angeld --lib
+```
+Expected: all green.
+
+- [ ] **DoD confirmation (phase α.B.b):**
+  - `post_unlock_maintenance_ensures_both_keypairs` — kyber keypair generated on unlock.
+  - `set_and_read_device_wrapped_kyber` — `wrapped_vault_key_kyber` persists/reads.
+  - `hybrid_wrap_unwrap_for_device_roundtrip` + `…rejects_wrong_vault_id` — identity bridge correct + context-bound.
+  - `selection_prefers_hybrid_then_falls_back` — unwrap selection (v3 preferred, v2 fallback).
+  - **`e2e_solo_vault_both_wraps_decrypt_to_same_vault_key` — the phase DoD: both ciphertexts decrypt to the identical Vault Key.**
+- [ ] **No version bump.** Push (pre-push active, never `--no-verify`). Then mark `STATUS.md` §12.5 α.B.b → DONE + tree marker → α.D.a.
+
+**Live SMOKE (separate, does NOT gate code DONE):** real Dell↔Lenovo enroll → joining device unwraps the hybrid-wrapped VK. Requires both machines; run after the Rust gate is green.
 
 ---
 
