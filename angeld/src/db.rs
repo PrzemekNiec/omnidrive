@@ -224,6 +224,8 @@ pub struct LocalDeviceIdentityRecord {
     pub updated_at: i64,
     pub encrypted_private_key: Option<Vec<u8>>,
     pub public_key: Option<Vec<u8>>,
+    pub encrypted_kyber_private_key: Option<Vec<u8>>,
+    pub kyber_public_key: Option<Vec<u8>>,
 }
 
 #[allow(dead_code)]
@@ -747,6 +749,14 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE local_device_identity ADD COLUMN public_key BLOB")
         .execute(&pool)
         .await;
+    let _ = sqlx::query(
+        "ALTER TABLE local_device_identity ADD COLUMN encrypted_kyber_private_key BLOB",
+    )
+    .execute(&pool)
+    .await;
+    let _ = sqlx::query("ALTER TABLE local_device_identity ADD COLUMN kyber_public_key BLOB")
+        .execute(&pool)
+        .await;
 
     sqlx::query(
         r#"
@@ -1152,6 +1162,8 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     // N.5 A.3: track when a device has set a real X25519 key (not the [0;32] placeholder).
     // accept_device checks enrolled_at IS NOT NULL before wrapping the vault key.
     ensure_column_exists(&pool, "devices", "enrolled_at", "INTEGER").await?;
+    ensure_column_exists(&pool, "devices", "kyber_public_key", "BLOB").await?;
+    ensure_column_exists(&pool, "devices", "wrapped_vault_key_kyber", "BLOB").await?;
     // Backfill existing devices that already have a real public key.
     sqlx::query(
         "UPDATE devices SET enrolled_at = created_at \
@@ -2874,7 +2886,8 @@ pub async fn get_local_device_identity(
     sqlx::query_as::<_, LocalDeviceIdentityRecord>(
         r#"
         SELECT device_id, device_name, peer_token, created_at, updated_at,
-               encrypted_private_key, public_key
+               encrypted_private_key, public_key,
+               encrypted_kyber_private_key, kyber_public_key
         FROM local_device_identity
         WHERE id = 1
         "#,
@@ -2960,6 +2973,38 @@ pub async fn store_device_keypair(
     .bind(now)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+pub async fn store_kyber_keypair(
+    pool: &SqlitePool,
+    encrypted_kyber_private_key: &[u8],
+    kyber_public_key: &[u8],
+) -> Result<(), sqlx::Error> {
+    let now = epoch_secs();
+    sqlx::query(
+        "UPDATE local_device_identity \
+         SET encrypted_kyber_private_key = ?, kyber_public_key = ?, updated_at = ? \
+         WHERE id = 1",
+    )
+    .bind(encrypted_kyber_private_key)
+    .bind(kyber_public_key)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn set_device_kyber_public_key(
+    pool: &SqlitePool,
+    device_id: &str,
+    kyber_public_key: &[u8],
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE devices SET kyber_public_key = ? WHERE device_id = ?")
+        .bind(kyber_public_key)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -9542,5 +9587,29 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir).await;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn store_and_read_kyber_keypair() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        upsert_local_device_identity(&pool, "dev-kyber", "TestPC", "tok-1")
+            .await
+            .unwrap();
+
+        let sealed_priv = vec![0x11u8; 2428];
+        let kyber_pub = vec![0x22u8; 1184];
+        store_kyber_keypair(&pool, &sealed_priv, &kyber_pub)
+            .await
+            .unwrap();
+
+        let device = get_local_device_identity(&pool).await.unwrap().unwrap();
+        assert_eq!(
+            device.encrypted_kyber_private_key.as_deref(),
+            Some(sealed_priv.as_slice())
+        );
+        assert_eq!(
+            device.kyber_public_key.as_deref(),
+            Some(kyber_pub.as_slice())
+        );
     }
 }
