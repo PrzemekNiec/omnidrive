@@ -110,7 +110,6 @@ fn seal_secret_blob(kek: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, Identit
     Ok(out)
 }
 
-/// Decrypts a blob produced by `seal_secret_blob`.
 pub fn open_secret_blob(kek: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, IdentityError> {
     if blob.len() < NONCE_LEN + 16 {
         return Err(IdentityError::Crypto("sealed blob too short".into()));
