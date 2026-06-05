@@ -404,7 +404,7 @@ async fn get_material_symbols_font() -> impl IntoResponse {
             (header::CONTENT_TYPE, "font/ttf"),
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
-        include_bytes!("../../static/material-symbols-outlined.ttf").as_ref(),
+        include_bytes!("../../static/material-symbols-outlined.ttf").as_slice(),
     )
 }
 
