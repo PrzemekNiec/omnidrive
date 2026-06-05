@@ -9442,4 +9442,105 @@ mod tests {
         let _ = fs::remove_dir_all(&dir).await;
         Ok(())
     }
+
+    #[tokio::test]
+    async fn graft_makes_joining_device_derive_same_evk_safety_and_dek()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use secrecy::ExposeSecret;
+        use tokio::fs;
+        let dir = temp_test_dir("roundtrip");
+        fs::create_dir_all(&dir).await?;
+
+        let (source_pool, snapshot_path, source_evk, source_safety, inode_id, _dek, _vid) =
+            build_source_vault(&dir).await?;
+        let source_store = crate::vault::VaultKeyStore::new();
+        source_store.unlock(&source_pool, "test-pass").await?;
+        let (_id, source_dek) = source_store
+            .get_or_create_dek(&source_pool, inode_id)
+            .await?;
+        let source_dek_bytes = source_dek.expose_secret()[..].to_vec();
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target_pool = init_db(&target_url).await?;
+        crate::vault::VaultKeyStore::new()
+            .unlock(&target_pool, "test-pass")
+            .await?;
+
+        graft_restored_metadata_snapshot(&target_pool, &snapshot_path).await?;
+
+        let joined = crate::vault::VaultKeyStore::new();
+        joined.unlock(&target_pool, "test-pass").await?;
+
+        let joined_evk = joined.require_envelope_key().await?.to_vec();
+        assert_eq!(joined_evk, source_evk, "joined EVK must equal source EVK");
+
+        let joined_safety = joined.safety_numbers(USER_FIXTURE).await.unwrap();
+        assert_eq!(
+            joined_safety, source_safety,
+            "safety numbers must match (P1-005)"
+        );
+
+        let (_id2, joined_dek) = joined.get_or_create_dek(&target_pool, inode_id).await?;
+        assert_eq!(
+            joined_dek.expose_secret()[..].to_vec(),
+            source_dek_bytes,
+            "grafted DEK must unwrap to the same plaintext (P1-001)"
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_from_legacy_v1_snapshot_does_not_panic() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use tokio::fs;
+        let dir = temp_test_dir("v1compat");
+        fs::create_dir_all(&dir).await?;
+
+        let source_url = format!(
+            "sqlite://{}",
+            dir.join("source.db").to_string_lossy().replace('\\', "/")
+        );
+        let source_pool = init_db(&source_url).await?;
+        sqlx::query(
+            "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+             VALUES (1, ?, ?, ?)",
+        )
+        .bind(vec![1u8; 16])
+        .bind("v1-params")
+        .bind("vault-legacy")
+        .execute(&source_pool)
+        .await?;
+
+        let snapshot_path = dir.join("snapshot.db");
+        crate::disaster_recovery::create_metadata_snapshot(&source_pool, &snapshot_path).await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target_pool = init_db(&target_url).await?;
+
+        graft_restored_metadata_snapshot(&target_pool, &snapshot_path).await?;
+
+        let evk: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target_pool)
+                .await?;
+        assert!(
+            evk.is_none(),
+            "V1 snapshot has no envelope key — must stay NULL"
+        );
+        let dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&target_pool)
+            .await?;
+        assert_eq!(dek_count, 0);
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
 }
