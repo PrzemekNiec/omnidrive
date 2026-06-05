@@ -20,6 +20,8 @@
 - **Modify:** `angeld/src/db.rs` — additive schema (`local_device_identity` +2 cols, `devices` +2 cols), `LocalDeviceIdentityRecord` +2 fields, extend the SELECT, new `store_kyber_keypair` + `set_device_kyber_public_key`.
 - **Modify:** `angeld/src/identity.rs` — variable-length `seal_secret_blob`/`open_secret_blob`, new `ensure_device_kyber_keypair`, tests.
 
+**Task 2 (α.B.b.2)** additionally: extend `omnidrive-core/src/pqkem.rs` (encapsulate/decapsulate wrappers) and **create** `omnidrive-core/src/hybrid.rs` (combiner + wrap/unwrap), registered in `omnidrive-core/src/lib.rs`. Still `omnidrive-core`-only — no new dependencies.
+
 No changes to `vault.rs`, no wiring into the live unlock path (that is α.B.b.3). No version bump.
 
 ---
@@ -431,13 +433,393 @@ Expected: all green. New tests live in `omnidrive-core` (`pqkem`) and the `angel
 
 ---
 
-## Task 2 (α.B.b.2) — DEFERRED outline (pure crypto in omnidrive-core)
+## Task 2 (α.B.b.2): Hybrid wrap/unwrap crypto (pure `omnidrive-core`)
 
-> **Not yet broken into TDD steps.** Detailed plan (test code + exact signatures) to be written before execution, once Task 1 has landed and the `ml-kem` 0.2 encapsulate/decapsulate + combiner API is pinned against the installed version.
+**Scope:** `omnidrive-core` only — ML-KEM encapsulate/decapsulate byte wrappers (in `pqkem`), and a new `hybrid` module composing X25519 (shared secret passed in) + ML-KEM + HKDF-SHA256 combiner + AES-256-KW. **No new dependencies** (`ml-kem`, `aes-kw`, `hkdf`, `sha2`, `zeroize`, `rand` are all already deps). No DB, no `angeld` changes, no x25519 ECDH (the caller computes the X25519 shared secret in Task 3 and passes it in — keeps `omnidrive-core` free of `x25519-dalek`).
 
-**Scope:** in `omnidrive-core` only — `ml_kem_encapsulate(their_ek) -> (ct, ss)` / `ml_kem_decapsulate(my_dk, ct) -> ss` wrappers; X-Wing-pattern combiner `hybrid_combine(x25519_ss, kyber_ss, transcript) -> KEK` via HKDF-SHA256 (evaluate the `x-wing` crate first; **never XOR**); `hybrid_wrap_vault_key(...) -> kyber_ct || wrapped` and `hybrid_unwrap_vault_key(...) -> VK` using AES-256-KW with AAD binding `vault_id | device_id | "v3-hybrid"`; format discriminator (`v2-x25519` / `v3-hybrid`).
+### Key design points (read before implementing)
 
-**DoD:** unit round-trip (wrap → unwrap → same VK) + tamper-fail (flipped ciphertext / wrong device / downgraded version all reject). No DB, no integration.
+- **"AAD" without an AEAD.** AES-KW (RFC 3394) has **no AAD parameter**. The anti-splice / anti-downgrade binding (spec D4: `version | vault_id | device_id`) is realized by folding those fields — plus the kyber ciphertext and the peer encapsulation key (X-Wing anti-rebinding) — into the **HKDF `info`** that derives the wrapping KEK. Tamper any of them ⇒ different KEK ⇒ AES-KW unwrap integrity failure. This is stronger than a bolted-on AAD and needs no AEAD.
+- **Combiner = HKDF-SHA256 (X-Wing pattern), never XOR.** `KEK = HKDF-SHA256(salt = "omnidrive-hybrid-wrap-v1", ikm = x25519_ss ‖ mlkem_ss, info = transcript)`. The transcript is **length-prefixed** (`u32-BE len ‖ bytes` per field) so concatenation is unambiguous (canonical encoding).
+- **Wrapped blob layout:** `kyber_ct (1088) ‖ aes_kw_wrapped_vk (40)` = **1128 bytes**. No separate version byte in the blob — the version lives in the KEK transcript (downgrade-resistant); the storage-level `v2`/`v3` column discriminator is Task 3.
+- **Implicit rejection caveat:** ML-KEM decapsulation of a tampered ciphertext does **not** error (FIPS 203 returns a pseudo-random shared secret). The tamper-fail tests therefore pass via the **AES-KW** integrity check downstream, not a decaps error — this is expected and correct.
+- **Zeroize** every transient shared-secret / KEK / IKM buffer (`zeroize` is a core dep; `KeyBytes` is already `ZeroizeOnDrop`).
+
+> **Implementer note (`ml-kem` 0.2.3 API):** the exact paths for the `Encapsulate`/`Decapsulate` traits (`ml_kem::kem::{Encapsulate, Decapsulate}` vs crate root), the `Encoded<_>` alias, and the `Ciphertext<MlKem768>` type may differ slightly from the snippets below. Verify against `cargo doc -p ml-kem --no-deps` / docs.rs and adjust the `use` paths and `from_bytes`/`try_from` conversions — but keep every **public function signature and constant** exactly as written. The round-trip + size tests are the compile-and-correctness guard. (Task 1A already confirmed `MlKem768::generate`, `EncodedSizeUser::as_bytes`, and that `Array` derefs to `[u8]`.)
+
+---
+
+### Task 2A — ML-KEM encapsulate / decapsulate byte wrappers
+
+**Files:**
+- Modify: `omnidrive-core/src/pqkem.rs`
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `mod tests` in `pqkem.rs`:
+
+```rust
+    #[test]
+    fn encapsulate_decapsulate_roundtrip_same_secret() {
+        let (ek, dk) = generate_ml_kem_768_keypair();
+        let (ct, ss_enc) = ml_kem_encapsulate(&ek).unwrap();
+        assert_eq!(ct.len(), ML_KEM_768_CIPHERTEXT_LEN);
+        assert_eq!(ss_enc.len(), ML_KEM_768_SHARED_SECRET_LEN);
+        let ss_dec = ml_kem_decapsulate(&dk, &ct).unwrap();
+        assert_eq!(ss_enc, ss_dec, "encaps and decaps must agree on the shared secret");
+    }
+
+    #[test]
+    fn encapsulate_rejects_wrong_encaps_key_length() {
+        assert!(ml_kem_encapsulate(&[0u8; 10]).is_err());
+    }
+
+    #[test]
+    fn decapsulate_rejects_wrong_lengths() {
+        let (_ek, dk) = generate_ml_kem_768_keypair();
+        assert!(ml_kem_decapsulate(&dk, &[0u8; 10]).is_err());
+        assert!(ml_kem_decapsulate(&[0u8; 10], &[0u8; ML_KEM_768_CIPHERTEXT_LEN]).is_err());
+    }
+```
+
+- [ ] **Step 2: Run, expect FAIL (undefined):** `cargo test -p omnidrive-core pqkem`
+
+- [ ] **Step 3: Implement.** Extend the `use` at the top of `pqkem.rs` and add the items above the test module:
+
+```rust
+use ml_kem::kem::{Decapsulate, Encapsulate};
+use ml_kem::{Ciphertext, Encoded};
+
+pub const ML_KEM_768_CIPHERTEXT_LEN: usize = 1088;
+pub const ML_KEM_768_SHARED_SECRET_LEN: usize = 32;
+
+type Ek = <MlKem768 as KemCore>::EncapsulationKey;
+type Dk = <MlKem768 as KemCore>::DecapsulationKey;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PqKemError {
+    InvalidEncapsKeyLen(usize),
+    InvalidDecapsKeyLen(usize),
+    InvalidCiphertextLen(usize),
+}
+
+impl std::fmt::Display for PqKemError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidEncapsKeyLen(n) => write!(f, "invalid ML-KEM encapsulation key length: {n}"),
+            Self::InvalidDecapsKeyLen(n) => write!(f, "invalid ML-KEM decapsulation key length: {n}"),
+            Self::InvalidCiphertextLen(n) => write!(f, "invalid ML-KEM ciphertext length: {n}"),
+        }
+    }
+}
+impl std::error::Error for PqKemError {}
+
+/// Encapsulates against a peer's ML-KEM-768 encapsulation key.
+/// Returns `(ciphertext 1088 B, shared_secret 32 B)`.
+pub fn ml_kem_encapsulate(their_ek_bytes: &[u8]) -> Result<(Vec<u8>, [u8; 32]), PqKemError> {
+    let encoded = Encoded::<Ek>::try_from(their_ek_bytes)
+        .map_err(|_| PqKemError::InvalidEncapsKeyLen(their_ek_bytes.len()))?;
+    let ek = Ek::from_bytes(&encoded);
+    let mut rng = rand::thread_rng();
+    // ML-KEM encapsulation is infallible for a well-formed key.
+    let (ct, ss) = ek.encapsulate(&mut rng).expect("ML-KEM encapsulation");
+    let mut ss_bytes = [0u8; 32];
+    ss_bytes.copy_from_slice(&ss);
+    Ok((ct.to_vec(), ss_bytes))
+}
+
+/// Decapsulates a ciphertext with the local ML-KEM-768 decapsulation key.
+/// Returns the 32-byte shared secret. Per FIPS 203 a tampered ciphertext does
+/// not error here — it yields a pseudo-random secret (implicit rejection); the
+/// caller detects tampering downstream (AES-KW integrity).
+pub fn ml_kem_decapsulate(my_dk_bytes: &[u8], ct_bytes: &[u8]) -> Result<[u8; 32], PqKemError> {
+    let encoded = Encoded::<Dk>::try_from(my_dk_bytes)
+        .map_err(|_| PqKemError::InvalidDecapsKeyLen(my_dk_bytes.len()))?;
+    let dk = Dk::from_bytes(&encoded);
+    let ct = Ciphertext::<MlKem768>::try_from(ct_bytes)
+        .map_err(|_| PqKemError::InvalidCiphertextLen(ct_bytes.len()))?;
+    let ss = dk.decapsulate(&ct).expect("ML-KEM decapsulation");
+    let mut ss_bytes = [0u8; 32];
+    ss_bytes.copy_from_slice(&ss);
+    Ok(ss_bytes)
+}
+```
+
+> `ss` (the ML-KEM shared key) derefs to `[u8]`, so `copy_from_slice(&ss)` works. `ct.to_vec()` works because the ciphertext array also derefs to `[u8]`.
+
+- [ ] **Step 4: Run, expect PASS:** `cargo test -p omnidrive-core pqkem` (now 5 tests). `cargo fmt --all`.
+
+- [ ] **Step 5: Commit (do NOT push):**
+
+```bash
+git add omnidrive-core/src/pqkem.rs
+git commit -m "feat(core): α.B.b ML-KEM-768 encapsulate/decapsulate byte wrappers"
+```
+
+---
+
+### Task 2B — Hybrid combiner + wrap/unwrap
+
+**Files:**
+- Create: `omnidrive-core/src/hybrid.rs`
+- Modify: `omnidrive-core/src/lib.rs` (add `pub mod hybrid;`)
+
+- [ ] **Step 1: Write the failing tests FIRST.** Create `omnidrive-core/src/hybrid.rs` with ONLY this test module:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::KeyBytes;
+    use crate::pqkem::generate_ml_kem_768_keypair;
+
+    fn ctx() -> HybridWrapContext<'static> {
+        HybridWrapContext { version: HYBRID_WRAP_VERSION, vault_id: "vault-1", device_id: "dev-1" }
+    }
+
+    #[test]
+    fn wrap_unwrap_roundtrip() {
+        let (ek, dk) = generate_ml_kem_768_keypair();
+        let x_ss = [0x07u8; 32];
+        let vk = KeyBytes::from([0x33u8; 32]);
+
+        let blob = hybrid_wrap_vault_key(&x_ss, &ek, &vk, &ctx()).unwrap();
+        assert_eq!(blob.len(), HYBRID_WRAPPED_LEN);
+
+        let out = hybrid_unwrap_vault_key(&x_ss, &dk, &ek, &blob, &ctx()).unwrap();
+        assert_eq!(out, vk);
+    }
+
+    #[test]
+    fn unwrap_rejects_tampered_ciphertext() {
+        let (ek, dk) = generate_ml_kem_768_keypair();
+        let x_ss = [0x07u8; 32];
+        let vk = KeyBytes::from([0x33u8; 32]);
+        let mut blob = hybrid_wrap_vault_key(&x_ss, &ek, &vk, &ctx()).unwrap();
+        blob[0] ^= 0xFF; // flip in the kyber_ct region
+        assert!(hybrid_unwrap_vault_key(&x_ss, &dk, &ek, &blob, &ctx()).is_err());
+    }
+
+    #[test]
+    fn unwrap_rejects_tampered_wrapped_key() {
+        let (ek, dk) = generate_ml_kem_768_keypair();
+        let x_ss = [0x07u8; 32];
+        let vk = KeyBytes::from([0x33u8; 32]);
+        let mut blob = hybrid_wrap_vault_key(&x_ss, &ek, &vk, &ctx()).unwrap();
+        let last = blob.len() - 1;
+        blob[last] ^= 0xFF; // flip in the AES-KW wrapped region
+        assert!(hybrid_unwrap_vault_key(&x_ss, &dk, &ek, &blob, &ctx()).is_err());
+    }
+
+    #[test]
+    fn unwrap_rejects_downgraded_version() {
+        let (ek, dk) = generate_ml_kem_768_keypair();
+        let x_ss = [0x07u8; 32];
+        let vk = KeyBytes::from([0x33u8; 32]);
+        let blob = hybrid_wrap_vault_key(&x_ss, &ek, &vk, &ctx()).unwrap();
+        let bad = HybridWrapContext { version: "v2-x25519", vault_id: "vault-1", device_id: "dev-1" };
+        assert!(hybrid_unwrap_vault_key(&x_ss, &dk, &ek, &blob, &bad).is_err());
+    }
+
+    #[test]
+    fn unwrap_rejects_wrong_device_id() {
+        let (ek, dk) = generate_ml_kem_768_keypair();
+        let x_ss = [0x07u8; 32];
+        let vk = KeyBytes::from([0x33u8; 32]);
+        let blob = hybrid_wrap_vault_key(&x_ss, &ek, &vk, &ctx()).unwrap();
+        let bad = HybridWrapContext { version: HYBRID_WRAP_VERSION, vault_id: "vault-1", device_id: "dev-OTHER" };
+        assert!(hybrid_unwrap_vault_key(&x_ss, &dk, &ek, &blob, &bad).is_err());
+    }
+
+    #[test]
+    fn unwrap_rejects_wrong_x25519_secret() {
+        let (ek, dk) = generate_ml_kem_768_keypair();
+        let vk = KeyBytes::from([0x33u8; 32]);
+        let blob = hybrid_wrap_vault_key(&[0x07u8; 32], &ek, &vk, &ctx()).unwrap();
+        assert!(hybrid_unwrap_vault_key(&[0x08u8; 32], &dk, &ek, &blob, &ctx()).is_err());
+    }
+
+    #[test]
+    fn unwrap_rejects_wrong_decaps_key() {
+        let (ek, _dk) = generate_ml_kem_768_keypair();
+        let (_ek2, dk2) = generate_ml_kem_768_keypair();
+        let x_ss = [0x07u8; 32];
+        let vk = KeyBytes::from([0x33u8; 32]);
+        let blob = hybrid_wrap_vault_key(&x_ss, &ek, &vk, &ctx()).unwrap();
+        assert!(hybrid_unwrap_vault_key(&x_ss, &dk2, &ek, &blob, &ctx()).is_err());
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL (undefined):** `cargo test -p omnidrive-core hybrid`
+
+- [ ] **Step 3: Implement the module body.** Prepend above the `#[cfg(test)]` block in `hybrid.rs`:
+
+```rust
+use crate::crypto::{CryptoError, KeyBytes, WRAPPED_KEY_LEN, unwrap_key, wrap_key};
+use crate::pqkem::{self, ML_KEM_768_CIPHERTEXT_LEN, PqKemError};
+use hkdf::Hkdf;
+use sha2::Sha256;
+use zeroize::Zeroize;
+
+const HYBRID_WRAP_SALT: &[u8] = b"omnidrive-hybrid-wrap-v1";
+pub const HYBRID_WRAP_VERSION: &str = "v3-hybrid";
+pub const HYBRID_WRAPPED_LEN: usize = ML_KEM_768_CIPHERTEXT_LEN + WRAPPED_KEY_LEN;
+
+/// Anti-splice / anti-downgrade binding folded into the wrapping-KEK transcript.
+pub struct HybridWrapContext<'a> {
+    pub version: &'a str,
+    pub vault_id: &'a str,
+    pub device_id: &'a str,
+}
+
+#[derive(Debug)]
+pub enum HybridError {
+    PqKem(PqKemError),
+    Crypto(CryptoError),
+    InvalidBlobLen(usize),
+}
+
+impl std::fmt::Display for HybridError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PqKem(e) => write!(f, "ML-KEM error: {e}"),
+            Self::Crypto(e) => write!(f, "crypto error: {e}"),
+            Self::InvalidBlobLen(n) => write!(f, "invalid hybrid blob length: {n}"),
+        }
+    }
+}
+impl std::error::Error for HybridError {}
+impl From<PqKemError> for HybridError {
+    fn from(e: PqKemError) -> Self { Self::PqKem(e) }
+}
+impl From<CryptoError> for HybridError {
+    fn from(e: CryptoError) -> Self { Self::Crypto(e) }
+}
+
+fn append_field(info: &mut Vec<u8>, field: &[u8]) {
+    info.extend_from_slice(&(field.len() as u32).to_be_bytes());
+    info.extend_from_slice(field);
+}
+
+/// `KEK = HKDF-SHA256(salt, ikm = x25519_ss ‖ mlkem_ss, info = length-prefixed transcript)`.
+/// The transcript binds version + vault_id + device_id (anti-downgrade/splice) and
+/// the kyber ciphertext + encapsulation key (X-Wing anti-rebinding). Never XOR.
+fn derive_hybrid_kek(
+    x25519_ss: &[u8; 32],
+    mlkem_ss: &[u8; 32],
+    kyber_ct: &[u8],
+    their_ek: &[u8],
+    ctx: &HybridWrapContext,
+) -> Result<KeyBytes, HybridError> {
+    let mut ikm = Vec::with_capacity(64);
+    ikm.extend_from_slice(x25519_ss);
+    ikm.extend_from_slice(mlkem_ss);
+    let hk = Hkdf::<Sha256>::new(Some(HYBRID_WRAP_SALT), &ikm);
+
+    let mut info = Vec::new();
+    append_field(&mut info, ctx.version.as_bytes());
+    append_field(&mut info, ctx.vault_id.as_bytes());
+    append_field(&mut info, ctx.device_id.as_bytes());
+    append_field(&mut info, kyber_ct);
+    append_field(&mut info, their_ek);
+
+    let mut kek = [0u8; 32];
+    let res = hk.expand(&info, &mut kek);
+    ikm.zeroize();
+    res.map_err(|e| HybridError::Crypto(CryptoError::HkdfExpand(e)))?;
+
+    let out = KeyBytes::from(kek);
+    kek.zeroize();
+    Ok(out)
+}
+
+/// Wraps the Vault Key under the hybrid X25519 + ML-KEM-768 KEK.
+/// Returns `kyber_ct (1088) ‖ aes_kw_wrapped_vk (40)` = 1128 bytes. The X25519
+/// shared secret is computed by the caller and passed in (keeps this crate free
+/// of x25519-dalek).
+pub fn hybrid_wrap_vault_key(
+    x25519_shared_secret: &[u8; 32],
+    their_kyber_encaps_key: &[u8],
+    vault_key: &KeyBytes,
+    ctx: &HybridWrapContext,
+) -> Result<Vec<u8>, HybridError> {
+    let (kyber_ct, mut mlkem_ss) = pqkem::ml_kem_encapsulate(their_kyber_encaps_key)?;
+    let kek = derive_hybrid_kek(
+        x25519_shared_secret,
+        &mlkem_ss,
+        &kyber_ct,
+        their_kyber_encaps_key,
+        ctx,
+    )?;
+    mlkem_ss.zeroize();
+    let wrapped = wrap_key(&kek, vault_key)?;
+    let mut out = Vec::with_capacity(kyber_ct.len() + wrapped.len());
+    out.extend_from_slice(&kyber_ct);
+    out.extend_from_slice(&wrapped);
+    Ok(out)
+}
+
+/// Unwraps a Vault Key produced by `hybrid_wrap_vault_key`. `their_kyber_encaps_key`
+/// is the encapsulation key used at wrap time (needed to reconstruct the transcript).
+pub fn hybrid_unwrap_vault_key(
+    x25519_shared_secret: &[u8; 32],
+    my_kyber_decaps_key: &[u8],
+    their_kyber_encaps_key: &[u8],
+    wrapped_blob: &[u8],
+    ctx: &HybridWrapContext,
+) -> Result<KeyBytes, HybridError> {
+    if wrapped_blob.len() != HYBRID_WRAPPED_LEN {
+        return Err(HybridError::InvalidBlobLen(wrapped_blob.len()));
+    }
+    let (kyber_ct, wrapped) = wrapped_blob.split_at(ML_KEM_768_CIPHERTEXT_LEN);
+    let mut mlkem_ss = pqkem::ml_kem_decapsulate(my_kyber_decaps_key, kyber_ct)?;
+    let kek = derive_hybrid_kek(
+        x25519_shared_secret,
+        &mlkem_ss,
+        kyber_ct,
+        their_kyber_encaps_key,
+        ctx,
+    )?;
+    mlkem_ss.zeroize();
+    let wrapped_arr: &[u8; WRAPPED_KEY_LEN] = wrapped
+        .try_into()
+        .map_err(|_| HybridError::InvalidBlobLen(wrapped_blob.len()))?;
+    Ok(unwrap_key(&kek, wrapped_arr)?)
+}
+```
+
+- [ ] **Step 4: Register the module.** Add `pub mod hybrid;` to `omnidrive-core/src/lib.rs`.
+
+- [ ] **Step 5: Run, expect PASS:** `cargo test -p omnidrive-core hybrid` (7 tests). `cargo fmt --all`.
+
+- [ ] **Step 6: Commit (do NOT push):**
+
+```bash
+git add omnidrive-core/src/hybrid.rs omnidrive-core/src/lib.rs
+git commit -m "feat(core): α.B.b hybrid X25519+ML-KEM vault-key wrap/unwrap"
+```
+
+---
+
+### Final verification (after Task 2)
+
+- [ ] **Workspace gate** (mirrors pre-push):
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features test-helpers -- -D warnings
+cargo build --release --workspace
+cargo test -p omnidrive-core
+```
+Expected: all green. Watch for any new `AsRef`/`Array` ambiguity surfaced by the wider build (as in Task 1's `as_slice()` fix).
+
+- [ ] **DoD confirmation (α.B.b.2 Rust gate):**
+  - `encapsulate_decapsulate_roundtrip_same_secret` — encaps/decaps agree (1088 B ct, 32 B ss).
+  - `wrap_unwrap_roundtrip` — VK survives hybrid wrap → unwrap (1128-byte blob).
+  - tamper-fail set — flipped ciphertext, flipped wrapped key, downgraded version, wrong device_id, wrong x25519 secret, wrong decaps key all reject.
+- [ ] **No version bump.** Push (pre-push active, never `--no-verify`).
 
 ---
 
