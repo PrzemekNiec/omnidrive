@@ -92,6 +92,38 @@ pub fn decrypt_private_key(kek: &[u8; 32], blob: &[u8]) -> Result<[u8; 32], Iden
     Ok(key)
 }
 
+/// Encrypts an arbitrary-length secret with AES-256-GCM under `kek`.
+/// Returns `nonce(12) || ciphertext+tag`. Unlike `encrypt_private_key` this is
+/// not locked to 32-byte inputs (used for the 2400-byte ML-KEM decapsulation key).
+fn seal_secret_blob(kek: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, IdentityError> {
+    let cipher = Aes256Gcm::new_from_slice(kek)
+        .map_err(|e| IdentityError::Crypto(format!("AES init: {e}")))?;
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| IdentityError::Crypto(format!("AES-GCM encrypt: {e}")))?;
+    let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Decrypts a blob produced by `seal_secret_blob`.
+pub fn open_secret_blob(kek: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, IdentityError> {
+    if blob.len() < NONCE_LEN + 16 {
+        return Err(IdentityError::Crypto("sealed blob too short".into()));
+    }
+    let (nonce_bytes, ciphertext) = blob.split_at(NONCE_LEN);
+    let cipher = Aes256Gcm::new_from_slice(kek)
+        .map_err(|e| IdentityError::Crypto(format!("AES init: {e}")))?;
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| IdentityError::Crypto(format!("AES-GCM decrypt: {e}")))
+}
+
 /// Ensures the local device has an X25519 keypair.
 ///
 /// If the keypair already exists in `local_device_identity`, returns the public key.
@@ -136,6 +168,39 @@ pub async fn ensure_device_keypair(
     let _ = db::set_device_public_key(pool, &device.device_id, &public_bytes).await;
 
     Ok(public_bytes)
+}
+
+/// Ensures the local device has an ML-KEM-768 keypair, sealed at rest under the
+/// identity KEK (same KEK as the X25519 private key). Idempotent: returns the
+/// existing encapsulation key if one is already stored. Sibling to
+/// `ensure_device_keypair` (deliberately not folded in, so existing X25519-only
+/// devices get backfilled with a kyber keypair on the next unlock).
+///
+/// Returns the 1184-byte ML-KEM encapsulation (public) key.
+pub async fn ensure_device_kyber_keypair(
+    pool: &SqlitePool,
+    master_key: &[u8],
+) -> Result<Vec<u8>, IdentityError> {
+    let device = db::get_local_device_identity(pool)
+        .await?
+        .ok_or(IdentityError::NoDeviceIdentity)?;
+
+    if let (Some(_enc), Some(pubkey)) = (
+        &device.encrypted_kyber_private_key,
+        &device.kyber_public_key,
+    ) && pubkey.len() == omnidrive_core::pqkem::ML_KEM_768_ENCAPS_KEY_LEN
+    {
+        return Ok(pubkey.clone());
+    }
+
+    let (encaps_key, decaps_key) = omnidrive_core::pqkem::generate_ml_kem_768_keypair();
+    let kek = derive_identity_kek(master_key)?;
+    let sealed = seal_secret_blob(&kek, &decaps_key)?;
+
+    db::store_kyber_keypair(pool, &sealed, &encaps_key).await?;
+    let _ = db::set_device_kyber_public_key(pool, &device.device_id, &encaps_key).await;
+
+    Ok(encaps_key)
 }
 
 /// Retrieves and decrypts the local device's X25519 private key.
@@ -244,6 +309,47 @@ pub fn unwrap_vault_key_from_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seal_open_secret_blob_roundtrip_variable_length() {
+        let kek = [0x77u8; 32];
+        let secret = vec![0x5Au8; 2400];
+        let sealed = seal_secret_blob(&kek, &secret).unwrap();
+        assert_eq!(sealed.len(), NONCE_LEN + 2400 + 16);
+        assert_eq!(open_secret_blob(&kek, &sealed).unwrap(), secret);
+
+        let wrong = [0x88u8; 32];
+        assert!(open_secret_blob(&wrong, &sealed).is_err());
+    }
+
+    #[tokio::test]
+    async fn ensure_device_kyber_keypair_generates_persists_and_is_idempotent() {
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        let master_key = [0x42u8; 32];
+        db::upsert_local_device_identity(&pool, "dev-kyber", "TestPC", "tok-1")
+            .await
+            .unwrap();
+
+        let pub1 = ensure_device_kyber_keypair(&pool, &master_key)
+            .await
+            .unwrap();
+        assert_eq!(pub1.len(), omnidrive_core::pqkem::ML_KEM_768_ENCAPS_KEY_LEN);
+        assert_ne!(pub1, vec![0u8; pub1.len()]);
+
+        let pub2 = ensure_device_kyber_keypair(&pool, &master_key)
+            .await
+            .unwrap();
+        assert_eq!(pub1, pub2);
+
+        let device = db::get_local_device_identity(&pool).await.unwrap().unwrap();
+        let sealed = device.encrypted_kyber_private_key.unwrap();
+        let kek = derive_identity_kek(&master_key).unwrap();
+        let decaps = open_secret_blob(&kek, &sealed).unwrap();
+        assert_eq!(
+            decaps.len(),
+            omnidrive_core::pqkem::ML_KEM_768_DECAPS_KEY_LEN
+        );
+    }
 
     #[test]
     fn reseal_private_key_rebinds_to_new_master() {
