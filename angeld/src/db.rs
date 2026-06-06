@@ -544,6 +544,8 @@ pub struct DeviceRecord {
     pub last_seen_at: Option<i64>,
     pub created_at: i64,
     pub enrolled_at: Option<i64>,
+    pub kyber_public_key: Option<Vec<u8>>,
+    pub wrapped_vault_key_kyber: Option<Vec<u8>>,
 }
 
 #[allow(dead_code)]
@@ -7304,7 +7306,8 @@ pub async fn get_device(
 ) -> Result<Option<DeviceRecord>, sqlx::Error> {
     sqlx::query_as::<_, DeviceRecord>(
         "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
-         vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at \
+         vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at, \
+         kyber_public_key, wrapped_vault_key_kyber \
          FROM devices WHERE device_id = ?",
     )
     .bind(device_id)
@@ -7343,7 +7346,8 @@ pub async fn list_devices_for_user(
 ) -> Result<Vec<DeviceRecord>, sqlx::Error> {
     sqlx::query_as::<_, DeviceRecord>(
         "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
-         vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at \
+         vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at, \
+         kyber_public_key, wrapped_vault_key_kyber \
          FROM devices WHERE user_id = ? ORDER BY created_at ASC",
     )
     .bind(user_id)
@@ -7368,6 +7372,19 @@ pub async fn set_device_wrapped_vault_key(
     Ok(result.rows_affected() > 0)
 }
 
+pub async fn set_device_wrapped_vault_key_kyber(
+    pool: &SqlitePool,
+    device_id: &str,
+    wrapped_vault_key_kyber: &[u8],
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE devices SET wrapped_vault_key_kyber = ? WHERE device_id = ?")
+        .bind(wrapped_vault_key_kyber)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Returns active devices for a user: non-revoked and with a wrapped vault key.
 pub async fn get_active_devices_for_user(
     pool: &SqlitePool,
@@ -7375,7 +7392,8 @@ pub async fn get_active_devices_for_user(
 ) -> Result<Vec<DeviceRecord>, sqlx::Error> {
     sqlx::query_as::<_, DeviceRecord>(
         "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
-         vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at \
+         vault_key_generation, revoked_at, last_seen_at, created_at, enrolled_at, \
+         kyber_public_key, wrapped_vault_key_kyber \
          FROM devices WHERE user_id = ? AND revoked_at IS NULL AND wrapped_vault_key IS NOT NULL \
          ORDER BY created_at ASC",
     )
@@ -9587,6 +9605,41 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir).await;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn set_and_read_device_wrapped_kyber() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u-kyber', 'Test', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('dev-x', 'u-kyber', 'PC', X'090909', 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let kyber_pub = vec![0x22u8; 1184];
+        let wrapped_kyber = vec![0x44u8; 1128];
+        set_device_kyber_public_key(&pool, "dev-x", &kyber_pub)
+            .await
+            .unwrap();
+        set_device_wrapped_vault_key_kyber(&pool, "dev-x", &wrapped_kyber)
+            .await
+            .unwrap();
+
+        let dev = get_device(&pool, "dev-x").await.unwrap().unwrap();
+        assert_eq!(dev.kyber_public_key.as_deref(), Some(kyber_pub.as_slice()));
+        assert_eq!(
+            dev.wrapped_vault_key_kyber.as_deref(),
+            Some(wrapped_kyber.as_slice())
+        );
     }
 
     #[tokio::test]
