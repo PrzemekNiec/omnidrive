@@ -31,23 +31,7 @@
 
 ## P1 — Krytyczne błędy logiczne
 
-### P1-003 — Snapshot upload do Scaleway zwraca AccessDenied
-
-- **Wykryto:** v0.3.23 Dell metadata-backup status — Scaleway 403 AccessDenied dla `_omnidrive/system/metadata/snapshots/*.db.enc`
-- **Symptom:** B2 OK, R2 connection reset (osobny issue), Scaleway 403. Czyli z 3 providerów tylko jeden żywy.
-- **Hipoteza:** Bucket policy / access key uprawnienia do prefix `_omnidrive/system/metadata/snapshots/` — może bucket nie pozwala PUT pod system/. Inny prefix (`packs/...`) działa wg logów.
-- **Impact:** Brak redundancji metadanych: jedyna kopia snapshot na B2. Awaria B2 = utrata metadata, mimo że chunki są na 3 providerach.
-- **Fix scope:** Sprawdzić Scaleway IAM policy + bucket policy + key permissions. Jeśli OK, zbadać dlaczego prefix `_omnidrive/system/` jest blokowany. Naprawić konfigurację albo udokumentować workaround.
-- **Status:** OPEN. **Faza β** roadmapy v0.4 (snapshot redundancy fix). **Quality Gate 2.e** ("snapshot zawsze w ≥1 sprawnym miejscu") nie spełniony, ale technically B2 jest sprawny → tolerowalne tymczasowo. P1 bo bezpieczeństwo redundancji.
-
-### P1-004 — Snapshot upload do R2 zwraca ConnectionReset
-
-- **Wykryto:** v0.3.23 Dell metadata-backup status — R2 `ConnectionReset (os error 10054)` przy PUT
-- **Symptom:** Brak 403, brak timeout — surowy reset połączenia od R2. Może być rate-limit / WAF / connection pool issue.
-- **Hipoteza:** R2 hyper-1.x compatibility issue (memory: rustls/hyper consolidation odłożona). Może `keep-alive` pool trzyma wygasłe połączenie.
-- **Impact:** Tak samo jak P1-003 — brak redundancji.
-- **Fix scope:** Najpierw retry z fresh connection (`force-close` po 1 ConnReset). Drugorzędnie: Batch 7 C.3 (rustls/hyper consolidation z Backlog).
-- **Status:** OPEN. **Faza β** roadmapy v0.4 (snapshot redundancy fix). Powiązany z C.3 (Backlog).
+*Brak otwartych — wszystkie P1 z Dell smoke v0.3.23 zamknięte: P1-001/005 (α.C.b graft), P1-002 (β.b fetch worker), P1-003/004 (β.c cloud redundancy).*
 
 ---
 
@@ -112,6 +96,13 @@
 ---
 
 ## Closed
+
+### Faza β — β.c: P1-003 & P1-004 Cloud Redundancy (2026-06-06)
+
+Plan: `docs/superpowers/plans/2026-06-06-beta-task2-p1003-p1004-cloud-redundancy.md`. Commity `5cbf3ae`/`e6e20de`/`cdb7443`, TDD subagent-driven. Bramka `--all-targets` oba tryby + core 28 + angeld **157** lib green. Bez bumpu (v0.3.27).
+
+- ~~**P1-004** — R2 ConnectionReset 10054 przy PUT snapshotu (stale keep-alive socket)~~ → **FIXED (kod)** (`5cbf3ae`+`e6e20de`). Root cause = R2 zrywa idle keep-alive, hyper reużywa martwy socket. Fix w współdzielonym `aws_http::load_shared_config`: krótki `pool_idle_timeout` (10s, prune martwych socketów przed RST R2) + adaptive `RetryConfig` (cały workspace, też pack-upload). Plus app-level `retry_with_backoff` (4 próby, exp backoff) wokół uploadu snapshotu — retryuje transienty (ConnReset/timeout), permanentne (403) fail-fast. Pooling NIE wyłączony (perf hot-path zachowany). **Live smoke R2 = osobna akceptacja.**
+- ~~**P1-003** — Scaleway 403 AccessDenied na PUT do prefiksu `_omnidrive/system/`~~ → **ROOT CAUSE = IAM/bucket policy (NIE kod)**, kod-side zaadresowany (`cdb7443`). Dowód: `upload_system_file` (snapshoty) i `upload_pack` wołają TEN SAM `upload_file` z identycznym żądaniem i klientem (ten sam `force_path_style`); skoro `packs/` PUT działa na Scaleway a `_omnidrive/system/` nie — to prefix-scoped policy, nie path-style/endpoint. **Kod:** actionable diagnostic (`upload_error_is_access_denied` → warn „IAM/bucket-policy denial, verify s3:PutObject/GetObject/ListBucket on prefix") + potwierdzona graceful degradation (per-provider, 2/3 spełnia QG, Scaleway-403 nie blokuje B2+R2). **⚠️ AKCJA INFRA WYMAGANA (Przemek, konsola Scaleway):** nadać kluczowi dostępowemu uprawnienia `s3:PutObject`+`s3:GetObject`+`s3:ListBucket` na prefiks `_omnidrive/system/*` (lub cały bucket). Po zmianie IAM → live smoke potwierdzi 3/3. Bez tego redundancja działa na 2/3 (B2+R2), co spełnia QG „≥1, docelowo 2/3".
 
 ### Faza β — β.b: P1-002 Snapshot Fetch Worker (2026-06-06)
 
