@@ -2713,6 +2713,30 @@ pub async fn set_system_config_value(
 }
 
 #[allow(dead_code)]
+pub async fn get_last_applied_roster_snapshot_at(
+    pool: &SqlitePool,
+) -> Result<Option<i64>, sqlx::Error> {
+    Ok(
+        get_system_config_value(pool, "last_applied_roster_snapshot_at")
+            .await?
+            .and_then(|v| v.parse::<i64>().ok()),
+    )
+}
+
+#[allow(dead_code)]
+pub async fn set_last_applied_roster_snapshot_at(
+    pool: &SqlitePool,
+    created_at: i64,
+) -> Result<(), sqlx::Error> {
+    set_system_config_value(
+        pool,
+        "last_applied_roster_snapshot_at",
+        &created_at.to_string(),
+    )
+    .await
+}
+
+#[allow(dead_code)]
 pub async fn get_cloud_usage_for_day(
     pool: &SqlitePool,
     day_epoch: i64,
@@ -10152,5 +10176,28 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir).await;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn roster_snapshot_marker_round_trips() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        assert_eq!(
+            get_last_applied_roster_snapshot_at(&pool).await.unwrap(),
+            None
+        );
+        set_last_applied_roster_snapshot_at(&pool, 1234)
+            .await
+            .unwrap();
+        assert_eq!(
+            get_last_applied_roster_snapshot_at(&pool).await.unwrap(),
+            Some(1234)
+        );
+        set_last_applied_roster_snapshot_at(&pool, 5678)
+            .await
+            .unwrap();
+        assert_eq!(
+            get_last_applied_roster_snapshot_at(&pool).await.unwrap(),
+            Some(5678)
+        );
     }
 }
