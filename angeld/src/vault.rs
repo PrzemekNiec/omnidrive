@@ -932,20 +932,20 @@ async fn ensure_vault_config(pool: &SqlitePool) -> Result<(RootKdfParams, bool),
     db::set_vault_config(
         pool,
         &salt,
-        i64::from(DEFAULT_PARAMETER_SET_VERSION),
-        i64::from(DEFAULT_MEMORY_COST_KIB),
-        i64::from(DEFAULT_TIME_COST),
-        i64::from(DEFAULT_LANES),
+        i64::from(TARGET_PARAMETER_SET_VERSION),
+        i64::from(TARGET_MEMORY_COST_KIB),
+        i64::from(TARGET_TIME_COST),
+        i64::from(TARGET_LANES),
     )
     .await?;
 
     Ok((
         RootKdfParams::new(
-            DEFAULT_PARAMETER_SET_VERSION,
+            TARGET_PARAMETER_SET_VERSION,
             salt,
-            DEFAULT_MEMORY_COST_KIB,
-            DEFAULT_TIME_COST,
-            DEFAULT_LANES,
+            TARGET_MEMORY_COST_KIB,
+            TARGET_TIME_COST,
+            TARGET_LANES,
         ),
         true,
     ))
@@ -1473,6 +1473,17 @@ mod tests {
 
     async fn test_pool_v1() -> SqlitePool {
         let pool = db::init_db("sqlite::memory:").await.unwrap();
+        let salt = RootKdfParams::random_salt().to_vec();
+        db::set_vault_config(
+            &pool,
+            &salt,
+            i64::from(DEFAULT_PARAMETER_SET_VERSION),
+            i64::from(DEFAULT_MEMORY_COST_KIB),
+            i64::from(DEFAULT_TIME_COST),
+            i64::from(DEFAULT_LANES),
+        )
+        .await
+        .unwrap();
         VaultKeyStore::new()
             .unlock(&pool, "pass-123")
             .await
@@ -1756,5 +1767,25 @@ mod tests {
             "kyber decaps sealed"
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn fresh_vault_starts_at_target_param_set() {
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        bootstrap_local_vault(&pool).await.unwrap();
+        let cfg = db::get_vault_config(&pool).await.unwrap().unwrap();
+        assert_eq!(
+            cfg.parameter_set_version,
+            i64::from(TARGET_PARAMETER_SET_VERSION)
+        );
+        assert_eq!(cfg.memory_cost_kib, i64::from(TARGET_MEMORY_COST_KIB));
+    }
+
+    #[tokio::test]
+    async fn fresh_vault_needs_no_kdf_migration() {
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        bootstrap_local_vault(&pool).await.unwrap();
+        let cfg = db::get_vault_config(&pool).await.unwrap().unwrap();
+        assert!(!needs_kdf_migration(cfg.parameter_set_version));
     }
 }
