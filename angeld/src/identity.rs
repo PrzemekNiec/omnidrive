@@ -309,8 +309,8 @@ pub fn unwrap_vault_key_from_device(
 }
 
 /// Wraps a Vault Key for a target device under the hybrid X25519 + ML-KEM scheme.
-/// Computes the X25519 shared secret here (ECDH stays in `angeld`) and delegates the
-/// combiner + AES-KW to `omnidrive_core::hybrid`. Returns `kyber_ct ‖ wrapped` (1128 B).
+/// Computes the X25519 ECDH in `angeld` (keeping x25519-dalek out of `omnidrive-core`)
+/// and delegates the X-Wing combiner + AES-KW to `omnidrive_core::hybrid`.
 pub fn hybrid_wrap_vault_key_for_device(
     my_private_key: &[u8; 32],
     their_public_key: &[u8; 32],
@@ -338,7 +338,8 @@ pub fn hybrid_wrap_vault_key_for_device(
 }
 
 /// Unwraps a Vault Key produced by `hybrid_wrap_vault_key_for_device`. `my_kyber_encaps_key`
-/// is the recipient's own encapsulation key (bound into the transcript at wrap time).
+/// must be the same encapsulation key that was passed as `their_kyber_encaps_key` at wrap
+/// time (it is bound into the KEK transcript).
 pub fn hybrid_unwrap_vault_key_from_device(
     my_private_key: &[u8; 32],
     their_public_key: &[u8; 32],
