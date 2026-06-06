@@ -1074,4 +1074,54 @@ mod tests {
         assert!(dev2.revoked_at.is_some());
         assert!(dev2.wrapped_vault_key.is_none());
     }
+
+    #[tokio::test]
+    async fn e2e_solo_vault_both_wraps_decrypt_to_same_vault_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::vault::VaultKeyStore;
+
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+        db::upsert_local_device_identity(&pool, "dev-solo", "PC", "tok").await?;
+
+        store.run_post_unlock_maintenance(&pool, "pass-123").await?;
+
+        let master = store.require_master_key().await?;
+        let vk = store.require_envelope_key().await?;
+
+        let device = db::get_local_device_identity(&pool).await?.unwrap();
+        let mut owner_pub = [0u8; 32];
+        owner_pub.copy_from_slice(device.public_key.as_deref().unwrap());
+        let kyber_ek = device.kyber_public_key.unwrap();
+
+        let owner_priv = get_device_private_key(&pool, master.as_ref()).await?;
+        let kyber_dk = get_device_kyber_private_key(&pool, master.as_ref()).await?;
+
+        let wrapped_x = wrap_vault_key_for_device(&owner_priv, &owner_pub, &vk)?;
+        let wrapped_h = hybrid_wrap_vault_key_for_device(
+            &owner_priv,
+            &owner_pub,
+            &kyber_ek,
+            &vk,
+            "vault-solo",
+            "dev-solo",
+        )?;
+
+        let vk_x = unwrap_vault_key_from_device(&owner_priv, &owner_pub, &wrapped_x)?;
+        let vk_h = hybrid_unwrap_vault_key_from_device(
+            &owner_priv,
+            &owner_pub,
+            &kyber_dk,
+            &kyber_ek,
+            &wrapped_h,
+            "vault-solo",
+            "dev-solo",
+        )?;
+
+        assert_eq!(vk_x, vk, "X25519 wrap must decrypt to the Vault Key");
+        assert_eq!(vk_h, vk, "hybrid wrap must decrypt to the Vault Key");
+        assert_eq!(vk_x, vk_h, "both wraps must yield the identical Vault Key");
+        Ok(())
+    }
 }
