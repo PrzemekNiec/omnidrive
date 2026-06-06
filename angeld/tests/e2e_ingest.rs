@@ -111,7 +111,7 @@ async fn ingest_pipeline_full_cycle() -> Result<(), Box<dyn std::error::Error>> 
         vault_keys.clone(),
         spool_dir.clone(),
         sync_root.clone(),
-    );
+    )?;
 
     let job = IngestJob::from_row(&row).expect("valid job");
     worker.process_job_for_test(&job).await?;

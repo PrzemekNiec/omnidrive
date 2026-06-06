@@ -151,16 +151,20 @@ struct HelloQuery {
 }
 
 impl PeerClient {
-    pub fn new(pool: SqlitePool, caller_device_id: String, local_vault_id: String) -> Self {
-        Self {
+    pub fn new(
+        pool: SqlitePool,
+        caller_device_id: String,
+        local_vault_id: String,
+    ) -> Result<Self, PeerError> {
+        Ok(Self {
             pool,
             caller_device_id,
             local_vault_id,
             http: Client::builder()
                 .timeout(Duration::from_millis(900))
                 .build()
-                .expect("peer client"),
-        }
+                .map_err(PeerError::Http)?,
+        })
     }
 
     pub async fn fetch_chunk(&self, chunk_id: &[u8]) -> Result<Option<Vec<u8>>, PeerError> {
@@ -573,5 +577,16 @@ fn evaluate_peer_policy(
         health_score,
         stale,
         eligible: peer.trusted != 0 && !stale && !in_error_backoff,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn peer_client_new_succeeds() {
+        let pool = crate::db::init_db("sqlite::memory:").await.unwrap();
+        assert!(PeerClient::new(pool, "dev".into(), "v1".into()).is_ok());
     }
 }

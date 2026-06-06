@@ -171,7 +171,7 @@ impl IngestWorker {
         vault_keys: VaultKeyStore,
         spool_dir: PathBuf,
         sync_root: PathBuf,
-    ) -> Self {
+    ) -> Result<Self, IngestError> {
         let poll_ms: u64 = std::env::var("OMNIDRIVE_INGEST_POLL_INTERVAL_MS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -185,15 +185,14 @@ impl IngestWorker {
             pool.clone(),
             vault_keys,
             PackerConfig::new(&spool_dir).with_chunk_size(chunk_size),
-        )
-        .expect("ingest: packer initialization failed");
+        )?;
 
-        Self {
+        Ok(Self {
             pool,
             packer,
             sync_root,
             poll_interval: Duration::from_millis(poll_ms),
-        }
+        })
     }
 
     /// Crash recovery: reset any jobs that were mid-flight (CHUNKING / UPLOADING)
@@ -583,4 +582,18 @@ pub async fn cleanup_failed_ingest(
     info!("ingest cleanup: deleted FAILED job {}", job_id);
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vault::VaultKeyStore;
+
+    #[tokio::test]
+    async fn ingest_worker_new_succeeds() {
+        let pool = crate::db::init_db("sqlite::memory:").await.unwrap();
+        let spool = std::env::temp_dir().join("omnidrive_test_spool");
+        let sync = std::env::temp_dir().join("omnidrive_test_sync");
+        assert!(IngestWorker::new(pool, VaultKeyStore::new(), spool, sync).is_ok());
+    }
 }

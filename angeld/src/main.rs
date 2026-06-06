@@ -556,7 +556,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             pool.clone(),
             local_device.device_id.clone(),
             local_vault_id.clone(),
-        ))
+        )?)
         .await;
     if !no_sync {
         let _ = virtual_drive::unmount_virtual_drive(&preferred_drive_letter);
@@ -776,7 +776,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         vault_keys.clone(),
         ingest_spool_dir,
         sync_root.clone(),
-    );
+    )?;
     let metadata_backup_provider_manager =
         Arc::new(MetadataBackupProviderManager::from_onboarding_db_all(&pool).await?);
     let metadata_backup_worker = start_metadata_backup_worker(
