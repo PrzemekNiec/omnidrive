@@ -5,6 +5,9 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
 use omnidrive_core::crypto::{KeyBytes, WRAPPED_KEY_LEN, unwrap_key, wrap_key};
+use omnidrive_core::hybrid::{
+    HYBRID_WRAP_VERSION, HybridWrapContext, hybrid_unwrap_vault_key, hybrid_wrap_vault_key,
+};
 use rand::RngCore;
 use sha2::Sha256;
 use sqlx::SqlitePool;
@@ -305,9 +308,220 @@ pub fn unwrap_vault_key_from_device(
         .map_err(|e| IdentityError::Crypto(format!("AES-KW unwrap: {e}")))
 }
 
+/// Wraps a Vault Key for a target device under the hybrid X25519 + ML-KEM scheme.
+/// Computes the X25519 shared secret here (ECDH stays in `angeld`) and delegates the
+/// combiner + AES-KW to `omnidrive_core::hybrid`. Returns `kyber_ct ‖ wrapped` (1128 B).
+pub fn hybrid_wrap_vault_key_for_device(
+    my_private_key: &[u8; 32],
+    their_public_key: &[u8; 32],
+    their_kyber_encaps_key: &[u8],
+    vault_key: &KeyBytes,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<Vec<u8>, IdentityError> {
+    validate_x25519_pubkey(their_public_key)?;
+    let secret = x25519_dalek::StaticSecret::from(*my_private_key);
+    let their_pub = x25519_dalek::PublicKey::from(*their_public_key);
+    let shared = secret.diffie_hellman(&their_pub);
+    if shared.as_bytes() == &[0u8; 32] {
+        return Err(IdentityError::Crypto(
+            "ECDH produced all-zero shared secret: low-order point attack rejected".into(),
+        ));
+    }
+    let ctx = HybridWrapContext {
+        version: HYBRID_WRAP_VERSION,
+        vault_id,
+        device_id,
+    };
+    hybrid_wrap_vault_key(shared.as_bytes(), their_kyber_encaps_key, vault_key, &ctx)
+        .map_err(|e| IdentityError::Crypto(format!("hybrid wrap: {e}")))
+}
+
+/// Unwraps a Vault Key produced by `hybrid_wrap_vault_key_for_device`. `my_kyber_encaps_key`
+/// is the recipient's own encapsulation key (bound into the transcript at wrap time).
+pub fn hybrid_unwrap_vault_key_from_device(
+    my_private_key: &[u8; 32],
+    their_public_key: &[u8; 32],
+    my_kyber_decaps_key: &[u8],
+    my_kyber_encaps_key: &[u8],
+    wrapped_blob: &[u8],
+    vault_id: &str,
+    device_id: &str,
+) -> Result<KeyBytes, IdentityError> {
+    validate_x25519_pubkey(their_public_key)?;
+    let secret = x25519_dalek::StaticSecret::from(*my_private_key);
+    let their_pub = x25519_dalek::PublicKey::from(*their_public_key);
+    let shared = secret.diffie_hellman(&their_pub);
+    if shared.as_bytes() == &[0u8; 32] {
+        return Err(IdentityError::Crypto(
+            "ECDH produced all-zero shared secret: low-order point attack rejected".into(),
+        ));
+    }
+    let ctx = HybridWrapContext {
+        version: HYBRID_WRAP_VERSION,
+        vault_id,
+        device_id,
+    };
+    hybrid_unwrap_vault_key(
+        shared.as_bytes(),
+        my_kyber_decaps_key,
+        my_kyber_encaps_key,
+        wrapped_blob,
+        &ctx,
+    )
+    .map_err(|e| IdentityError::Crypto(format!("hybrid unwrap: {e}")))
+}
+
+/// Unwraps the device's Vault Key, preferring the post-quantum hybrid wrap when the
+/// kyber ciphertext and the local kyber keypair are all present, else the X25519 wrap.
+#[allow(clippy::too_many_arguments)]
+pub fn select_and_unwrap_vault_key(
+    my_private_key: &[u8; 32],
+    their_public_key: &[u8; 32],
+    my_kyber_decaps_key: Option<&[u8]>,
+    my_kyber_encaps_key: Option<&[u8]>,
+    wrapped_x25519: &[u8; WRAPPED_KEY_LEN],
+    wrapped_hybrid: Option<&[u8]>,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<KeyBytes, IdentityError> {
+    if let (Some(blob), Some(dk), Some(ek)) =
+        (wrapped_hybrid, my_kyber_decaps_key, my_kyber_encaps_key)
+    {
+        return hybrid_unwrap_vault_key_from_device(
+            my_private_key,
+            their_public_key,
+            dk,
+            ek,
+            blob,
+            vault_id,
+            device_id,
+        );
+    }
+    unwrap_vault_key_from_device(my_private_key, their_public_key, wrapped_x25519)
+}
+
+/// Retrieves and unseals the local device's ML-KEM decapsulation key. Requires the
+/// vault to be unlocked (needs `master_key` to derive the identity KEK).
+pub async fn get_device_kyber_private_key(
+    pool: &SqlitePool,
+    master_key: &[u8],
+) -> Result<Vec<u8>, IdentityError> {
+    let device = db::get_local_device_identity(pool)
+        .await?
+        .ok_or(IdentityError::NoDeviceIdentity)?;
+    let encrypted = device
+        .encrypted_kyber_private_key
+        .ok_or(IdentityError::Crypto(
+            "no encrypted kyber private key stored".into(),
+        ))?;
+    let kek = derive_identity_kek(master_key)?;
+    open_secret_blob(&kek, &encrypted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hybrid_wrap_unwrap_for_device_roundtrip() {
+        let (ek, dk) = omnidrive_core::pqkem::generate_ml_kem_768_keypair();
+        let owner_priv = [0x11u8; 32];
+        let owner_pub =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(owner_priv)).to_bytes();
+        let vault_key = KeyBytes::from([0x33u8; 32]);
+
+        let blob = hybrid_wrap_vault_key_for_device(
+            &owner_priv,
+            &owner_pub,
+            &ek,
+            &vault_key,
+            "vault-1",
+            "dev-1",
+        )
+        .unwrap();
+        let out = hybrid_unwrap_vault_key_from_device(
+            &owner_priv,
+            &owner_pub,
+            &dk,
+            &ek,
+            &blob,
+            "vault-1",
+            "dev-1",
+        )
+        .unwrap();
+        assert_eq!(out, vault_key);
+    }
+
+    #[test]
+    fn hybrid_unwrap_for_device_rejects_wrong_vault_id() {
+        let (ek, dk) = omnidrive_core::pqkem::generate_ml_kem_768_keypair();
+        let owner_priv = [0x11u8; 32];
+        let owner_pub =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(owner_priv)).to_bytes();
+        let vault_key = KeyBytes::from([0x33u8; 32]);
+        let blob = hybrid_wrap_vault_key_for_device(
+            &owner_priv,
+            &owner_pub,
+            &ek,
+            &vault_key,
+            "vault-1",
+            "dev-1",
+        )
+        .unwrap();
+        assert!(
+            hybrid_unwrap_vault_key_from_device(
+                &owner_priv,
+                &owner_pub,
+                &dk,
+                &ek,
+                &blob,
+                "vault-OTHER",
+                "dev-1",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn selection_prefers_hybrid_then_falls_back() {
+        let (ek, dk) = omnidrive_core::pqkem::generate_ml_kem_768_keypair();
+        let owner_priv = [0x11u8; 32];
+        let owner_pub =
+            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(owner_priv)).to_bytes();
+        let vk = KeyBytes::from([0x33u8; 32]);
+
+        let wrapped_x = wrap_vault_key_for_device(&owner_priv, &owner_pub, &vk).unwrap();
+        let wrapped_h =
+            hybrid_wrap_vault_key_for_device(&owner_priv, &owner_pub, &ek, &vk, "vault-1", "dev-1")
+                .unwrap();
+
+        let via_hybrid = select_and_unwrap_vault_key(
+            &owner_priv,
+            &owner_pub,
+            Some(&dk),
+            Some(&ek),
+            &wrapped_x,
+            Some(&wrapped_h),
+            "vault-1",
+            "dev-1",
+        )
+        .unwrap();
+        assert_eq!(via_hybrid, vk);
+
+        let via_x25519 = select_and_unwrap_vault_key(
+            &owner_priv,
+            &owner_pub,
+            Some(&dk),
+            Some(&ek),
+            &wrapped_x,
+            None,
+            "vault-1",
+            "dev-1",
+        )
+        .unwrap();
+        assert_eq!(via_x25519, vk);
+    }
 
     #[test]
     fn seal_open_secret_blob_roundtrip_variable_length() {
