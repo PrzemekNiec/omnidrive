@@ -2462,13 +2462,11 @@ pub async fn graft_restored_metadata_snapshot(
 /// overwritten. The function rejects any snapshot whose `vault_state.vault_id` differs
 /// from `expected_vault_id`, and it never touches `data_encryption_keys`, `vault_state`,
 /// `vault_recovery_keys`, or `local_device_identity`.
-#[allow(dead_code)]
 pub struct RosterMergeSummary {
     pub devices_added: u64,
     pub members_added: u64,
 }
 
-#[allow(dead_code)]
 pub async fn graft_roster_additive(
     pool: &SqlitePool,
     snapshot_db_path: &Path,
@@ -2484,23 +2482,28 @@ pub async fn graft_roster_additive(
     struct VaultIdRow {
         vault_id: String,
     }
-    let snap_vault =
+    let snap_vault_row =
         sqlx::query_as::<_, VaultIdRow>("SELECT vault_id FROM vault_state WHERE id = 1")
             .fetch_optional(&snap_pool)
-            .await?
-            .ok_or(sqlx::Error::Protocol(
+            .await?;
+    let snap_vault = match snap_vault_row {
+        Some(row) => row,
+        None => {
+            snap_pool.close().await;
+            drop(snap_pool);
+            return Err(sqlx::Error::Protocol(
                 "restored snapshot is missing vault_state row".into(),
-            ))?;
+            ));
+        }
+    };
 
     if snap_vault.vault_id != expected_vault_id {
+        snap_pool.close().await;
         drop(snap_pool);
-        return Err(sqlx::Error::Protocol(
-            format!(
-                "snapshot vault_id mismatch: expected '{}', got '{}'",
-                expected_vault_id, snap_vault.vault_id
-            )
-            .into(),
-        ));
+        return Err(sqlx::Error::Protocol(format!(
+            "snapshot vault_id mismatch: expected '{}', got '{}'",
+            expected_vault_id, snap_vault.vault_id
+        )));
     }
 
     let r_devices = sqlx::query_as::<_, RestoredDevice>(
@@ -2521,54 +2524,77 @@ pub async fn graft_roster_additive(
 
     snap_pool.close().await;
     drop(snap_pool);
+    tokio::task::yield_now().await;
 
-    let mut devices_added: u64 = 0;
-    let mut members_added: u64 = 0;
-
-    for row in &r_devices {
-        let res = sqlx::query(
-            "INSERT OR IGNORE INTO devices \
-             (device_id, user_id, device_name, public_key, wrapped_vault_key, \
-              vault_key_generation, revoked_at, last_seen_at, created_at, \
-              safety_numbers_verified_at, enrolled_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&row.device_id)
-        .bind(&row.user_id)
-        .bind(&row.device_name)
-        .bind(&row.public_key)
-        .bind(&row.wrapped_vault_key)
-        .bind(row.vault_key_generation)
-        .bind(row.revoked_at)
-        .bind(row.last_seen_at)
-        .bind(row.created_at)
-        .bind(row.safety_numbers_verified_at)
-        .bind(row.enrolled_at)
-        .execute(pool)
+    let mut conn = pool.acquire().await?;
+    sqlx::query("PRAGMA busy_timeout = 10000")
+        .execute(&mut *conn)
         .await?;
-        devices_added += res.rows_affected();
-    }
-
-    for row in &r_members {
-        let res = sqlx::query(
-            "INSERT OR IGNORE INTO vault_members \
-             (user_id, vault_id, role, invited_by, joined_at) \
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(&row.user_id)
-        .bind(&row.vault_id)
-        .bind(&row.role)
-        .bind(&row.invited_by)
-        .bind(row.joined_at)
-        .execute(pool)
+    sqlx::query("BEGIN IMMEDIATE TRANSACTION")
+        .execute(&mut *conn)
         .await?;
-        members_added += res.rows_affected();
-    }
 
-    Ok(RosterMergeSummary {
-        devices_added,
-        members_added,
-    })
+    let apply_result = async {
+        let mut devices_added: u64 = 0;
+        let mut members_added: u64 = 0;
+
+        for row in &r_devices {
+            let res = sqlx::query(
+                "INSERT OR IGNORE INTO devices \
+                 (device_id, user_id, device_name, public_key, wrapped_vault_key, \
+                  vault_key_generation, revoked_at, last_seen_at, created_at, \
+                  safety_numbers_verified_at, enrolled_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&row.device_id)
+            .bind(&row.user_id)
+            .bind(&row.device_name)
+            .bind(&row.public_key)
+            .bind(&row.wrapped_vault_key)
+            .bind(row.vault_key_generation)
+            .bind(row.revoked_at)
+            .bind(row.last_seen_at)
+            .bind(row.created_at)
+            .bind(row.safety_numbers_verified_at)
+            .bind(row.enrolled_at)
+            .execute(&mut *conn)
+            .await?;
+            devices_added += res.rows_affected();
+        }
+
+        for row in &r_members {
+            let res = sqlx::query(
+                "INSERT OR IGNORE INTO vault_members \
+                 (user_id, vault_id, role, invited_by, joined_at) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&row.user_id)
+            .bind(&row.vault_id)
+            .bind(&row.role)
+            .bind(&row.invited_by)
+            .bind(row.joined_at)
+            .execute(&mut *conn)
+            .await?;
+            members_added += res.rows_affected();
+        }
+
+        Ok::<_, sqlx::Error>(RosterMergeSummary {
+            devices_added,
+            members_added,
+        })
+    }
+    .await;
+
+    match apply_result {
+        Ok(summary) => {
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            Ok(summary)
+        }
+        Err(err) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            Err(err)
+        }
+    }
 }
 
 #[allow(dead_code)]
