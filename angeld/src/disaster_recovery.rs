@@ -727,6 +727,16 @@ pub async fn upload_metadata_backup(
                     Some(&err.to_string()),
                 )
                 .await?;
+                if upload_error_is_access_denied(&err) {
+                    warn!(
+                        "metadata snapshot upload DENIED by provider '{}' on prefix \
+                        '_omnidrive/system/metadata/snapshots/' — this is an IAM/bucket-policy \
+                        denial, not a code bug. Verify the access key grants s3:PutObject + \
+                        s3:GetObject + s3:ListBucket on this prefix. Other providers unaffected \
+                        (redundancy degrades gracefully).",
+                        uploader.provider_name()
+                    );
+                }
             }
         }
     }
@@ -1360,6 +1370,22 @@ where
                 sleep(delay).await;
             }
         }
+    }
+}
+
+/// Returns `true` when the error is an IAM/bucket-policy denial (HTTP 403/401, AccessDenied,
+/// Unauthorized) as opposed to a transient network failure. Used to emit an operator-actionable
+/// diagnostic: the policy must be fixed server-side, code cannot recover from it.
+pub(crate) fn upload_error_is_access_denied(err: &UploaderError) -> bool {
+    match err {
+        UploaderError::Upload { details, .. } => {
+            let lower = details.to_ascii_lowercase();
+            lower.contains("accessdenied")
+                || lower.contains("403")
+                || lower.contains("401")
+                || lower.contains("unauthorized")
+        }
+        _ => false,
     }
 }
 
@@ -2012,6 +2038,83 @@ mod tests {
         assert!(
             !upload_error_is_retryable(&io_err),
             "local I/O errors must NOT be retried"
+        );
+    }
+
+    #[test]
+    fn upload_error_is_access_denied_classifies_correctly() {
+        let access_denied = UploaderError::Upload {
+            provider: "scaleway",
+            operation: "put_object",
+            details: "display=AccessDenied: Access Denied | debug=...".to_string(),
+        };
+        assert!(
+            upload_error_is_access_denied(&access_denied),
+            "AccessDenied must be detected"
+        );
+
+        let forbidden_403 = UploaderError::Upload {
+            provider: "scaleway",
+            operation: "put_object",
+            details: "http status 403 forbidden".to_string(),
+        };
+        assert!(
+            upload_error_is_access_denied(&forbidden_403),
+            "403 must be detected"
+        );
+
+        let unauthorized_401 = UploaderError::Upload {
+            provider: "scaleway",
+            operation: "put_object",
+            details: "401 Unauthorized".to_string(),
+        };
+        assert!(
+            upload_error_is_access_denied(&unauthorized_401),
+            "401 must be detected"
+        );
+
+        let unauthorized_lower = UploaderError::Upload {
+            provider: "scaleway",
+            operation: "put_object",
+            details: "unauthorized request".to_string(),
+        };
+        assert!(
+            upload_error_is_access_denied(&unauthorized_lower),
+            "lowercase 'unauthorized' must be detected"
+        );
+
+        let transient = UploaderError::Upload {
+            provider: "test",
+            operation: "put_object",
+            details: "connection reset by peer".to_string(),
+        };
+        assert!(
+            !upload_error_is_access_denied(&transient),
+            "transient errors must NOT be detected as access denied"
+        );
+
+        let timeout_err = UploaderError::Timeout {
+            provider: "test",
+            duration: Duration::from_secs(30),
+        };
+        assert!(
+            !upload_error_is_access_denied(&timeout_err),
+            "timeout must NOT be detected as access denied"
+        );
+
+        let io_err = UploaderError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file not found",
+        ));
+        assert!(
+            !upload_error_is_access_denied(&io_err),
+            "local I/O errors must NOT be detected as access denied"
+        );
+
+        let db_err = UploaderError::Db(sqlx::Error::RowNotFound);
+        assert!(
+            !upload_error_is_access_denied(&db_err),
+            "DB errors must NOT be detected as access denied"
         );
     }
 }
