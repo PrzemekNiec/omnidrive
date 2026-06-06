@@ -326,6 +326,29 @@ pub fn decrypt_chunk_v2(
     Ok(plaintext)
 }
 
+/// Like [`decrypt_chunk_v2`] but additionally recomputes `chunk_id = HMAC(dek, plaintext)`
+/// and verifies it against `expected_chunk_id` (parity with V1 `decrypt_chunk`). Use this
+/// on the daemon read path where the manifest-authoritative chunk_id is known. The plain
+/// [`decrypt_chunk_v2`] stays for the FFI / share-link decryptor, which has no manifest.
+pub fn decrypt_chunk_v2_verified(
+    dek: &KeyBytes,
+    expected_chunk_id: &ChunkId,
+    nonce: &ChunkNonce,
+    aad: &[u8],
+    ciphertext: &[u8],
+    gcm_tag: &GcmTag,
+) -> Result<Vec<u8>, CryptoError> {
+    let plaintext = decrypt_chunk_v2(dek, nonce, aad, ciphertext, gcm_tag)?;
+    let actual = chunk_id(dek, &plaintext)?;
+    if &actual != expected_chunk_id {
+        return Err(CryptoError::ChunkIdMismatch {
+            expected: *expected_chunk_id,
+            actual,
+        });
+    }
+    Ok(plaintext)
+}
+
 fn expand_labeled_key(input_key_material: &[u8], info: &[u8]) -> Result<KeyBytes, CryptoError> {
     let hkdf = Hkdf::<Sha256>::from_prk(input_key_material).map_err(CryptoError::HkdfPrk)?;
     let mut key = KeyBytes([0u8; KEY_LEN]);
@@ -624,6 +647,33 @@ mod tests {
         let decrypted =
             decrypt_chunk_v2(&dek, &browser_nonce, aad, browser_ciphertext, &browser_tag).unwrap();
         assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn decrypt_chunk_v2_verified_roundtrip_ok() {
+        let dek = KeyBytes::from([0x11u8; 32]);
+        let pt = b"hello envelope v2";
+        let enc = encrypt_chunk_v2(&dek, pt, &[]).unwrap();
+        let out = decrypt_chunk_v2_verified(
+            &dek,
+            &enc.chunk_id,
+            &enc.nonce,
+            &[],
+            &enc.ciphertext,
+            &enc.gcm_tag,
+        )
+        .unwrap();
+        assert_eq!(out, pt);
+    }
+
+    #[test]
+    fn decrypt_chunk_v2_verified_rejects_wrong_chunk_id() {
+        let dek = KeyBytes::from([0x11u8; 32]);
+        let enc = encrypt_chunk_v2(&dek, b"payload", &[]).unwrap();
+        let wrong = [0xAAu8; 32];
+        let err =
+            decrypt_chunk_v2_verified(&dek, &wrong, &enc.nonce, &[], &enc.ciphertext, &enc.gcm_tag);
+        assert!(matches!(err, Err(CryptoError::ChunkIdMismatch { .. })));
     }
 
     /// Verify wire format with various payload sizes including empty and large.

@@ -18,7 +18,7 @@ use aws_config::timeout::TimeoutConfig;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
 use omnidrive_core::crypto::{
-    ChunkId, CryptoError, GcmTag, KeyBytes, decrypt_chunk, decrypt_chunk_v2,
+    ChunkId, CryptoError, GcmTag, KeyBytes, decrypt_chunk, decrypt_chunk_v2_verified,
 };
 use omnidrive_core::layout::{CHUNK_RECORD_MAGIC, COMPRESSION_ALGO_NONE, ChunkRecordPrefix};
 use reed_solomon_erasure::galois_8::ReedSolomon;
@@ -1366,7 +1366,7 @@ fn decrypt_chunk_record(
             let dek = dek.ok_or(DownloaderError::InvalidPackRecord(
                 "V2 chunk but no DEK available for this inode",
             ))?;
-            decrypt_chunk_v2(dek, &nonce, &[], ciphertext, &gcm_tag)?
+            decrypt_chunk_v2_verified(dek, &expected_chunk_id, &nonce, &[], ciphertext, &gcm_tag)?
         }
         _ => {
             // V1 (or unknown — treat as V1 for backward compat)
