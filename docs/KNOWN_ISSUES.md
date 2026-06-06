@@ -105,7 +105,7 @@
 - **Fix scope:**
   1. `db::revoke_device` musi NULLować OBIE kolumny (`wrapped_vault_key` **i** `wrapped_vault_key_kyber`) w tej samej operacji.
   2. Test: po `revoke_device` żadna ścieżka (`select_and_unwrap_vault_key`) nie odtwarza VK dla zrewokowanego urządzenia.
-- **Status:** OPEN. **Dług techniczny — MUSI być naprawiony przed aktywacją LIVE multi-device hybrid.** Kandydat do fazy δ (Multi-User Infra) lub osobnego sub-taska przed Epic 33 sharing.
+- **Status:** 🔜 **PLANNED — Faza β Task 0 (Crypto Debt Elimination)**, plan `docs/superpowers/plans/2026-06-06-beta-task0-crypto-debt-elimination.md` Task 0.1. (Dyrektywa ZERO DŁUGU TECHNICZNEGO — naprawiane przed logiką sieciową β.) → Closed po landingu fixu.
 
 ---
 
@@ -135,15 +135,15 @@
 - **Root cause:** `omnidrive_core::crypto::decrypt_chunk_v2` (inaczej niż V1 `decrypt_chunk`) NIE rekomputuje `HMAC(DEK, plaintext)` po dekrypcji i nie weryfikuje go względem oczekiwanego chunk_id. Downloader (`downloader.rs:1323`) porównuje chunk_id z **prefiksu rekordu** (bajty z dysku) względem chunk_id z DB — to routing/sanity-check, NIE kryptograficzne wiązanie plaintext↔chunk_id. AAD=`&[]` (P3-001) nie wiąże chunk_id z ciphertextem.
 - **Eksploatowalność:** **brak w modelu zero-knowledge §12.1(a).** Sfałszowanie chunka wymaga ważnego tagu GCM pod DEK, którego provider (jedyny adwersarz) NIE posiada. Wewnątrz-DEK substitution wymagałaby znajomości DEK. To wyłącznie luka defense-in-depth.
 - **Fix scope (opcjonalny, defense-in-depth):** rekomputować chunk_id po dekrypcji V2 (parytet z V1 `decrypt_chunk`) **lub** związać oczekiwany chunk_id/ordinal jako AAD V2 (uwaga: AAD łamie share-link Tryb B compat — patrz [Closed] P3-001 trade-off).
-- **Status:** OPEN. Dług techniczny niski priorytet. Faza γ (Zero Data Loss Hardening) lub utrzymaniowa.
+- **Status:** 🔜 **PLANNED — Faza β Task 0 (Crypto Debt Elimination)**, plan `docs/superpowers/plans/2026-06-06-beta-task0-crypto-debt-elimination.md` Task 0.2 (verified-wrapper, FFI/share-link nietknięte). → Closed po landingu fixu.
 
 ### P3-004 — Świeży vault tworzony na słabszym parameter_set Argon2id (migrowany przy 1. unlocku) — finding F-3 z QG5
 
 - **Wykryto:** 2026-06-06, formalny crypto-review QG5 (finding **F-3**, severity Low).
 - **Root cause:** Nowy vault tworzony jest na `DEFAULT` (`vault.rs`: parameter_set 1, m=64 MiB), a do `TARGET` (parameter_set 2, m=256 MiB Desktop High Security) migrowany dopiero przy pierwszym unlocku (`run_post_unlock_maintenance` → re-key migracja). Skutek: (a) okno, w którym świeży vault jest chroniony słabszym KDF (64 MiB zamiast 256 MiB) — istotne tylko jeśli atakujący zdobędzie DB między utworzeniem a pierwszym unlockiem; (b) podwójny koszt Argon2id (64 MiB + 256 MiB) przy pierwszym unlocku.
 - **Fix scope:** tworzyć świeże vaulty od razu na `TARGET` parameter_set; zachować ścieżkę re-key migracji wyłącznie dla istniejących vaultów v1.
-- **Decyzja Przemka 2026-06-06:** **doc-only dla Fazy α — NIE dotykamy kodu.** Pozostaje zarejestrowane jako dług techniczny do osobnej decyzji/fazy.
-- **Status:** OPEN. Dług techniczny niski priorytet.
+- **Decyzja Przemka 2026-06-06:** doc-only w Fazie α; **kod naprawiany w Fazie β Task 0** (dyrektywa ZERO DŁUGU TECHNICZNEGO) — świeży vault startuje od razu na parameter_set 2.
+- **Status:** 🔜 **PLANNED — Faza β Task 0 (Crypto Debt Elimination)**, plan `docs/superpowers/plans/2026-06-06-beta-task0-crypto-debt-elimination.md` Task 0.3 (ensure_vault_config → TARGET + audyt testów migracji). → Closed po landingu fixu.
 
 ---
 
