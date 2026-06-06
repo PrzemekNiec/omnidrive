@@ -97,16 +97,6 @@
 - **Impact:** Dług techniczny. Nie blokuje funkcjonalności, ale zwiększa risk regresji (jeden review nie wystarczy — trzeba uruchomić oba targety) + 2× czas CI + utrudnia świadome projektowanie API biblioteki.
 - **Status:** OPEN. P2 — blokuje v0.4 (clean architecture przed mobile). Decyzja Opcja A vs B vs C → Faza α lub β (wstawić jako β.f lub γ.a-pre, do decyzji).
 
-### P2-006 — `revoke_device` nie NULLuje hybrydowego wrapu Vault Key (niekompletna rewokacja) — finding F-1 z QG5
-
-- **Wykryto:** 2026-06-06, formalny crypto-review QG5 (`docs/superpowers/specs/2026-06-06-crypto-review.md`, finding **F-1**, severity Medium).
-- **Root cause:** `db::revoke_device` czyści `devices.wrapped_vault_key` (wrap X25519, v2-x25519), ale **pozostawia** `devices.wrapped_vault_key_kyber` (wrap hybrydowy X25519+ML-KEM, v3-hybrid, dodany w α.B.b). Urządzenie zrewokowane, które zachowało lokalnie kopię bazy/snapshotu, wciąż posiada swój ML-KEM decapsulation key (`local_device_identity.encrypted_kyber_private_key`) i może odtworzyć Vault Key ścieżką hybrydową (`select_and_unwrap_vault_key` preferuje v3) — rewokacja jest obejściowa.
-- **Eksploatowalność:** wymaga, by zrewokowane urządzenie retainowało kopię DB z hybrydowym blobem. **Hybrid multi-device NIE jest jeszcze aktywny live** (α.B.b zrealizował solo vault + best-effort wrap przy `accept_device`; pełne produkcyjne wpięcie `select_and_unwrap_vault_key` w onboarding = follow-up). Dlatego **NIE blokuje v0.4**, ale jest blokerem aktywacji live multi-device hybrid (post-v0.4).
-- **Fix scope:**
-  1. `db::revoke_device` musi NULLować OBIE kolumny (`wrapped_vault_key` **i** `wrapped_vault_key_kyber`) w tej samej operacji.
-  2. Test: po `revoke_device` żadna ścieżka (`select_and_unwrap_vault_key`) nie odtwarza VK dla zrewokowanego urządzenia.
-- **Status:** 🔜 **PLANNED — Faza β Task 0 (Crypto Debt Elimination)**, plan `docs/superpowers/plans/2026-06-06-beta-task0-crypto-debt-elimination.md` Task 0.1. (Dyrektywa ZERO DŁUGU TECHNICZNEGO — naprawiane przed logiką sieciową β.) → Closed po landingu fixu.
-
 ---
 
 ## P3 — Drobne UX / kosmetyka
@@ -129,25 +119,17 @@
   - **Eskalowane (2):** zrefaktorować `peer.rs::Peer::new` i `ingest.rs::IngestWorker::new` do zwrotu `Result<Self, E>` zamiast panic. Wymaga zmiany sygnatury wywoływaczy (callerze już mają `?` Pattern).
 - **Status:** OPEN dla 2 eskalowanych do P2 — pozostałe 21 udokumentowane jako świadome decyzje. **Eskalowane 2 → Faza β** (kandydat do β.f jako P2-003 quick wins batch, do decyzji).
 
-### P3-003 — V2 chunk nie rekomputuje chunk_id po dekrypcji (parytet z V1) — finding F-2 z QG5
-
-- **Wykryto:** 2026-06-06, formalny crypto-review QG5 (finding **F-2**, severity Low).
-- **Root cause:** `omnidrive_core::crypto::decrypt_chunk_v2` (inaczej niż V1 `decrypt_chunk`) NIE rekomputuje `HMAC(DEK, plaintext)` po dekrypcji i nie weryfikuje go względem oczekiwanego chunk_id. Downloader (`downloader.rs:1323`) porównuje chunk_id z **prefiksu rekordu** (bajty z dysku) względem chunk_id z DB — to routing/sanity-check, NIE kryptograficzne wiązanie plaintext↔chunk_id. AAD=`&[]` (P3-001) nie wiąże chunk_id z ciphertextem.
-- **Eksploatowalność:** **brak w modelu zero-knowledge §12.1(a).** Sfałszowanie chunka wymaga ważnego tagu GCM pod DEK, którego provider (jedyny adwersarz) NIE posiada. Wewnątrz-DEK substitution wymagałaby znajomości DEK. To wyłącznie luka defense-in-depth.
-- **Fix scope (opcjonalny, defense-in-depth):** rekomputować chunk_id po dekrypcji V2 (parytet z V1 `decrypt_chunk`) **lub** związać oczekiwany chunk_id/ordinal jako AAD V2 (uwaga: AAD łamie share-link Tryb B compat — patrz [Closed] P3-001 trade-off).
-- **Status:** 🔜 **PLANNED — Faza β Task 0 (Crypto Debt Elimination)**, plan `docs/superpowers/plans/2026-06-06-beta-task0-crypto-debt-elimination.md` Task 0.2 (verified-wrapper, FFI/share-link nietknięte). → Closed po landingu fixu.
-
-### P3-004 — Świeży vault tworzony na słabszym parameter_set Argon2id (migrowany przy 1. unlocku) — finding F-3 z QG5
-
-- **Wykryto:** 2026-06-06, formalny crypto-review QG5 (finding **F-3**, severity Low).
-- **Root cause:** Nowy vault tworzony jest na `DEFAULT` (`vault.rs`: parameter_set 1, m=64 MiB), a do `TARGET` (parameter_set 2, m=256 MiB Desktop High Security) migrowany dopiero przy pierwszym unlocku (`run_post_unlock_maintenance` → re-key migracja). Skutek: (a) okno, w którym świeży vault jest chroniony słabszym KDF (64 MiB zamiast 256 MiB) — istotne tylko jeśli atakujący zdobędzie DB między utworzeniem a pierwszym unlockiem; (b) podwójny koszt Argon2id (64 MiB + 256 MiB) przy pierwszym unlocku.
-- **Fix scope:** tworzyć świeże vaulty od razu na `TARGET` parameter_set; zachować ścieżkę re-key migracji wyłącznie dla istniejących vaultów v1.
-- **Decyzja Przemka 2026-06-06:** doc-only w Fazie α; **kod naprawiany w Fazie β Task 0** (dyrektywa ZERO DŁUGU TECHNICZNEGO) — świeży vault startuje od razu na parameter_set 2.
-- **Status:** 🔜 **PLANNED — Faza β Task 0 (Crypto Debt Elimination)**, plan `docs/superpowers/plans/2026-06-06-beta-task0-crypto-debt-elimination.md` Task 0.3 (ensure_vault_config → TARGET + audyt testów migracji). → Closed po landingu fixu.
-
 ---
 
 ## Closed
+
+### Faza β — Task 0: Crypto Debt Elimination (2026-06-06, dyrektywa ZERO DŁUGU TECHNICZNEGO)
+
+Plan: `docs/superpowers/plans/2026-06-06-beta-task0-crypto-debt-elimination.md`. Wszystkie 3 findings QG5 naprawione TDD subagent-driven przed jakąkolwiek logiką sieciową β. Bramka `--all-targets` (oba tryby) + core 28 + angeld 142 lib zielone. Bez bumpu wersji (v0.3.27).
+
+- ~~**P2-006 (F-1)** — `revoke_device` nie NULLuje `wrapped_vault_key_kyber` (niekompletna rewokacja hybrydowa)~~ → **FIXED** (`d0c03ce` + test-strengthen `900a92e`). SQL czyści teraz OBIE kolumny wrapu w jednym atomowym UPDATE; `kyber_public_key` świadomie zostaje (klucz publiczny). Test `revoke_device_nulls_both_wraps` (oba wrapy NULL + generation NULL + public key survives).
+- ~~**P3-003 (F-2)** — V2 chunk nie rekomputuje chunk_id po dekrypcji~~ → **FIXED** (`3053216`). Nowy `decrypt_chunk_v2_verified` (rekomputuje `HMAC(DEK, plaintext)`, parytet z V1) wpięty w daemon read-path (downloader, z DB-autorytatywnym chunk_id). **FFI/share-link (`ffi_decrypt_chunk_v2`) i `migrator.rs` świadomie nietknięte** (browser nie ma manifestu). Testy: roundtrip OK + wrong-id → `ChunkIdMismatch`.
+- ~~**P3-004 (F-3)** — świeży vault na słabszym parameter_set 1~~ → **FIXED** (`5cd36bd` + cfg-gate `03f276c`). `ensure_vault_config` tworzy świeże vaulty od razu na parameter_set 2 (m=256 MiB) → brak okna słabszego KDF + brak podwójnego Argon2id przy 1. unlocku. Logika re-key migracji v1→v2 nietknięta i nadal testowana (test_pool_v1 jawnie seeduje v1). `DEFAULT_*` consts → `#[cfg(test)]` (legacy v1, test-only). Testy: `fresh_vault_starts_at_target_param_set` + `fresh_vault_needs_no_kdf_migration`.
 
 ### Faza α — Crypto Hardening (v0.3.24–v0.3.27, zamknięte 2026-06-06)
 
@@ -155,9 +137,7 @@
 - ~~**P1-006** — `/api/auth/logout` nie blokuje vaulta (klucze zostają w RAM)~~ → **FIXED w α.A.a** (commit `ed35ecb`, v0.3.24). `post_auth_logout` woła `vault_keys.lock()` PRZED `delete_user_session` + teardown CF/dysku. SMOKE H1 4/4 PASS na Lenovo.
 - ~~**P2-004** — Brak auto-lock po idle~~ → **FIXED w α.A.b** (v0.3.25). Konfigurowalny idle timeout (`vault.auto_lock_idle_minutes`, default 15) + Win+L hook (`WM_WTSSESSION_CHANGE`) + UI chip/settings + `lock_flow::force_lock_and_dismount`. Bug ACL idle-timer reset znaleziony i naprawiony (`8e0d116`). SMOKE H2/H3 PASS live.
 - ~~**P2-005** — Brak Zeroize na temp kopiach kluczy~~ → **FIXED w α.A.c** (HEAD `285b913`, v0.3.26). `KeyBytes` newtype z `#[derive(Zeroize, ZeroizeOnDrop)]` + redacted Debug + non-Copy + buildery in-place. SMOKE H4 memdump: after-lock = 0 trafień known-key.
-- ~~**P3-001** — AAD pusty (`&[]`) na chunk encrypt/decrypt — niespecyfikowane w crypto-spec~~ → **FIXED w α.D.a** (HEAD `c502bb1`). Świadoma decyzja udokumentowana w `docs/crypto-spec.md §12` (AAD semantics): `&[]` chunki = WebCrypto Tryb B compat; `user_id` OAuth = cross-user tampering protection; trade-off cross-file swap vs share-link. Doc-only, brak zmian w kodzie.
-
-> **Nota:** powiązany defense-in-depth follow-up do P3-001 (rekomputacja chunk_id w V2 / AAD binding) żyje dalej jako **P3-003** (OPEN). Niepełna rewokacja hybrydowego wrapu żyje jako **P2-006** (OPEN).
+- ~~**P3-001** — AAD pusty (`&[]`) na chunk encrypt/decrypt — niespecyfikowane w crypto-spec~~ → **FIXED w α.D.a** (HEAD `c502bb1`). Świadoma decyzja udokumentowana w `docs/crypto-spec.md §12` (AAD semantics): `&[]` chunki = WebCrypto Tryb B compat; `user_id` OAuth = cross-user tampering protection; trade-off cross-file swap vs share-link. Doc-only, brak zmian w kodzie. (Defense-in-depth follow-up rekomputacji chunk_id w V2 → naprawiony osobno jako **P3-003** w β Task 0.)
 
 ### v0.3.23
 
