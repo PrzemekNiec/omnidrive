@@ -7405,7 +7405,8 @@ pub async fn get_active_devices_for_user(
 pub async fn revoke_device(pool: &SqlitePool, device_id: &str) -> Result<bool, sqlx::Error> {
     let now = epoch_secs();
     let result = sqlx::query(
-        "UPDATE devices SET revoked_at = ?, wrapped_vault_key = NULL, vault_key_generation = NULL \
+        "UPDATE devices SET revoked_at = ?, wrapped_vault_key = NULL, \
+         wrapped_vault_key_kyber = NULL, vault_key_generation = NULL \
          WHERE device_id = ? AND revoked_at IS NULL",
     )
     .bind(now)
@@ -9640,6 +9641,44 @@ mod tests {
             dev.wrapped_vault_key_kyber.as_deref(),
             Some(wrapped_kyber.as_slice())
         );
+    }
+
+    #[tokio::test]
+    async fn revoke_device_nulls_both_wraps() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u-kyber', 'Test', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('dev-x', 'u-kyber', 'PC', X'090909', 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let kyber_pub = vec![0x22u8; 1184];
+        let wrapped_kyber = vec![0x44u8; 1128];
+        set_device_kyber_public_key(&pool, "dev-x", &kyber_pub)
+            .await
+            .unwrap();
+        set_device_wrapped_vault_key_kyber(&pool, "dev-x", &wrapped_kyber)
+            .await
+            .unwrap();
+        let wvk = vec![0x11u8; 48];
+        set_device_wrapped_vault_key(&pool, "dev-x", &wvk, 1)
+            .await
+            .unwrap();
+
+        assert!(revoke_device(&pool, "dev-x").await.unwrap());
+        let dev = get_device(&pool, "dev-x").await.unwrap().unwrap();
+        assert!(dev.revoked_at.is_some());
+        assert!(dev.wrapped_vault_key.is_none());
+        assert!(dev.wrapped_vault_key_kyber.is_none());
     }
 
     #[tokio::test]
