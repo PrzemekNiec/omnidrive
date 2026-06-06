@@ -15,6 +15,7 @@ $outputDir = Join-Path $distRoot "output"
 $targetDir = Join-Path $repoRoot "target\$Configuration"
 $angeldExe = Join-Path $targetDir "angeld.exe"
 $cliExe = Join-Path $targetDir "omnidrive.exe"
+$trayExe = Join-Path $targetDir "omnidrive-tray.exe"
 $staticDir = Join-Path $repoRoot "angeld\static"
 $iconsDir = Join-Path $repoRoot "icons"
 $angeldManifest = Join-Path $repoRoot "angeld\Cargo.toml"
@@ -86,7 +87,7 @@ $iscc = Resolve-InnoSetupCompiler -PreferredPath $IsccPath
 Write-Host "Building OmniDrive binaries ($Configuration)..."
 Push-Location $repoRoot
 try {
-    & cargo build --$Configuration -p angeld -p omnidrive-cli
+    & cargo build --$Configuration -p angeld -p omnidrive-cli -p omnidrive-tray
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed with exit code $LASTEXITCODE"
     }
@@ -103,11 +104,16 @@ if (-not (Test-Path $cliExe)) {
     throw "Missing build output: $cliExe"
 }
 
+if (-not (Test-Path $trayExe)) {
+    throw "Missing build output: $trayExe"
+}
+
 Reset-Directory -Path $payloadDir
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 Copy-Item -Path $angeldExe -Destination (Join-Path $payloadDir "angeld.exe") -Force
 Copy-Item -Path $cliExe -Destination (Join-Path $payloadDir "omnidrive.exe") -Force
+Copy-Item -Path $trayExe -Destination (Join-Path $payloadDir "omnidrive-tray.exe") -Force
 Copy-DirectoryContents -Source $staticDir -Destination (Join-Path $payloadDir "static")
 Copy-DirectoryContents -Source $iconsDir -Destination (Join-Path $payloadDir "icons")
 

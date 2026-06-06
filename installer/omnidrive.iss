@@ -1,5 +1,5 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "0.3.23"
+  #define AppVersion "0.3.28"
 #endif
 
 #ifndef PayloadDir
