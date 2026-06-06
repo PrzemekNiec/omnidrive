@@ -799,6 +799,100 @@ fn decrypt_metadata_backup(
     Ok(plaintext)
 }
 
+struct MetadataBackupParsed {
+    nonce: [u8; METADATA_BACKUP_NONCE_LEN],
+    plaintext: Vec<u8>,
+    tag: [u8; METADATA_BACKUP_TAG_LEN],
+}
+
+fn parse_metadata_backup(encoded: &[u8]) -> Result<MetadataBackupParsed, DisasterRecoveryError> {
+    if encoded.len() < METADATA_BACKUP_HEADER_FIXED_LEN + METADATA_BACKUP_TAG_LEN {
+        return Err(DisasterRecoveryError::InvalidBackupFormat("file too short"));
+    }
+
+    let magic_end = METADATA_BACKUP_MAGIC.len();
+    if &encoded[..magic_end] != METADATA_BACKUP_MAGIC {
+        return Err(DisasterRecoveryError::InvalidBackupFormat("magic mismatch"));
+    }
+
+    let version = encoded[magic_end];
+    if version != METADATA_BACKUP_VERSION {
+        return Err(DisasterRecoveryError::InvalidBackupFormat(
+            "unsupported backup version",
+        ));
+    }
+
+    let mut cursor = magic_end + 1;
+    let salt_len = u16::from_le_bytes(
+        encoded[cursor..cursor + 2]
+            .try_into()
+            .map_err(|_| DisasterRecoveryError::InvalidBackupFormat("salt_len"))?,
+    ) as usize;
+    cursor += 2;
+    cursor += 4 + 4 + 4 + 4;
+
+    let nonce: [u8; METADATA_BACKUP_NONCE_LEN] = encoded
+        .get(cursor..cursor + METADATA_BACKUP_NONCE_LEN)
+        .ok_or(DisasterRecoveryError::InvalidBackupFormat("nonce"))?
+        .try_into()
+        .map_err(|_| DisasterRecoveryError::InvalidBackupFormat("nonce"))?;
+    cursor += METADATA_BACKUP_NONCE_LEN;
+
+    if encoded.get(cursor..cursor + salt_len).is_none() {
+        return Err(DisasterRecoveryError::InvalidBackupFormat("salt"));
+    }
+    cursor += salt_len;
+
+    if encoded.len() < cursor + METADATA_BACKUP_TAG_LEN {
+        return Err(DisasterRecoveryError::InvalidBackupFormat(
+            "ciphertext missing",
+        ));
+    }
+
+    let ciphertext_end = encoded.len() - METADATA_BACKUP_TAG_LEN;
+    let plaintext = encoded[cursor..ciphertext_end].to_vec();
+    let tag: [u8; METADATA_BACKUP_TAG_LEN] = encoded[ciphertext_end..]
+        .try_into()
+        .map_err(|_| DisasterRecoveryError::InvalidBackupFormat("tag"))?;
+
+    Ok(MetadataBackupParsed {
+        nonce,
+        plaintext,
+        tag,
+    })
+}
+
+/// The fetch worker holds `master_key` (not the passphrase — zero-knowledge: passphrase is never
+/// retained). In single-user-multi-device mode all devices share the same master derived from the
+/// same passphrase+salt+params via graft, so `metadata_backup_key = HKDF(master)` can be
+/// re-derived locally without Argon2.
+#[allow(dead_code)]
+pub fn decrypt_metadata_backup_with_master(
+    encoded: &[u8],
+    master_key: &[u8],
+) -> Result<Vec<u8>, DisasterRecoveryError> {
+    let MetadataBackupParsed {
+        nonce,
+        mut plaintext,
+        tag,
+    } = parse_metadata_backup(encoded)?;
+
+    let metadata_backup_key = derive_metadata_backup_key(master_key)?;
+    let cipher = Aes256Gcm::new_from_slice(&metadata_backup_key)
+        .map_err(|_| DisasterRecoveryError::BackupDecryptFailed)?;
+
+    cipher
+        .decrypt_in_place_detached(
+            Nonce::from_slice(&nonce),
+            &[],
+            &mut plaintext,
+            aes_gcm::Tag::from_slice(&tag),
+        )
+        .map_err(|_| DisasterRecoveryError::BackupDecryptFailed)?;
+
+    Ok(plaintext)
+}
+
 fn normalize_snapshot_path(output_path: &Path) -> Result<PathBuf, DisasterRecoveryError> {
     if output_path.is_dir() {
         return Err(DisasterRecoveryError::InvalidOutputPath(
@@ -1116,6 +1210,66 @@ mod tests {
         );
         let decrypted = decrypt_metadata_backup(&encoded, passphrase)?;
         assert_eq!(decrypted, b"sqlite-snapshot-payload");
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decrypt_with_master_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-master-roundtrip-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        let input_path = test_root.join("snapshot.db");
+        let output_path = test_root.join("snapshot.db.enc");
+        let passphrase = "restore-passphrase";
+        let kdf_params = RootKdfParams::new(1, vec![0x33; 16], 65_536, 3, 1);
+        let root_keys = derive_root_keys(passphrase.as_bytes(), &kdf_params)?;
+        let master_key = root_keys.master_key;
+
+        fs::create_dir_all(&test_root).await?;
+        fs::write(&input_path, b"sqlite-snapshot-payload").await?;
+
+        encrypt_metadata_snapshot(&input_path, &output_path, &master_key, &kdf_params).await?;
+
+        let encoded = fs::read(&output_path).await?;
+        let decrypted = decrypt_metadata_backup_with_master(&encoded, &master_key)?;
+        assert_eq!(decrypted, b"sqlite-snapshot-payload");
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decrypt_with_master_rejects_wrong_master() -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-master-reject-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        let input_path = test_root.join("snapshot.db");
+        let output_path = test_root.join("snapshot.db.enc");
+        let passphrase = "restore-passphrase";
+        let kdf_params = RootKdfParams::new(1, vec![0x44; 16], 65_536, 3, 1);
+        let root_keys = derive_root_keys(passphrase.as_bytes(), &kdf_params)?;
+        let master_key = root_keys.master_key;
+
+        let other_params = RootKdfParams::new(1, vec![0x55; 16], 65_536, 3, 1);
+        let other_root_keys = derive_root_keys(b"wrong-passphrase", &other_params)?;
+        let other_master = other_root_keys.master_key;
+
+        fs::create_dir_all(&test_root).await?;
+        fs::write(&input_path, b"sqlite-snapshot-payload").await?;
+
+        encrypt_metadata_snapshot(&input_path, &output_path, &master_key, &kdf_params).await?;
+
+        let encoded = fs::read(&output_path).await?;
+        let result = decrypt_metadata_backup_with_master(&encoded, &other_master);
+        assert!(
+            matches!(result, Err(DisasterRecoveryError::BackupDecryptFailed)),
+            "expected BackupDecryptFailed, got {:?}",
+            result
+        );
 
         let _ = fs::remove_dir_all(&test_root).await;
         Ok(())
