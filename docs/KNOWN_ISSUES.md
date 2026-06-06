@@ -31,37 +31,6 @@
 
 ## P1 — Krytyczne błędy logiczne
 
-### P1-001 + P1-005 (POŁĄCZONE) — Graft pomija krytyczne pola krypto vault_state + data_encryption_keys
-
-- **Wykryto:** v0.3.22 (P1-001 hydration fail) + v0.3.23 wieczór (P1-005 safety numbers mismatch)
-- **CONFIRMED 2026-05-10 wieczór:** porównanie `key_generation` przez `/api/vault/safety-numbers` na obu maszynach:
-  - Lenovo: `key_generation=4`, mnemonic `town write alley critic unusual topple…`, safety `58975 53274 06638 …`
-  - Dell:   `key_generation=1`, mnemonic `armed fiber cave strategy alert market…`, safety `03018 46227 27488 …`
-  - user_id identyczny (`bb3cb95e-…`) — graft `users`/`devices`/`vault_members` z v0.3.23 OK
-- **Root cause (jednoznaczny):** `db.rs::graft_restored_metadata_snapshot` (~linia 1830) kopiuje z `vault_state` TYLKO 3 pola: `master_key_salt`, `argon2_params`, `vault_id`. **Pomija `encrypted_vault_key` i `vault_key_generation`** (oraz wszelkie inne pola krypto w `vault_state`). Dell po grafcie używa swojego lokalnego gen=1 VK z bootstrap, nie Lenovo's gen=4 VK. KEK jest poprawny (salt+params grafted), ale unwrap zwraca losowy gen=1 VK Della, nie Lenovo's gen=4. Stąd:
-  - Różny EVK → różne `safety_numbers` (P1-005)
-  - DEK chunków (wrapped Lenovo's gen=4 VK) nie unwrap pod Dell's gen=1 → fallback tworzy gen=1 DEK → próba decrypt obcych chunków → `aes-gcm operation failed` (P1-001)
-- **Impact:** **P0-style severity** dla single-user-multi-device (główny use case v0.4) — multi-device nie działa funkcjonalnie. UI pokazuje device w MultiDevice tab (cosmetic ok), ale ŻADEN plik nie da się pobrać na Dellu, a UI security verification (safety numbers) bezużyteczne. Nadal P1 bo pojedyncze urządzenie działa, tylko cross-device broken.
-- **Fix scope (Faza α.C.b z roadmapy v0.4):** Rozszerzyć graft o pełen „identity bundle" krypto:
-  1. `vault_state.encrypted_vault_key` + `vault_key_generation` + `previous_envelope_key` (cała tabela poza KDF params i vault_id)
-  2. Cała tabela `data_encryption_keys` (DEK per-plik, wrapped pod source's VK)
-  3. Cała tabela `recovery_keys` (BIP-39, jeśli istnieje, Sesja 34.6a)
-  4. **Audit pozostałych tabel** w `docs/crypto-spec.md` żeby nie zostawić jeszcze jakiegoś pola
-  5. Test e2e: Lenovo wgra plik → Dell join → Dell otwiera plik z O:\ → checksum match → safety numbers identyczne na obu
-- **Status:** OPEN. **Faza α.C.b** roadmapy v0.4 (po Argon2id bump α.B.a, ML-KEM α.B.b, X25519 α.C.a). Faza α formalnie wystartuje po Fazie 0 (QA Foundation) — nie robimy hot-fix v0.3.24, bo trzeba to zrobić systematycznie z testem e2e (kluczowy flow F5).
-
-### P1-006 — `/api/auth/logout` nie blokuje vaulta (klucze zostają w RAM)
-
-- **Wykryto:** 2026-05-17, Task 2 Fazy 0 (audit AAD/zeroize/auto-lock).
-- **Root cause:** `api/auth.rs::post_auth_logout` (linia 189) wykonuje TYLKO `db::delete_user_session(&state.pool, token).await` + audit log. **Brak `state.vault_keys.lock().await`.** Sesja HTTP w DB jest unieważniona, ale `VaultKeyStore.inner` w RAM nadal trzyma `UnlockedVaultKeys { master_key: SecretBox, vault_key: SecretBox, envelope_vault_key: ... }`. Dla porównania `api/vault.rs::post_vault_lock` (linia 915) wywołuje `state.vault_keys.lock().await` + dismount cfapi.
-- **Impact:** **Zero-knowledge gap.** User klika "Wyloguj" myśląc, że jest bezpieczny — w rzeczywistości klucze plaintext są nadal w pamięci procesu `angeld.exe`. Atakujący z dostępem do procesu (debugger, ProcDump, core dump, lub atak fizyczny na zablokowany laptop z włączonym daemonem) może odczytać klucze i zdeszyfrować dane. UI semantyka jest kłamliwa.
-- **Realny scenariusz:** Użytkownik kończy pracę → klika "Wyloguj" → odchodzi od komputera. Klucze nadal w pamięci. Atakujący z fizycznym dostępem (cold boot attack, Thunderbolt DMA, lub po prostu unlock systemu jeśli user nie zablokował Windows) widzi otwarty vault.
-- **Fix scope:**
-  1. `post_auth_logout` musi wywołać `state.vault_keys.lock().await` PRZED `delete_user_session` (analogicznie do `post_vault_lock`).
-  2. Decyzja: czy logout = full vault lock (z dismount cfapi P0 sequence) czy tylko key zero? Pełny lock jest spójny z user mental model i security best practice.
-  3. Audit innych endpointów: czy są inne ścieżki które kasują sesję ale nie lockują vaulta (np. session expiry timer w db, jeśli istnieje).
-- **Status:** OPEN. **Faza α.A.a** (Crypto Hardening, grupa A hot-fixes). Może iść jako hot-fix v0.3.24 (mały scope, security high impact, low regression risk).
-
 ### P1-002 — Lenovo nie widzi Della w MultiDevice po join
 
 - **Wykryto:** v0.3.23 Dell smoke test, MultiDevice tab Lenovo pokazuje tylko siebie
@@ -70,11 +39,7 @@
 - **Hipoteza root cause:** Daemon ma snapshot **upload** worker (`MetadataBackupWorker`) ale nie ma symetrycznego snapshot **fetch** workera dla istniejących urządzeń. Tylko join-existing flow pobiera snapshot.
 - **Impact:** Multi-device awareness jednokierunkowy. Gdy ktoś z rodziny dołącza nowy laptop (v5.0), admin nie zobaczy go bez restart daemona albo manual refresh.
 - **Fix scope:** Periodic snapshot fetch worker (np. co 1h) w angeld. Decyzja: tylko gdy snapshot jest nowszy + lock wokół DB (nie nadpisuj jeśli były lokalne zmiany). Może wymagać per-device sequence number / lamport clock.
-- **Status:** OPEN. Planowany w **Faza β.b** roadmapy v0.4.
-
-### P1-005 → MERGED z P1-001 (2026-05-10 wieczór)
-
-Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypted_vault_key` + `vault_key_generation` nie kopiowane w grafcie, plus brak kopiowania `data_encryption_keys`. To ten sam underlying bug co P1-001 — patrz wpis P1-001+P1-005 (połączone) wyżej.
+- **Status:** OPEN. Planowany w **Faza β** roadmapy v0.4.
 
 ### P1-003 — Snapshot upload do Scaleway zwraca AccessDenied
 
@@ -83,7 +48,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **Hipoteza:** Bucket policy / access key uprawnienia do prefix `_omnidrive/system/metadata/snapshots/` — może bucket nie pozwala PUT pod system/. Inny prefix (`packs/...`) działa wg logów.
 - **Impact:** Brak redundancji metadanych: jedyna kopia snapshot na B2. Awaria B2 = utrata metadata, mimo że chunki są na 3 providerach.
 - **Fix scope:** Sprawdzić Scaleway IAM policy + bucket policy + key permissions. Jeśli OK, zbadać dlaczego prefix `_omnidrive/system/` jest blokowany. Naprawić konfigurację albo udokumentować workaround.
-- **Status:** OPEN. **Faza β.c** roadmapy v0.4 (snapshot redundancy fix). **Quality Gate 2.e** ("snapshot zawsze w ≥1 sprawnym miejscu") nie spełniony, ale technically B2 jest sprawny → tolerowalne tymczasowo. P1 bo bezpieczeństwo redundancji.
+- **Status:** OPEN. **Faza β** roadmapy v0.4 (snapshot redundancy fix). **Quality Gate 2.e** ("snapshot zawsze w ≥1 sprawnym miejscu") nie spełniony, ale technically B2 jest sprawny → tolerowalne tymczasowo. P1 bo bezpieczeństwo redundancji.
 
 ### P1-004 — Snapshot upload do R2 zwraca ConnectionReset
 
@@ -92,7 +57,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **Hipoteza:** R2 hyper-1.x compatibility issue (memory: rustls/hyper consolidation odłożona). Może `keep-alive` pool trzyma wygasłe połączenie.
 - **Impact:** Tak samo jak P1-003 — brak redundancji.
 - **Fix scope:** Najpierw retry z fresh connection (`force-close` po 1 ConnReset). Drugorzędnie: Batch 7 C.3 (rustls/hyper consolidation z Backlog).
-- **Status:** OPEN. **Faza β.c** roadmapy v0.4 (snapshot redundancy fix). Powiązany z C.3 (Backlog).
+- **Status:** OPEN. **Faza β** roadmapy v0.4 (snapshot redundancy fix). Powiązany z C.3 (Backlog).
 
 ---
 
@@ -103,8 +68,9 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **Wykryto:** Subiektywna obserwacja Przemka, brak benchmarku
 - **Symptom:** `angeld.exe` w taskmgr pokazuje wysokie CPU nawet w idle (do potwierdzenia liczbowego)
 - **SLA cel:** < 1% CPU idle, < 5% active (per roadmap v0.4)
-- **Fix scope:** (1) Mierzenie: profiling 60s idle + 60s active. (2) Audit `angeld/src/watcher.rs` (643 linie). Sprawdzić: polling vs event-driven? debounce? batch? file system event API (Windows ReadDirectoryChangesW)?
-- **Status:** OPEN. **Faza β.d** (po pomiarach).
+- **Pomiar (Faza 0, 2026-05-17):** perf baseline M3 watcher CPU idle **0%** + M4 load **avg 0.01% / max 0.14%** — **w pełni w SLA** (`docs/perf-baseline-2026-05-17.md`). Pierwotna subiektywna obserwacja NIE potwierdzona benchmarkiem.
+- **Fix scope:** brak — wynik PASS. Pozostawione OPEN do formalnego domknięcia decyzją (czy zamknąć jako „resolved-by-measurement", czy re-mierzyć po Fazie β z aktywnym watcherem na realnym obciążeniu).
+- **Status:** OPEN (kandydat do zamknięcia — pomiar PASS). **Faza β.d** = bez akcji.
 
 ### P2-002 — VFS laguje przy dużych plikach
 
@@ -113,33 +79,6 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **SLA cel:** Cold fetch < 2s/10MB, < 10s/100MB; warm < 100ms (per roadmap v0.4)
 - **Fix scope:** (1) Benchmark: cold fetch 1MB/10MB/100MB/1GB; warm fetch tych samych. (2) Audit `angeld/src/smart_sync.rs` (2197 linii — monolit do dekomponozycji). Sprawdzić: streaming hydration czy fetch-all-then-decrypt? EC reconstruction blokująca? Cache hit path?
 - **Status:** OPEN. **Faza ε.a/β.e** (po pomiarach — dekompozycja smart_sync.rs).
-
-### P2-004 — Brak auto-lock po idle
-
-- **Wykryto:** 2026-05-17, Task 2 Fazy 0 (audit auto-lock).
-- **Symptom:** Po `unlock` vault pozostaje otwarty dopóki user nie kliknie "Zablokuj vault" (POST `/api/vault/lock`) lub daemon nie umrze. Brak żadnego timera idle.
-- **Werifikacja:** `grep -i "auto_lock|idle_timeout|idle_lock|lock_after|inactivity"` w całym `*.rs` workspace → **0 matches.**
-- **Impact:** Zostawiony zalogowany laptop z odblokowanym vaultem = pełen dostęp do plików dla każdego, kto siada przy maszynie. Standardowa praktyka w password managerach (1Password, Bitwarden, KeePassXC) = auto-lock po 5/15/30 min idle, lub po zablokowaniu systemu Windows.
-- **Fix scope:**
-  1. Konfigurowalny timer (np. `vault.auto_lock_idle_minutes`, default 15).
-  2. Reset timera przy każdym authenticated API call (file access, list, search, …).
-  3. Hook na Windows session-lock event (`WM_WTSSESSION_CHANGE` / `SystemEvents.SessionSwitch`) — natychmiastowy lock przy zablokowaniu sesji Windows.
-  4. UI: pasek statusu „odblokowany na 14:32 min" + warning przed auto-lock (np. 1 min wcześniej toast).
-- **Impact:** Nie security data loss (klucze są w pamięci procesu, nie na dysku), ale user-facing security feature missing. Blokuje v0.4 (Faza ε UX/Stability).
-- **Status:** OPEN. **Faza α.A.b** (security hot-fix, grupa A). Wymaga: hook Windows event API + config + UI element.
-
-### P2-005 — Brak Zeroize na temp kopiach kluczy (klucze zostają w pamięci poza SecretBox)
-
-- **Wykryto:** 2026-05-17, Task 2 Fazy 0 (audit key zeroization).
-- **Werifikacja:** `grep "Zeroize|zeroize|ZeroizeOnDrop"` w całym workspace → **0 matches.** `crypto-spec.md §8` wymienia `zeroize` jako dep transitive przez `secrecy` ale wprost nie używamy.
-- **Symptom:** `KeyBytes = [u8; 32]` (omnidrive-core/src/crypto.rs:28) nie ma `Zeroize` derive. `secrecy::SecretBox<KeyBytes>` zeruje wewnętrzną kopię na drop (dobre), ale każdy gettera `master_key()`, `vault_key()`, `envelope_vault_key()` w `vault.rs:77-91` zwraca KOPIĘ `KeyBytes` przez `*self.master_key.expose_secret()`. Te zwracane kopie żyją na stosie/stercie wywołującego, NIE są zeroize-on-drop. Po `lock()` w `VaultKeyStore.inner` klucze są wyzerowane, ale kopie u wywołujących (np. lokalne `let key = vault.require_key().await?;`) zostają.
-- **Impact:** Memory dump po `lock()` może zawierać klucze pozostawione w pamięci wywołujących. Podważa zero-knowledge guarantee w przypadku coredumpa / hibernation / ataku DMA. Defense-in-depth gap.
-- **Fix scope:**
-  1. Dodać `zeroize = { workspace = true, features = ["zeroize_derive"] }` jako explicit dep w `omnidrive-core`.
-  2. `KeyBytes` opakować w newtype z `#[derive(Zeroize, ZeroizeOnDrop)]` (zamiast type alias) — wymusi zeroize na każdej kopii.
-  3. Audit call-sites `expose_secret()` w `vault.rs`, `downloader.rs`, `packer.rs`, `migrator.rs`, `sharing.rs` — zamienić plain copies na `SecretBox<KeyBytes>` lub krótkożyjące referencje.
-  4. Test: po `vault.lock()`, memscan procesu nie znajduje znanych key patterns.
-- **Status:** OPEN. **Faza α.A.c** (Crypto Hardening, grupa A hot-fixes). Powiązane z P1-006 (α.A.a) ale niezależne.
 
 ### P2-003 — Bin `angeld` duplikuje 27 modułów z lib (dual-compile)
 
@@ -172,30 +111,6 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 
 ## P3 — Drobne UX / kosmetyka
 
-### P3-001 — AAD pusty (`&[]`) na chunk encrypt/decrypt — niespecyfikowane w crypto-spec
-
-- **Wykryto:** 2026-05-17, Task 2 Fazy 0 (audit AAD call-sites).
-- **Status:** **świadoma decyzja, brak realnej luki** — wymaga jedynie dokumentacji w spec.
-- **Faktyczne call-sites w prod (poza testami):**
-  | Call-site | AAD | Komentarz |
-  |---|---|---|
-  | `packer.rs:264` `encrypt_chunk_v2(&dek, plaintext, &[])` | pusty | hot path — wszystkie nowe chunki |
-  | `migrator.rs:163` `decrypt_chunk(vault_key, &chunk_id, &[], …)` | pusty | V1→V2 migration |
-  | `migrator.rs:173` `encrypt_chunk_v2(&dek, &plaintext, &[])` | pusty | V1→V2 migration |
-  | `downloader.rs:1353` `decrypt_chunk_v2(dek, &nonce, &[], …)` | pusty | V2 read path |
-  | `downloader.rs:1357` `decrypt_chunk(vault_key, …, &[], …)` | pusty | V1 read path |
-  | `vault.rs:298` `encrypt_secret(&derived, token, user_id.as_bytes())` | **`user_id`** ✓ | OAuth token sealing — wiąże ciphertext z tożsamością |
-  | `vault.rs:308` `decrypt_secret(&derived, blob, user_id.as_bytes())` | **`user_id`** ✓ | symetrycznie |
-- **Werdykt per kategoria:**
-  - **OAuth secrets (`vault.rs`):** AAD = `user_id` — **POPRAWNE.** Cross-user tampering wykryty przez GCM tag.
-  - **Chunki (`packer.rs`/`migrator.rs`/`downloader.rs`):** AAD = `&[]`. **Wymuszone przez WebCrypto compat** — share-link decryption w przeglądarce (`share.html`, komentarz w `crypto.rs:523`) musi mieć identyczny AAD jak encryption, a `crypto.subtle.decrypt` w browserze nie ma dostępu do `(inode_id, revision_id, chunk_index)`. Pusty AAD = jedyna opcja zgodna z architekturą Trybu B (statyczny dekryptor na skarbiec.app).
-- **Defense-in-depth oportunity (poza scope obecnej architektury):** AAD mógłby wiązać chunk z `(inode_id, revision_id, chunk_index, dek_id)` — wykrywałby cross-file chunk swap attack (atakujący kopiuje encrypted chunk z pliku A na pliku B). Ale to łamie share-link compat (Tryb B). **Trade-off świadomie wybrany na rzecz share-link compat.**
-- **Fix scope:** Dodać do `docs/crypto-spec.md` nową sekcję §12 "AAD semantics" wyjaśniającą:
-  1. dlaczego `&[]` dla chunków (WebCrypto / Tryb B compat)
-  2. dlaczego `user_id` dla OAuth secrets (cross-user tampering protection)
-  3. udokumentowany trade-off cross-file swap protection vs share-link Tryb B
-- **Status:** OPEN doc-only. **P3 (dokumentacja, brak code change).** Może iść razem z innym crypto-spec update.
-
 ### P3-002 — 23 prod unwrap/expect — triage
 
 - **Wykryto:** 2026-05-17, Task 2 Fazy 0 (audit unwrap/expect).
@@ -219,7 +134,7 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **Wykryto:** 2026-06-06, formalny crypto-review QG5 (finding **F-2**, severity Low).
 - **Root cause:** `omnidrive_core::crypto::decrypt_chunk_v2` (inaczej niż V1 `decrypt_chunk`) NIE rekomputuje `HMAC(DEK, plaintext)` po dekrypcji i nie weryfikuje go względem oczekiwanego chunk_id. Downloader (`downloader.rs:1323`) porównuje chunk_id z **prefiksu rekordu** (bajty z dysku) względem chunk_id z DB — to routing/sanity-check, NIE kryptograficzne wiązanie plaintext↔chunk_id. AAD=`&[]` (P3-001) nie wiąże chunk_id z ciphertextem.
 - **Eksploatowalność:** **brak w modelu zero-knowledge §12.1(a).** Sfałszowanie chunka wymaga ważnego tagu GCM pod DEK, którego provider (jedyny adwersarz) NIE posiada. Wewnątrz-DEK substitution wymagałaby znajomości DEK. To wyłącznie luka defense-in-depth.
-- **Fix scope (opcjonalny, defense-in-depth):** rekomputować chunk_id po dekrypcji V2 (parytet z V1 `decrypt_chunk`) **lub** związać oczekiwany chunk_id/ordinal jako AAD V2 (uwaga: AAD łamie share-link Tryb B compat — patrz P3-001 trade-off).
+- **Fix scope (opcjonalny, defense-in-depth):** rekomputować chunk_id po dekrypcji V2 (parytet z V1 `decrypt_chunk`) **lub** związać oczekiwany chunk_id/ordinal jako AAD V2 (uwaga: AAD łamie share-link Tryb B compat — patrz [Closed] P3-001 trade-off).
 - **Status:** OPEN. Dług techniczny niski priorytet. Faza γ (Zero Data Loss Hardening) lub utrzymaniowa.
 
 ### P3-004 — Świeży vault tworzony na słabszym parameter_set Argon2id (migrowany przy 1. unlocku) — finding F-3 z QG5
@@ -230,11 +145,19 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **Decyzja Przemka 2026-06-06:** **doc-only dla Fazy α — NIE dotykamy kodu.** Pozostaje zarejestrowane jako dług techniczny do osobnej decyzji/fazy.
 - **Status:** OPEN. Dług techniczny niski priorytet.
 
-
-
 ---
 
 ## Closed
+
+### Faza α — Crypto Hardening (v0.3.24–v0.3.27, zamknięte 2026-06-06)
+
+- ~~**P1-001 + P1-005** — Graft pomija krytyczne pola krypto (`vault_state.encrypted_vault_key`/`vault_key_generation` + `data_encryption_keys`) → różne EVK/safety-numbers + `aes-gcm operation failed` cross-device~~ → **FIXED w α.C.b** (HEAD `226ee72`, v0.3.27). `graft_restored_metadata_snapshot` rozszerzony o pełen identity bundle (vault_state EVK+gen+legacy_read_key, `data_encryption_keys`, `vault_recovery_keys`) w tx `BEGIN IMMEDIATE`. DoD Rust gate zamknięty in-process: joined EVK == source + safety_numbers identyczne (P1-005) + grafted DEK unwrapuje ten sam plaintext (P1-001). **Live SMOKE Dell↔Lenovo (C3/D7) = osobna akceptacja operacyjna, NIE blokuje zamknięcia kodu.**
+- ~~**P1-006** — `/api/auth/logout` nie blokuje vaulta (klucze zostają w RAM)~~ → **FIXED w α.A.a** (commit `ed35ecb`, v0.3.24). `post_auth_logout` woła `vault_keys.lock()` PRZED `delete_user_session` + teardown CF/dysku. SMOKE H1 4/4 PASS na Lenovo.
+- ~~**P2-004** — Brak auto-lock po idle~~ → **FIXED w α.A.b** (v0.3.25). Konfigurowalny idle timeout (`vault.auto_lock_idle_minutes`, default 15) + Win+L hook (`WM_WTSSESSION_CHANGE`) + UI chip/settings + `lock_flow::force_lock_and_dismount`. Bug ACL idle-timer reset znaleziony i naprawiony (`8e0d116`). SMOKE H2/H3 PASS live.
+- ~~**P2-005** — Brak Zeroize na temp kopiach kluczy~~ → **FIXED w α.A.c** (HEAD `285b913`, v0.3.26). `KeyBytes` newtype z `#[derive(Zeroize, ZeroizeOnDrop)]` + redacted Debug + non-Copy + buildery in-place. SMOKE H4 memdump: after-lock = 0 trafień known-key.
+- ~~**P3-001** — AAD pusty (`&[]`) na chunk encrypt/decrypt — niespecyfikowane w crypto-spec~~ → **FIXED w α.D.a** (HEAD `c502bb1`). Świadoma decyzja udokumentowana w `docs/crypto-spec.md §12` (AAD semantics): `&[]` chunki = WebCrypto Tryb B compat; `user_id` OAuth = cross-user tampering protection; trade-off cross-file swap vs share-link. Doc-only, brak zmian w kodzie.
+
+> **Nota:** powiązany defense-in-depth follow-up do P3-001 (rekomputacja chunk_id w V2 / AAD binding) żyje dalej jako **P3-003** (OPEN). Niepełna rewokacja hybrydowego wrapu żyje jako **P2-006** (OPEN).
 
 ### v0.3.23
 
