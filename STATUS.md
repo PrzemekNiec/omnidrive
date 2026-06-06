@@ -514,8 +514,8 @@ v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
 │   ├── α.C    Identity & device keys (P1-001/005) . ✅ DONE (α.C.a + α.C.b)
 │   └── α.D    Spec + formal crypto review (QG5) ... ✅ DONE (α.D.a, crypto-review QG5 PASS)
 │
-⏸️ β — Critical Bug Fixes  (β.d Watcher CPU już ✅ PASS)  ◄── JESTEŚMY TU
-⏸️ γ — Zero Data Loss Hardening
+✅ β — Critical Bug Fixes — DONE (wszystkie P1 zamknięte; β.e VFS → ε)
+⏸️ γ — Zero Data Loss Hardening  ◄── JESTEŚMY TU
 ⏸️ δ — Multi-User Infra Closure (pod maską, bez UI)
 ⏸️ ε — VFS Stability (pancerne O:)
 ⏸️ ζ — Test Automation (F1–F12 e2e)
@@ -664,19 +664,20 @@ v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
 
 ---
 
-### 12.6 Faza β — Critical Bug Fixes *(po Fazie α)*
+### 12.6 Faza β — Critical Bug Fixes *(po Fazie α)* — ✅ ZAMKNIĘTA 2026-06-06
 
-> **Cel:** zamknąć wszystkie P1 z `KNOWN_ISSUES.md`. Po Fazie α mamy poprawne krypto i tożsamość — fixujemy resztę.
+> **Cel:** zamknąć wszystkie P1 z `KNOWN_ISSUES.md`. Po Fazie α mamy poprawne krypto i tożsamość — fixujemy resztę. **WSZYSTKIE P1 ZAMKNIĘTE** (P1-001/005 α.C.b, P1-002 β.b, P1-003/004 β.c) + P3-002 panic-mitigation (β.3). β.e (VFS) przeniesione do ε (VFS Stability). β.a = live smoke operacyjny (Dell), NIE bramkuje kodu.
 
 #### Drzewko orientacyjne
 
 ```
-β — Critical Bug Fixes (po α)
-├── β.a — P1-001 AES-GCM hydration fail (graft DEK z α.C.b)     ⏸️
+β — Critical Bug Fixes (po α) — ✅ DONE
+├── β.a — P1-001 AES-GCM hydration fail (graft DEK z α.C.b)     ✅ DONE kod (α.C.b); live smoke Dell = operacyjny
 ├── β.b — P1-002 Snapshot fetch worker (refresh co 1h)          ✅ DONE (roster-merge only, fe3dcdd..73403fb)
 ├── β.c — P1-003+004 Snapshot redundancy (Scaleway+R2, ≥2/3)    ✅ DONE kod (P1-004 fix; P1-003 = IAM action-item)
 ├── β.d — P2-001 Watcher CPU fix                                ✅ PASS (perf baseline 0.c, bez akcji)
-└── β.e — P2-002 VFS lag fix + smart_sync.rs decompose          ⏸️ (overlap z ε.a)
+├── β.3 — P3-002 panic mitigation (peer/ingest → Result)        ✅ DONE (63bbde3)
+└── β.e — P2-002 VFS lag fix + smart_sync.rs decompose          ➡️ PRZENIESIONE do ε.a (VFS Stability)
 ```
 
 | Krok | Zakres | DoD |

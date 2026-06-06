@@ -75,27 +75,15 @@
 
 ## P3 — Drobne UX / kosmetyka
 
-### P3-002 — 23 prod unwrap/expect — triage
-
-- **Wykryto:** 2026-05-17, Task 2 Fazy 0 (audit unwrap/expect).
-- **Status raw vs prod:** 368 raw, ale po odfiltrowaniu `#[cfg(test)]` tail to **23** (audit report wcześniej zliczył 24, ale `downloader.rs:1582` jest w bloku testów). **Test count uzasadniony i konsekwentny — `unwrap` w testach OK.**
-- **Triage:**
-  - **11× UI tray binary** (`omnidrive-tray/src/main.rs`) — fail-fast na ładowaniu ikony, panic OK dla GUI app.
-  - **3× mutex poison** (`cloud_guard.rs:185, 239, 273` — `.expect("session usage mutex poisoned")`) — idiomatic, mutex poison = bug w innym tasku, panic OK.
-  - **3× post-guard / post-invariant**: `secure_fs.rs:72` (`.expect("retry loop must capture last error")`), `main.rs:1042` (analogicznie), `api/mod.rs:64` (`.first().copied().unwrap()` po `len() >= 3` guardzie), `device_identity.rs:51` (`.expect("local device identity must exist after upsert")`) — wszystkie po programowym invariancie.
-  - **3× hardcoded Argon2** (`sharing.rs:46, 52, 75` — `.expect("valid argon2 params")` / `.expect("argon2 hash")`) — Argon2id z hardcoded params (8192, 2, 1, Some(32)). Niemożliwe do faili przy stałych parametrach + 32-byte output.
-  - **2× ❗P2 (eskalacja)**:
-    - `peer.rs:159` `reqwest::Client::builder().timeout(...).build().expect("peer client")` — startup crash przy nieprawidłowej konfiguracji reqwest (np. brak rustls feature, mismatched TLS backend). **Daemon nie wstanie.** Lepiej: `Result<Peer, PeerError>` propagation.
-    - `ingest.rs:184` `.expect("ingest: packer initialization failed")` — analogicznie, packer init może faili przy złych params. Hot path = ingest pipeline, crash blokuje cały watcher.
-- **Fix scope (per kategoria):**
-  - UI tray + idiomy: nic do roboty.
-  - Argon2 hardcoded: zostawić (sanity expect).
-  - **Eskalowane (2):** zrefaktorować `peer.rs::Peer::new` i `ingest.rs::IngestWorker::new` do zwrotu `Result<Self, E>` zamiast panic. Wymaga zmiany sygnatury wywoływaczy (callerze już mają `?` Pattern).
-- **Status:** OPEN dla 2 eskalowanych do P2 — pozostałe 21 udokumentowane jako świadome decyzje. **Eskalowane 2 → Faza β** (kandydat do β.f jako P2-003 quick wins batch, do decyzji).
+*Brak otwartych.*
 
 ---
 
 ## Closed
+
+### Faza β — β.3: P3-002 Panic Mitigation (2026-06-06)
+
+- ~~**P3-002** — 2 eskalowane prod-panics (`peer.rs:159` reqwest build `.expect`, `ingest.rs:184` packer init `.expect`)~~ → **FIXED** (`63bbde3`). `PeerClient::new` → `Result<Self, PeerError>` (reqwest build err via `.map_err(PeerError::Http)?`); `IngestWorker::new` → `Result<Self, IngestError>` (`Packer::new` via `?`, `From<PackerError>` istniał). Callerzy (main.rs ×2 w `run_daemon`→`Box<dyn Error>` + tests/e2e_ingest.rs) z `?`. 2 happy-path testy. Pozostałe 21 unwrap/expect z triage to **świadome, udokumentowane decyzje** (11× UI tray fail-fast, 3× mutex-poison idiom, 3× post-invariant guard, 3× hardcoded-Argon2 sanity, 1× `api/mod.rs` post-len-guard) — NIE bugi, zostają jako akceptowane. Bramka --all-targets oba tryby + core 28 + angeld **159** lib green.
 
 ### Faza β — β.c: P1-003 & P1-004 Cloud Redundancy (2026-06-06)
 
