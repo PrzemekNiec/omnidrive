@@ -423,6 +423,32 @@ async fn post_accept_device(
             message: e.to_string(),
         })?;
 
+    if let Some(kyber_ek) = target_device.kyber_public_key.as_deref() {
+        match identity::hybrid_wrap_vault_key_for_device(
+            &owner_private,
+            &member_pubkey,
+            kyber_ek,
+            &envelope_key,
+            &vault_id,
+            &target_device_id,
+        ) {
+            Ok(wrapped_kyber) => {
+                if let Err(e) = db::set_device_wrapped_vault_key_kyber(
+                    &state.pool,
+                    &target_device_id,
+                    &wrapped_kyber,
+                )
+                .await
+                {
+                    warn!("hybrid wrap persist failed for {target_device_id}: {e}");
+                }
+            }
+            Err(e) => {
+                warn!("hybrid wrap failed for {target_device_id} (X25519 wrap still applied): {e}")
+            }
+        }
+    }
+
     let _ = db::insert_audit_log(
         &state.pool,
         &vault_id,
