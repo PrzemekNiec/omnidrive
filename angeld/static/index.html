@@ -2173,8 +2173,12 @@
         document.getElementById('mdInviteModal').classList.remove('hidden');
       });
       document.getElementById('mdRefreshDevicesBtn').addEventListener('click', () => {
-        fetchMdDevices();
-        fetchMdPending();
+        fetch('/api/metadata-backup/fetch-now', { method: 'POST', headers: mdAuthHeaders() })
+          .catch(() => {})
+          .finally(() => {
+            fetchMdDevices();
+            fetchMdPending();
+          });
       });
       setupMdInviteModal();
       fetchMdDevices();

@@ -126,6 +126,7 @@ pub(super) fn routes() -> Router<ApiState> {
         )
         .route("/api/metadata-backup/status", get(get_recovery_status))
         .route("/api/metadata-backup/backup-now", post(post_backup_now))
+        .route("/api/metadata-backup/fetch-now", post(post_fetch_now))
         .route(
             "/api/metadata-backup/snapshot-local",
             post(post_snapshot_local),
@@ -694,6 +695,68 @@ async fn post_backup_now(
         "last_run": unix_timestamp_millis(),
         "uploaded": true
     })))
+}
+
+async fn post_fetch_now(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
+
+    let master_key = state
+        .vault_keys
+        .require_master_key()
+        .await
+        .map_err(|err| match err {
+            VaultError::Locked => ApiError::BadRequest {
+                code: "vault_locked",
+                message: "odblokuj Skarbiec przed pobraniem metadanych".to_string(),
+            },
+            other => ApiError::Internal {
+                message: other.to_string(),
+            },
+        })?;
+
+    let provider_manager =
+        disaster_recovery::MetadataBackupProviderManager::from_onboarding_db_all(&state.pool)
+            .await
+            .map_err(|err| ApiError::Internal {
+                message: err.to_string(),
+            })?;
+
+    let summary =
+        disaster_recovery::run_metadata_fetch_now(&state.pool, &provider_manager, &master_key)
+            .await
+            .map_err(|err| ApiError::Internal {
+                message: err.to_string(),
+            })?;
+
+    let _ = db::insert_audit_log(
+        &state.pool,
+        &caller.vault_id,
+        "metadata_fetch",
+        Some(&caller.user_id),
+        Some(&caller.device_id),
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    Ok(Json(match summary {
+        Some(s) => serde_json::json!({
+            "status": "ok",
+            "applied": true,
+            "devices_added": s.devices_added,
+            "members_added": s.members_added,
+        }),
+        None => serde_json::json!({
+            "status": "ok",
+            "applied": false,
+            "devices_added": 0,
+            "members_added": 0,
+        }),
+    }))
 }
 
 // ── Ingest API (Epic 35.1e) ──────────────────────────────────────────
