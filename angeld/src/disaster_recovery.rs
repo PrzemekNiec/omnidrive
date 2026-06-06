@@ -841,14 +841,14 @@ async fn collect_newest_snapshot_key(
 ) -> Option<(i64, String)> {
     let mut best: Option<(i64, String)> = None;
 
-    if let Some(local_store) = &provider_manager.local_store {
-        if let Ok(keys) = local_store.list_snapshot_keys(32).await {
-            for key in keys {
-                if let Some(ts) = parse_created_at_from_snapshot_key(&key) {
-                    if best.as_ref().map_or(true, |(b, _)| ts > *b) {
-                        best = Some((ts, key));
-                    }
-                }
+    if let Some(local_store) = &provider_manager.local_store
+        && let Ok(keys) = local_store.list_snapshot_keys(32).await
+    {
+        for key in keys {
+            if let Some(ts) = parse_created_at_from_snapshot_key(&key)
+                && best.as_ref().is_none_or(|(b, _)| ts > *b)
+            {
+                best = Some((ts, key));
             }
         }
     }
@@ -856,10 +856,10 @@ async fn collect_newest_snapshot_key(
     for provider in &provider_manager.download_providers {
         if let Ok(keys) = provider.list_snapshot_keys(None, 32).await {
             for key in keys {
-                if let Some(ts) = parse_created_at_from_snapshot_key(&key) {
-                    if best.as_ref().map_or(true, |(b, _)| ts > *b) {
-                        best = Some((ts, key));
-                    }
+                if let Some(ts) = parse_created_at_from_snapshot_key(&key)
+                    && best.as_ref().is_none_or(|(b, _)| ts > *b)
+                {
+                    best = Some((ts, key));
                 }
             }
         }
