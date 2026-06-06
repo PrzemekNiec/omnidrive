@@ -2,8 +2,8 @@
 
 > **Single source of truth dla bugów.** Ten plik (nie GitHub Issues, nie STATUS.md) trzyma listę otwartych problemów z priorytetyzacją.
 >
-> **Ostatnia aktualizacja:** 2026-05-17
-> **Aktualna wersja:** v0.3.23
+> **Ostatnia aktualizacja:** 2026-06-06
+> **Aktualna wersja:** v0.3.27
 
 ---
 
@@ -158,6 +158,16 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
 - **Impact:** Dług techniczny. Nie blokuje funkcjonalności, ale zwiększa risk regresji (jeden review nie wystarczy — trzeba uruchomić oba targety) + 2× czas CI + utrudnia świadome projektowanie API biblioteki.
 - **Status:** OPEN. P2 — blokuje v0.4 (clean architecture przed mobile). Decyzja Opcja A vs B vs C → Faza α lub β (wstawić jako β.f lub γ.a-pre, do decyzji).
 
+### P2-006 — `revoke_device` nie NULLuje hybrydowego wrapu Vault Key (niekompletna rewokacja) — finding F-1 z QG5
+
+- **Wykryto:** 2026-06-06, formalny crypto-review QG5 (`docs/superpowers/specs/2026-06-06-crypto-review.md`, finding **F-1**, severity Medium).
+- **Root cause:** `db::revoke_device` czyści `devices.wrapped_vault_key` (wrap X25519, v2-x25519), ale **pozostawia** `devices.wrapped_vault_key_kyber` (wrap hybrydowy X25519+ML-KEM, v3-hybrid, dodany w α.B.b). Urządzenie zrewokowane, które zachowało lokalnie kopię bazy/snapshotu, wciąż posiada swój ML-KEM decapsulation key (`local_device_identity.encrypted_kyber_private_key`) i może odtworzyć Vault Key ścieżką hybrydową (`select_and_unwrap_vault_key` preferuje v3) — rewokacja jest obejściowa.
+- **Eksploatowalność:** wymaga, by zrewokowane urządzenie retainowało kopię DB z hybrydowym blobem. **Hybrid multi-device NIE jest jeszcze aktywny live** (α.B.b zrealizował solo vault + best-effort wrap przy `accept_device`; pełne produkcyjne wpięcie `select_and_unwrap_vault_key` w onboarding = follow-up). Dlatego **NIE blokuje v0.4**, ale jest blokerem aktywacji live multi-device hybrid (post-v0.4).
+- **Fix scope:**
+  1. `db::revoke_device` musi NULLować OBIE kolumny (`wrapped_vault_key` **i** `wrapped_vault_key_kyber`) w tej samej operacji.
+  2. Test: po `revoke_device` żadna ścieżka (`select_and_unwrap_vault_key`) nie odtwarza VK dla zrewokowanego urządzenia.
+- **Status:** OPEN. **Dług techniczny — MUSI być naprawiony przed aktywacją LIVE multi-device hybrid.** Kandydat do fazy δ (Multi-User Infra) lub osobnego sub-taska przed Epic 33 sharing.
+
 ---
 
 ## P3 — Drobne UX / kosmetyka
@@ -203,6 +213,22 @@ Diagnoza zakończona. Root cause potwierdzony empirycznie: `vault_state.encrypte
   - Argon2 hardcoded: zostawić (sanity expect).
   - **Eskalowane (2):** zrefaktorować `peer.rs::Peer::new` i `ingest.rs::IngestWorker::new` do zwrotu `Result<Self, E>` zamiast panic. Wymaga zmiany sygnatury wywoływaczy (callerze już mają `?` Pattern).
 - **Status:** OPEN dla 2 eskalowanych do P2 — pozostałe 21 udokumentowane jako świadome decyzje. **Eskalowane 2 → Faza β** (kandydat do β.f jako P2-003 quick wins batch, do decyzji).
+
+### P3-003 — V2 chunk nie rekomputuje chunk_id po dekrypcji (parytet z V1) — finding F-2 z QG5
+
+- **Wykryto:** 2026-06-06, formalny crypto-review QG5 (finding **F-2**, severity Low).
+- **Root cause:** `omnidrive_core::crypto::decrypt_chunk_v2` (inaczej niż V1 `decrypt_chunk`) NIE rekomputuje `HMAC(DEK, plaintext)` po dekrypcji i nie weryfikuje go względem oczekiwanego chunk_id. Downloader (`downloader.rs:1323`) porównuje chunk_id z **prefiksu rekordu** (bajty z dysku) względem chunk_id z DB — to routing/sanity-check, NIE kryptograficzne wiązanie plaintext↔chunk_id. AAD=`&[]` (P3-001) nie wiąże chunk_id z ciphertextem.
+- **Eksploatowalność:** **brak w modelu zero-knowledge §12.1(a).** Sfałszowanie chunka wymaga ważnego tagu GCM pod DEK, którego provider (jedyny adwersarz) NIE posiada. Wewnątrz-DEK substitution wymagałaby znajomości DEK. To wyłącznie luka defense-in-depth.
+- **Fix scope (opcjonalny, defense-in-depth):** rekomputować chunk_id po dekrypcji V2 (parytet z V1 `decrypt_chunk`) **lub** związać oczekiwany chunk_id/ordinal jako AAD V2 (uwaga: AAD łamie share-link Tryb B compat — patrz P3-001 trade-off).
+- **Status:** OPEN. Dług techniczny niski priorytet. Faza γ (Zero Data Loss Hardening) lub utrzymaniowa.
+
+### P3-004 — Świeży vault tworzony na słabszym parameter_set Argon2id (migrowany przy 1. unlocku) — finding F-3 z QG5
+
+- **Wykryto:** 2026-06-06, formalny crypto-review QG5 (finding **F-3**, severity Low).
+- **Root cause:** Nowy vault tworzony jest na `DEFAULT` (`vault.rs`: parameter_set 1, m=64 MiB), a do `TARGET` (parameter_set 2, m=256 MiB Desktop High Security) migrowany dopiero przy pierwszym unlocku (`run_post_unlock_maintenance` → re-key migracja). Skutek: (a) okno, w którym świeży vault jest chroniony słabszym KDF (64 MiB zamiast 256 MiB) — istotne tylko jeśli atakujący zdobędzie DB między utworzeniem a pierwszym unlockiem; (b) podwójny koszt Argon2id (64 MiB + 256 MiB) przy pierwszym unlocku.
+- **Fix scope:** tworzyć świeże vaulty od razu na `TARGET` parameter_set; zachować ścieżkę re-key migracji wyłącznie dla istniejących vaultów v1.
+- **Decyzja Przemka 2026-06-06:** **doc-only dla Fazy α — NIE dotykamy kodu.** Pozostaje zarejestrowane jako dług techniczny do osobnej decyzji/fazy.
+- **Status:** OPEN. Dług techniczny niski priorytet.
 
 
 
