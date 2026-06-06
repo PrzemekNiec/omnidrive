@@ -673,7 +673,7 @@ v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
 ```
 β — Critical Bug Fixes (po α)
 ├── β.a — P1-001 AES-GCM hydration fail (graft DEK z α.C.b)     ⏸️
-├── β.b — P1-002 Snapshot fetch worker (refresh co 1h)          ⏸️
+├── β.b — P1-002 Snapshot fetch worker (refresh co 1h)          ✅ DONE (roster-merge only, fe3dcdd..73403fb)
 ├── β.c — P1-003+004 Snapshot redundancy (Scaleway+R2, ≥2/3)    ⏸️
 ├── β.d — P2-001 Watcher CPU fix                                ✅ PASS (perf baseline 0.c, bez akcji)
 └── β.e — P2-002 VFS lag fix + smart_sync.rs decompose          ⏸️ (overlap z ε.a)
@@ -682,7 +682,7 @@ v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
 | Krok | Zakres | DoD |
 |------|--------|-----|
 | **β.a** | **P1-001 AES-GCM hydration fail** — graft kopiuje DEK (zrobione w α.C.b); test: Lenovo wgra 5MB plik → Dell unlock → otwórz plik z O:\ → checksum match. | P1-001 → FIXED |
-| **β.b** | **P1-002 Snapshot fetch worker** — periodic refresh snapshotu na istniejących urządzeniach (co 1h). Lock wokół DB, lamport clock per snapshot, conflict resolve = newer wins (z audit log entry). | Test: Dell join, Lenovo czeka, Lenovo MultiDevice tab pokazuje Della po max 1h |
+| **β.b** ✅ | **P1-002 Snapshot fetch worker** — periodic refresh snapshotu na istniejących urządzeniach (co 1h). | **DONE 2026-06-06** — 8 commitów `fe3dcdd..73403fb`, TDD subagent-driven, plan `docs/superpowers/plans/2026-06-06-beta-task1-p1002-snapshot-fetch-worker.md`. **Strategia ROSTER-MERGE ONLY** (data-safety): `db::graft_roster_additive` `INSERT OR IGNORE` wyłącznie `devices`+`vault_members` w atomowej tx, **NIGDY** nie dotyka `data_encryption_keys`/`vault_state` (vs JOIN-graft wipe+copy = data-loss). `run_metadata_fetch_now` (newest-wins po `created_at`, marker `last_applied_roster_snapshot_at`, idempotentny, best-effort non-fatal) + `start_metadata_fetch_worker` (1h tick, mirror backup workera) wpięty w main.rs (full daemon). Defense-in-depth: jawna walidacja `vault_id` snapshotu PRZED INSERT + `decrypt_metadata_backup_with_master` (worker bez passphrase). Bramka `--all-targets` oba tryby + core 28 + angeld **151** lib green. DoD e2e: aktywne urządzenie uczy się peera bez utraty DEK/revoke-state, drugi tick no-op. NIE bumpowano (v0.3.27). **Live SMOKE Dell↔Lenovo = osobna akceptacja, NIE bramkuje DONE.** |
 | **β.c** | **P1-003+P1-004 Snapshot redundancy fix** — Scaleway IAM/policy debug; R2 ConnReset retry-with-fresh-pool. **QG kryterium:** snapshot _zawsze_ w ≥1 sprawnym miejscu, najlepiej w 2/3. | metadata-backup status: ≥2/3 providers zielone |
 | **β.d** | **Watcher CPU fix (P2-001)** — po pomiarach z 0.c (perf baseline). Możliwe: debounce + batch + ReadDirectoryChangesW zamiast polling. | SLA `watcher idle < 1%` osiągnięty |
 | **β.e** | **VFS lag fix (P2-002)** — dekompozycja `smart_sync.rs` (2197 linii) na moduły. Streaming hydration zamiast fetch-all-then-decrypt. | SLA cold fetch §12.2 osiągnięte |

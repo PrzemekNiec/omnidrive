@@ -31,16 +31,6 @@
 
 ## P1 — Krytyczne błędy logiczne
 
-### P1-002 — Lenovo nie widzi Della w MultiDevice po join
-
-- **Wykryto:** v0.3.23 Dell smoke test, MultiDevice tab Lenovo pokazuje tylko siebie
-- **CONFIRMED 2026-05-10 wieczór:** Dell po v0.3.23 join-existing pokazuje OBA urządzenia (PN-THINKPAD + PN-OFFICE) ✅ — graft `devices` działa. Lenovo daemon zweryfikowany jako v0.3.23 (curl `/api/diagnostics` zwraca pełny JSON, endpoint dodany w v0.3.23). `members_count:1` w `/api/vault/status` na Lenovo — potwierdza że Lenovo nigdy nie pobrał zaktualizowanego snapshot z Della.
-- **Symptom:** Dell po join-existing wgra zaktualizowany snapshot do chmury, ale Lenovo nigdy go nie pobiera, więc nie wie o nowym device
-- **Hipoteza root cause:** Daemon ma snapshot **upload** worker (`MetadataBackupWorker`) ale nie ma symetrycznego snapshot **fetch** workera dla istniejących urządzeń. Tylko join-existing flow pobiera snapshot.
-- **Impact:** Multi-device awareness jednokierunkowy. Gdy ktoś z rodziny dołącza nowy laptop (v5.0), admin nie zobaczy go bez restart daemona albo manual refresh.
-- **Fix scope:** Periodic snapshot fetch worker (np. co 1h) w angeld. Decyzja: tylko gdy snapshot jest nowszy + lock wokół DB (nie nadpisuj jeśli były lokalne zmiany). Może wymagać per-device sequence number / lamport clock.
-- **Status:** OPEN. Planowany w **Faza β** roadmapy v0.4.
-
 ### P1-003 — Snapshot upload do Scaleway zwraca AccessDenied
 
 - **Wykryto:** v0.3.23 Dell metadata-backup status — Scaleway 403 AccessDenied dla `_omnidrive/system/metadata/snapshots/*.db.enc`
@@ -122,6 +112,12 @@
 ---
 
 ## Closed
+
+### Faza β — β.b: P1-002 Snapshot Fetch Worker (2026-06-06)
+
+Plan: `docs/superpowers/plans/2026-06-06-beta-task1-p1002-snapshot-fetch-worker.md`. 8 commitów `fe3dcdd..73403fb`, TDD subagent-driven. Bramka `--all-targets` (oba tryby) + core 28 + angeld **151** lib zielone. Bez bumpu (v0.3.27).
+
+- ~~**P1-002** — Lenovo nie widzi Della w MultiDevice po join (jednokierunkowy snapshot: upload worker był, fetch workera nie było)~~ → **FIXED** (β.b). Periodyczny fetch worker (`start_metadata_fetch_worker`, 1h tick, mirror backup workera) + `run_metadata_fetch_now` (newest-wins po `created_at`, marker `last_applied_roster_snapshot_at`, idempotentny, best-effort non-fatal). **Strategia ROSTER-MERGE ONLY** (data-safety): `db::graft_roster_additive` — `INSERT OR IGNORE` **wyłącznie** `devices`+`vault_members` w atomowej tx; **NIGDY** nie dotyka `data_encryption_keys`/`vault_state`/`vault_recovery_keys` (vs JOIN-graft który robi wipe+copy DEK → data-loss). Defense-in-depth: jawna walidacja `vault_id` snapshotu == lokalny PRZED INSERT-em + `decrypt_metadata_backup_with_master` (worker bez passphrase). DoD e2e: aktywne urządzenie uczy się peera, lokalne DEK + revoke-state nietknięte, drugi tick no-op. **Live SMOKE Dell↔Lenovo (Dell join → Lenovo widzi Della po ≤1 tick) = osobna akceptacja operacyjna, NIE bramkuje DONE kodu.**
 
 ### Faza β — Task 0: Crypto Debt Elimination (2026-06-06, dyrektywa ZERO DŁUGU TECHNICZNEGO)
 
