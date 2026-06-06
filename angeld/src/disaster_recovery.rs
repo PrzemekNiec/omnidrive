@@ -1625,4 +1625,184 @@ mod tests {
         let _ = fs::remove_dir_all(&test_root).await;
         Ok(())
     }
+
+    #[tokio::test]
+    async fn e2e_active_device_learns_peer_without_dek_or_revoke_loss()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use omnidrive_core::crypto::{RootKdfParams, derive_root_keys};
+
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-revoke-survival-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&test_root).await?;
+
+        let passphrase = "revoke-survival-passphrase";
+        let kdf_params = RootKdfParams::new(1, vec![0xBCu8; 16], 65_536, 3, 1);
+        let root_keys = derive_root_keys(passphrase.as_bytes(), &kdf_params)?;
+        let master_key = root_keys.master_key;
+
+        let pool_a_url = format!(
+            "sqlite://{}",
+            test_root
+                .join("device_a.db")
+                .to_string_lossy()
+                .replace('\\', "/")
+        );
+        let pool_a = db::init_db(&pool_a_url).await?;
+
+        sqlx::query(
+            "INSERT INTO vault_state \
+             (id, master_key_salt, argon2_params, vault_id, encrypted_vault_key, vault_key_generation) \
+             VALUES (1, ?, 'test', 'v1', X'AABB', 1)",
+        )
+        .bind(vec![0u8; 16])
+        .execute(&pool_a)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('owner', 'Owner', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&pool_a)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('A', 'owner', 'PC-A', X'01', 1000)",
+        )
+        .execute(&pool_a)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at, revoked_at) \
+             VALUES ('dev-old', 'owner', 'PC-Old', X'03', 500, 999)",
+        )
+        .execute(&pool_a)
+        .await?;
+
+        let inode_id = db::create_inode(&pool_a, None, "guard.txt", "FILE", 10).await?;
+        db::insert_wrapped_dek(&pool_a, inode_id, &[0xDDu8; 32], 1, 1).await?;
+
+        let before_dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&pool_a)
+            .await?;
+        let before_dek_bytes: Vec<u8> =
+            sqlx::query_scalar("SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&pool_a)
+                .await?;
+
+        let peer_snap_db = test_root.join("peer_snap.db");
+        {
+            let url = format!(
+                "sqlite://{}",
+                peer_snap_db.to_string_lossy().replace('\\', "/")
+            );
+            let sp = db::init_db(&url).await?;
+            sqlx::query(
+                "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+                 VALUES (1, ?, 'test', 'v1')",
+            )
+            .bind(vec![0u8; 16])
+            .execute(&sp)
+            .await?;
+            sqlx::query(
+                "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+                 VALUES ('owner', 'Owner', NULL, 'local', NULL, 1000)",
+            )
+            .execute(&sp)
+            .await?;
+            sqlx::query(
+                "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+                 VALUES ('A', 'owner', 'PC-A', X'01', 1000)",
+            )
+            .execute(&sp)
+            .await?;
+            sqlx::query(
+                "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+                 VALUES ('B', 'owner', 'PC-B', X'02', 2000)",
+            )
+            .execute(&sp)
+            .await?;
+            sqlx::query(
+                "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+                 VALUES ('dev-old', 'owner', 'PC-Old', X'03', 500)",
+            )
+            .execute(&sp)
+            .await?;
+            sp.close().await;
+            drop(sp);
+        }
+
+        let enc_path = test_root.join("peer_snap.db.enc");
+        encrypt_metadata_snapshot(&peer_snap_db, &enc_path, &master_key, &kdf_params).await?;
+
+        let created_at: i64 = 1_700_000_001_000;
+        let snapshot_key = format!("_omnidrive/system/metadata/snapshots/{created_at}.db.enc");
+
+        let local_store_root = test_root.join("local_store");
+        fs::create_dir_all(&local_store_root).await?;
+        let local_store = LocalMetadataBackupStore {
+            root: local_store_root.clone(),
+        };
+        let target_path = local_store.root.join(snapshot_key.replace('/', "\\"));
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::copy(&enc_path, &target_path).await?;
+
+        let pm = MetadataBackupProviderManager {
+            uploaders: Vec::new(),
+            download_providers: Vec::new(),
+            local_store: Some(local_store),
+        };
+
+        let summary = run_metadata_fetch_now(&pool_a, &pm, &master_key)
+            .await?
+            .expect("should return Some(summary) with devices_added==1");
+
+        assert_eq!(summary.devices_added, 1, "only device B should be added");
+
+        let dev_b = db::get_device(&pool_a, "B").await?;
+        assert!(dev_b.is_some(), "device B must exist after fetch");
+
+        let after_dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&pool_a)
+            .await?;
+        let after_dek_bytes: Vec<u8> =
+            sqlx::query_scalar("SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&pool_a)
+                .await?;
+
+        assert_eq!(
+            after_dek_count, before_dek_count,
+            "DEK count must not change"
+        );
+        assert_eq!(
+            after_dek_bytes, before_dek_bytes,
+            "DEK bytes must not change"
+        );
+
+        let dev_old = db::get_device(&pool_a, "dev-old")
+            .await?
+            .expect("dev-old must still exist");
+        assert!(
+            dev_old.revoked_at.is_some(),
+            "local revoke on dev-old must survive snapshot merge (INSERT OR IGNORE)"
+        );
+
+        let marker = db::get_last_applied_roster_snapshot_at(&pool_a).await?;
+        assert_eq!(marker, Some(created_at), "marker must equal created_at");
+
+        let second_result = run_metadata_fetch_now(&pool_a, &pm, &master_key).await?;
+        assert!(
+            second_result.is_none(),
+            "second call must be idempotent (Ok(None))"
+        );
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
 }
