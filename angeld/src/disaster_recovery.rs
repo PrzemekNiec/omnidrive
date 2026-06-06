@@ -13,12 +13,13 @@ use rand::RngCore;
 use sha2::Sha256;
 use sqlx::SqlitePool;
 use std::fmt;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::task::JoinHandle;
-use tokio::time::{Duration, MissedTickBehavior, interval};
+use tokio::time::{Duration, MissedTickBehavior, interval, sleep};
 use tracing::{info, warn};
 
 pub const METADATA_BACKUP_MAGIC: &[u8; 15] = b"OMNIDRIVE-META1";
@@ -687,10 +688,15 @@ pub async fn upload_metadata_backup(
         )
         .await?;
 
-        match uploader
-            .upload_system_file(enc_file_path, &snapshot_key)
-            .await
-        {
+        let upload_result = retry_with_backoff(
+            4,
+            Duration::from_millis(500),
+            upload_error_is_retryable,
+            |_| uploader.upload_system_file(enc_file_path, &snapshot_key),
+        )
+        .await;
+
+        match upload_result {
             Ok(_) => match uploader.upload_system_file(enc_file_path, latest_key).await {
                 Ok(_) => {
                     successful_uploads += 1;
@@ -1329,6 +1335,51 @@ impl LocalMetadataBackupStore {
     }
 }
 
+/// Retries `op` up to `max_attempts` times with exponential backoff starting at `base_delay`.
+/// The `is_retryable` predicate decides whether a given error warrants a retry;
+/// permanent errors (e.g. 403 AccessDenied) break out immediately after the first attempt.
+async fn retry_with_backoff<T, E, Fut>(
+    max_attempts: u32,
+    base_delay: Duration,
+    is_retryable: impl Fn(&E) -> bool,
+    mut op: impl FnMut(u32) -> Fut,
+) -> Result<T, E>
+where
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        match op(attempt).await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if attempt >= max_attempts || !is_retryable(&err) {
+                    return Err(err);
+                }
+                let delay = base_delay * 2u32.saturating_pow(attempt - 1);
+                sleep(delay).await;
+            }
+        }
+    }
+}
+
+/// Returns `false` for permanent credential/permission errors (403 AccessDenied, 401 Unauthorized)
+/// that will not succeed on retry — retrying would be wasteful and mask the root cause.
+/// Returns `true` for transient failures (network resets, timeouts, 5xx) that may resolve.
+pub(crate) fn upload_error_is_retryable(err: &UploaderError) -> bool {
+    match err {
+        UploaderError::Timeout { .. } => true,
+        UploaderError::Upload { details, .. } => {
+            let lower = details.to_ascii_lowercase();
+            !lower.contains("accessdenied")
+                && !lower.contains("403")
+                && !lower.contains("401")
+                && !lower.contains("unauthorized")
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1804,5 +1855,163 @@ mod tests {
 
         let _ = fs::remove_dir_all(&test_root).await;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_succeeds_after_transient_failures() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+        let result = retry_with_backoff(
+            4,
+            Duration::from_millis(1),
+            upload_error_is_retryable,
+            |_| {
+                let count = Arc::clone(&attempts_clone);
+                async move {
+                    let n = count.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n < 3 {
+                        Err(UploaderError::Upload {
+                            provider: "test",
+                            operation: "put_object",
+                            details: "connection reset".to_string(),
+                        })
+                    } else {
+                        Ok("uploaded")
+                    }
+                }
+            },
+        )
+        .await;
+        assert!(result.is_ok(), "expected Ok after transient retries");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            3,
+            "must attempt exactly 3 times"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_exhausts_on_persistent_transient() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+        let result: Result<(), UploaderError> = retry_with_backoff(
+            4,
+            Duration::from_millis(1),
+            upload_error_is_retryable,
+            |_| {
+                let count = Arc::clone(&attempts_clone);
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Err(UploaderError::Upload {
+                        provider: "test",
+                        operation: "put_object",
+                        details: "connection reset".to_string(),
+                    })
+                }
+            },
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expected Err after exhausting all attempts"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            4,
+            "must attempt exactly max_attempts times"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_does_not_retry_permanent_error() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+        let result: Result<(), UploaderError> = retry_with_backoff(
+            4,
+            Duration::from_millis(1),
+            upload_error_is_retryable,
+            |_| {
+                let count = Arc::clone(&attempts_clone);
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Err(UploaderError::Upload {
+                        provider: "test",
+                        operation: "put_object",
+                        details: "display=AccessDenied | debug=AccessDenied".to_string(),
+                    })
+                }
+            },
+        )
+        .await;
+        assert!(result.is_err(), "expected Err on permanent error");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "must NOT retry on AccessDenied — exactly 1 attempt"
+        );
+    }
+
+    #[test]
+    fn is_retryable_classifies_correctly() {
+        let transient = UploaderError::Upload {
+            provider: "test",
+            operation: "put_object",
+            details: "connection reset by peer".to_string(),
+        };
+        assert!(
+            upload_error_is_retryable(&transient),
+            "connection reset must be retryable"
+        );
+
+        let timeout_err = UploaderError::Timeout {
+            provider: "test",
+            duration: Duration::from_secs(30),
+        };
+        assert!(
+            upload_error_is_retryable(&timeout_err),
+            "timeout must be retryable"
+        );
+
+        let access_denied = UploaderError::Upload {
+            provider: "test",
+            operation: "put_object",
+            details: "display=AccessDenied: Access Denied | debug=...".to_string(),
+        };
+        assert!(
+            !upload_error_is_retryable(&access_denied),
+            "AccessDenied must NOT be retryable"
+        );
+
+        let forbidden_403 = UploaderError::Upload {
+            provider: "test",
+            operation: "put_object",
+            details: "http status 403 forbidden".to_string(),
+        };
+        assert!(
+            !upload_error_is_retryable(&forbidden_403),
+            "403 must NOT be retryable"
+        );
+
+        let unauthorized = UploaderError::Upload {
+            provider: "test",
+            operation: "put_object",
+            details: "401 Unauthorized".to_string(),
+        };
+        assert!(
+            !upload_error_is_retryable(&unauthorized),
+            "401 must NOT be retryable"
+        );
+
+        let io_err = UploaderError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file not found",
+        ));
+        assert!(
+            !upload_error_is_retryable(&io_err),
+            "local I/O errors must NOT be retried"
+        );
     }
 }
