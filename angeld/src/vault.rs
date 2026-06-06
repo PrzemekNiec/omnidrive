@@ -15,9 +15,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+#[cfg(test)]
 const DEFAULT_PARAMETER_SET_VERSION: u32 = 1;
+#[cfg(test)]
 const DEFAULT_MEMORY_COST_KIB: u32 = 65_536;
+#[cfg(test)]
 const DEFAULT_TIME_COST: u32 = 3;
+#[cfg(test)]
 const DEFAULT_LANES: u32 = 1;
 
 const TARGET_PARAMETER_SET_VERSION: u32 = 2;
