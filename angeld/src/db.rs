@@ -9679,6 +9679,14 @@ mod tests {
         assert!(dev.revoked_at.is_some());
         assert!(dev.wrapped_vault_key.is_none());
         assert!(dev.wrapped_vault_key_kyber.is_none());
+        assert!(
+            dev.vault_key_generation.is_none(),
+            "generation cleared on revoke"
+        );
+        assert!(
+            dev.kyber_public_key.is_some(),
+            "public key survives revoke by design"
+        );
     }
 
     #[tokio::test]
