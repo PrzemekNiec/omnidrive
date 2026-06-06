@@ -2457,6 +2457,120 @@ pub async fn graft_restored_metadata_snapshot(
     }
 }
 
+/// Merge `devices` and `vault_members` from a snapshot DB into the live DB additively.
+/// Only rows that do not already exist (by PK) are inserted — existing rows are never
+/// overwritten. The function rejects any snapshot whose `vault_state.vault_id` differs
+/// from `expected_vault_id`, and it never touches `data_encryption_keys`, `vault_state`,
+/// `vault_recovery_keys`, or `local_device_identity`.
+#[allow(dead_code)]
+pub struct RosterMergeSummary {
+    pub devices_added: u64,
+    pub members_added: u64,
+}
+
+#[allow(dead_code)]
+pub async fn graft_roster_additive(
+    pool: &SqlitePool,
+    snapshot_db_path: &Path,
+    expected_vault_id: &str,
+) -> Result<RosterMergeSummary, sqlx::Error> {
+    let snap_url = format!(
+        "sqlite:{}?mode=ro",
+        snapshot_db_path.to_string_lossy().replace('\\', "/")
+    );
+    let snap_pool = SqlitePool::connect(&snap_url).await?;
+
+    #[derive(sqlx::FromRow)]
+    struct VaultIdRow {
+        vault_id: String,
+    }
+    let snap_vault =
+        sqlx::query_as::<_, VaultIdRow>("SELECT vault_id FROM vault_state WHERE id = 1")
+            .fetch_optional(&snap_pool)
+            .await?
+            .ok_or(sqlx::Error::Protocol(
+                "restored snapshot is missing vault_state row".into(),
+            ))?;
+
+    if snap_vault.vault_id != expected_vault_id {
+        drop(snap_pool);
+        return Err(sqlx::Error::Protocol(
+            format!(
+                "snapshot vault_id mismatch: expected '{}', got '{}'",
+                expected_vault_id, snap_vault.vault_id
+            )
+            .into(),
+        ));
+    }
+
+    let r_devices = sqlx::query_as::<_, RestoredDevice>(
+        "SELECT device_id, user_id, device_name, public_key, wrapped_vault_key, \
+         vault_key_generation, revoked_at, last_seen_at, created_at, \
+         safety_numbers_verified_at, enrolled_at FROM devices",
+    )
+    .fetch_all(&snap_pool)
+    .await
+    .unwrap_or_default();
+
+    let r_members = sqlx::query_as::<_, RestoredVaultMember>(
+        "SELECT user_id, vault_id, role, invited_by, joined_at FROM vault_members",
+    )
+    .fetch_all(&snap_pool)
+    .await
+    .unwrap_or_default();
+
+    snap_pool.close().await;
+    drop(snap_pool);
+
+    let mut devices_added: u64 = 0;
+    let mut members_added: u64 = 0;
+
+    for row in &r_devices {
+        let res = sqlx::query(
+            "INSERT OR IGNORE INTO devices \
+             (device_id, user_id, device_name, public_key, wrapped_vault_key, \
+              vault_key_generation, revoked_at, last_seen_at, created_at, \
+              safety_numbers_verified_at, enrolled_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&row.device_id)
+        .bind(&row.user_id)
+        .bind(&row.device_name)
+        .bind(&row.public_key)
+        .bind(&row.wrapped_vault_key)
+        .bind(row.vault_key_generation)
+        .bind(row.revoked_at)
+        .bind(row.last_seen_at)
+        .bind(row.created_at)
+        .bind(row.safety_numbers_verified_at)
+        .bind(row.enrolled_at)
+        .execute(pool)
+        .await?;
+        devices_added += res.rows_affected();
+    }
+
+    for row in &r_members {
+        let res = sqlx::query(
+            "INSERT OR IGNORE INTO vault_members \
+             (user_id, vault_id, role, invited_by, joined_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&row.user_id)
+        .bind(&row.vault_id)
+        .bind(&row.role)
+        .bind(&row.invited_by)
+        .bind(row.joined_at)
+        .execute(pool)
+        .await?;
+        members_added += res.rows_affected();
+    }
+
+    Ok(RosterMergeSummary {
+        devices_added,
+        members_added,
+    })
+}
+
 #[allow(dead_code)]
 pub async fn get_vault_config(pool: &SqlitePool) -> Result<Option<VaultConfigRecord>, sqlx::Error> {
     sqlx::query_as::<_, VaultConfigRecord>(
@@ -9711,5 +9825,306 @@ mod tests {
             device.kyber_public_key.as_deref(),
             Some(kyber_pub.as_slice())
         );
+    }
+
+    // ── β.1 graft_roster_additive tests ─────────────────────────────────────
+
+    async fn build_roster_snapshot(
+        path: &std::path::Path,
+        vault_id: &str,
+        devices: &[(&str, &str, Option<i64>)],
+        members: &[(&str, &str)],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        if let Some(p) = path.parent() {
+            fs::create_dir_all(p).await?;
+        }
+        let url = format!("sqlite://{}", path.to_string_lossy().replace('\\', "/"));
+        let pool = init_db(&url).await?;
+
+        sqlx::query(
+            "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+             VALUES (1, ?, 'test', ?)",
+        )
+        .bind(vec![0u8; 16])
+        .bind(vault_id)
+        .execute(&pool)
+        .await?;
+
+        for (device_id, user_id, revoked_at) in devices {
+            sqlx::query(
+                "INSERT OR IGNORE INTO users \
+                 (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+                 VALUES (?, 'Test', NULL, 'local', NULL, 1000)",
+            )
+            .bind(user_id)
+            .execute(&pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO devices \
+                 (device_id, user_id, device_name, public_key, created_at, revoked_at) \
+                 VALUES (?, ?, 'PC', X'01', 1000, ?)",
+            )
+            .bind(device_id)
+            .bind(user_id)
+            .bind(revoked_at)
+            .execute(&pool)
+            .await?;
+        }
+
+        for (user_id, role) in members {
+            sqlx::query(
+                "INSERT OR IGNORE INTO users \
+                 (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+                 VALUES (?, 'Test', NULL, 'local', NULL, 1000)",
+            )
+            .bind(user_id)
+            .execute(&pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO vault_members (user_id, vault_id, role, invited_by, joined_at) \
+                 VALUES (?, ?, ?, NULL, 1000)",
+            )
+            .bind(user_id)
+            .bind(vault_id)
+            .bind(role)
+            .execute(&pool)
+            .await?;
+        }
+
+        pool.close().await;
+        drop(pool);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_roster_additive_adds_missing_device() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("roster-add");
+        fs::create_dir_all(&dir).await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target = init_db(&target_url).await?;
+        sqlx::query(
+            "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+             VALUES (1, ?, 'test', 'v1')",
+        )
+        .bind(vec![0u8; 16])
+        .execute(&target)
+        .await?;
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u1', 'Owner', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&target)
+        .await?;
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('A', 'u1', 'PC-A', X'01', 1000)",
+        )
+        .execute(&target)
+        .await?;
+
+        let snap = dir.join("snap.db");
+        build_roster_snapshot(&snap, "v1", &[("A", "u1", None), ("B", "u1", None)], &[]).await?;
+
+        let summary = graft_roster_additive(&target, &snap, "v1").await?;
+        assert_eq!(summary.devices_added, 1, "only device B should be added");
+
+        let dev_b = get_device(&target, "B").await?;
+        assert!(dev_b.is_some(), "device B must exist after graft");
+        let dev_a = get_device(&target, "A").await?;
+        assert!(dev_a.is_some(), "device A must still exist");
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_roster_additive_does_not_clobber_existing_device()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("roster-noclobber");
+        fs::create_dir_all(&dir).await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target = init_db(&target_url).await?;
+        sqlx::query(
+            "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+             VALUES (1, ?, 'test', 'v1')",
+        )
+        .bind(vec![0u8; 16])
+        .execute(&target)
+        .await?;
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u1', 'Owner', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&target)
+        .await?;
+        sqlx::query(
+            "INSERT INTO devices \
+             (device_id, user_id, device_name, public_key, created_at, revoked_at) \
+             VALUES ('A', 'u1', 'PC-A', X'01', 1000, 123)",
+        )
+        .execute(&target)
+        .await?;
+
+        let snap = dir.join("snap.db");
+        build_roster_snapshot(&snap, "v1", &[("A", "u1", None)], &[]).await?;
+
+        graft_roster_additive(&target, &snap, "v1").await?;
+
+        let dev_a = get_device(&target, "A").await?.unwrap();
+        assert_eq!(
+            dev_a.revoked_at,
+            Some(123),
+            "INSERT OR IGNORE must not overwrite local revoked_at"
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_roster_additive_never_touches_dek() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("roster-dek-guard");
+        fs::create_dir_all(&dir).await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target = init_db(&target_url).await?;
+        sqlx::query(
+            "INSERT INTO vault_state \
+             (id, master_key_salt, argon2_params, vault_id, encrypted_vault_key, vault_key_generation) \
+             VALUES (1, ?, 'test', 'v1', X'AABB', 7)",
+        )
+        .bind(vec![0u8; 16])
+        .execute(&target)
+        .await?;
+        let inode_id = create_inode(&target, None, "guard.txt", "FILE", 10).await?;
+        insert_wrapped_dek(&target, inode_id, &[0xCCu8; 32], 1, 7).await?;
+
+        let before_dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&target)
+            .await?;
+        let before_dek_bytes: Vec<u8> =
+            sqlx::query_scalar("SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&target)
+                .await?;
+        let before_evk: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target)
+                .await?;
+        let before_gen: Option<i64> =
+            sqlx::query_scalar("SELECT vault_key_generation FROM vault_state WHERE id = 1")
+                .fetch_one(&target)
+                .await?;
+
+        let snap = dir.join("snap.db");
+        {
+            let url = format!("sqlite://{}", snap.to_string_lossy().replace('\\', "/"));
+            let sp = init_db(&url).await?;
+            sqlx::query(
+                "INSERT INTO vault_state \
+                 (id, master_key_salt, argon2_params, vault_id, encrypted_vault_key, vault_key_generation) \
+                 VALUES (1, ?, 'test', 'v1', X'DDEE', 99)",
+            )
+            .bind(vec![1u8; 16])
+            .execute(&sp)
+            .await?;
+            let snap_inode = create_inode(&sp, None, "snap.txt", "FILE", 5).await?;
+            insert_wrapped_dek(&sp, snap_inode, &[0xFFu8; 32], 1, 99).await?;
+            sp.close().await;
+            drop(sp);
+        }
+
+        graft_roster_additive(&target, &snap, "v1").await?;
+
+        let after_dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&target)
+            .await?;
+        let after_dek_bytes: Vec<u8> =
+            sqlx::query_scalar("SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&target)
+                .await?;
+        let after_evk: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target)
+                .await?;
+        let after_gen: Option<i64> =
+            sqlx::query_scalar("SELECT vault_key_generation FROM vault_state WHERE id = 1")
+                .fetch_one(&target)
+                .await?;
+
+        assert_eq!(
+            after_dek_count, before_dek_count,
+            "DEK row count must not change"
+        );
+        assert_eq!(
+            after_dek_bytes, before_dek_bytes,
+            "DEK bytes must be unchanged"
+        );
+        assert_eq!(after_evk, before_evk, "encrypted_vault_key must not change");
+        assert_eq!(
+            after_gen, before_gen,
+            "vault_key_generation must not change"
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_roster_additive_rejects_foreign_vault() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use tokio::fs;
+        let dir = temp_test_dir("roster-foreign");
+        fs::create_dir_all(&dir).await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target = init_db(&target_url).await?;
+        sqlx::query(
+            "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+             VALUES (1, ?, 'test', 'v1')",
+        )
+        .bind(vec![0u8; 16])
+        .execute(&target)
+        .await?;
+
+        let before_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices")
+            .fetch_one(&target)
+            .await?;
+
+        let snap = dir.join("snap.db");
+        build_roster_snapshot(&snap, "v-OTHER", &[("X", "u9", None)], &[]).await?;
+
+        let result = graft_roster_additive(&target, &snap, "v1").await;
+        assert!(result.is_err(), "must return Err for foreign vault");
+
+        let after_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices")
+            .fetch_one(&target)
+            .await?;
+        assert_eq!(
+            after_count, before_count,
+            "no device must be inserted on vault_id mismatch"
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
     }
 }
