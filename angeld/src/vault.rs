@@ -867,6 +867,12 @@ impl VaultKeyStore {
             Ok(_) => info!("[DEVICE-KEY] X25519 keypair ensured for local device"),
             Err(e) => warn!("[DEVICE-KEY] keypair generation failed (will retry next unlock): {e}"),
         }
+        match crate::identity::ensure_device_kyber_keypair(pool, master_key.as_ref()).await {
+            Ok(_) => info!("[DEVICE-KEY] ML-KEM keypair ensured for local device"),
+            Err(e) => {
+                warn!("[DEVICE-KEY] kyber keypair generation failed (will retry next unlock): {e}")
+            }
+        }
         Ok(())
     }
 
@@ -1719,6 +1725,30 @@ mod tests {
                 .await
                 .is_err(),
             "old master must no longer unseal the re-sealed device key"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn post_unlock_maintenance_ensures_both_keypairs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = db::init_db("sqlite::memory:").await?;
+        let store = VaultKeyStore::new();
+        store.unlock(&pool, "pass-123").await?;
+        db::upsert_local_device_identity(&pool, "dev-1", "PC", "tok").await?;
+
+        store.run_post_unlock_maintenance(&pool, "pass-123").await?;
+
+        let dev = db::get_local_device_identity(&pool).await?.unwrap();
+        assert!(dev.public_key.is_some(), "X25519 pubkey present");
+        assert_eq!(
+            dev.kyber_public_key.as_deref().map(<[u8]>::len),
+            Some(omnidrive_core::pqkem::ML_KEM_768_ENCAPS_KEY_LEN),
+            "kyber encaps key generated and persisted"
+        );
+        assert!(
+            dev.encrypted_kyber_private_key.is_some(),
+            "kyber decaps sealed"
         );
         Ok(())
     }
