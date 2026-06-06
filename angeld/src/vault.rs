@@ -1736,6 +1736,11 @@ mod tests {
         let store = VaultKeyStore::new();
         store.unlock(&pool, "pass-123").await?;
         db::upsert_local_device_identity(&pool, "dev-1", "PC", "tok").await?;
+        let pre = db::get_local_device_identity(&pool).await?.unwrap();
+        assert!(
+            pre.kyber_public_key.is_none(),
+            "precondition: no kyber key before maintenance"
+        );
 
         store.run_post_unlock_maintenance(&pool, "pass-123").await?;
 
