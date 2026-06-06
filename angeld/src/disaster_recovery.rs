@@ -29,6 +29,8 @@ pub const METADATA_BACKUP_TAG_LEN: usize = 16;
 const METADATA_BACKUP_HEADER_FIXED_LEN: usize = 15 + 1 + 2 + 4 + 4 + 4 + 4 + 12;
 const METADATA_BACKUP_WORKER_TICK: Duration = Duration::from_secs(60 * 60);
 const METADATA_BACKUP_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
+const METADATA_FETCH_WORKER_TICK: Duration = Duration::from_secs(60 * 60);
+const METADATA_FETCH_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -297,6 +299,71 @@ pub fn start_metadata_backup_worker(
                 warn!("metadata backup worker failed: {err}");
             } else {
                 info!("metadata backup worker uploaded a fresh recovery snapshot");
+            }
+            diagnostics::set_worker_status(WorkerKind::MetadataBackup, WorkerStatus::Idle);
+        }
+    })
+}
+
+pub fn start_metadata_fetch_worker(
+    db_pool: SqlitePool,
+    provider_manager: Arc<MetadataBackupProviderManager>,
+    keystore: Arc<VaultKeyStore>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = interval(METADATA_FETCH_WORKER_TICK);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        diagnostics::set_worker_status(WorkerKind::MetadataBackup, WorkerStatus::Idle);
+
+        loop {
+            ticker.tick().await;
+
+            let last_applied = match db::get_last_applied_roster_snapshot_at(&db_pool).await {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("metadata fetch worker failed to query last applied: {err}");
+                    continue;
+                }
+            };
+
+            let now_ms = match unix_timestamp_ms() {
+                Ok(value) => value as i64,
+                Err(err) => {
+                    warn!("metadata fetch worker failed to read clock: {err}");
+                    continue;
+                }
+            };
+
+            let should_fetch = match last_applied {
+                Some(applied_at) => {
+                    let elapsed_ms = now_ms.saturating_sub(applied_at);
+                    elapsed_ms >= METADATA_FETCH_MIN_INTERVAL.as_millis() as i64
+                }
+                None => true,
+            };
+
+            if !should_fetch {
+                continue;
+            }
+
+            let master_key = match keystore.require_master_key().await {
+                Ok(key) => key,
+                Err(_) => {
+                    warn!("metadata fetch worker skipped: vault is locked");
+                    continue;
+                }
+            };
+            diagnostics::set_worker_status(WorkerKind::MetadataBackup, WorkerStatus::Active);
+
+            match run_metadata_fetch_now(&db_pool, provider_manager.as_ref(), &master_key).await {
+                Err(err) => warn!("metadata fetch worker failed: {err}"),
+                Ok(None) => {}
+                Ok(Some(summary)) => {
+                    info!(
+                        "metadata fetch worker applied snapshot: devices_added={} members_added={}",
+                        summary.devices_added, summary.members_added
+                    );
+                }
             }
             diagnostics::set_worker_status(WorkerKind::MetadataBackup, WorkerStatus::Idle);
         }
@@ -691,6 +758,132 @@ pub async fn run_metadata_backup_now(
     }
 
     upload_result
+}
+
+pub async fn run_metadata_fetch_now(
+    pool: &SqlitePool,
+    provider_manager: &MetadataBackupProviderManager,
+    master_key: &[u8],
+) -> Result<Option<db::RosterMergeSummary>, DisasterRecoveryError> {
+    let local_vault_id = match db::get_vault_params(pool).await? {
+        Some(record) => record.vault_id,
+        None => return Ok(None),
+    };
+
+    let newest = collect_newest_snapshot_key(provider_manager).await;
+    let (newest_created_at, newest_key) = match newest {
+        Some(pair) => pair,
+        None => return Ok(None),
+    };
+
+    let marker = db::get_last_applied_roster_snapshot_at(pool).await?;
+    if newest_created_at <= marker.unwrap_or(i64::MIN) {
+        return Ok(None);
+    }
+
+    let encoded = download_snapshot_bytes(provider_manager, &newest_key).await?;
+
+    let plaintext = match decrypt_metadata_backup_with_master(&encoded, master_key) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            warn!("metadata fetch: decrypt failed for key={newest_key}: {err}");
+            return Ok(None);
+        }
+    };
+
+    let temp_path = std::env::temp_dir().join(format!(
+        "omnidrive-roster-fetch-{}.db",
+        unix_timestamp_ms().unwrap_or(0)
+    ));
+
+    let valid = match write_plaintext_snapshot_if_valid(&plaintext, &temp_path).await {
+        Ok(v) => v,
+        Err(err) => {
+            warn!("metadata fetch: failed to write temp snapshot: {err}");
+            let _ = fs::remove_file(&temp_path).await;
+            return Ok(None);
+        }
+    };
+
+    if !valid {
+        warn!("metadata fetch: snapshot key={newest_key} has no vault_state row");
+        let _ = fs::remove_file(&temp_path).await;
+        return Ok(None);
+    }
+
+    let summary = match db::graft_roster_additive(pool, &temp_path, &local_vault_id).await {
+        Ok(s) => s,
+        Err(err) => {
+            warn!("metadata fetch: graft failed for key={newest_key}: {err}");
+            let _ = secure_delete(&temp_path).await;
+            return Ok(None);
+        }
+    };
+
+    db::set_last_applied_roster_snapshot_at(pool, newest_created_at).await?;
+
+    info!(
+        "metadata fetch applied snapshot created_at={} devices_added={} members_added={}",
+        newest_created_at, summary.devices_added, summary.members_added
+    );
+
+    let _ = secure_delete(&temp_path).await;
+    Ok(Some(summary))
+}
+
+fn parse_created_at_from_snapshot_key(key: &str) -> Option<i64> {
+    let stem = key.rsplit('/').next()?.strip_suffix(".db.enc")?;
+    stem.parse::<i64>().ok()
+}
+
+async fn collect_newest_snapshot_key(
+    provider_manager: &MetadataBackupProviderManager,
+) -> Option<(i64, String)> {
+    let mut best: Option<(i64, String)> = None;
+
+    if let Some(local_store) = &provider_manager.local_store {
+        if let Ok(keys) = local_store.list_snapshot_keys(32).await {
+            for key in keys {
+                if let Some(ts) = parse_created_at_from_snapshot_key(&key) {
+                    if best.as_ref().map_or(true, |(b, _)| ts > *b) {
+                        best = Some((ts, key));
+                    }
+                }
+            }
+        }
+    }
+
+    for provider in &provider_manager.download_providers {
+        if let Ok(keys) = provider.list_snapshot_keys(None, 32).await {
+            for key in keys {
+                if let Some(ts) = parse_created_at_from_snapshot_key(&key) {
+                    if best.as_ref().map_or(true, |(b, _)| ts > *b) {
+                        best = Some((ts, key));
+                    }
+                }
+            }
+        }
+    }
+
+    best
+}
+
+async fn download_snapshot_bytes(
+    provider_manager: &MetadataBackupProviderManager,
+    key: &str,
+) -> Result<Vec<u8>, DisasterRecoveryError> {
+    if let Some(local_store) = &provider_manager.local_store {
+        return local_store.download_bytes(key).await;
+    }
+
+    let mut errors = Vec::new();
+    for provider in &provider_manager.download_providers {
+        match provider.download_bytes(None, key).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(err) => errors.push(err.to_string()),
+        }
+    }
+    Err(DisasterRecoveryError::DownloadFailed(errors))
 }
 
 #[allow(dead_code)]
@@ -1269,6 +1462,164 @@ mod tests {
             matches!(result, Err(DisasterRecoveryError::BackupDecryptFailed)),
             "expected BackupDecryptFailed, got {:?}",
             result
+        );
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_now_merges_peer_device_additively() -> Result<(), Box<dyn std::error::Error>> {
+        use omnidrive_core::crypto::{RootKdfParams, derive_root_keys};
+
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-fetch-now-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&test_root).await?;
+
+        let passphrase = "fetch-test-passphrase";
+        let kdf_params = RootKdfParams::new(1, vec![0xABu8; 16], 65_536, 3, 1);
+        let root_keys = derive_root_keys(passphrase.as_bytes(), &kdf_params)?;
+        let master_key = root_keys.master_key;
+
+        let pool_a_url = format!(
+            "sqlite://{}",
+            test_root
+                .join("device_a.db")
+                .to_string_lossy()
+                .replace('\\', "/")
+        );
+        let pool_a = db::init_db(&pool_a_url).await?;
+
+        sqlx::query(
+            "INSERT INTO vault_state \
+             (id, master_key_salt, argon2_params, vault_id, encrypted_vault_key, vault_key_generation) \
+             VALUES (1, ?, 'test', 'vault-fetch-test', X'AABB', 1)",
+        )
+        .bind(vec![0u8; 16])
+        .execute(&pool_a)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('owner', 'Owner', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&pool_a)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('A', 'owner', 'PC-A', X'01', 1000)",
+        )
+        .execute(&pool_a)
+        .await?;
+
+        let inode_id = db::create_inode(&pool_a, None, "guard.txt", "FILE", 10).await?;
+        db::insert_wrapped_dek(&pool_a, inode_id, &[0xCCu8; 32], 1, 1).await?;
+
+        let before_dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&pool_a)
+            .await?;
+        let before_dek_bytes: Vec<u8> =
+            sqlx::query_scalar("SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&pool_a)
+                .await?;
+
+        let peer_snap_db = test_root.join("peer_snap.db");
+        {
+            let url = format!(
+                "sqlite://{}",
+                peer_snap_db.to_string_lossy().replace('\\', "/")
+            );
+            let sp = db::init_db(&url).await?;
+            sqlx::query(
+                "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+                 VALUES (1, ?, 'test', 'vault-fetch-test')",
+            )
+            .bind(vec![0u8; 16])
+            .execute(&sp)
+            .await?;
+            sqlx::query(
+                "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+                 VALUES ('owner', 'Owner', NULL, 'local', NULL, 1000)",
+            )
+            .execute(&sp)
+            .await?;
+            sqlx::query(
+                "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+                 VALUES ('A', 'owner', 'PC-A', X'01', 1000)",
+            )
+            .execute(&sp)
+            .await?;
+            sqlx::query(
+                "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+                 VALUES ('B', 'owner', 'PC-B', X'02', 2000)",
+            )
+            .execute(&sp)
+            .await?;
+            sp.close().await;
+            drop(sp);
+        }
+
+        let enc_path = test_root.join("peer_snap.db.enc");
+        encrypt_metadata_snapshot(&peer_snap_db, &enc_path, &master_key, &kdf_params).await?;
+
+        let created_at: i64 = 1_700_000_000_000;
+        let snapshot_key = format!("_omnidrive/system/metadata/snapshots/{created_at}.db.enc");
+
+        let local_store_root = test_root.join("local_store");
+        fs::create_dir_all(&local_store_root).await?;
+        let local_store = LocalMetadataBackupStore {
+            root: local_store_root.clone(),
+        };
+        let target_path = local_store.root.join(snapshot_key.replace('/', "\\"));
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::copy(&enc_path, &target_path).await?;
+
+        let pm = MetadataBackupProviderManager {
+            uploaders: Vec::new(),
+            download_providers: Vec::new(),
+            local_store: Some(local_store),
+        };
+
+        let summary = run_metadata_fetch_now(&pool_a, &pm, &master_key)
+            .await?
+            .expect("should return Some(summary) with devices_added==1");
+
+        assert_eq!(summary.devices_added, 1, "only device B should be added");
+
+        let dev_b = db::get_device(&pool_a, "B").await?;
+        assert!(dev_b.is_some(), "device B must exist after fetch");
+
+        let after_dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&pool_a)
+            .await?;
+        let after_dek_bytes: Vec<u8> =
+            sqlx::query_scalar("SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&pool_a)
+                .await?;
+
+        assert_eq!(
+            after_dek_count, before_dek_count,
+            "DEK count must not change"
+        );
+        assert_eq!(
+            after_dek_bytes, before_dek_bytes,
+            "DEK bytes must not change"
+        );
+
+        let marker = db::get_last_applied_roster_snapshot_at(&pool_a).await?;
+        assert_eq!(marker, Some(created_at), "marker must equal created_at");
+
+        let second_result = run_metadata_fetch_now(&pool_a, &pm, &master_key).await?;
+        assert!(
+            second_result.is_none(),
+            "second call must be idempotent (Ok(None))"
         );
 
         let _ = fs::remove_dir_all(&test_root).await;
