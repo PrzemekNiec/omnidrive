@@ -51,6 +51,7 @@ use crate::device_identity::ensure_local_device_identity;
 use crate::diagnostics::init_global_diagnostics;
 use crate::disaster_recovery::{
     MetadataBackupProviderManager, restore_metadata_from_cloud, start_metadata_backup_worker,
+    start_metadata_fetch_worker,
 };
 use crate::downloader::Downloader;
 use crate::gc::GcWorker;
@@ -780,6 +781,11 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(MetadataBackupProviderManager::from_onboarding_db_all(&pool).await?);
     let metadata_backup_worker = start_metadata_backup_worker(
         pool.clone(),
+        metadata_backup_provider_manager.clone(),
+        Arc::new(vault_keys.clone()),
+    );
+    let metadata_fetch_worker = start_metadata_fetch_worker(
+        pool.clone(),
         metadata_backup_provider_manager,
         Arc::new(vault_keys.clone()),
     );
@@ -793,6 +799,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let mut gc_task = tokio::spawn(async move { gc_worker.run().await });
     let mut ingest_task = tokio::spawn(async move { ingest_worker.run().await });
     let mut metadata_backup_task = metadata_backup_worker;
+    let mut metadata_fetch_task = metadata_fetch_worker;
     let mut api_task = tokio::spawn(async move { api.run().await });
     let mut peer_task = tokio::spawn(async move { peer_service.run().await });
     let _pipe_task = tokio::spawn(pipe_server::run_pipe_server(pool.clone()));
@@ -824,6 +831,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             ingest_task.abort();
             metadata_backup_task.abort();
+            metadata_fetch_task.abort();
             api_task.abort();
             peer_task.abort();
             result??;
@@ -835,6 +843,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             ingest_task.abort();
             metadata_backup_task.abort();
+            metadata_fetch_task.abort();
             api_task.abort();
             peer_task.abort();
             result??;
@@ -846,6 +855,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             ingest_task.abort();
             metadata_backup_task.abort();
+            metadata_fetch_task.abort();
             api_task.abort();
             peer_task.abort();
             result??;
@@ -857,6 +867,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             scrubber_task.abort();
             ingest_task.abort();
             metadata_backup_task.abort();
+            metadata_fetch_task.abort();
             api_task.abort();
             peer_task.abort();
             result??;
@@ -868,6 +879,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             scrubber_task.abort();
             gc_task.abort();
             metadata_backup_task.abort();
+            metadata_fetch_task.abort();
             api_task.abort();
             peer_task.abort();
             result??;
@@ -879,6 +891,19 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             scrubber_task.abort();
             gc_task.abort();
             ingest_task.abort();
+            metadata_fetch_task.abort();
+            api_task.abort();
+            peer_task.abort();
+            result?;
+            Ok(())
+        }
+        result = &mut metadata_fetch_task => {
+            upload_task.abort();
+            repair_task.abort();
+            scrubber_task.abort();
+            gc_task.abort();
+            ingest_task.abort();
+            metadata_backup_task.abort();
             api_task.abort();
             peer_task.abort();
             result?;
@@ -891,6 +916,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             ingest_task.abort();
             metadata_backup_task.abort();
+            metadata_fetch_task.abort();
             api_task.abort();
             peer_task.abort();
             result?;
@@ -903,6 +929,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             ingest_task.abort();
             metadata_backup_task.abort();
+            metadata_fetch_task.abort();
             peer_task.abort();
             result??;
             Ok(())
@@ -914,6 +941,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             ingest_task.abort();
             metadata_backup_task.abort();
+            metadata_fetch_task.abort();
             api_task.abort();
             result??;
             Ok(())
@@ -926,6 +954,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             gc_task.abort();
             ingest_task.abort();
             metadata_backup_task.abort();
+            metadata_fetch_task.abort();
             api_task.abort();
             peer_task.abort();
             info!("shutdown signal received");
