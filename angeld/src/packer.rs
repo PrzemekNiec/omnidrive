@@ -782,4 +782,59 @@ mod tests {
         let _ = fs::remove_dir_all(&test_root).await;
         Ok(())
     }
+
+    #[tokio::test]
+    async fn stale_local_base_materializes_conflict_copy() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-packer-conflict-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        let spool_dir = test_root.join("spool");
+        let source_path = test_root.join("doc.txt");
+        fs::create_dir_all(&spool_dir).await?;
+
+        let pool = db::init_db("sqlite::memory:").await?;
+        let inode_id = db::create_inode(&pool, None, "doc.txt", "FILE", 3).await?;
+        let vault_keys = VaultKeyStore::new();
+        vault_keys.unlock(&pool, "test-passphrase").await?;
+        let packer = Packer::new(pool.clone(), vault_keys, PackerConfig::new(&spool_dir))?;
+
+        fs::write(&source_path, b"v1").await?;
+        let r1 = packer
+            .pack_file_with_expected_parent(inode_id, &source_path, None)
+            .await?;
+        let rev1 = r1.revision_id.expect("rev1");
+        assert!(
+            r1.conflict_copy_name.is_none(),
+            "first write must not conflict"
+        );
+
+        fs::write(&source_path, b"v2x").await?;
+        let r2 = packer
+            .pack_file_with_expected_parent(inode_id, &source_path, Some(rev1))
+            .await?;
+        assert!(
+            r2.conflict_copy_name.is_none(),
+            "same-base write must not conflict"
+        );
+
+        fs::write(&source_path, b"v3y").await?;
+        let r3 = packer
+            .pack_file_with_expected_parent(inode_id, &source_path, Some(rev1))
+            .await?;
+        assert!(
+            r3.conflict_copy_name.is_some(),
+            "stale base must materialize a conflict copy"
+        );
+
+        let events = db::list_recent_conflicts(&pool, 10).await?;
+        assert!(
+            events.iter().any(|e| e.reason == "stale_local_base"),
+            "stale_local_base event expected"
+        );
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
 }
