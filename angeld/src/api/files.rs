@@ -240,6 +240,10 @@ async fn restore_trash(
         });
     }
     let restored_name = db::restore_soft_deleted_inode(&state.pool, inode_id).await?;
+    let sync_root = sync_root_path();
+    if let Err(err) = smart_sync::project_vault_to_sync_root(&state.pool, &sync_root).await {
+        tracing::warn!("restore re-projection failed for inode {inode_id}: {err}");
+    }
     tracing::info!(
         "api restored inode {} from trash as {}",
         inode_id,
