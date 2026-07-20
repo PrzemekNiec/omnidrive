@@ -3442,6 +3442,7 @@ pub async fn get_inode_by_path(
         FROM inodes
         WHERE ((parent_id IS NULL AND ? IS NULL) OR parent_id = ?)
           AND name = ?
+          AND deleted_at IS NULL
         "#,
     )
     .bind(parent_id)
@@ -5531,6 +5532,7 @@ pub async fn list_active_files(pool: &SqlitePool) -> Result<Vec<FileInventoryRec
         LEFT JOIN smart_sync_state ss
             ON ss.inode_id = i.id
         WHERE i.kind = 'FILE'
+          AND i.deleted_at IS NULL
         ORDER BY inode_paths.path ASC
         "#,
     )
@@ -5575,6 +5577,7 @@ pub async fn get_active_files_for_projection(
             ON fr.inode_id = i.id
            AND fr.is_current = 1
         WHERE i.kind = 'FILE'
+          AND i.deleted_at IS NULL
         ORDER BY inode_paths.path ASC
         "#,
     )
@@ -5694,6 +5697,7 @@ pub async fn list_unpinned_hydrated_files_for_eviction(
         INNER JOIN inode_paths
             ON inode_paths.id = i.id
         WHERE i.kind = 'FILE'
+          AND i.deleted_at IS NULL
           AND s.pin_state = 0
           AND s.hydration_state = 1
         ORDER BY inode_paths.path ASC
@@ -8294,6 +8298,7 @@ pub async fn get_stats_overview(pool: &SqlitePool) -> Result<StatsOverview, sqlx
             COALESCE(SUM(size), 0) AS logical_size_bytes
         FROM inodes
         WHERE kind = 'file'
+          AND deleted_at IS NULL
         "#,
     )
     .fetch_one(pool)
@@ -10469,6 +10474,28 @@ mod tests {
 
         let second = soft_delete_inode(&pool, inode, 2_000).await?;
         assert!(!second, "already soft-deleted → no change");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn soft_deleted_excluded_from_lookup_but_visible_by_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "gone.txt", "FILE", 1).await?;
+        soft_delete_inode(&pool, inode, 1_000).await?;
+
+        assert!(
+            get_inode_by_path(&pool, None, "gone.txt").await?.is_none(),
+            "soft-deleted must not resolve by path"
+        );
+        assert!(
+            resolve_path(&pool, "/gone.txt").await?.is_none(),
+            "soft-deleted must not resolve as live"
+        );
+        assert!(
+            get_inode_by_id(&pool, inode).await?.is_some(),
+            "raw by-id must still see soft-deleted"
+        );
         Ok(())
     }
 }
