@@ -476,9 +476,16 @@ impl FileWatcher {
             return Ok(());
         }
 
-        db::delete_file_chunks(&self.pool, inode_id).await?;
-        db::delete_inode_record(&self.pool, inode_id).await?;
-        info!("watcher removed {} from sqlite", path.display());
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        db::soft_delete_inode(&self.pool, inode_id, now_ms).await?;
+        info!(
+            "watcher soft-deleted inode {} ({})",
+            inode_id,
+            path.display()
+        );
         Ok(())
     }
 

@@ -166,8 +166,12 @@ async fn delete_file(
         });
     }
 
-    db::delete_file_chunks(&state.pool, inode_id).await?;
-    db::delete_inode_record(&state.pool, inode_id).await?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    db::soft_delete_inode(&state.pool, inode_id, now_ms).await?;
+    tracing::info!("api soft-deleted inode {}", inode_id);
 
     Ok(Json(DeleteFileResponse {
         inode_id,

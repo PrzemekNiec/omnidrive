@@ -4332,6 +4332,21 @@ pub async fn delete_inode_record(pool: &SqlitePool, inode_id: i64) -> Result<u64
     Ok(result.rows_affected())
 }
 
+pub async fn soft_delete_inode(
+    pool: &SqlitePool,
+    inode_id: i64,
+    now_ms: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE inodes SET deleted_at = ? WHERE id = ? AND kind = 'FILE' AND deleted_at IS NULL",
+    )
+    .bind(now_ms)
+    .bind(inode_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 #[allow(dead_code)]
 pub async fn create_pack(
     pool: &SqlitePool,
@@ -10423,6 +10438,37 @@ mod tests {
                 .fetch_one(&pool)
                 .await?;
         assert_eq!(deleted_at, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn soft_delete_sets_timestamp_and_preserves_chunks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "f.txt", "FILE", 10).await?;
+        let rev =
+            create_file_revision(&pool, inode, 10, None, None, None, "local_write", None).await?;
+        register_chunk(&pool, rev, &[7u8; 32], 0, 10).await?;
+
+        let changed = soft_delete_inode(&pool, inode, 1_000).await?;
+        assert!(changed);
+
+        let deleted_at: Option<i64> =
+            sqlx::query_scalar("SELECT deleted_at FROM inodes WHERE id = ?")
+                .bind(inode)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(deleted_at, Some(1_000));
+
+        let chunk_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chunk_refs WHERE revision_id = ?")
+                .bind(rev)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(chunk_count, 1, "soft-delete must not touch chunk_refs");
+
+        let second = soft_delete_inode(&pool, inode, 2_000).await?;
+        assert!(!second, "already soft-deleted → no change");
         Ok(())
     }
 }
