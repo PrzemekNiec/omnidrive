@@ -10200,4 +10200,61 @@ mod tests {
             Some(5678)
         );
     }
+
+    #[tokio::test]
+    async fn lineage_same_when_candidate_equals_current() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "f.txt", "FILE", 10).await?;
+        let rev = create_file_revision(&pool, inode, 10, None, None, None, "local_write", None).await?;
+        let rel = classify_revision_lineage(&pool, rev, rev).await?;
+        assert_eq!(rel, RevisionLineageRelation::Same);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lineage_candidate_descends_from_current_is_fast_forward()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "f.txt", "FILE", 10).await?;
+        let current =
+            create_file_revision(&pool, inode, 10, None, None, None, "local_write", None).await?;
+        let candidate =
+            create_file_revision(&pool, inode, 10, None, None, Some(current), "local_write", None)
+                .await?;
+        let rel = classify_revision_lineage(&pool, candidate, current).await?;
+        assert_eq!(rel, RevisionLineageRelation::CandidateDescendsFromCurrent);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lineage_current_descends_from_candidate_is_stale_base()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "f.txt", "FILE", 10).await?;
+        let candidate =
+            create_file_revision(&pool, inode, 10, None, None, None, "local_write", None).await?;
+        let current =
+            create_file_revision(&pool, inode, 10, None, None, Some(candidate), "local_write", None)
+                .await?;
+        let rel = classify_revision_lineage(&pool, candidate, current).await?;
+        assert_eq!(rel, RevisionLineageRelation::CurrentDescendsFromCandidate);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lineage_siblings_are_parallel() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "f.txt", "FILE", 10).await?;
+        let base =
+            create_file_revision(&pool, inode, 10, None, None, None, "local_write", None).await?;
+        let branch_a =
+            create_file_revision(&pool, inode, 10, None, None, Some(base), "local_write", None)
+                .await?;
+        let branch_b =
+            create_file_revision(&pool, inode, 10, None, None, Some(base), "local_write", None)
+                .await?;
+        let rel = classify_revision_lineage(&pool, branch_a, branch_b).await?;
+        assert_eq!(rel, RevisionLineageRelation::Parallel);
+        Ok(())
+    }
 }
