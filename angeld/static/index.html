@@ -229,6 +229,10 @@
         <span class="material-symbols-outlined">folder_open</span>
         <span class="text-sm">Pliki</span>
       </a>
+      <a class="nav-item flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-slate-200 hover:bg-white/10 transition-colors duration-200" href="#" data-view="kosz">
+        <span class="material-symbols-outlined">delete</span>
+        <span class="text-sm">Kosz</span>
+      </a>
       <a class="nav-item flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-slate-200 hover:bg-white/10 transition-colors duration-200" href="#" data-view="skarbiec">
         <span class="material-symbols-outlined">enhanced_encryption</span>
         <span class="text-sm">Skarbiec</span>
@@ -916,6 +920,17 @@
           <button id="auditLoadMoreBtn" class="hidden text-xs font-bold text-primary border border-primary/20 px-3 py-1.5 rounded-lg hover:bg-primary/10 transition-colors">Załaduj więcej</button>
         </div>
       </section>
+    </div>
+
+    <!-- ===== Widok: Kosz (γ.c) ===== -->
+    <div id="view-kosz" data-view="kosz" class="hidden p-8 max-w-4xl mx-auto space-y-6 pb-16">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-3xl font-bold tracking-tight text-on-surface mb-1">Kosz</h1>
+          <p class="text-sm text-slate-400">Usunięte pliki są odzyskiwalne przez 7 dni, potem kasowane trwale.</p>
+        </div>
+      </div>
+      <div id="koszList" class="space-y-2"></div>
     </div>
 
     <!-- ===== Widok: Diagnostyka (v0.3.20) ===== -->
@@ -3474,7 +3489,7 @@
     }
 
     // ── Hash router (F.7) ───────────────────────────────────────
-    const VALID_VIEWS = ['przeglad', 'pliki', 'skarbiec', 'multi-device', 'chmura', 'audyt', 'ustawienia', 'diagnostyka'];
+    const VALID_VIEWS = ['przeglad', 'pliki', 'kosz', 'skarbiec', 'multi-device', 'chmura', 'audyt', 'ustawienia', 'diagnostyka'];
     const PLACEHOLDER_META = {
       'multi-device': { icon: 'devices',   title: 'Multi-Device' },
       chmura:         { icon: 'cloud',     title: 'Chmura' },
@@ -3499,7 +3514,7 @@
       if (skarbiec) skarbiec.classList.add('hidden');
       const multiDevice = document.getElementById('view-multi-device');
       if (multiDevice) multiDevice.classList.add('hidden');
-      ['view-chmura', 'view-audyt', 'view-ustawienia', 'view-diagnostyka'].forEach(id => { const el = document.getElementById(id); if (el) el.classList.add('hidden'); });
+      ['view-chmura', 'view-audyt', 'view-ustawienia', 'view-diagnostyka', 'view-kosz'].forEach(id => { const el = document.getElementById(id); if (el) el.classList.add('hidden'); });
       placeholder.classList.add('hidden');
       placeholder.classList.remove('flex');
 
@@ -3508,6 +3523,9 @@
       } else if (view === 'pliki') {
         pliki.classList.remove('hidden');
         activatePlikiView();
+      } else if (view === 'kosz') {
+        document.getElementById('view-kosz').classList.remove('hidden');
+        loadKosz();
       } else if (view === 'skarbiec') {
         document.getElementById('view-skarbiec').classList.remove('hidden');
         activateSkarbiecView();
@@ -3548,6 +3566,49 @@
           item.classList.remove('active');
         }
       });
+    }
+
+    async function loadKosz() {
+      const list = document.getElementById('koszList');
+      if (!list) return;
+      try {
+        const res = await fetch('/api/trash', { headers: mdAuthHeaders() });
+        const data = await res.json();
+        if (!data.items || data.items.length === 0) {
+          list.innerHTML = '<div class="text-center text-slate-500 py-16"><span class="material-symbols-outlined text-4xl block mb-2">delete</span>Kosz jest pusty. Usunięte pliki trafią tu na 7 dni.</div>';
+          return;
+        }
+        list.innerHTML = data.items.map(it => {
+          const badge = it.days_remaining >= 4 ? 'text-emerald-400 bg-emerald-400/15'
+                      : it.days_remaining >= 2 ? 'text-amber-400 bg-amber-400/15'
+                      : 'text-red-400 bg-red-400/15';
+          const dni = it.days_remaining === 1 ? '1 dzień' : it.days_remaining + ' dni';
+          const usun = new Date(it.deleted_at).toLocaleDateString('pl-PL');
+          return `<div class="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
+            <span class="material-symbols-outlined text-slate-400">description</span>
+            <div class="flex-1 min-w-0">
+              <div class="text-slate-200 font-semibold truncate">${it.name}</div>
+              <div class="text-slate-500 text-xs">usunięto ${usun}</div>
+            </div>
+            <span class="text-xs font-semibold px-2 py-1 rounded-full ${badge}">${dni}</span>
+            <button onclick="restoreKosz(${it.inode_id})" class="text-sky-400 bg-sky-400/15 rounded-lg px-3 py-1.5 text-xs font-semibold">Przywróć</button>
+            <button onclick="purgeKosz(${it.inode_id})" class="text-red-400 border border-red-400/30 rounded-lg px-3 py-1.5 text-xs">Usuń teraz</button>
+          </div>`;
+        }).join('');
+      } catch (err) {
+        list.innerHTML = '<div class="text-center text-red-400 py-16">Nie udało się wczytać Kosza.</div>';
+      }
+    }
+
+    async function restoreKosz(id) {
+      await fetch(`/api/trash/${id}/restore`, { method: 'POST', headers: mdAuthHeaders() });
+      loadKosz();
+    }
+
+    async function purgeKosz(id) {
+      if (!confirm('Usunąć plik trwale? Tej operacji nie można cofnąć.')) return;
+      await fetch(`/api/trash/${id}/purge`, { method: 'POST', headers: mdAuthHeaders() });
+      loadKosz();
     }
 
     function onHashChange() {
