@@ -672,7 +672,7 @@ v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
 
 ```
 β — Critical Bug Fixes (po α) — ✅ DONE
-├── β.a — P1-001 AES-GCM hydration fail (graft DEK z α.C.b)     ✅ DONE kod (α.C.b); live smoke Dell = operacyjny
+├── β.a — P1-001 AES-GCM hydration fail (graft DEK z α.C.b)     ✅ DONE kod (α.C.b); ⚠️ live smoke Dell = DEFERRED/NIEZWERYFIKOWANE (2026-07-20)
 ├── β.b — P1-002 Snapshot fetch worker (refresh co 1h)          ✅ DONE (roster-merge only, fe3dcdd..73403fb)
 ├── β.c — P1-003+004 Snapshot redundancy (Scaleway+R2, ≥2/3)    ✅ DONE kod (P1-004 fix; P1-003 = IAM action-item)
 ├── β.d — P2-001 Watcher CPU fix                                ✅ PASS (perf baseline 0.c, bez akcji)
@@ -682,7 +682,7 @@ v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
 
 | Krok | Zakres | DoD |
 |------|--------|-----|
-| **β.a** | **P1-001 AES-GCM hydration fail** — graft kopiuje DEK (zrobione w α.C.b); test: Lenovo wgra 5MB plik → Dell unlock → otwórz plik z O:\ → checksum match. | P1-001 → FIXED |
+| **β.a** ⚠️ | **P1-001 AES-GCM hydration fail** — graft kopiuje DEK (zrobione w α.C.b); test: Lenovo wgra 5MB plik → Dell unlock → otwórz plik z O:\ → checksum match. **Live smoke Dell↔Lenovo = DEFERRED/NIEZWERYFIKOWANE (decyzja 2026-07-20).** Kod DONE (α.C.b, live smoke NIE bramkuje DONE), ale onboarding-na-świeżym-Dellu NIE potwierdzony empirycznie. Procedura gotowa: `docs/SMOKE-beta-a-cross-device.md`. Ryzyko = „czy join działa", NIE data-loss dla istniejących vaultów (join = read-from-cloud; fetch worker roster-merge-only, pokryty testem `5731e56`). | P1-001 → FIXED (kod); smoke DEFERRED |
 | **β.b** ✅ | **P1-002 Snapshot fetch worker** — periodic refresh snapshotu na istniejących urządzeniach (co 1h). | **DONE 2026-06-06** — 8 commitów `fe3dcdd..73403fb`, TDD subagent-driven, plan `docs/superpowers/plans/2026-06-06-beta-task1-p1002-snapshot-fetch-worker.md`. **Strategia ROSTER-MERGE ONLY** (data-safety): `db::graft_roster_additive` `INSERT OR IGNORE` wyłącznie `devices`+`vault_members` w atomowej tx, **NIGDY** nie dotyka `data_encryption_keys`/`vault_state` (vs JOIN-graft wipe+copy = data-loss). `run_metadata_fetch_now` (newest-wins po `created_at`, marker `last_applied_roster_snapshot_at`, idempotentny, best-effort non-fatal) + `start_metadata_fetch_worker` (1h tick, mirror backup workera) wpięty w main.rs (full daemon). Defense-in-depth: jawna walidacja `vault_id` snapshotu PRZED INSERT + `decrypt_metadata_backup_with_master` (worker bez passphrase). Bramka `--all-targets` oba tryby + core 28 + angeld **151** lib green. DoD e2e: aktywne urządzenie uczy się peera bez utraty DEK/revoke-state, drugi tick no-op. NIE bumpowano (v0.3.27). **Live SMOKE Dell↔Lenovo = osobna akceptacja, NIE bramkuje DONE.** |
 | **β.c** ✅ | **P1-003+P1-004 Snapshot redundancy fix.** | **DONE 2026-06-06 (kod)** — commity `5cbf3ae`/`e6e20de`/`cdb7443`, plan `docs/superpowers/plans/2026-06-06-beta-task2-p1003-p1004-cloud-redundancy.md`. **P1-004 (R2 ConnReset 10054)** = stale keep-alive → fix w `aws_http`: krótki `pool_idle_timeout` (10s) + adaptive `RetryConfig` (współdzielone, też pack-upload) + app-level `retry_with_backoff` (transient retry, 403 fail-fast). **P1-003 (Scaleway 403)** = ROOT CAUSE IAM/bucket policy na prefiks `_omnidrive/system/` (NIE kod — `upload_system_file`/`upload_pack` ten sam klient+żądanie, packs działają → path-style/endpoint wykluczone); kod: actionable AccessDenied diagnostic + graceful 2/3 degradation. **AKCJA INFRA Przemka:** Scaleway IAM grant na `_omnidrive/system/*`. Bramka `--all-targets` oba tryby + core 28 + angeld **157** lib green. Bez bumpu (v0.3.27). **Live smoke (R2 PUT OK + Scaleway po IAM = ≥2/3) = osobna akceptacja, NIE bramkuje DONE kodu.** |
 | **β.d** | **Watcher CPU fix (P2-001)** — po pomiarach z 0.c (perf baseline). Możliwe: debounce + batch + ReadDirectoryChangesW zamiast polling. | SLA `watcher idle < 1%` osiągnięty |
@@ -695,25 +695,27 @@ v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
 ### 12.7 Faza γ — Zero Data Loss Hardening *(po Fazie β)*
 
 > **Cel:** spełnić wszystkie 5 kryteriów Zero Data Loss zaakceptowanych w decyzji 2026-05-10.
+>
+> **⚠️ RECONCILE 2026-07-20 (audyt kodu vs. roadmapa):** trzy z czterech itemów były błędnie oznaczone jako `⏸️ do zrobienia`. Faktyczny stan poniżej. Roadmapa opisywała intencję, nie stan implementacji — audyt oparty na kodzie.
 
-#### Drzewko orientacyjne
+#### Drzewko orientacyjne (stan po audycie 2026-07-20)
 
 ```
 γ — Zero Data Loss Hardening (po β)
-├── γ.a — Resume upload after crash (multipart state w SQLite)  ⏸️
-├── γ.b — Conflict copy (2-device write → 2 revisions w O:)     ⏸️
-├── γ.c — Soft-delete grace 7 dni + UI „Kosz"                   ⏸️
-└── γ.d — Snapshot upload guard (3-provider outage → .bak/24h)  ⏸️
+├── γ.a — Resume upload after crash    ❓ PREMISA MOOT — uploader single-shot ~4MB (brak multipart); istnieje tylko cleanup, nie resume → DECYZJA czy w ogóle potrzebne
+├── γ.b — Conflict copy                ✅ ZBUDOWANE (local path) / ⚠️ NIETESTOWANE → γ.1 weryfikacja testami; cross-device → δ
+├── γ.c — Soft-delete grace 7d + Kosz  ⏸️ NIE ZBUDOWANE (zero śladu) → jedyny czysty greenfield
+└── γ.d — Snapshot upload guard        🟡 W WIĘKSZOŚCI POKRYTE (append-only snapshoty + latest.db.enc advance-on-success + local_store + β.c graceful) → brakuje periodycznego .bak/24h
 ```
 
-| Krok | Zakres | DoD |
+| Krok | Zakres | Stan (audyt 2026-07-20) |
 |------|--------|-----|
-| **γ.a** | **Resume upload after crash.** Multipart upload state persist w SQLite (`multipart_uploads` table z S3 upload_id, parts, completed_at). Daemon po crashu → wznowienie pending parts zamiast restart-from-zero. | Test: kill daemona w środku 1GB upload → restart → plik w chmurze kompletny |
-| **γ.b** | **Conflict copy.** Modyfikacja tego samego inode z 2 urządzeń → oba revisions zachowane, materialized w O:\ jako `file (Conflict from Dell).pdf`. (Faza S w starym roadmap to mobile; tutaj desktop-first.) | Test 2-device write conflict → 2 revisions w `file_revisions` + 2 pliki w O:\ |
-| **γ.c** | **Soft-delete grace period.** `inodes.deleted_at` + grace 7 dni. UI „Kosz" w sidebar. Twardy delete dopiero po grace. | Test: usuń plik → 7 dni odzyskiwalny → po 7 dniach gone |
-| **γ.d** | **Snapshot upload guard.** Daemon nie wgra nowego snapshotu jeśli wszystkie 3 providery odpowiedziały błędem; trzyma stary aktualny w cache. Backup `omnidrive.db.bak.YYYYMMDD_HHMMSS` co 24h lokalnie. | Test simulated 3-provider outage → snapshot lokalny kompletny po recovery |
+| **γ.a** | **Resume upload after crash.** Roadmapa: multipart state w SQLite (`multipart_uploads`), wznów pending parts. | ❓ **PREMISA NIEAKTUALNA.** `uploader.rs` = single-shot PUT packów ~4MB (BEZ multipart). Istnieje tylko `cleanup_stale_multipart_uploads` (abort porzuconych przy starcie, `onboarding.rs`), NIE resume. Crash mid-upload → niezuploadowane packi zostają w spool → retry przez upload worker. **Do decyzji: czy γ.a jako specowane jest w ogóle potrzebne**, czy spool+retry już spełnia intencję. |
+| **γ.b** | **Conflict copy.** 2-device → 2 revisions materialized w O:\. | ✅ **ZBUDOWANE (local path)** — `watcher.rs:424` → `packer.pack_file_with_expected_parent` → `db::classify_revision_lineage` (4-way) → `materialize_conflict_copy_from_revision` → `conflict_events` → surface `list_recent_conflicts` (Multi-Device tab). ⚠️ **BRAK testów** → **γ.1** (plan `docs/superpowers/plans/2026-07-20-gamma-conflict-copy-verification.md`). Cross-device (2 fizyczne urządzenia) = Faza δ (β.b roster-merge-only nie aplikuje rewizji plików). |
+| **γ.c** | **Soft-delete grace period.** `inodes.deleted_at` + grace 7 dni + UI „Kosz". Twardy delete po grace. | ⏸️ **NIE ZBUDOWANE** — zero śladu `deleted_at`/trash/Kosz w kodzie. Jedyny jednoznaczny greenfield w γ. |
+| **γ.d** | **Snapshot upload guard.** Nie nadpisuj dobrego snapshotu przy all-provider-fail; lokalny backup. | 🟡 **W WIĘKSZOŚCI POKRYTE.** `disaster_recovery.rs`: snapshoty append-only pod timestamped key, wskaźnik `latest.db.enc` advance TYLKO przy sukcesie, `local_store` fallback (`OMNIDRIVE_METADATA_BACKUP_DIR`), β.c graceful degradation (fail tylko gdy 0 sukcesów). **Brakuje:** jawnego periodycznego `omnidrive.db.bak.YYYYMMDD_HHMMSS` co 24h + ew. testu all-fail. → weryfikacja + mała luka, nie greenfield. |
 
-**Szacunek:** 4–6 sesji.
+**Szacunek (po audycie):** γ.b weryfikacja ~1 sesja (γ.1); γ.c greenfield ~2-3 sesje; γ.d weryfikacja+luka ~1 sesja; γ.a = najpierw decyzja.
 
 ---
 
