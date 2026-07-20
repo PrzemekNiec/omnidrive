@@ -3585,7 +3585,6 @@
           const dni = it.days_remaining === 1 ? '1 dzień' : it.days_remaining + ' dni';
           const usun = new Date(it.deleted_at).toLocaleDateString('pl-PL');
           return `<div class="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
-            <span class="material-symbols-outlined text-slate-400">description</span>
             <div class="flex-1 min-w-0">
               <div class="text-slate-200 font-semibold truncate">${it.name}</div>
               <div class="text-slate-500 text-xs">usunięto ${usun}</div>
