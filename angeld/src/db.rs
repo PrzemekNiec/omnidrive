@@ -10614,4 +10614,35 @@ mod tests {
         assert_eq!(expired, vec![old]);
         Ok(())
     }
+
+    #[tokio::test]
+    async fn sweeper_hard_deletes_expired_only() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let old = create_inode(&pool, None, "old.txt", "FILE", 1).await?;
+        let rev =
+            create_file_revision(&pool, old, 1, None, None, None, "local_write", None).await?;
+        register_chunk(&pool, rev, &[1u8; 32], 0, 1).await?;
+        let fresh = create_inode(&pool, None, "fresh.txt", "FILE", 1).await?;
+        soft_delete_inode(&pool, old, 1_000).await?;
+        soft_delete_inode(&pool, fresh, 9_000).await?;
+
+        for inode_id in list_expired_soft_deleted(&pool, 5_000).await? {
+            delete_file_chunks(&pool, inode_id).await?;
+            delete_inode_record(&pool, inode_id).await?;
+        }
+
+        assert!(
+            get_inode_by_id(&pool, old).await?.is_none(),
+            "expired hard-deleted"
+        );
+        assert!(
+            get_inode_by_id(&pool, fresh).await?.is_some(),
+            "fresh survives"
+        );
+        let chunks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chunk_refs")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(chunks, 0, "expired file chunks reclaimed");
+        Ok(())
+    }
 }

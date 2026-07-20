@@ -821,6 +821,42 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+
+    let sweeper_pool = pool.clone();
+    let _soft_delete_sweeper = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            ticker.tick().await;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let cutoff = now_ms - db::SOFT_DELETE_GRACE_MS;
+            match db::list_expired_soft_deleted(&sweeper_pool, cutoff).await {
+                Ok(expired) => {
+                    for inode_id in expired {
+                        if let Err(err) = db::delete_file_chunks(&sweeper_pool, inode_id).await {
+                            tracing::warn!(
+                                "soft-delete sweeper: chunk delete failed for {inode_id}: {err}"
+                            );
+                            continue;
+                        }
+                        if let Err(err) = db::delete_inode_record(&sweeper_pool, inode_id).await {
+                            tracing::warn!(
+                                "soft-delete sweeper: inode delete failed for {inode_id}: {err}"
+                            );
+                            continue;
+                        }
+                        tracing::info!(
+                            "soft-delete sweeper: grace expired, hard-deleted inode {inode_id}"
+                        );
+                    }
+                }
+                Err(err) => tracing::warn!("soft-delete sweeper query failed: {err}"),
+            }
+        }
+    });
+
     let watcher_future = watcher.run();
     tokio::pin!(watcher_future);
 
