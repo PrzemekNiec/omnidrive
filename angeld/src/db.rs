@@ -713,13 +713,6 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     .await?;
 
     sqlx::query(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_inodes_parent_name_root \
-         ON inodes(COALESCE(parent_id, -1), name)",
-    )
-    .execute(&pool)
-    .await?;
-
-    sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS file_revisions (
             revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -998,6 +991,15 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     .await?;
     ensure_column_exists(&pool, "file_revisions", "conflict_reason", "TEXT").await?;
     ensure_column_exists(&pool, "inodes", "deleted_at", "INTEGER").await?;
+    sqlx::query("DROP INDEX IF EXISTS idx_inodes_parent_name_root")
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_inodes_parent_name_root \
+         ON inodes(COALESCE(parent_id, -1), name) WHERE deleted_at IS NULL",
+    )
+    .execute(&pool)
+    .await?;
     ensure_column_exists(&pool, "pack_shards", "last_error", "TEXT").await?;
     ensure_column_exists(&pool, "pack_shards", "last_verified_at", "INTEGER").await?;
     ensure_column_exists(&pool, "pack_shards", "last_verification_method", "TEXT").await?;
@@ -4346,6 +4348,72 @@ pub async fn soft_delete_inode(
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+#[derive(Clone, Debug, FromRow)]
+pub struct SoftDeletedInode {
+    pub inode_id: i64,
+    pub name: String,
+    pub deleted_at: i64,
+    pub size: i64,
+}
+
+pub async fn list_soft_deleted(pool: &SqlitePool) -> Result<Vec<SoftDeletedInode>, sqlx::Error> {
+    sqlx::query_as::<_, SoftDeletedInode>(
+        "SELECT id AS inode_id, name, deleted_at, size \
+         FROM inodes WHERE deleted_at IS NOT NULL AND kind = 'FILE' \
+         ORDER BY deleted_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn restore_soft_deleted_inode(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<String, sqlx::Error> {
+    let inode = get_inode_by_id(pool, inode_id)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)?;
+    let mut final_name = inode.name.clone();
+    let mut attempt = 1;
+    while get_inode_by_path(pool, inode.parent_id, &final_name)
+        .await?
+        .is_some()
+    {
+        final_name = restored_name(&inode.name, attempt);
+        attempt += 1;
+    }
+    sqlx::query("UPDATE inodes SET deleted_at = NULL, name = ? WHERE id = ?")
+        .bind(&final_name)
+        .bind(inode_id)
+        .execute(pool)
+        .await?;
+    Ok(final_name)
+}
+
+fn restored_name(original: &str, attempt: usize) -> String {
+    let (stem, ext) = match original.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() && !e.is_empty() => (s, format!(".{e}")),
+        _ => (original, String::new()),
+    };
+    if attempt == 1 {
+        format!("{stem} (restored){ext}")
+    } else {
+        format!("{stem} (restored {attempt}){ext}")
+    }
+}
+
+pub async fn list_expired_soft_deleted(
+    pool: &SqlitePool,
+    cutoff_ms: i64,
+) -> Result<Vec<i64>, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM inodes WHERE deleted_at IS NOT NULL AND deleted_at < ? ORDER BY id ASC",
+    )
+    .bind(cutoff_ms)
+    .fetch_all(pool)
+    .await
 }
 
 #[allow(dead_code)]
@@ -10496,6 +10564,54 @@ mod tests {
             get_inode_by_id(&pool, inode).await?.is_some(),
             "raw by-id must still see soft-deleted"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_and_restore_soft_deleted() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let a = create_inode(&pool, None, "a.txt", "FILE", 5).await?;
+        soft_delete_inode(&pool, a, 1_000).await?;
+
+        let listed = list_soft_deleted(&pool).await?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].inode_id, a);
+        assert_eq!(listed[0].name, "a.txt");
+        assert_eq!(listed[0].deleted_at, 1_000);
+
+        let name = restore_soft_deleted_inode(&pool, a).await?;
+        assert_eq!(name, "a.txt");
+        assert!(
+            get_inode_by_path(&pool, None, "a.txt").await?.is_some(),
+            "restored file resolves again"
+        );
+        assert!(list_soft_deleted(&pool).await?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restore_disambiguates_on_name_collision() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let old = create_inode(&pool, None, "dup.txt", "FILE", 1).await?;
+        soft_delete_inode(&pool, old, 1_000).await?;
+        create_inode(&pool, None, "dup.txt", "FILE", 1).await?;
+
+        let name = restore_soft_deleted_inode(&pool, old).await?;
+        assert_ne!(name, "dup.txt", "must not collide with live file");
+        assert!(name.contains("restored"), "restored name: {name}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_expired_returns_only_past_cutoff() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let old = create_inode(&pool, None, "old.txt", "FILE", 1).await?;
+        let fresh = create_inode(&pool, None, "fresh.txt", "FILE", 1).await?;
+        soft_delete_inode(&pool, old, 1_000).await?;
+        soft_delete_inode(&pool, fresh, 9_000).await?;
+
+        let expired = list_expired_soft_deleted(&pool, 5_000).await?;
+        assert_eq!(expired, vec![old]);
         Ok(())
     }
 }
