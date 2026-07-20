@@ -7,6 +7,8 @@ use std::path::Path;
 use std::str::FromStr;
 use uuid::Uuid;
 
+pub const SOFT_DELETE_GRACE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
 pub fn new_user_id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -995,6 +997,7 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     )
     .await?;
     ensure_column_exists(&pool, "file_revisions", "conflict_reason", "TEXT").await?;
+    ensure_column_exists(&pool, "inodes", "deleted_at", "INTEGER").await?;
     ensure_column_exists(&pool, "pack_shards", "last_error", "TEXT").await?;
     ensure_column_exists(&pool, "pack_shards", "last_verified_at", "INTEGER").await?;
     ensure_column_exists(&pool, "pack_shards", "last_verification_method", "TEXT").await?;
@@ -10408,5 +10411,18 @@ mod tests {
             Err(sqlx::Error::Database(err)) if err.is_unique_violation() => Ok(()),
             other => panic!("expected unique violation for duplicate root name, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn inodes_deleted_at_defaults_null() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "f.txt", "FILE", 1).await?;
+        let deleted_at: Option<i64> =
+            sqlx::query_scalar("SELECT deleted_at FROM inodes WHERE id = ?")
+                .bind(inode)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(deleted_at, None);
+        Ok(())
     }
 }
