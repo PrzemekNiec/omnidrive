@@ -139,6 +139,9 @@ pub(super) fn routes() -> Router<ApiState> {
             post(materialize_conflict_copy),
         )
         .route("/api/quota", get(get_quota))
+        .route("/api/trash", get(list_trash))
+        .route("/api/trash/{inode_id}/restore", post(restore_trash))
+        .route("/api/trash/{inode_id}/purge", post(purge_trash))
         // ── I.2: filesystem runtime policies ──
         .route("/api/filesystem/policies", get(get_filesystem_policies))
 }
@@ -177,6 +180,99 @@ async fn delete_file(
         inode_id,
         deleted: true,
     }))
+}
+
+#[derive(Serialize)]
+struct TrashItem {
+    inode_id: i64,
+    name: String,
+    deleted_at: i64,
+    size: i64,
+    days_remaining: i64,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+async fn list_trash(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
+    let now = now_ms();
+    let items: Vec<TrashItem> = db::list_soft_deleted(&state.pool)
+        .await?
+        .into_iter()
+        .map(|r| {
+            let remaining_ms = (r.deleted_at + db::SOFT_DELETE_GRACE_MS) - now;
+            let days_remaining = (remaining_ms.max(0) + 86_400_000 - 1) / 86_400_000;
+            TrashItem {
+                inode_id: r.inode_id,
+                name: r.name,
+                deleted_at: r.deleted_at,
+                size: r.size,
+                days_remaining,
+            }
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "items": items })))
+}
+
+async fn restore_trash(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(inode_id): Path<i64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
+    let inode = db::get_inode_by_id(&state.pool, inode_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "inode",
+            id: inode_id.to_string(),
+        })?;
+    if inode.deleted_at.is_none() {
+        return Err(ApiError::Conflict {
+            message: "inode is not in trash".to_string(),
+        });
+    }
+    let restored_name = db::restore_soft_deleted_inode(&state.pool, inode_id).await?;
+    tracing::info!(
+        "api restored inode {} from trash as {}",
+        inode_id,
+        restored_name
+    );
+    Ok(Json(
+        serde_json::json!({ "inode_id": inode_id, "restored_name": restored_name }),
+    ))
+}
+
+async fn purge_trash(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(inode_id): Path<i64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    acl::require_role(&state.pool, &headers, Role::Member).await?;
+    let inode = db::get_inode_by_id(&state.pool, inode_id)
+        .await?
+        .ok_or(ApiError::NotFound {
+            resource: "inode",
+            id: inode_id.to_string(),
+        })?;
+    if inode.deleted_at.is_none() {
+        return Err(ApiError::Conflict {
+            message: "inode is not in trash".to_string(),
+        });
+    }
+    db::delete_file_chunks(&state.pool, inode_id).await?;
+    db::delete_inode_record(&state.pool, inode_id).await?;
+    tracing::info!("api purged inode {} from trash (hard-delete)", inode_id);
+    Ok(Json(
+        serde_json::json!({ "inode_id": inode_id, "purged": true }),
+    ))
 }
 
 async fn get_files(

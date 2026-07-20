@@ -123,6 +123,7 @@ pub struct InodeRecord {
     pub size: i64,
     pub mode: Option<i64>,
     pub mtime: Option<i64>,
+    pub deleted_at: Option<i64>,
 }
 
 #[allow(dead_code)]
@@ -3440,7 +3441,7 @@ pub async fn get_inode_by_path(
 ) -> Result<Option<InodeRecord>, sqlx::Error> {
     sqlx::query_as::<_, InodeRecord>(
         r#"
-        SELECT id, parent_id, name, kind, size, mode, mtime
+        SELECT id, parent_id, name, kind, size, mode, mtime, deleted_at
         FROM inodes
         WHERE ((parent_id IS NULL AND ? IS NULL) OR parent_id = ?)
           AND name = ?
@@ -3461,7 +3462,7 @@ pub async fn get_inode_by_id(
 ) -> Result<Option<InodeRecord>, sqlx::Error> {
     sqlx::query_as::<_, InodeRecord>(
         r#"
-        SELECT id, parent_id, name, kind, size, mode, mtime
+        SELECT id, parent_id, name, kind, size, mode, mtime, deleted_at
         FROM inodes
         WHERE id = ?
         "#,
