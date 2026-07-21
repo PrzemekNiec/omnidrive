@@ -522,6 +522,7 @@ pub async fn restore_metadata_from_cloud(
 ) -> Result<(), DisasterRecoveryError> {
     let object_key = "_omnidrive/system/metadata/latest.db.enc";
     let mut errors = Vec::new();
+    let mut key_cache = MetadataBackupKeyCache::default();
 
     if let Some(local_store) = &provider_manager.local_store {
         let mut candidate_keys = vec![object_key.to_string()];
@@ -538,7 +539,13 @@ pub async fn restore_metadata_from_cloud(
                     continue;
                 }
             };
-            let plaintext = decrypt_metadata_backup(&encoded, passphrase)?;
+            let plaintext = match decrypt_metadata_backup(&encoded, passphrase, &mut key_cache) {
+                Ok(plaintext) => plaintext,
+                Err(err) => {
+                    errors.push(format!("local-metadata-store {key}: {err}"));
+                    continue;
+                }
+            };
             if write_plaintext_snapshot_if_valid(&plaintext, output_db_path).await? {
                 return Ok(());
             }
@@ -565,7 +572,13 @@ pub async fn restore_metadata_from_cloud(
                     continue;
                 }
             };
-            let plaintext = decrypt_metadata_backup(&encoded, passphrase)?;
+            let plaintext = match decrypt_metadata_backup(&encoded, passphrase, &mut key_cache) {
+                Ok(plaintext) => plaintext,
+                Err(err) => {
+                    errors.push(format!("{} {}: {}", provider.provider_name, key, err));
+                    continue;
+                }
+            };
             if write_plaintext_snapshot_if_valid(&plaintext, output_db_path).await? {
                 return Ok(());
             }
@@ -902,11 +915,78 @@ async fn download_snapshot_bytes(
     Err(DisasterRecoveryError::DownloadFailed(errors))
 }
 
-#[allow(dead_code)]
+type MetadataBackupKdfKey = (u32, Vec<u8>, u32, u32, u32);
+
+#[derive(Default)]
+struct MetadataBackupKeyCache {
+    entries: Vec<(MetadataBackupKdfKey, KeyBytes)>,
+}
+
+impl MetadataBackupKeyCache {
+    fn backup_key(
+        &mut self,
+        passphrase: &str,
+        kdf: &RootKdfParams,
+    ) -> Result<KeyBytes, DisasterRecoveryError> {
+        let cache_key: MetadataBackupKdfKey = (
+            kdf.parameter_set_version,
+            kdf.salt.clone(),
+            kdf.memory_cost_kib,
+            kdf.time_cost,
+            kdf.lanes,
+        );
+        if let Some((_, key)) = self
+            .entries
+            .iter()
+            .find(|(existing, _)| *existing == cache_key)
+        {
+            return Ok(key.clone());
+        }
+
+        let root_keys = derive_root_keys(passphrase.as_bytes(), kdf)
+            .map_err(|_| DisasterRecoveryError::BackupDecryptFailed)?;
+        let backup_key = derive_metadata_backup_key(&root_keys.master_key)?;
+        self.entries.push((cache_key, backup_key.clone()));
+        Ok(backup_key)
+    }
+}
+
 fn decrypt_metadata_backup(
     encoded: &[u8],
     passphrase: &str,
+    cache: &mut MetadataBackupKeyCache,
 ) -> Result<Vec<u8>, DisasterRecoveryError> {
+    let MetadataBackupParsed {
+        kdf,
+        nonce,
+        mut plaintext,
+        tag,
+    } = parse_metadata_backup(encoded)?;
+
+    let metadata_backup_key = cache.backup_key(passphrase, &kdf)?;
+    let cipher = Aes256Gcm::new_from_slice(&metadata_backup_key)
+        .map_err(|_| DisasterRecoveryError::BackupDecryptFailed)?;
+
+    cipher
+        .decrypt_in_place_detached(
+            Nonce::from_slice(&nonce),
+            &[],
+            &mut plaintext,
+            aes_gcm::Tag::from_slice(&tag),
+        )
+        .map_err(|_| DisasterRecoveryError::BackupDecryptFailed)?;
+
+    Ok(plaintext)
+}
+
+struct MetadataBackupParsed {
+    kdf: RootKdfParams,
+    nonce: [u8; METADATA_BACKUP_NONCE_LEN],
+    plaintext: Vec<u8>,
+    tag: [u8; METADATA_BACKUP_TAG_LEN],
+}
+
+fn parse_metadata_backup(encoded: &[u8]) -> Result<MetadataBackupParsed, DisasterRecoveryError> {
     if encoded.len() < METADATA_BACKUP_HEADER_FIXED_LEN + METADATA_BACKUP_TAG_LEN {
         return Err(DisasterRecoveryError::InvalidBackupFormat("file too short"));
     }
@@ -976,95 +1056,19 @@ fn decrypt_metadata_backup(
     }
 
     let ciphertext_end = encoded.len() - METADATA_BACKUP_TAG_LEN;
-    let mut plaintext = encoded[cursor..ciphertext_end].to_vec();
-    let tag: [u8; METADATA_BACKUP_TAG_LEN] = encoded[ciphertext_end..]
-        .try_into()
-        .map_err(|_| DisasterRecoveryError::InvalidBackupFormat("tag"))?;
-
-    let root_keys = derive_root_keys(
-        passphrase.as_bytes(),
-        &RootKdfParams::new(
-            parameter_set_version,
-            salt,
-            memory_cost_kib,
-            time_cost,
-            lanes,
-        ),
-    )
-    .map_err(|_| DisasterRecoveryError::BackupDecryptFailed)?;
-    let metadata_backup_key = derive_metadata_backup_key(&root_keys.master_key)?;
-    let cipher = Aes256Gcm::new_from_slice(&metadata_backup_key)
-        .map_err(|_| DisasterRecoveryError::BackupDecryptFailed)?;
-
-    cipher
-        .decrypt_in_place_detached(
-            Nonce::from_slice(&nonce),
-            &[],
-            &mut plaintext,
-            aes_gcm::Tag::from_slice(&tag),
-        )
-        .map_err(|_| DisasterRecoveryError::BackupDecryptFailed)?;
-
-    Ok(plaintext)
-}
-
-struct MetadataBackupParsed {
-    nonce: [u8; METADATA_BACKUP_NONCE_LEN],
-    plaintext: Vec<u8>,
-    tag: [u8; METADATA_BACKUP_TAG_LEN],
-}
-
-fn parse_metadata_backup(encoded: &[u8]) -> Result<MetadataBackupParsed, DisasterRecoveryError> {
-    if encoded.len() < METADATA_BACKUP_HEADER_FIXED_LEN + METADATA_BACKUP_TAG_LEN {
-        return Err(DisasterRecoveryError::InvalidBackupFormat("file too short"));
-    }
-
-    let magic_end = METADATA_BACKUP_MAGIC.len();
-    if &encoded[..magic_end] != METADATA_BACKUP_MAGIC {
-        return Err(DisasterRecoveryError::InvalidBackupFormat("magic mismatch"));
-    }
-
-    let version = encoded[magic_end];
-    if version != METADATA_BACKUP_VERSION {
-        return Err(DisasterRecoveryError::InvalidBackupFormat(
-            "unsupported backup version",
-        ));
-    }
-
-    let mut cursor = magic_end + 1;
-    let salt_len = u16::from_le_bytes(
-        encoded[cursor..cursor + 2]
-            .try_into()
-            .map_err(|_| DisasterRecoveryError::InvalidBackupFormat("salt_len"))?,
-    ) as usize;
-    cursor += 2;
-    cursor += 4 + 4 + 4 + 4;
-
-    let nonce: [u8; METADATA_BACKUP_NONCE_LEN] = encoded
-        .get(cursor..cursor + METADATA_BACKUP_NONCE_LEN)
-        .ok_or(DisasterRecoveryError::InvalidBackupFormat("nonce"))?
-        .try_into()
-        .map_err(|_| DisasterRecoveryError::InvalidBackupFormat("nonce"))?;
-    cursor += METADATA_BACKUP_NONCE_LEN;
-
-    if encoded.get(cursor..cursor + salt_len).is_none() {
-        return Err(DisasterRecoveryError::InvalidBackupFormat("salt"));
-    }
-    cursor += salt_len;
-
-    if encoded.len() < cursor + METADATA_BACKUP_TAG_LEN {
-        return Err(DisasterRecoveryError::InvalidBackupFormat(
-            "ciphertext missing",
-        ));
-    }
-
-    let ciphertext_end = encoded.len() - METADATA_BACKUP_TAG_LEN;
     let plaintext = encoded[cursor..ciphertext_end].to_vec();
     let tag: [u8; METADATA_BACKUP_TAG_LEN] = encoded[ciphertext_end..]
         .try_into()
         .map_err(|_| DisasterRecoveryError::InvalidBackupFormat("tag"))?;
 
     Ok(MetadataBackupParsed {
+        kdf: RootKdfParams::new(
+            parameter_set_version,
+            salt,
+            memory_cost_kib,
+            time_cost,
+            lanes,
+        ),
         nonce,
         plaintext,
         tag,
@@ -1084,6 +1088,7 @@ pub fn decrypt_metadata_backup_with_master(
         nonce,
         mut plaintext,
         tag,
+        ..
     } = parse_metadata_backup(encoded)?;
 
     let metadata_backup_key = derive_metadata_backup_key(master_key)?;
@@ -1478,7 +1483,8 @@ mod tests {
             encoded[METADATA_BACKUP_MAGIC.len()],
             METADATA_BACKUP_VERSION
         );
-        let decrypted = decrypt_metadata_backup(&encoded, passphrase)?;
+        let decrypted =
+            decrypt_metadata_backup(&encoded, passphrase, &mut MetadataBackupKeyCache::default())?;
         assert_eq!(decrypted, b"sqlite-snapshot-payload");
 
         let _ = fs::remove_dir_all(&test_root).await;
@@ -2116,5 +2122,103 @@ mod tests {
             !upload_error_is_access_denied(&db_err),
             "DB errors must NOT be detected as access denied"
         );
+    }
+
+    #[tokio::test]
+    async fn restore_falls_back_to_older_snapshot_when_latest_is_corrupt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-restore-fallback-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&test_root).await?;
+
+        let passphrase = "restore-fallback-passphrase";
+        let kdf_params = RootKdfParams::new(1, vec![0x66; 16], 65_536, 3, 1);
+        let master_key = derive_root_keys(passphrase.as_bytes(), &kdf_params)?.master_key;
+
+        let source_db = test_root.join("source.db");
+        let source_url = format!(
+            "sqlite://{}",
+            source_db.to_string_lossy().replace('\\', "/")
+        );
+        let source_pool = db::init_db(&source_url).await?;
+        db::set_vault_params(&source_pool, &[0u8; 16], "test", "vault-restore-fallback").await?;
+        source_pool.close().await;
+        drop(source_pool);
+
+        let enc_path = test_root.join("source.db.enc");
+        encrypt_metadata_snapshot(&source_db, &enc_path, &master_key, &kdf_params).await?;
+
+        let store_root = test_root.join("local_store");
+        let metadata_dir = store_root.join("_omnidrive\\system\\metadata");
+        let snapshots_dir = metadata_dir.join("snapshots");
+        fs::create_dir_all(&snapshots_dir).await?;
+        fs::copy(&enc_path, snapshots_dir.join("1700000000000.db.enc")).await?;
+        fs::write(
+            metadata_dir.join("latest.db.enc"),
+            b"corrupted-bytes-not-a-backup",
+        )
+        .await?;
+
+        let pm = MetadataBackupProviderManager {
+            uploaders: Vec::new(),
+            download_providers: Vec::new(),
+            local_store: Some(LocalMetadataBackupStore { root: store_root }),
+        };
+
+        let output_db = test_root.join("restored.db");
+        restore_metadata_from_cloud(&pm, passphrase, &output_db, None).await?;
+
+        let restored_url = format!(
+            "sqlite://{}",
+            output_db.to_string_lossy().replace('\\', "/")
+        );
+        let restored_pool = db::init_db(&restored_url).await?;
+        let vault = db::get_vault_params(&restored_pool)
+            .await?
+            .expect("restored snapshot must have a vault_state row");
+        assert_eq!(vault.vault_id, "vault-restore-fallback");
+        restored_pool.close().await;
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restore_reports_every_candidate_when_all_are_corrupt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-restore-all-corrupt-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        let store_root = test_root.join("local_store");
+        let metadata_dir = store_root.join("_omnidrive\\system\\metadata");
+        let snapshots_dir = metadata_dir.join("snapshots");
+        fs::create_dir_all(&snapshots_dir).await?;
+
+        fs::write(metadata_dir.join("latest.db.enc"), b"corrupt-latest").await?;
+        fs::write(snapshots_dir.join("1700000000000.db.enc"), b"corrupt-one").await?;
+        fs::write(snapshots_dir.join("1700000001000.db.enc"), b"corrupt-two").await?;
+
+        let pm = MetadataBackupProviderManager {
+            uploaders: Vec::new(),
+            download_providers: Vec::new(),
+            local_store: Some(LocalMetadataBackupStore { root: store_root }),
+        };
+
+        let output_db = test_root.join("restored.db");
+        let result = restore_metadata_from_cloud(&pm, "any-passphrase", &output_db, None).await;
+        let Err(DisasterRecoveryError::DownloadFailed(errors)) = result else {
+            panic!("expected DownloadFailed, got {result:?}");
+        };
+        assert_eq!(
+            errors.len(),
+            3,
+            "every candidate must be reported, no early abort: {errors:?}"
+        );
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
     }
 }
