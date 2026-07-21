@@ -650,7 +650,7 @@ pub async fn restore_metadata_from_cloud(
 ) -> Result<(), DisasterRecoveryError> {
     let object_key = "_omnidrive/system/metadata/latest.db.enc";
     let mut errors = Vec::new();
-    let mut key_cache = MetadataBackupKeyCache::default();
+    let mut key_cache = MetadataBackupKeyCache::new(passphrase);
     let mut decrypt_failures = 0usize;
 
     if let Some(local_store) = &provider_manager.local_store {
@@ -668,7 +668,7 @@ pub async fn restore_metadata_from_cloud(
                     continue;
                 }
             };
-            let plaintext = match decrypt_metadata_backup(&encoded, passphrase, &mut key_cache) {
+            let plaintext = match decrypt_metadata_backup(&encoded, &mut key_cache) {
                 Ok(plaintext) => plaintext,
                 Err(err) => {
                     errors.push(format!("local-metadata-store {key}: {err}"));
@@ -707,7 +707,7 @@ pub async fn restore_metadata_from_cloud(
                     continue;
                 }
             };
-            let plaintext = match decrypt_metadata_backup(&encoded, passphrase, &mut key_cache) {
+            let plaintext = match decrypt_metadata_backup(&encoded, &mut key_cache) {
                 Ok(plaintext) => plaintext,
                 Err(err) => {
                     errors.push(format!("{} {}: {}", provider.provider_name, key, err));
@@ -1182,46 +1182,35 @@ async fn download_snapshot_bytes(
     Err(DisasterRecoveryError::DownloadFailed(errors))
 }
 
-type MetadataBackupKdfKey = (u32, Vec<u8>, u32, u32, u32);
-
-#[derive(Default)]
-struct MetadataBackupKeyCache {
-    entries: Vec<(MetadataBackupKdfKey, KeyBytes)>,
+struct MetadataBackupKeyCache<'a> {
+    passphrase: &'a str,
+    entries: Vec<(RootKdfParams, KeyBytes)>,
 }
 
-impl MetadataBackupKeyCache {
-    fn backup_key(
-        &mut self,
-        passphrase: &str,
-        kdf: &RootKdfParams,
-    ) -> Result<KeyBytes, DisasterRecoveryError> {
-        let cache_key: MetadataBackupKdfKey = (
-            kdf.parameter_set_version,
-            kdf.salt.clone(),
-            kdf.memory_cost_kib,
-            kdf.time_cost,
-            kdf.lanes,
-        );
-        if let Some((_, key)) = self
-            .entries
-            .iter()
-            .find(|(existing, _)| *existing == cache_key)
-        {
+impl<'a> MetadataBackupKeyCache<'a> {
+    fn new(passphrase: &'a str) -> Self {
+        Self {
+            passphrase,
+            entries: Vec::new(),
+        }
+    }
+
+    fn backup_key(&mut self, kdf: &RootKdfParams) -> Result<KeyBytes, DisasterRecoveryError> {
+        if let Some((_, key)) = self.entries.iter().find(|(existing, _)| existing == kdf) {
             return Ok(key.clone());
         }
 
-        let root_keys = derive_root_keys(passphrase.as_bytes(), kdf)
+        let root_keys = derive_root_keys(self.passphrase.as_bytes(), kdf)
             .map_err(|_| DisasterRecoveryError::BackupDecryptFailed)?;
         let backup_key = derive_metadata_backup_key(&root_keys.master_key)?;
-        self.entries.push((cache_key, backup_key.clone()));
+        self.entries.push((kdf.clone(), backup_key.clone()));
         Ok(backup_key)
     }
 }
 
 fn decrypt_metadata_backup(
     encoded: &[u8],
-    passphrase: &str,
-    cache: &mut MetadataBackupKeyCache,
+    cache: &mut MetadataBackupKeyCache<'_>,
 ) -> Result<Vec<u8>, DisasterRecoveryError> {
     let MetadataBackupParsed {
         kdf,
@@ -1230,7 +1219,7 @@ fn decrypt_metadata_backup(
         tag,
     } = parse_metadata_backup(encoded)?;
 
-    let metadata_backup_key = cache.backup_key(passphrase, &kdf)?;
+    let metadata_backup_key = cache.backup_key(&kdf)?;
     let cipher = Aes256Gcm::new_from_slice(&metadata_backup_key)
         .map_err(|_| DisasterRecoveryError::BackupDecryptFailed)?;
 
@@ -1751,7 +1740,7 @@ mod tests {
             METADATA_BACKUP_VERSION
         );
         let decrypted =
-            decrypt_metadata_backup(&encoded, passphrase, &mut MetadataBackupKeyCache::default())?;
+            decrypt_metadata_backup(&encoded, &mut MetadataBackupKeyCache::new(passphrase))?;
         assert_eq!(decrypted, b"sqlite-snapshot-payload");
 
         let _ = fs::remove_dir_all(&test_root).await;
@@ -2661,6 +2650,90 @@ mod tests {
             db::get_system_config_value(&pool, LAST_SNAPSHOT_INODE_COUNT_KEY).await?,
             Some("1240".to_string()),
             "baseline must stay at the last good value while the guard is engaged"
+        );
+
+        let status: String = sqlx::query_scalar("SELECT status FROM metadata_backups")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(
+            status, "COMPLETED",
+            "skipping the latest pointer must not be recorded as FAILED, \
+            or the worker would retry hourly forever"
+        );
+
+        pool.close().await;
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn healthy_database_advances_latest_pointer() -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-advance-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&test_root).await?;
+
+        let db_path = test_root.join("healthy.db");
+        let db_url = format!("sqlite://{}", db_path.to_string_lossy().replace('\\', "/"));
+        let pool = db::init_db(&db_url).await?;
+        db::set_vault_params(&pool, &[0u8; 16], "test", "vault-advance-test").await?;
+        db::set_vault_config(&pool, &[0x11u8; 16], 1, 65_536, 3, 1).await?;
+        db::set_system_config_value(&pool, LAST_SNAPSHOT_INODE_COUNT_KEY, "0").await?;
+        db::set_system_config_value(&pool, LAST_SNAPSHOT_DEK_COUNT_KEY, "0").await?;
+
+        let inode_id = db::create_inode(&pool, None, "advance.txt", "FILE", 10).await?;
+        db::insert_wrapped_dek(&pool, inode_id, &[0xEEu8; 32], 1, 1).await?;
+
+        let store_root = test_root.join("local_store");
+        let metadata_dir = store_root.join("_omnidrive\\system\\metadata");
+        fs::create_dir_all(&metadata_dir).await?;
+        let latest_path = metadata_dir.join("latest.db.enc");
+        fs::write(&latest_path, b"sentinel-bytes").await?;
+
+        let pm = MetadataBackupProviderManager {
+            uploaders: Vec::new(),
+            download_providers: Vec::new(),
+            local_store: Some(LocalMetadataBackupStore {
+                root: store_root.clone(),
+            }),
+        };
+
+        run_metadata_backup_now(&pool, &pm, &[0x42u8; 32]).await?;
+
+        let latest_bytes = fs::read(&latest_path).await?;
+        assert_ne!(
+            latest_bytes,
+            b"sentinel-bytes".to_vec(),
+            "latest pointer must advance for a healthy database"
+        );
+
+        let snapshots_dir = metadata_dir.join("snapshots");
+        let mut entries = fs::read_dir(&snapshots_dir).await?;
+        let mut snapshot_files = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            snapshot_files.push(entry.path());
+        }
+        assert_eq!(
+            snapshot_files.len(),
+            1,
+            "exactly one timestamped snapshot must be written"
+        );
+        let snapshot_bytes = fs::read(&snapshot_files[0]).await?;
+        assert_eq!(
+            latest_bytes, snapshot_bytes,
+            "latest.db.enc must be a byte-for-byte copy of the timestamped snapshot"
+        );
+
+        assert_eq!(
+            db::get_system_config_value(&pool, LAST_SNAPSHOT_INODE_COUNT_KEY).await?,
+            Some("1".to_string()),
+            "inode baseline must advance to the live count"
+        );
+        assert_eq!(
+            db::get_system_config_value(&pool, LAST_SNAPSHOT_DEK_COUNT_KEY).await?,
+            Some("1".to_string()),
+            "dek baseline must advance to the live count"
         );
 
         pool.close().await;
