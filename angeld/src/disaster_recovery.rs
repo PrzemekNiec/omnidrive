@@ -624,10 +624,67 @@ async fn snapshot_has_vault_state_row(snapshot_path: &Path) -> Result<bool, Disa
     Ok(has_row)
 }
 
+const LAST_SNAPSHOT_INODE_COUNT_KEY: &str = "last_snapshot_inode_count";
+const LAST_SNAPSHOT_DEK_COUNT_KEY: &str = "last_snapshot_dek_count";
+
+struct SnapshotHealth {
+    has_vault_state: bool,
+    has_vault_config: bool,
+    inode_count: i64,
+    dek_count: i64,
+}
+
+async fn collect_snapshot_health(
+    pool: &SqlitePool,
+) -> Result<SnapshotHealth, DisasterRecoveryError> {
+    let has_vault_state = db::get_vault_params(pool).await?.is_some();
+    let has_vault_config = db::get_vault_config(pool).await?.is_some();
+    let inode_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM inodes")
+        .fetch_one(pool)
+        .await?;
+    let dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+        .fetch_one(pool)
+        .await?;
+
+    Ok(SnapshotHealth {
+        has_vault_state,
+        has_vault_config,
+        inode_count,
+        dek_count,
+    })
+}
+
+async fn read_snapshot_counter(
+    pool: &SqlitePool,
+    config_key: &str,
+) -> Result<Option<i64>, DisasterRecoveryError> {
+    Ok(db::get_system_config_value(pool, config_key)
+        .await?
+        .and_then(|value| value.parse::<i64>().ok()))
+}
+
+fn latest_pointer_may_advance(
+    health: &SnapshotHealth,
+    previous_inode_count: Option<i64>,
+    previous_dek_count: Option<i64>,
+) -> bool {
+    if !health.has_vault_state || !health.has_vault_config {
+        return false;
+    }
+    if health.inode_count == 0 && previous_inode_count.unwrap_or(0) > 0 {
+        return false;
+    }
+    if health.dek_count == 0 && previous_dek_count.unwrap_or(0) > 0 {
+        return false;
+    }
+    true
+}
+
 pub async fn upload_metadata_backup(
     db_pool: &SqlitePool,
     provider_manager: &MetadataBackupProviderManager,
     enc_file_path: &Path,
+    advance_latest: bool,
 ) -> Result<(), DisasterRecoveryError> {
     if provider_manager.uploaders.is_empty() && provider_manager.local_store.is_none() {
         return Err(DisasterRecoveryError::NoConfiguredProviders);
@@ -657,28 +714,39 @@ pub async fn upload_metadata_backup(
         .await?;
 
         match local_store.upload_file(enc_file_path, &snapshot_key).await {
-            Ok(()) => match local_store.upload_file(enc_file_path, latest_key).await {
-                Ok(()) => {
-                    successful_uploads += 1;
-                    db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
+            Ok(()) => {
+                let latest_result = if advance_latest {
+                    local_store
+                        .upload_file(enc_file_path, latest_key)
+                        .await
+                        .map_err(|err| err.to_string())
+                } else {
+                    Ok(())
+                };
+
+                match latest_result {
+                    Ok(()) => {
+                        successful_uploads += 1;
+                        db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
+                            .await?;
+                    }
+                    Err(err) => {
+                        let error_text = format!("latest pointer update failed: {err}");
+                        db::update_metadata_backup_status(
+                            db_pool,
+                            &backup_id,
+                            "FAILED",
+                            Some(&error_text),
+                        )
                         .await?;
+                        warn!(
+                            "metadata backup latest pointer update failed for {}: {}",
+                            local_store.provider_name(),
+                            err
+                        );
+                    }
                 }
-                Err(err) => {
-                    let error_text = format!("latest pointer update failed: {err}");
-                    db::update_metadata_backup_status(
-                        db_pool,
-                        &backup_id,
-                        "FAILED",
-                        Some(&error_text),
-                    )
-                    .await?;
-                    warn!(
-                        "metadata backup latest pointer update failed for {}: {}",
-                        local_store.provider_name(),
-                        err
-                    );
-                }
-            },
+            }
             Err(err) => {
                 let error_text = err.to_string();
                 db::update_metadata_backup_status(db_pool, &backup_id, "FAILED", Some(&error_text))
@@ -710,28 +778,40 @@ pub async fn upload_metadata_backup(
         .await;
 
         match upload_result {
-            Ok(_) => match uploader.upload_system_file(enc_file_path, latest_key).await {
-                Ok(_) => {
-                    successful_uploads += 1;
-                    db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
+            Ok(_) => {
+                let latest_result = if advance_latest {
+                    uploader
+                        .upload_system_file(enc_file_path, latest_key)
+                        .await
+                        .map(|_| ())
+                        .map_err(|err| err.to_string())
+                } else {
+                    Ok(())
+                };
+
+                match latest_result {
+                    Ok(()) => {
+                        successful_uploads += 1;
+                        db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
+                            .await?;
+                    }
+                    Err(err) => {
+                        let error_text = format!("latest pointer update failed: {err}");
+                        db::update_metadata_backup_status(
+                            db_pool,
+                            &backup_id,
+                            "FAILED",
+                            Some(&error_text),
+                        )
                         .await?;
+                        warn!(
+                            "metadata backup latest pointer update failed for {}: {}",
+                            uploader.provider_name(),
+                            err
+                        );
+                    }
                 }
-                Err(err) => {
-                    let error_text = format!("latest pointer update failed: {err}");
-                    db::update_metadata_backup_status(
-                        db_pool,
-                        &backup_id,
-                        "FAILED",
-                        Some(&error_text),
-                    )
-                    .await?;
-                    warn!(
-                        "metadata backup latest pointer update failed for {}: {}",
-                        uploader.provider_name(),
-                        err
-                    );
-                }
-            },
+            }
             Err(err) => {
                 db::update_metadata_backup_status(
                     db_pool,
@@ -766,6 +846,27 @@ pub async fn run_metadata_backup_now(
     provider_manager: &MetadataBackupProviderManager,
     master_key: &[u8],
 ) -> Result<(), DisasterRecoveryError> {
+    let health = collect_snapshot_health(db_pool).await?;
+    let previous_inode_count =
+        read_snapshot_counter(db_pool, LAST_SNAPSHOT_INODE_COUNT_KEY).await?;
+    let previous_dek_count = read_snapshot_counter(db_pool, LAST_SNAPSHOT_DEK_COUNT_KEY).await?;
+    let advance_latest =
+        latest_pointer_may_advance(&health, previous_inode_count, previous_dek_count);
+
+    if !advance_latest {
+        warn!(
+            "metadata snapshot sanity guard engaged: latest pointer will NOT advance \
+            (vault_state={}, vault_config={}, inodes {:?} -> {}, deks {:?} -> {}). \
+            The timestamped snapshot is still uploaded and the previous latest stays recoverable.",
+            health.has_vault_state,
+            health.has_vault_config,
+            previous_inode_count,
+            health.inode_count,
+            previous_dek_count,
+            health.dek_count
+        );
+    }
+
     let temp_enc_path = temporary_encrypted_backup_path();
     let create_result =
         create_encrypted_metadata_snapshot(db_pool, &temp_enc_path, master_key).await;
@@ -775,7 +876,8 @@ pub async fn run_metadata_backup_now(
         return Err(err);
     }
 
-    let upload_result = upload_metadata_backup(db_pool, provider_manager, &temp_enc_path).await;
+    let upload_result =
+        upload_metadata_backup(db_pool, provider_manager, &temp_enc_path, advance_latest).await;
     let cleanup_result = secure_delete(&temp_enc_path).await;
 
     if let Err(err) = cleanup_result {
@@ -784,6 +886,21 @@ pub async fn run_metadata_backup_now(
             temp_enc_path.display(),
             err
         );
+    }
+
+    if upload_result.is_ok() && advance_latest {
+        db::set_system_config_value(
+            db_pool,
+            LAST_SNAPSHOT_INODE_COUNT_KEY,
+            &health.inode_count.to_string(),
+        )
+        .await?;
+        db::set_system_config_value(
+            db_pool,
+            LAST_SNAPSHOT_DEK_COUNT_KEY,
+            &health.dek_count.to_string(),
+        )
+        .await?;
     }
 
     upload_result
@@ -2218,6 +2335,135 @@ mod tests {
             "every candidate must be reported, no early abort: {errors:?}"
         );
 
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
+    #[test]
+    fn latest_pointer_advance_decision_table() {
+        let healthy = SnapshotHealth {
+            has_vault_state: true,
+            has_vault_config: true,
+            inode_count: 3,
+            dek_count: 2,
+        };
+        assert!(latest_pointer_may_advance(&healthy, Some(1240), Some(87)));
+
+        let no_vault_state = SnapshotHealth {
+            has_vault_state: false,
+            has_vault_config: true,
+            inode_count: 3,
+            dek_count: 2,
+        };
+        assert!(!latest_pointer_may_advance(
+            &no_vault_state,
+            Some(1),
+            Some(1)
+        ));
+
+        let no_vault_config = SnapshotHealth {
+            has_vault_state: true,
+            has_vault_config: false,
+            inode_count: 3,
+            dek_count: 2,
+        };
+        assert!(!latest_pointer_may_advance(
+            &no_vault_config,
+            Some(1),
+            Some(1)
+        ));
+
+        let emptied_inodes = SnapshotHealth {
+            has_vault_state: true,
+            has_vault_config: true,
+            inode_count: 0,
+            dek_count: 2,
+        };
+        assert!(!latest_pointer_may_advance(
+            &emptied_inodes,
+            Some(1240),
+            Some(87)
+        ));
+
+        let emptied_deks = SnapshotHealth {
+            has_vault_state: true,
+            has_vault_config: true,
+            inode_count: 3,
+            dek_count: 0,
+        };
+        assert!(!latest_pointer_may_advance(
+            &emptied_deks,
+            Some(1240),
+            Some(87)
+        ));
+
+        let fresh_vault = SnapshotHealth {
+            has_vault_state: true,
+            has_vault_config: true,
+            inode_count: 0,
+            dek_count: 0,
+        };
+        assert!(latest_pointer_may_advance(&fresh_vault, Some(0), Some(0)));
+        assert!(latest_pointer_may_advance(&fresh_vault, None, None));
+    }
+
+    #[tokio::test]
+    async fn degraded_database_uploads_snapshot_without_advancing_latest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-guard-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&test_root).await?;
+
+        let db_path = test_root.join("degraded.db");
+        let db_url = format!("sqlite://{}", db_path.to_string_lossy().replace('\\', "/"));
+        let pool = db::init_db(&db_url).await?;
+        db::set_vault_params(&pool, &[0u8; 16], "test", "vault-guard-test").await?;
+        db::set_vault_config(&pool, &[0x11u8; 16], 1, 65_536, 3, 1).await?;
+        db::set_system_config_value(&pool, LAST_SNAPSHOT_INODE_COUNT_KEY, "1240").await?;
+        db::set_system_config_value(&pool, LAST_SNAPSHOT_DEK_COUNT_KEY, "87").await?;
+
+        let store_root = test_root.join("local_store");
+        let metadata_dir = store_root.join("_omnidrive\\system\\metadata");
+        fs::create_dir_all(&metadata_dir).await?;
+        let latest_path = metadata_dir.join("latest.db.enc");
+        fs::write(&latest_path, b"last-good-snapshot-bytes").await?;
+
+        let pm = MetadataBackupProviderManager {
+            uploaders: Vec::new(),
+            download_providers: Vec::new(),
+            local_store: Some(LocalMetadataBackupStore {
+                root: store_root.clone(),
+            }),
+        };
+
+        run_metadata_backup_now(&pool, &pm, &[0x42u8; 32]).await?;
+
+        assert_eq!(
+            fs::read(&latest_path).await?,
+            b"last-good-snapshot-bytes".to_vec(),
+            "latest pointer must not advance for a degraded database"
+        );
+
+        let snapshots_dir = metadata_dir.join("snapshots");
+        let mut entries = fs::read_dir(&snapshots_dir).await?;
+        let mut snapshot_count = 0usize;
+        while let Some(_entry) = entries.next_entry().await? {
+            snapshot_count += 1;
+        }
+        assert_eq!(
+            snapshot_count, 1,
+            "the timestamped snapshot must still be uploaded"
+        );
+
+        assert_eq!(
+            db::get_system_config_value(&pool, LAST_SNAPSHOT_INODE_COUNT_KEY).await?,
+            Some("1240".to_string()),
+            "baseline must stay at the last good value while the guard is engaged"
+        );
+
+        pool.close().await;
         let _ = fs::remove_dir_all(&test_root).await;
         Ok(())
     }
