@@ -34,6 +34,7 @@ const METADATA_FETCH_WORKER_TICK: Duration = Duration::from_secs(60 * 60);
 const METADATA_FETCH_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const LOCAL_DB_BACKUP_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
 const LOCAL_DB_BACKUP_RETENTION: usize = 3;
+const MAX_DECRYPT_FAILURES: usize = 3;
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -296,17 +297,22 @@ fn local_backup_timestamp_suffix<'a>(file_name: &'a str, db_file_name: &str) -> 
     Some(suffix)
 }
 
+fn backup_parent_dir(db_path: &Path) -> &Path {
+    match db_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
 async fn run_local_db_backup_if_due(
     db_pool: &SqlitePool,
     db_path: &Path,
     now: SystemTime,
 ) -> Result<Option<PathBuf>, DisasterRecoveryError> {
-    let (Some(parent), Some(db_file_name)) = (
-        db_path.parent(),
-        db_path.file_name().and_then(|value| value.to_str()),
-    ) else {
+    let Some(db_file_name) = db_path.file_name().and_then(|value| value.to_str()) else {
         return Ok(None);
     };
+    let parent = backup_parent_dir(db_path);
     let Some(cutoff_time) = now.checked_sub(LOCAL_DB_BACKUP_MIN_INTERVAL) else {
         return Ok(None);
     };
@@ -645,6 +651,7 @@ pub async fn restore_metadata_from_cloud(
     let object_key = "_omnidrive/system/metadata/latest.db.enc";
     let mut errors = Vec::new();
     let mut key_cache = MetadataBackupKeyCache::default();
+    let mut decrypt_failures = 0usize;
 
     if let Some(local_store) = &provider_manager.local_store {
         let mut candidate_keys = vec![object_key.to_string()];
@@ -665,6 +672,12 @@ pub async fn restore_metadata_from_cloud(
                 Ok(plaintext) => plaintext,
                 Err(err) => {
                     errors.push(format!("local-metadata-store {key}: {err}"));
+                    if matches!(err, DisasterRecoveryError::BackupDecryptFailed) {
+                        decrypt_failures += 1;
+                        if decrypt_failures >= MAX_DECRYPT_FAILURES {
+                            break;
+                        }
+                    }
                     continue;
                 }
             };
@@ -676,10 +689,10 @@ pub async fn restore_metadata_from_cloud(
             ));
         }
 
-        return Err(DisasterRecoveryError::DownloadFailed(errors));
+        return Err(finalize_restore_error(errors, decrypt_failures));
     }
 
-    for provider in &provider_manager.download_providers {
+    'providers: for provider in &provider_manager.download_providers {
         let mut candidate_keys = vec![object_key.to_string()];
         match provider.list_snapshot_keys(pool, 32).await {
             Ok(keys) => candidate_keys.extend(keys),
@@ -698,6 +711,12 @@ pub async fn restore_metadata_from_cloud(
                 Ok(plaintext) => plaintext,
                 Err(err) => {
                     errors.push(format!("{} {}: {}", provider.provider_name, key, err));
+                    if matches!(err, DisasterRecoveryError::BackupDecryptFailed) {
+                        decrypt_failures += 1;
+                        if decrypt_failures >= MAX_DECRYPT_FAILURES {
+                            break 'providers;
+                        }
+                    }
                     continue;
                 }
             };
@@ -711,7 +730,16 @@ pub async fn restore_metadata_from_cloud(
         }
     }
 
-    Err(DisasterRecoveryError::DownloadFailed(errors))
+    Err(finalize_restore_error(errors, decrypt_failures))
+}
+
+fn finalize_restore_error(errors: Vec<String>, decrypt_failures: usize) -> DisasterRecoveryError {
+    if decrypt_failures > 0 {
+        warn!("metadata restore failed: {}", errors.join(" | "));
+        DisasterRecoveryError::BackupDecryptFailed
+    } else {
+        DisasterRecoveryError::DownloadFailed(errors)
+    }
 }
 
 fn dedup_object_keys(keys: Vec<String>) -> Vec<String> {
@@ -2461,6 +2489,56 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn restore_reports_incorrect_passphrase_when_decryption_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-restore-wrong-passphrase-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&test_root).await?;
+
+        let passphrase_a = "passphrase-a";
+        let kdf_params = RootKdfParams::new(1, vec![0x77; 16], 65_536, 3, 1);
+        let master_key = derive_root_keys(passphrase_a.as_bytes(), &kdf_params)?.master_key;
+
+        let source_db = test_root.join("source.db");
+        let source_url = format!(
+            "sqlite://{}",
+            source_db.to_string_lossy().replace('\\', "/")
+        );
+        let source_pool = db::init_db(&source_url).await?;
+        db::set_vault_params(&source_pool, &[0u8; 16], "test", "vault-wrong-passphrase").await?;
+        source_pool.close().await;
+        drop(source_pool);
+
+        let enc_path = test_root.join("source.db.enc");
+        encrypt_metadata_snapshot(&source_db, &enc_path, &master_key, &kdf_params).await?;
+
+        let store_root = test_root.join("local_store");
+        let metadata_dir = store_root.join("_omnidrive\\system\\metadata");
+        let snapshots_dir = metadata_dir.join("snapshots");
+        fs::create_dir_all(&snapshots_dir).await?;
+        fs::copy(&enc_path, snapshots_dir.join("1700000000000.db.enc")).await?;
+        fs::copy(&enc_path, metadata_dir.join("latest.db.enc")).await?;
+
+        let pm = MetadataBackupProviderManager {
+            uploaders: Vec::new(),
+            download_providers: Vec::new(),
+            local_store: Some(LocalMetadataBackupStore { root: store_root }),
+        };
+
+        let output_db = test_root.join("restored.db");
+        let result = restore_metadata_from_cloud(&pm, "passphrase-b", &output_db, None).await;
+        assert!(
+            matches!(result, Err(DisasterRecoveryError::BackupDecryptFailed)),
+            "expected BackupDecryptFailed, got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
     #[test]
     fn latest_pointer_advance_decision_table() {
         let healthy = SnapshotHealth {
@@ -2600,6 +2678,19 @@ mod tests {
             format_utc_compact(UNIX_EPOCH + Duration::from_secs(1_700_000_000))
                 .expect("known timestamp formats"),
             "20231114_221320"
+        );
+    }
+
+    #[test]
+    fn backup_parent_dir_normalizes_relative_paths() {
+        assert_eq!(backup_parent_dir(Path::new("omnidrive.db")), Path::new("."));
+        assert_eq!(
+            backup_parent_dir(Path::new("C:\\data\\omnidrive.db")),
+            Path::new("C:\\data")
+        );
+        assert_eq!(
+            backup_parent_dir(Path::new("sub\\omnidrive.db")),
+            Path::new("sub")
         );
     }
 
