@@ -32,6 +32,8 @@ const METADATA_BACKUP_WORKER_TICK: Duration = Duration::from_secs(60 * 60);
 const METADATA_BACKUP_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
 const METADATA_FETCH_WORKER_TICK: Duration = Duration::from_secs(60 * 60);
 const METADATA_FETCH_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const LOCAL_DB_BACKUP_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
+const LOCAL_DB_BACKUP_RETENTION: usize = 3;
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -244,10 +246,122 @@ impl MetadataBackupProviderManager {
     }
 }
 
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_position = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_position + 2) / 5 + 1) as u32;
+    let month = if month_position < 10 {
+        month_position + 3
+    } else {
+        month_position - 9
+    } as u32;
+
+    (if month <= 2 { year + 1 } else { year }, month, day)
+}
+
+fn format_utc_compact(time: SystemTime) -> Result<String, DisasterRecoveryError> {
+    let seconds = time
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| DisasterRecoveryError::InvalidOutputPath("timestamp before unix epoch"))?
+        .as_secs();
+    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
+    let seconds_of_day = seconds % 86_400;
+
+    Ok(format!(
+        "{year:04}{month:02}{day:02}_{:02}{:02}{:02}",
+        seconds_of_day / 3_600,
+        (seconds_of_day % 3_600) / 60,
+        seconds_of_day % 60
+    ))
+}
+
+fn local_backup_timestamp_suffix<'a>(file_name: &'a str, db_file_name: &str) -> Option<&'a str> {
+    let suffix = file_name.strip_prefix(&format!("{db_file_name}.bak."))?;
+    if suffix.len() != 15 || suffix.as_bytes()[8] != b'_' {
+        return None;
+    }
+    if !suffix[..8].bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if !suffix[9..].bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+
+    Some(suffix)
+}
+
+async fn run_local_db_backup_if_due(
+    db_pool: &SqlitePool,
+    db_path: &Path,
+    now: SystemTime,
+) -> Result<Option<PathBuf>, DisasterRecoveryError> {
+    let (Some(parent), Some(db_file_name)) = (
+        db_path.parent(),
+        db_path.file_name().and_then(|value| value.to_str()),
+    ) else {
+        return Ok(None);
+    };
+    let Some(cutoff_time) = now.checked_sub(LOCAL_DB_BACKUP_MIN_INTERVAL) else {
+        return Ok(None);
+    };
+
+    let mut stamps = Vec::new();
+    let mut entries = fs::read_dir(parent).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if let Some(stamp) = local_backup_timestamp_suffix(name, db_file_name) {
+            stamps.push(stamp.to_string());
+        }
+    }
+    stamps.sort();
+
+    let cutoff = format_utc_compact(cutoff_time)?;
+    if let Some(newest) = stamps.last()
+        && newest.as_str() >= cutoff.as_str()
+    {
+        return Ok(None);
+    }
+
+    let stamp = format_utc_compact(now)?;
+    let backup_path = parent.join(format!("{db_file_name}.bak.{stamp}"));
+    if fs::try_exists(&backup_path).await? {
+        fs::remove_file(&backup_path).await?;
+    }
+
+    let sql = format!("VACUUM INTO '{}'", sqlite_string_literal(&backup_path));
+    sqlx::query(&sql).execute(db_pool).await?;
+
+    stamps.push(stamp);
+    stamps.sort();
+    while stamps.len() > LOCAL_DB_BACKUP_RETENTION {
+        let stale = stamps.remove(0);
+        let stale_path = parent.join(format!("{db_file_name}.bak.{stale}"));
+        if let Err(err) = fs::remove_file(&stale_path).await {
+            warn!(
+                "local database backup rotation failed for {}: {}",
+                stale_path.display(),
+                err
+            );
+        }
+    }
+
+    Ok(Some(backup_path))
+}
+
 pub fn start_metadata_backup_worker(
     db_pool: SqlitePool,
     provider_manager: Arc<MetadataBackupProviderManager>,
     keystore: Arc<VaultKeyStore>,
+    db_file_path: Option<PathBuf>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = interval(METADATA_BACKUP_WORKER_TICK);
@@ -256,6 +370,14 @@ pub fn start_metadata_backup_worker(
 
         loop {
             ticker.tick().await;
+
+            if let Some(db_path) = db_file_path.as_deref() {
+                match run_local_db_backup_if_due(&db_pool, db_path, SystemTime::now()).await {
+                    Ok(Some(path)) => info!("local database backup created: {}", path.display()),
+                    Ok(None) => {}
+                    Err(err) => warn!("local database backup failed: {err}"),
+                }
+            }
 
             let last_success = match db::get_last_successful_metadata_backup_at(&db_pool).await {
                 Ok(value) => value,
@@ -2462,6 +2584,87 @@ mod tests {
             Some("1240".to_string()),
             "baseline must stay at the last good value while the guard is engaged"
         );
+
+        pool.close().await;
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
+    #[test]
+    fn formats_utc_timestamp_for_backup_names() {
+        assert_eq!(
+            format_utc_compact(UNIX_EPOCH).expect("epoch formats"),
+            "19700101_000000"
+        );
+        assert_eq!(
+            format_utc_compact(UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+                .expect("known timestamp formats"),
+            "20231114_221320"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_db_backup_rotates_and_ignores_manual_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-local-bak-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&test_root).await?;
+
+        let db_path = test_root.join("omnidrive.db");
+        let db_url = format!("sqlite://{}", db_path.to_string_lossy().replace('\\', "/"));
+        let pool = db::init_db(&db_url).await?;
+        db::create_inode(&pool, None, "bak-test.txt", "FILE", 7).await?;
+
+        let manual_path = test_root.join("omnidrive.db.bak.preSmoke-20260604-1422");
+        fs::write(&manual_path, b"manual-backup").await?;
+        fs::write(test_root.join("omnidrive.db.bak.20200101_000000"), b"old").await?;
+        fs::write(test_root.join("omnidrive.db.bak.20210101_000000"), b"older").await?;
+
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let first = run_local_db_backup_if_due(&pool, &db_path, now)
+            .await?
+            .expect("first run must create a backup");
+        assert_eq!(
+            first.file_name().and_then(|value| value.to_str()),
+            Some("omnidrive.db.bak.20231114_221320")
+        );
+        assert!(fs::try_exists(&first).await?);
+
+        assert!(
+            run_local_db_backup_if_due(&pool, &db_path, now + Duration::from_secs(3_600))
+                .await?
+                .is_none(),
+            "a second run within 24h must be a no-op"
+        );
+
+        let later = now + Duration::from_secs(25 * 3_600);
+        let second = run_local_db_backup_if_due(&pool, &db_path, later)
+            .await?
+            .expect("a run after 24h must create a backup");
+        assert_eq!(
+            second.file_name().and_then(|value| value.to_str()),
+            Some("omnidrive.db.bak.20231115_231320")
+        );
+
+        assert!(
+            !fs::try_exists(test_root.join("omnidrive.db.bak.20200101_000000")).await?,
+            "retention must drop the oldest backup"
+        );
+        assert!(fs::try_exists(test_root.join("omnidrive.db.bak.20210101_000000")).await?);
+        assert!(fs::try_exists(&first).await?);
+        assert!(fs::try_exists(&second).await?);
+        assert!(
+            fs::try_exists(&manual_path).await?,
+            "manual backups outside the YYYYMMDD_HHMMSS pattern must never be rotated away"
+        );
+
+        let restored_url = format!("sqlite://{}", second.to_string_lossy().replace('\\', "/"));
+        let restored_pool = db::init_db(&restored_url).await?;
+        let inode = db::get_inode_by_id(&restored_pool, 1).await?;
+        assert!(inode.is_some(), "the backup must be a usable SQLite copy");
+        restored_pool.close().await;
 
         pool.close().await;
         let _ = fs::remove_dir_all(&test_root).await;

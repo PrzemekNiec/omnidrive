@@ -783,6 +783,7 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         pool.clone(),
         metadata_backup_provider_manager.clone(),
         Arc::new(vault_keys.clone()),
+        runtime_paths.db_file_path.clone(),
     );
     let metadata_fetch_worker = start_metadata_fetch_worker(
         pool.clone(),
