@@ -1525,30 +1525,58 @@ impl MetadataBackupDownloadProvider {
             }));
         }
 
-        let response = self
-            .client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix("_omnidrive/system/metadata/snapshots/")
-            .max_keys(max_keys)
-            .send()
-            .await
-            .map_err(|err| {
-                DisasterRecoveryError::Uploader(UploaderError::Upload {
-                    provider: self.provider_name,
-                    operation: "list_objects_v2",
-                    details: format!("{err}"),
-                })
-            })?;
+        let mut all_keys = Vec::new();
+        let mut continuation_token: Option<String> = None;
+        const MAX_PAGES: u32 = 20;
 
-        let mut keys: Vec<String> = response
-            .contents()
-            .iter()
-            .filter_map(|entry| entry.key().map(|value| value.to_string()))
-            .collect();
-        keys.sort_by(|a, b| b.cmp(a));
-        Ok(keys)
+        for _ in 0..MAX_PAGES {
+            let response = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix("_omnidrive/system/metadata/snapshots/")
+                .set_continuation_token(continuation_token.clone())
+                .send()
+                .await
+                .map_err(|err| {
+                    DisasterRecoveryError::Uploader(UploaderError::Upload {
+                        provider: self.provider_name,
+                        operation: "list_objects_v2",
+                        details: format!("{err}"),
+                    })
+                })?;
+
+            all_keys.extend(
+                response
+                    .contents()
+                    .iter()
+                    .filter_map(|entry| entry.key().map(|value| value.to_string())),
+            );
+
+            continuation_token = response.next_continuation_token().map(str::to_string);
+            if continuation_token.is_none() {
+                break;
+            }
+        }
+
+        if continuation_token.is_some() {
+            warn!(
+                "metadata snapshot listing for provider '{}' hit the {}-page cap; \
+                using {} keys collected so far",
+                self.provider_name,
+                MAX_PAGES,
+                all_keys.len()
+            );
+        }
+
+        Ok(newest_snapshot_keys(all_keys, max_keys as usize))
     }
+}
+
+fn newest_snapshot_keys(mut keys: Vec<String>, max_keys: usize) -> Vec<String> {
+    keys.sort_by(|a, b| b.cmp(a));
+    keys.truncate(max_keys);
+    keys
 }
 
 impl LocalMetadataBackupStore {
@@ -1598,11 +1626,7 @@ impl LocalMetadataBackupStore {
             }
             keys.push(format!("_omnidrive/system/metadata/snapshots/{name}"));
         }
-        keys.sort_by(|a, b| b.cmp(a));
-        if keys.len() > max_keys {
-            keys.truncate(max_keys);
-        }
-        Ok(keys)
+        Ok(newest_snapshot_keys(keys, max_keys))
     }
 }
 
@@ -2751,6 +2775,23 @@ mod tests {
             format_utc_compact(UNIX_EPOCH + Duration::from_secs(1_700_000_000))
                 .expect("known timestamp formats"),
             "20231114_221320"
+        );
+    }
+
+    #[test]
+    fn newest_snapshot_keys_returns_newest_first_and_truncates() {
+        let keys = vec![
+            "_omnidrive/system/metadata/snapshots/1700000000000.db.enc".to_string(),
+            "_omnidrive/system/metadata/snapshots/1800000000000.db.enc".to_string(),
+            "_omnidrive/system/metadata/snapshots/1600000000000.db.enc".to_string(),
+        ];
+        let newest = newest_snapshot_keys(keys, 2);
+        assert_eq!(
+            newest,
+            vec![
+                "_omnidrive/system/metadata/snapshots/1800000000000.db.enc".to_string(),
+                "_omnidrive/system/metadata/snapshots/1700000000000.db.enc".to_string(),
+            ]
         );
     }
 
