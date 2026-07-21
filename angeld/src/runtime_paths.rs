@@ -200,11 +200,10 @@ pub fn sqlite_db_directory(db_url: &str) -> Option<PathBuf> {
 
     let normalized = normalize_sqlite_path(raw);
     let path = PathBuf::from(normalized);
-    Some(
-        path.parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(".")),
-    )
+    Some(match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    })
 }
 
 pub fn sqlite_db_file_path(db_url: &str) -> Option<PathBuf> {
