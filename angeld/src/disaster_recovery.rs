@@ -1513,7 +1513,7 @@ impl MetadataBackupDownloadProvider {
     async fn list_snapshot_keys(
         &self,
         pool: Option<&SqlitePool>,
-        max_keys: i32,
+        max_keys: usize,
     ) -> Result<Vec<String>, DisasterRecoveryError> {
         if let Some(pool) = pool
             && let Err(reason) = cloud_guard::try_authorize_read(pool, 0).await
@@ -1569,7 +1569,7 @@ impl MetadataBackupDownloadProvider {
             );
         }
 
-        Ok(newest_snapshot_keys(all_keys, max_keys as usize))
+        Ok(newest_snapshot_keys(all_keys, max_keys))
     }
 }
 
@@ -2552,6 +2552,170 @@ mod tests {
         Ok(())
     }
 
+    async fn corrupt_last_byte(path: &Path) -> std::io::Result<()> {
+        let mut bytes = fs::read(path).await?;
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        fs::write(path, bytes).await
+    }
+
+    #[tokio::test]
+    async fn restore_stops_after_repeated_decrypt_failures()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-restore-stop-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&test_root).await?;
+
+        let passphrase_a = "restore-stop-passphrase-a";
+        let kdf_params_a = RootKdfParams::new(1, vec![0x88; 16], 65_536, 3, 1);
+        let master_key_a = derive_root_keys(passphrase_a.as_bytes(), &kdf_params_a)?.master_key;
+
+        let passphrase_b = "restore-stop-passphrase-b";
+        let kdf_params_b = RootKdfParams::new(1, vec![0x99; 16], 65_536, 3, 1);
+        let master_key_b = derive_root_keys(passphrase_b.as_bytes(), &kdf_params_b)?.master_key;
+
+        let store_root = test_root.join("local_store");
+        let metadata_dir = store_root.join("_omnidrive\\system\\metadata");
+        let snapshots_dir = metadata_dir.join("snapshots");
+        fs::create_dir_all(&snapshots_dir).await?;
+
+        let plain_a = test_root.join("plain-a.db");
+        fs::write(&plain_a, b"decoy-payload-under-passphrase-a").await?;
+        encrypt_metadata_snapshot(
+            &plain_a,
+            &metadata_dir.join("latest.db.enc"),
+            &master_key_a,
+            &kdf_params_a,
+        )
+        .await?;
+        encrypt_metadata_snapshot(
+            &plain_a,
+            &snapshots_dir.join("1700000002000.db.enc"),
+            &master_key_a,
+            &kdf_params_a,
+        )
+        .await?;
+        encrypt_metadata_snapshot(
+            &plain_a,
+            &snapshots_dir.join("1700000001000.db.enc"),
+            &master_key_a,
+            &kdf_params_a,
+        )
+        .await?;
+
+        let source_db = test_root.join("source-b.db");
+        let source_url = format!(
+            "sqlite://{}",
+            source_db.to_string_lossy().replace('\\', "/")
+        );
+        let source_pool = db::init_db(&source_url).await?;
+        db::set_vault_params(
+            &source_pool,
+            &[0u8; 16],
+            "test",
+            "vault-should-not-be-reached",
+        )
+        .await?;
+        source_pool.close().await;
+        drop(source_pool);
+        encrypt_metadata_snapshot(
+            &source_db,
+            &snapshots_dir.join("1700000000000.db.enc"),
+            &master_key_b,
+            &kdf_params_b,
+        )
+        .await?;
+
+        let pm = MetadataBackupProviderManager {
+            uploaders: Vec::new(),
+            download_providers: Vec::new(),
+            local_store: Some(LocalMetadataBackupStore { root: store_root }),
+        };
+
+        let output_db = test_root.join("restored.db");
+        let result = restore_metadata_from_cloud(&pm, passphrase_b, &output_db, None).await;
+        assert!(
+            matches!(result, Err(DisasterRecoveryError::BackupDecryptFailed)),
+            "expected BackupDecryptFailed after the failure cap, got {result:?}"
+        );
+        assert!(
+            !fs::try_exists(&output_db).await?,
+            "output database must not be written: the reachable-in-principle snapshot must \
+            never be tried once the failure cap stops the loop"
+        );
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restore_recovers_after_two_aead_failures() -> Result<(), Box<dyn std::error::Error>> {
+        let test_root = env::temp_dir().join(format!(
+            "omnidrive-dr-restore-aead-recover-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&test_root).await?;
+
+        let passphrase = "restore-aead-recover-passphrase";
+        let kdf_params = RootKdfParams::new(1, vec![0xAA; 16], 65_536, 3, 1);
+        let master_key = derive_root_keys(passphrase.as_bytes(), &kdf_params)?.master_key;
+
+        let store_root = test_root.join("local_store");
+        let metadata_dir = store_root.join("_omnidrive\\system\\metadata");
+        let snapshots_dir = metadata_dir.join("snapshots");
+        fs::create_dir_all(&snapshots_dir).await?;
+
+        let plain = test_root.join("plain.db");
+        fs::write(&plain, b"decoy-payload-for-tag-corruption").await?;
+
+        let latest_path = metadata_dir.join("latest.db.enc");
+        encrypt_metadata_snapshot(&plain, &latest_path, &master_key, &kdf_params).await?;
+        corrupt_last_byte(&latest_path).await?;
+
+        let newer_snapshot_path = snapshots_dir.join("1700000001000.db.enc");
+        encrypt_metadata_snapshot(&plain, &newer_snapshot_path, &master_key, &kdf_params).await?;
+        corrupt_last_byte(&newer_snapshot_path).await?;
+
+        let source_db = test_root.join("source.db");
+        let source_url = format!(
+            "sqlite://{}",
+            source_db.to_string_lossy().replace('\\', "/")
+        );
+        let source_pool = db::init_db(&source_url).await?;
+        db::set_vault_params(&source_pool, &[0u8; 16], "test", "vault-aead-recover").await?;
+        source_pool.close().await;
+        drop(source_pool);
+
+        let older_snapshot_path = snapshots_dir.join("1700000000000.db.enc");
+        encrypt_metadata_snapshot(&source_db, &older_snapshot_path, &master_key, &kdf_params)
+            .await?;
+
+        let pm = MetadataBackupProviderManager {
+            uploaders: Vec::new(),
+            download_providers: Vec::new(),
+            local_store: Some(LocalMetadataBackupStore { root: store_root }),
+        };
+
+        let output_db = test_root.join("restored.db");
+        restore_metadata_from_cloud(&pm, passphrase, &output_db, None).await?;
+
+        let restored_url = format!(
+            "sqlite://{}",
+            output_db.to_string_lossy().replace('\\', "/")
+        );
+        let restored_pool = db::init_db(&restored_url).await?;
+        let vault = db::get_vault_params(&restored_pool)
+            .await?
+            .expect("restored snapshot must have a vault_state row");
+        assert_eq!(vault.vault_id, "vault-aead-recover");
+        restored_pool.close().await;
+
+        let _ = fs::remove_dir_all(&test_root).await;
+        Ok(())
+    }
+
     #[test]
     fn latest_pointer_advance_decision_table() {
         let healthy = SnapshotHealth {
@@ -2676,9 +2840,11 @@ mod tests {
             "baseline must stay at the last good value while the guard is engaged"
         );
 
-        let status: String = sqlx::query_scalar("SELECT status FROM metadata_backups")
-            .fetch_one(&pool)
-            .await?;
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM metadata_backups WHERE provider = 'local-metadata-store'",
+        )
+        .fetch_one(&pool)
+        .await?;
         assert_eq!(
             status, "COMPLETED",
             "skipping the latest pointer must not be recorded as FAILED, \
@@ -2703,8 +2869,8 @@ mod tests {
         let pool = db::init_db(&db_url).await?;
         db::set_vault_params(&pool, &[0u8; 16], "test", "vault-advance-test").await?;
         db::set_vault_config(&pool, &[0x11u8; 16], 1, 65_536, 3, 1).await?;
-        db::set_system_config_value(&pool, LAST_SNAPSHOT_INODE_COUNT_KEY, "0").await?;
-        db::set_system_config_value(&pool, LAST_SNAPSHOT_DEK_COUNT_KEY, "0").await?;
+        db::set_system_config_value(&pool, LAST_SNAPSHOT_INODE_COUNT_KEY, "1").await?;
+        db::set_system_config_value(&pool, LAST_SNAPSHOT_DEK_COUNT_KEY, "1").await?;
 
         let inode_id = db::create_inode(&pool, None, "advance.txt", "FILE", 10).await?;
         db::insert_wrapped_dek(&pool, inode_id, &[0xEEu8; 32], 1, 1).await?;
