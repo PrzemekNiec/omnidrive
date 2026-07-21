@@ -680,6 +680,30 @@ fn latest_pointer_may_advance(
     true
 }
 
+async fn record_latest_pointer_result(
+    db_pool: &SqlitePool,
+    backup_id: &str,
+    provider_name: &str,
+    latest_result: Result<(), String>,
+) -> Result<bool, DisasterRecoveryError> {
+    match latest_result {
+        Ok(()) => {
+            db::update_metadata_backup_status(db_pool, backup_id, "COMPLETED", None).await?;
+            Ok(true)
+        }
+        Err(err) => {
+            let error_text = format!("latest pointer update failed: {err}");
+            db::update_metadata_backup_status(db_pool, backup_id, "FAILED", Some(&error_text))
+                .await?;
+            warn!(
+                "metadata backup latest pointer update failed for {}: {}",
+                provider_name, err
+            );
+            Ok(false)
+        }
+    }
+}
+
 pub async fn upload_metadata_backup(
     db_pool: &SqlitePool,
     provider_manager: &MetadataBackupProviderManager,
@@ -724,27 +748,15 @@ pub async fn upload_metadata_backup(
                     Ok(())
                 };
 
-                match latest_result {
-                    Ok(()) => {
-                        successful_uploads += 1;
-                        db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
-                            .await?;
-                    }
-                    Err(err) => {
-                        let error_text = format!("latest pointer update failed: {err}");
-                        db::update_metadata_backup_status(
-                            db_pool,
-                            &backup_id,
-                            "FAILED",
-                            Some(&error_text),
-                        )
-                        .await?;
-                        warn!(
-                            "metadata backup latest pointer update failed for {}: {}",
-                            local_store.provider_name(),
-                            err
-                        );
-                    }
+                if record_latest_pointer_result(
+                    db_pool,
+                    &backup_id,
+                    local_store.provider_name(),
+                    latest_result,
+                )
+                .await?
+                {
+                    successful_uploads += 1;
                 }
             }
             Err(err) => {
@@ -789,27 +801,15 @@ pub async fn upload_metadata_backup(
                     Ok(())
                 };
 
-                match latest_result {
-                    Ok(()) => {
-                        successful_uploads += 1;
-                        db::update_metadata_backup_status(db_pool, &backup_id, "COMPLETED", None)
-                            .await?;
-                    }
-                    Err(err) => {
-                        let error_text = format!("latest pointer update failed: {err}");
-                        db::update_metadata_backup_status(
-                            db_pool,
-                            &backup_id,
-                            "FAILED",
-                            Some(&error_text),
-                        )
-                        .await?;
-                        warn!(
-                            "metadata backup latest pointer update failed for {}: {}",
-                            uploader.provider_name(),
-                            err
-                        );
-                    }
+                if record_latest_pointer_result(
+                    db_pool,
+                    &backup_id,
+                    uploader.provider_name(),
+                    latest_result,
+                )
+                .await?
+                {
+                    successful_uploads += 1;
                 }
             }
             Err(err) => {
