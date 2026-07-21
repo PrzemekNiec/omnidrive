@@ -49,7 +49,7 @@
 - Produces: `struct MetadataBackupKeyCache` (`Default`), metoda `fn backup_key(&mut self, passphrase: &str, kdf: &RootKdfParams) -> Result<KeyBytes, DisasterRecoveryError>`; `fn decrypt_metadata_backup(encoded: &[u8], passphrase: &str, cache: &mut MetadataBackupKeyCache) -> Result<Vec<u8>, DisasterRecoveryError>` (dodany trzeci parametr); `MetadataBackupParsed` z nowym polem `kdf: RootKdfParams`.
 - Consumes: `parse_metadata_backup`, `derive_metadata_backup_key`, `derive_root_keys`, `RootKdfParams`, `KeyBytes` (już zaimportowane w pliku).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Dopisz oba testy na końcu `mod tests` w `angeld/src/disaster_recovery.rs` (przed zamykającym `}` modułu):
 
@@ -153,12 +153,12 @@ Dopisz oba testy na końcu `mod tests` w `angeld/src/disaster_recovery.rs` (prze
     }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cargo test -p angeld --lib restore_falls_back_to_older_snapshot_when_latest_is_corrupt restore_reports_every_candidate_when_all_are_corrupt`
 Expected: FAIL. Pierwszy test kończy się `Err(InvalidBackupFormat("file too short"))` propagowanym z `restore_metadata_from_cloud` (znak `?` na dekrypcji uszkodzonego `latest.db.enc`); drugi panikuje na `expected DownloadFailed, got Err(InvalidBackupFormat("file too short"))`.
 
-- [ ] **Step 3: Rozszerz `MetadataBackupParsed` i parser o parametry KDF**
+- [x] **Step 3: Rozszerz `MetadataBackupParsed` i parser o parametry KDF**
 
 Zastąp `struct MetadataBackupParsed` (`:1011-1015`) oraz całe `parse_metadata_backup` (`:1017-1072`):
 
@@ -260,7 +260,7 @@ fn parse_metadata_backup(encoded: &[u8]) -> Result<MetadataBackupParsed, Disaste
 }
 ```
 
-- [ ] **Step 4: Zastąp `decrypt_metadata_backup` wersją z cache'em derywacji**
+- [x] **Step 4: Zastąp `decrypt_metadata_backup` wersją z cache'em derywacji**
 
 Zastąp całe `fn decrypt_metadata_backup` (`:906-1009`) poniższym blokiem (cache + funkcja przepięta na wspólny parser):
 
@@ -330,7 +330,7 @@ fn decrypt_metadata_backup(
 }
 ```
 
-- [ ] **Step 5: Dostosuj `decrypt_metadata_backup_with_master` do nowego pola**
+- [x] **Step 5: Dostosuj `decrypt_metadata_backup_with_master` do nowego pola**
 
 W `decrypt_metadata_backup_with_master` (`:1083-1087`) zamień destrukturyzację, żeby ignorowała `kdf`:
 
@@ -343,7 +343,7 @@ W `decrypt_metadata_backup_with_master` (`:1083-1087`) zamień destrukturyzację
     } = parse_metadata_backup(encoded)?;
 ```
 
-- [ ] **Step 6: Przepnij obie pętle w `restore_metadata_from_cloud` na `continue`**
+- [x] **Step 6: Przepnij obie pętle w `restore_metadata_from_cloud` na `continue`**
 
 W `restore_metadata_from_cloud` dodaj cache tuż pod `let mut errors = Vec::new();` (`:524`):
 
@@ -375,7 +375,7 @@ W pętli po providerach zamień `:568`:
             };
 ```
 
-- [ ] **Step 7: Zaktualizuj istniejący test do nowej sygnatury**
+- [x] **Step 7: Zaktualizuj istniejący test do nowej sygnatury**
 
 W teście `encrypts_snapshot_into_expected_binary_format` zamień linię `:1481`:
 
@@ -387,12 +387,12 @@ W teście `encrypts_snapshot_into_expected_binary_format` zamień linię `:1481`
         )?;
 ```
 
-- [ ] **Step 8: Run the tests to verify they pass**
+- [x] **Step 8: Run the tests to verify they pass**
 
 Run: `cargo test -p angeld --lib restore_falls_back_to_older_snapshot_when_latest_is_corrupt restore_reports_every_candidate_when_all_are_corrupt encrypts_snapshot_into_expected_binary_format decrypt_with_master`
 Expected: PASS — 5 testów zielonych (2 nowe + 1 zaktualizowany + 2 `decrypt_with_master_*`).
 
-- [ ] **Step 9: Bramka i commit**
+- [x] **Step 9: Bramka i commit**
 
 ```bash
 cargo fmt --all
@@ -417,7 +417,7 @@ Expected: clippy czysty, suite 176 testów zielona (174 baseline + 2).
 - Produces: `struct SnapshotHealth { has_vault_state: bool, has_vault_config: bool, inode_count: i64, dek_count: i64 }`; `async fn collect_snapshot_health(pool: &SqlitePool) -> Result<SnapshotHealth, DisasterRecoveryError>`; `fn latest_pointer_may_advance(health: &SnapshotHealth, previous_inode_count: Option<i64>, previous_dek_count: Option<i64>) -> bool`; `upload_metadata_backup(db_pool, provider_manager, enc_file_path, advance_latest: bool)` — czwarty parametr; stałe `LAST_SNAPSHOT_INODE_COUNT_KEY` / `LAST_SNAPSHOT_DEK_COUNT_KEY`.
 - Sygnatura `run_metadata_backup_now` **nie zmienia się** — wołają ją `api/auth.rs:389` i `api/maintenance.rs:674`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Dopisz na końcu `mod tests`:
 
@@ -536,12 +536,12 @@ Dopisz na końcu `mod tests`:
     }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cargo test -p angeld --lib latest_pointer_advance_decision_table degraded_database_uploads_snapshot_without_advancing_latest`
 Expected: FAIL na etapie kompilacji — `cannot find type SnapshotHealth`, `cannot find function latest_pointer_may_advance`, `cannot find value LAST_SNAPSHOT_INODE_COUNT_KEY`.
 
-- [ ] **Step 3: Dodaj stałe, `SnapshotHealth`, zbieranie i decyzję**
+- [x] **Step 3: Dodaj stałe, `SnapshotHealth`, zbieranie i decyzję**
 
 Wstaw bezpośrednio nad `pub async fn upload_metadata_backup` (`:614`):
 
@@ -603,7 +603,7 @@ fn latest_pointer_may_advance(
 }
 ```
 
-- [ ] **Step 4: Dodaj parametr `advance_latest` do `upload_metadata_backup`**
+- [x] **Step 4: Dodaj parametr `advance_latest` do `upload_metadata_backup`**
 
 Zmień sygnaturę (`:614-618`):
 
@@ -700,7 +700,7 @@ W pętli po `uploaders` zamień ramię `Ok(_) => match uploader.upload_system_fi
             }
 ```
 
-- [ ] **Step 5: Wepnij guard w `run_metadata_backup_now`**
+- [x] **Step 5: Wepnij guard w `run_metadata_backup_now`**
 
 Zastąp całe ciało `run_metadata_backup_now` (`:751-777`):
 
@@ -770,12 +770,12 @@ pub async fn run_metadata_backup_now(
 }
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `cargo test -p angeld --lib latest_pointer_advance_decision_table degraded_database_uploads_snapshot_without_advancing_latest`
 Expected: PASS — 2 testy zielone.
 
-- [ ] **Step 7: Bramka i commit**
+- [x] **Step 7: Bramka i commit**
 
 ```bash
 cargo fmt --all
@@ -800,7 +800,7 @@ Expected: clippy czysty, suite 178 testów zielona.
 - Produces: `fn format_utc_compact(time: SystemTime) -> Result<String, DisasterRecoveryError>` (format `YYYYMMDD_HHMMSS`, UTC); `fn civil_from_days(days: i64) -> (i64, u32, u32)`; `fn local_backup_timestamp_suffix<'a>(file_name: &'a str, db_file_name: &str) -> Option<&'a str>`; `async fn run_local_db_backup_if_due(db_pool: &SqlitePool, db_path: &Path, now: SystemTime) -> Result<Option<PathBuf>, DisasterRecoveryError>`; `start_metadata_backup_worker(db_pool, provider_manager, keystore, db_file_path: Option<PathBuf>)` — czwarty parametr.
 - Consumes: `sqlite_string_literal` (`:1115`), `SystemTime`/`UNIX_EPOCH` (już zaimportowane `:19`), `Duration` (`:22`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Dopisz na końcu `mod tests`:
 
@@ -887,12 +887,12 @@ Dopisz na końcu `mod tests`:
     }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cargo test -p angeld --lib formats_utc_timestamp_for_backup_names local_db_backup_rotates_and_ignores_manual_files`
 Expected: FAIL na kompilacji — `cannot find function format_utc_compact`, `cannot find function run_local_db_backup_if_due`.
 
-- [ ] **Step 3: Dodaj stałe**
+- [x] **Step 3: Dodaj stałe**
 
 Pod istniejącymi stałymi workerów (`:34`):
 
@@ -901,7 +901,7 @@ const LOCAL_DB_BACKUP_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24)
 const LOCAL_DB_BACKUP_RETENTION: usize = 3;
 ```
 
-- [ ] **Step 4: Dodaj formatowanie znacznika i skaner nazw**
+- [x] **Step 4: Dodaj formatowanie znacznika i skaner nazw**
 
 Wstaw bezpośrednio nad `pub fn start_metadata_backup_worker` (`:247`):
 
@@ -1018,7 +1018,7 @@ async fn run_local_db_backup_if_due(
 }
 ```
 
-- [ ] **Step 5: Wepnij krok w worker**
+- [x] **Step 5: Wepnij krok w worker**
 
 Zmień sygnaturę `start_metadata_backup_worker` (`:247-251`):
 
@@ -1043,7 +1043,7 @@ Wstaw krok bezpośrednio po `ticker.tick().await;` (`:258`), przed pobraniem `la
             }
 ```
 
-- [ ] **Step 6: Przekaż ścieżkę bazy z `main.rs`**
+- [x] **Step 6: Przekaż ścieżkę bazy z `main.rs`**
 
 W `angeld/src/main.rs:782-786` zamień wywołanie:
 
@@ -1056,12 +1056,12 @@ W `angeld/src/main.rs:782-786` zamień wywołanie:
     );
 ```
 
-- [ ] **Step 7: Run the tests to verify they pass**
+- [x] **Step 7: Run the tests to verify they pass**
 
 Run: `cargo test -p angeld --lib formats_utc_timestamp_for_backup_names local_db_backup_rotates_and_ignores_manual_files`
 Expected: PASS — 2 testy zielone.
 
-- [ ] **Step 8: Bramka i commit**
+- [x] **Step 8: Bramka i commit**
 
 ```bash
 cargo fmt --all
@@ -1083,7 +1083,7 @@ Expected: clippy czysty (także dla targetu `bin`, bo zmieniło się `main.rs`),
 **Interfaces:**
 - Consumes: wyniki Tasków 1-3. Nic nie produkuje dla kolejnych tasków.
 
-- [ ] **Step 1: Pełna bramka workspace**
+- [x] **Step 1: Pełna bramka workspace**
 
 ```bash
 cargo fmt --all --check
@@ -1095,7 +1095,7 @@ cargo test -p omnidrive-core
 ```
 Expected: wszystko zielone; angeld 180 testów (174 baseline + 6 nowych), omnidrive-core 28.
 
-- [ ] **Step 2: Zaktualizuj STATUS.md §12.7**
+- [x] **Step 2: Zaktualizuj STATUS.md §12.7**
 
 W drzewku (`STATUS.md:708`) zamień wiersz γ.d na:
 
@@ -1109,7 +1109,7 @@ W tabeli (`STATUS.md:716`) zamień komórkę stanu wiersza **γ.d** na:
 ✅ **DONE 2026-07-21.** Spec `docs/superpowers/specs/2026-07-21-gamma-d-snapshot-guard-design.md`, plan `…/plans/2026-07-21-gamma-d-snapshot-guard.md`. Premisa specowa („nie nadpisuj dobrego snapshotu") potwierdzona jako **już spełniona strukturalnie**: klucz timestampowany (append-only), `latest.db.enc` awansuje wyłącznie po udanym uploadzie snapshotu, 0 sukcesów → `NoSuccessfulUploads` bez przesunięcia markera. Audyt wyciągnął 3 inne luki i te zostały domknięte: **G1** `restore_metadata_from_cloud` przerywał całe odzyskiwanie na pierwszym nieodszyfrowywalnym obiekcie (a `latest.db.enc` jest kandydatem pierwszym) → teraz `continue` + cache derywacji Argon2id per parametry KDF; **G2** periodyczny `omnidrive.db.bak.YYYYMMDD_HHMMSS` co 24h z retencją 3, wykonywany PRZED `require_master_key` (działa przy zalockowanym vaulcie, gdy snapshot chmurowy w ogóle nie powstaje), rotacja ignoruje ręczne `.bak.preSmoke-*`; **G3** sanity guard — brak `vault_state`/`vault_config` albo spadek `inodes`/`data_encryption_keys` do zera przy niezerowym baseline blokuje wyłącznie awans `latest`, timestampowany snapshot leci normalnie, baseline w `system_config` nie przesuwa się do czasu powrotu liczników. 6 testów (2 restore-fallback, 2 guard, 2 lokalny `.bak`), suite angeld **180** green.
 ```
 
-- [ ] **Step 3: Commit dokumentacji**
+- [x] **Step 3: Commit dokumentacji**
 
 ```bash
 git add STATUS.md docs/superpowers/plans/2026-07-21-gamma-d-snapshot-guard.md
