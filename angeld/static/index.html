@@ -1426,7 +1426,7 @@
         const ageDays = Math.floor((Date.now() / 1000 - status.last_created_at) / 86400);
         titleEl.textContent = 'Klucz odzyskiwania wymaga weryfikacji';
         messageEl.textContent = `Twój klucz odzyskiwania ma ${ageDays} dni. Upewnij się, że karta jest nadal w bezpiecznym miejscu i czytelna. W razie wątpliwości wygeneruj nowy.`;
-        ctaEl.textContent = 'Weryfikuj teraz';
+        ctaEl.textContent = 'Sprawdź / wygeneruj nowy';
       }
       card.classList.remove('hidden');
       card.classList.add('flex');
@@ -2502,7 +2502,7 @@
 <script>window.onload = function(){ window.print(); }<\/script>
 </body></html>`;
 
-      const win = window.open('about:blank', '_blank', 'noopener,width=800,height=600');
+      const win = window.open('about:blank', '_blank', 'width=800,height=600');
       if (win) { win.document.write(html); win.document.close(); }
     }
 
@@ -3872,7 +3872,8 @@
       button.querySelector('.text-sm').textContent = 'Trwa…';
 
       try {
-        const res = await fetch(`/api/maintenance/${action}`, {
+        const url = action.includes('/') ? `/api/${action}` : `/api/maintenance/${action}`;
+        const res = await fetch(url, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
