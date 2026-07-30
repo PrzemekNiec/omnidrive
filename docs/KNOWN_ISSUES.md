@@ -69,7 +69,7 @@
   - **Opcja B:** Skasować `angeld/src/lib.rs` całkowicie (bin-only crate). Tracimy library API dla testów e2e i przyszłej integracji.
   - **Opcja C (status quo + safeguard):** Zostawić duplikację, ale dodać do CI sztywne `cargo clippy --workspace --all-targets -- -D warnings` żeby zawsze sprawdzać obie konfiguracje.
 - **Impact:** Dług techniczny. Nie blokuje funkcjonalności, ale zwiększa risk regresji (jeden review nie wystarczy — trzeba uruchomić oba targety) + 2× czas CI + utrudnia świadome projektowanie API biblioteki.
-- **Status:** OPEN. P2 — blokuje v0.4 (clean architecture przed mobile). Decyzja Opcja A vs B vs C → Faza α lub β (wstawić jako β.f lub γ.a-pre, do decyzji).
+- **Status:** ✅ CLOSED 2026-07-31 (Opcja A1). `main.rs` nie deklaruje już żadnego `mod` — 9 modułów bin-only przeniesionych do `lib.rs`, referencje `crate::`→`angeld::`, moduły gołe przez `use angeld::{…}`. Podniesiono do `pub` itemy lib używane przez bin (`onboarding::get_active_provider_configs`, `downloader::from_provider_configs`, `uploader::ProviderConfig`+`provider_name`). Każdy moduł kompiluje się raz; `clippy --all-targets` = jeden spójny set. Suita: core 28, angeld lib 199. Commit `ca263de`. Spec `docs/superpowers/specs/2026-07-30-p2-003-dual-compile-design.md`, plan `…/plans/2026-07-30-p2-003-dual-compile.md`.
 
 ---
 
