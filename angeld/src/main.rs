@@ -2,72 +2,32 @@
 // Debug builds keep the console so logs are visible during development.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod acl;
-mod api;
-mod api_error;
-mod auto_lock;
-mod autostart;
-mod aws_http;
-mod cache;
-mod cloud_guard;
-mod config;
-mod db;
-mod device_identity;
-mod diagnostics;
-mod disaster_recovery;
-mod downloader;
-mod gc;
-mod identity;
-mod ingest;
-mod lock_flow;
-mod logging;
-mod migrator;
-mod onboarding;
-mod packer;
-mod peer;
-mod pipe_server;
-mod recovery;
-mod repair;
-mod runtime_paths;
-mod scrubber;
-mod secure_fs;
-mod sharing;
-mod shell_integration;
-mod shell_state;
-mod smart_sync;
-mod uploader;
-mod vault;
-mod virtual_drive;
-mod watcher;
-mod win_acl;
-#[cfg(target_os = "windows")]
-#[allow(dead_code)]
-mod win_session;
-mod windows_hello;
-
-use crate::api::ApiServer;
-use crate::config::AppConfig;
-use crate::device_identity::ensure_local_device_identity;
-use crate::diagnostics::init_global_diagnostics;
-use crate::disaster_recovery::{
+use angeld::api::ApiServer;
+use angeld::config::AppConfig;
+use angeld::device_identity::ensure_local_device_identity;
+use angeld::diagnostics::init_global_diagnostics;
+use angeld::disaster_recovery::{
     MetadataBackupProviderManager, restore_metadata_from_cloud, start_metadata_backup_worker,
     start_metadata_fetch_worker,
 };
-use crate::downloader::Downloader;
-use crate::gc::GcWorker;
-use crate::logging::init_logging;
-use crate::onboarding::{
+use angeld::downloader::Downloader;
+use angeld::gc::GcWorker;
+use angeld::logging::init_logging;
+use angeld::onboarding::{
     cleanup_stale_restore_staging, cleanup_stale_uploads, get_active_provider_configs,
     initialize_onboarding_persistence,
 };
-use crate::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
-use crate::peer::{PeerClient, PeerService};
-use crate::repair::RepairWorker;
-use crate::runtime_paths::{RuntimePaths, sqlite_db_file_path};
-use crate::scrubber::ScrubberWorker;
-use crate::uploader::{UploadWorker, Uploader};
-use crate::vault::{VaultKeyStore, bootstrap_local_vault};
-use crate::watcher::FileWatcher;
+use angeld::packer::{DEFAULT_CHUNK_SIZE, Packer, PackerConfig};
+use angeld::peer::{PeerClient, PeerService};
+use angeld::repair::RepairWorker;
+use angeld::runtime_paths::{RuntimePaths, sqlite_db_file_path};
+use angeld::scrubber::ScrubberWorker;
+use angeld::uploader::{UploadWorker, Uploader};
+use angeld::vault::{VaultKeyStore, bootstrap_local_vault};
+use angeld::watcher::FileWatcher;
+use angeld::{
+    cloud_guard, db, diagnostics, ingest, pipe_server, shell_state, smart_sync, virtual_drive,
+};
 use std::env;
 use std::io;
 use std::path::PathBuf;
@@ -127,7 +87,7 @@ fn install_panic_hook() {
 
         error!("panic: {} at {}", payload, location);
         eprintln!("panic: {} at {}", payload, location);
-        crate::logging::flush_logs_best_effort();
+        angeld::logging::flush_logs_best_effort();
     }));
 }
 
@@ -362,28 +322,28 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             UploadWorker::from_onboarding_db(pool.clone(), Some(provider_reload_rx.clone()))
                 .await?;
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Repair,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Repair,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Scrubber,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Scrubber,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Gc,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Gc,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Watcher,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Watcher,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::MetadataBackup,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::MetadataBackup,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Peer,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Peer,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone(), None, None)?;
 
@@ -423,32 +383,32 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     if e2e_test_mode {
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Uploader,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Uploader,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Repair,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Repair,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Scrubber,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Scrubber,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Gc,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Gc,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Watcher,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Watcher,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::MetadataBackup,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::MetadataBackup,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Peer,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Peer,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
 
         let mut smart_sync_ready = false;
@@ -672,24 +632,24 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             UploadWorker::from_onboarding_db(pool.clone(), Some(provider_reload_rx.clone()))
                 .await?;
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Repair,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Repair,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Scrubber,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Scrubber,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Gc,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Gc,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::MetadataBackup,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::MetadataBackup,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         diagnostics::set_worker_status(
-            crate::diagnostics::WorkerKind::Peer,
-            crate::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerKind::Peer,
+            angeld::diagnostics::WorkerStatus::Idle,
         );
         info!(
             "setup/local-only mode enabled: repair/scrub/gc/metadata workers are idle until remote providers are configured"
@@ -1065,7 +1025,7 @@ async fn project_sync_root_with_retry(
     pool: &sqlx::SqlitePool,
     sync_root: &std::path::Path,
     just_restored: bool,
-) -> Result<(), crate::smart_sync::SmartSyncError> {
+) -> Result<(), angeld::smart_sync::SmartSyncError> {
     let attempts = if just_restored { 8 } else { 5 };
     let delay = Duration::from_millis(250);
     let mut last_err = None;

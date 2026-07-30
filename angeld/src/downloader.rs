@@ -210,7 +210,7 @@ impl Downloader {
         .await
     }
 
-    pub(crate) async fn from_provider_configs(
+    pub async fn from_provider_configs(
         pool: SqlitePool,
         vault_keys: VaultKeyStore,
         download_spool_dir: impl Into<PathBuf>,

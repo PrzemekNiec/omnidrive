@@ -94,8 +94,8 @@ struct UploadRateLimiterState {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ProviderConfig {
-    pub(crate) provider_name: &'static str,
+pub struct ProviderConfig {
+    pub provider_name: &'static str,
     pub(crate) endpoint: String,
     pub(crate) region: String,
     pub(crate) bucket: String,

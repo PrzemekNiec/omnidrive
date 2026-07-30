@@ -513,7 +513,7 @@ pub(crate) async fn load_provider_config_from_onboarding_db(
     Ok(provider_config_from_record(&config_record, &secrets))
 }
 
-pub(crate) async fn get_active_provider_configs(
+pub async fn get_active_provider_configs(
     pool: &SqlitePool,
 ) -> Result<Vec<FullProviderSetup>, ProviderError> {
     let records = db::list_provider_configs(pool).await.map_err(|err| {
