@@ -64,6 +64,18 @@
 
 ## Closed
 
+### P1-007 — Jeden zepsuty provider blokował całą kolejkę uploadu (2026-07-31)
+
+- **Wykryto:** live smoke po dekompozycjach P2-007/008/009. Job #7 `IN_PROGRESS` z 9 próbami (R2 „dispatch failure", Scaleway timeout), a jobs #8 i #9 stały `PENDING` z **zerem prób** — mimo że Backblaze B2 działał bez zarzutu.
+- **Przyczyna źródłowa (trzy składniki, wszystkie konieczne):**
+  1. `db::get_next_upload_job` wybierał ściśle `ORDER BY id ASC`.
+  2. Nieudane zadanie wracało do `PENDING` z tym samym, najniższym id → było wybierane ponownie zamiast ustąpić miejsca kolejnym.
+  3. Backoff spał w **głównej pętli** workera (`uploader.rs::run`), a worker uploadu jest **jeden** — więc sen zatrzymywał wszystkie pozostałe zadania, nie tylko felerne.
+- **Skala:** przy `UPLOAD_RETRY_PLATEAU_AT=100` (odstęp 1 h po 100 próbach) i `UPLOAD_PERMANENT_FAILURE_AT=1000` zepsuty provider mógł wstrzymać wysyłkę **wszystkich** plików na ~37 dni. Użytkownik widzi pliki w skarbcu i zakłada, że są w chmurze — a leżą wyłącznie na dysku lokalnym. Stąd P1: to zagrożenie trwałości danych, nie wydajności.
+- **Status:** ✅ FIXED, commit `0d57c82`. Odroczenie zapisywane w bazie zamiast spania w pętli: kolumna `upload_jobs.next_attempt_at` (migracja addytywna przez `ensure_column_exists`), `get_next_upload_job` pomija zadania których czas nie nadszedł, `requeue_upload_job` → `requeue_upload_job_after(delay_ms)` bez `sleep`. `reset_in_progress_upload_jobs` kasuje odroczenia — restart daemona to jawna intencja ponowienia, więc naprawiony provider jest próbowany od razu, a nie po godzinie plateau.
+- **Weryfikacja:** 4 testy w `db/uploads.rs`, sprawdzone mutacyjnie (po usunięciu filtru padają 3 z 4). **Potwierdzenie na żywo:** o `16:52:46.548` job #7 pada i zostaje odroczony, o `16:52:46.564` — 16 ms później — rusza job #8. Przed poprawką worker spałby w tym miejscu 60 s i wziął ponownie job #7. Bramka: fmt + clippy oba tryby + release + core 28 + angeld lib **203**.
+- **Nie zmieniono świadomie:** progi `UPLOAD_RETRY_PLATEAU_AT`/`UPLOAD_PERMANENT_FAILURE_AT`. Po tej poprawce długie odstępy nie szkodzą innym zadaniom, więc agresywne odstawianie providera przy przejściowej awarii sieci byłoby gorsze niż cierpliwe czekanie.
+
 ### P2-003 — Bin `angeld` duplikuje 27 modułów z lib (dual-compile)
 
 - **Wykryto:** 2026-05-17, Task 1 Fazy 0 / fix CI-red (clippy 1.94). Audyt znalazł 7 lintów w lib, ale `cargo clippy --workspace --all-targets` ujawnił 6 dodatkowych w bin których lib-only check nie złapał.
