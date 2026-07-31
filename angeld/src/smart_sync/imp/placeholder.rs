@@ -12,6 +12,7 @@ use tracing::warn;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::CloudFilters::CF_CONVERT_FLAG_NONE;
 use windows::Win32::Storage::CloudFilters::CF_FILE_RANGE;
+use windows::Win32::Storage::CloudFilters::CF_FS_METADATA;
 use windows::Win32::Storage::CloudFilters::CF_HYDRATE_FLAGS;
 use windows::Win32::Storage::CloudFilters::CF_IN_SYNC_STATE_IN_SYNC;
 use windows::Win32::Storage::CloudFilters::CF_IN_SYNC_STATE_NOT_IN_SYNC;
@@ -22,6 +23,7 @@ use windows::Win32::Storage::CloudFilters::CF_SET_IN_SYNC_FLAG_NONE;
 use windows::Win32::Storage::CloudFilters::CF_SET_PIN_FLAG_NONE;
 use windows::Win32::Storage::CloudFilters::CF_SET_PIN_FLAGS;
 use windows::Win32::Storage::CloudFilters::CF_UPDATE_FLAG_DEHYDRATE;
+use windows::Win32::Storage::CloudFilters::CF_UPDATE_FLAG_MARK_IN_SYNC;
 use windows::Win32::Storage::CloudFilters::CF_UPDATE_FLAG_NONE;
 use windows::Win32::Storage::CloudFilters::CF_UPDATE_FLAGS;
 use windows::Win32::Storage::CloudFilters::CfConvertToPlaceholder;
@@ -29,6 +31,9 @@ use windows::Win32::Storage::CloudFilters::CfHydratePlaceholder;
 use windows::Win32::Storage::CloudFilters::CfSetInSyncState;
 use windows::Win32::Storage::CloudFilters::CfSetPinState;
 use windows::Win32::Storage::CloudFilters::CfUpdatePlaceholder;
+use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_ARCHIVE;
+use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 use windows::Win32::UI::Shell::SHCNE_UPDATEITEM;
 use windows::Win32::UI::Shell::SHCNF_PATHW;
 use windows::Win32::UI::Shell::SHChangeNotify;
@@ -49,12 +54,24 @@ pub async fn sync_placeholder_pin_state(
                 format!("inode {inode_id} has no current revision for projection"),
             )
         })?;
+    let projected_revision = db::get_smart_sync_state(pool, file.inode_id)
+        .await?
+        .map(|state| state.revision_id);
     let state = db::ensure_smart_sync_state(pool, file.inode_id, file.revision_id).await?;
     let relative_path = normalize_relative_placeholder_path(&file.path)?;
     let target_path = sync_root.join(relative_path);
     if !target_path.exists() {
-        create_projection_placeholder(&sync_root, &file, state.pin_state != 0)?;
+        create_projection_placeholder(&sync_root, &file, state.pin_state != 0, false)?;
     } else {
+        if projected_revision.is_some_and(|revision| revision != file.revision_id) {
+            update_placeholder_revision(
+                &target_path,
+                file.inode_id,
+                file.revision_id,
+                file.size,
+                file_time_from_unix_millis(file.created_at)?,
+            )?;
+        }
         apply_pin_state(
             &target_path,
             if state.pin_state != 0 {
@@ -101,12 +118,24 @@ pub async fn hydrate_placeholder_now(
                 format!("inode {inode_id} has no current revision for projection"),
             )
         })?;
+    let projected_revision = db::get_smart_sync_state(pool, file.inode_id)
+        .await?
+        .map(|state| state.revision_id);
     let state = db::ensure_smart_sync_state(pool, file.inode_id, file.revision_id).await?;
     let relative_path = normalize_relative_placeholder_path(&file.path)?;
     let target_path = sync_root.join(relative_path);
     if !target_path.exists() {
-        create_projection_placeholder(&sync_root, &file, true)?;
+        create_projection_placeholder(&sync_root, &file, true, false)?;
     } else {
+        if projected_revision.is_some_and(|revision| revision != file.revision_id) {
+            update_placeholder_revision(
+                &target_path,
+                file.inode_id,
+                file.revision_id,
+                file.size,
+                file_time_from_unix_millis(file.created_at)?,
+            )?;
+        }
         apply_pin_state(&target_path, CF_PIN_STATE_PINNED)?;
     }
 
@@ -284,6 +313,57 @@ pub(super) fn mark_in_sync(path: &Path, in_sync: bool) -> Result<(), SmartSyncEr
     unsafe {
         CfSetInSyncState(as_handle(&file), state, CF_SET_IN_SYNC_FLAG_NONE, None)?;
     }
+    Ok(())
+}
+
+/// A placeholder carries its revision in the cfapi FileIdentity blob. When the
+/// vault gets a newer revision the blob must be rewritten, otherwise hydration
+/// keeps asking for the old revision and Explorer serves stale content.
+/// DEHYDRATE drops the cached bytes of the previous revision; MARK_IN_SYNC keeps
+/// the cloud icon instead of the "pending sync" arrows.
+pub(super) fn update_placeholder_revision(
+    path: &Path,
+    inode_id: i64,
+    revision_id: i64,
+    size: i64,
+    file_time: i64,
+) -> Result<(), SmartSyncError> {
+    let identity = PlaceholderIdentity {
+        inode_id,
+        revision_id,
+    };
+    let identity_bytes = unsafe {
+        std::slice::from_raw_parts(
+            (&identity as *const PlaceholderIdentity).cast::<u8>(),
+            size_of::<PlaceholderIdentity>(),
+        )
+    };
+    let metadata = CF_FS_METADATA {
+        BasicInfo: FILE_BASIC_INFO {
+            CreationTime: file_time,
+            LastAccessTime: file_time,
+            LastWriteTime: file_time,
+            ChangeTime: file_time,
+            FileAttributes: FILE_ATTRIBUTE_ARCHIVE.0 | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED.0,
+        },
+        FileSize: size,
+    };
+
+    let file = open_placeholder_handle(path)?;
+    let mut update_usn = 0i64;
+    unsafe {
+        CfUpdatePlaceholder(
+            as_handle(&file),
+            Some(&metadata),
+            Some(identity_bytes.as_ptr().cast()),
+            identity_bytes.len() as u32,
+            Option::<&[CF_FILE_RANGE]>::None,
+            CF_UPDATE_FLAGS(CF_UPDATE_FLAG_DEHYDRATE.0 | CF_UPDATE_FLAG_MARK_IN_SYNC.0),
+            Some(&mut update_usn),
+            None,
+        )?;
+    }
+
     Ok(())
 }
 

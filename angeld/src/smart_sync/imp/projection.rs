@@ -64,8 +64,16 @@ pub async fn project_vault_to_sync_root(
     }
 
     for file in files {
+        // Read the previously projected revision BEFORE ensure_* overwrites it:
+        // that comparison is the only way to tell whether an existing placeholder
+        // still points at stale content.
+        let projected_revision = db::get_smart_sync_state(pool, file.inode_id)
+            .await?
+            .map(|state| state.revision_id);
         let state = db::ensure_smart_sync_state(pool, file.inode_id, file.revision_id).await?;
-        create_projection_placeholder(&sync_root, &file, state.pin_state != 0)?;
+        let revision_changed =
+            projected_revision.is_some_and(|revision| revision != file.revision_id);
+        create_projection_placeholder(&sync_root, &file, state.pin_state != 0, revision_changed)?;
     }
 
     Ok(())
@@ -75,6 +83,7 @@ pub(super) fn create_projection_placeholder(
     sync_root: &Path,
     file: &ProjectionFileRecord,
     pinned: bool,
+    revision_changed: bool,
 ) -> Result<(), SmartSyncError> {
     let relative_path = normalize_relative_placeholder_path(&file.path)?;
     let target_path = sync_root.join(&relative_path);
@@ -167,6 +176,18 @@ pub(super) fn create_projection_placeholder(
         }
 
         info!("smart-sync: placeholder ready {}", relative_path);
+    } else if revision_changed {
+        update_placeholder_revision(
+            &target_path,
+            file.inode_id,
+            file.revision_id,
+            file.size,
+            file_time,
+        )?;
+        info!(
+            "smart-sync: placeholder repointed to revision {} for {}",
+            file.revision_id, relative_path
+        );
     }
 
     apply_pin_state(
