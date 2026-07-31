@@ -57,7 +57,7 @@ angeld/src/downloader/
   test_support.rs      (cfg(test)) helpery wspólne, jeśli testy ich potrzebują
 ```
 
-Testy (295 linii, 4 testy) rozdzielane do modułu, którego zachowanie asertują — wzorzec z `db.rs`.
+Testy (295 linii, 3 testy) rozdzielane do modułu, którego zachowanie asertują — wzorzec z `db.rs`.
 
 ## 5. Widoczność
 
@@ -78,15 +78,15 @@ Trzystopniowa, jak przy `smart_sync`, z jednym rozszerzeniem wymuszonym podział
 |---|---|
 | Podział `impl` gubi metodę | Kontrola: liczba i nazwy metod w wynikowych blokach `impl Downloader` == baseline (17) |
 | Zbyt szerokie `pub(super)` | Wyliczane z referencji + domknięcie przechodnie; nigdy `pub(crate)` |
-| Testy w pliku pokrywają tylko fragment | 4 testy na 1 730 linii — realnie potwierdzają `decrypt_chunk_record` i konwertery, **nie** ścieżkę pobierania. Ścieżkę sieciową pokrywają `angeld/tests/e2e_*` (`e2e_reconciliation`, `e2e_scrubber_repair`), które konsumują `Downloader` jako library consumer — muszą przejść |
+| Testy w pliku pokrywają tylko fragment | 3 testy na 1 730 linii — realnie potwierdzają `decrypt_chunk_record` i konwertery, **nie** ścieżkę pobierania. Ścieżkę sieciową pokrywają `angeld/tests/e2e_*` (`e2e_reconciliation`, `e2e_scrubber_repair`), które konsumują `Downloader` jako library consumer — muszą przejść |
 | `read_range` / `read_range_streamed` to bliźniaki (110 linii każda) | Świadomie zostają w jednym pliku; ewentualna de-duplikacja to osobne zadanie, NIE ten refaktor |
 
 ## 8. Definition of Done
 
-- [x] `angeld/src/downloader.rs` nie istnieje; `angeld/src/downloader/` z 8 plikami, żaden > ~470 linii
+- [x] `angeld/src/downloader.rs` nie istnieje; `angeld/src/downloader/` z **7** plikami (`test_support.rs` okazał się zbędny — testy nie mają wspólnych helperów między modułami). ⚠️ **cel ~470 linii przekroczony w `read.rs` = 729**; kod produkcyjny to ~450, resztę stanowi przeniesiony tam test roundtrip (158 linii) z siedmioma helperami mock S3
 - [x] fmt czysty; clippy `--all-targets -D warnings` czysty w obu trybach
 - [x] `cargo build --release --workspace` OK; core **28**, angeld lib **199**
-- [x] Testy e2e konsumujące `Downloader` kompilują się i przechodzą
+- [x] Testy e2e konsumujące `Downloader` **kompilują się** (`cargo test -p angeld --no-run`). ⚠️ **NIE zostały uruchomione** — wymagają mapowań `subst` i realnego środowiska, a sesja była bez nadzoru. Kompilacja dowodzi, że sygnatury konsumowane przez library consumer się nie zmieniły; nie dowodzi poprawności runtime
 - [x] 17 metod `impl Downloader` obecnych dokładnie raz; treść identyczna modulo `pub(super)`
 - [x] `git diff` poza `downloader/` i `docs/` pusty
 - [x] Wpis `KNOWN_ISSUES.md` P2-009 + `STATUS.md` §12.7b

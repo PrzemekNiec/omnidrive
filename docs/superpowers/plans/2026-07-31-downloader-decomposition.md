@@ -38,10 +38,10 @@
 
 ### Task 2: Testy i pełna bramka
 
-- [x] **Step 1:** rozdzielenie 4 testów do modułów wg asertowanego zachowania
+- [x] **Step 1:** rozdzielenie 3 testów do modułów wg asertowanego zachowania
 - [x] **Step 2:** `cargo fmt --all` + ponowna weryfikacja
 - [x] **Step 3:** clippy oba tryby, `build --release --workspace`
-- [x] **Step 4:** core 28, angeld lib 199, kompilacja testów e2e
+- [x] **Step 4:** core 28, angeld lib 199, kompilacja testów e2e (bez uruchomienia)
 - [x] **Step 5:** kontrola zakresu diffu
 - [x] **Step 6:** Commit + push
 
