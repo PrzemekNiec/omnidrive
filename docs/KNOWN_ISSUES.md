@@ -2,8 +2,8 @@
 
 > **Single source of truth dla bugów.** Ten plik (nie GitHub Issues, nie STATUS.md) trzyma listę otwartych problemów z priorytetyzacją.
 >
-> **Ostatnia aktualizacja:** 2026-06-06
-> **Aktualna wersja:** v0.3.27
+> **Ostatnia aktualizacja:** 2026-07-31
+> **Aktualna wersja:** v0.3.28
 
 ---
 
@@ -80,6 +80,16 @@
 ---
 
 ## Closed
+
+### P2-007 — `db.rs` monolit 10 649 linii (dekompozycja, 2026-07-31)
+
+- **Wykryto:** audyt `docs/superpowers/specs/2026-05-11-code-audit.md §2.1` (2026-05-17) — wskazany jako najpilniejszy kandydat do dekompozycji, zalecany **przed mobile** (UniFFI łatwiej projektować na modułach niż na monolicie).
+- **Symptom:** jeden plik, ~14 domen, 238 `pub async fn`, blok testowy 2 100 linii. Każda zmiana w jednej domenie wymagała nawigacji po całości; plik nie mieścił się w kontekście edytora.
+- **Status:** ✅ CLOSED. Rozbity na `angeld/src/db/` — 29 modułów + `test_support.rs`. Płaskie re-eksporty w `mod.rs` (`pub use xxx::*`), więc **912 call-site'ów `db::` poza katalogiem pozostało nietkniętych**. 58 testów rozdzielonych do 16 modułów wg asertowanego zachowania. `mod.rs` = 138 linii (enumy, `epoch_secs`, deklaracje, re-eksporty). Największe pliki: `graft.rs` 1621 (986 kodu + testy), `uploads.rs` 789, `schema.rs` 788.
+- **Weryfikacja zero-drift:** przeniesienie wykonane deterministycznym ekstraktorem blokow (parser udowodnił round-trip: odtworzenie baseline'u co do bajtu). Kontrola końcowa: **342 bloki produkcyjne identyczne** z `942a442:angeld/src/db.rs`, jedyna zmiana widoczności = `normalize_policy_path` → `pub(super)` (używany przez `projection.rs`); **58 nazw testów zachowanych**; `git diff` poza `db/` i `docs/` pusty.
+- **Bramka:** fmt + clippy `--all-targets -D warnings` w obu trybach (default + `test-helpers`) + `build --release --workspace` + **core 28** + **angeld lib 199**. Bez bumpu wersji, bez migracji schematu, bez nowych testów.
+- **Odchylenia od planu:** (1) plan pominął 5 funkcji (`get_next_pack_requiring_reconciliation`, `get_chunks_for_pack`, `link_chunk_to_pack`, `get_file_chunks`, `list_active_files`) — wykrył je ekstraktor i przypisał do `packs`/`chunks`/`projection`; (2) jeden `use super::*` w testach `vault_state` jest ocgowany `#[cfg(feature = "test-helpers")]`, bo wszystkie testy tego modułu są za tą flagą — cfg zamiast tłumika `#[allow(unused_imports)]`.
+- Spec `docs/superpowers/specs/2026-07-31-db-decomposition-design.md`, plan `docs/superpowers/plans/2026-07-31-db-decomposition.md`. Commity `d68bdc1..da092f7`.
 
 ### Faza β — β.3: P3-002 Panic Mitigation (2026-06-06)
 

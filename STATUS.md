@@ -719,6 +719,17 @@ v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
 
 ---
 
+### 12.7b Dług techniczny — dekompozycja `db.rs` (P2-007) *(między γ a δ)*
+
+| Krok | Zakres | Stan |
+|------|--------|------|
+| **P2-003** ✅ | **Bin/lib dual-compile.** `main.rs` deklarował `mod` dla 27 modułów będących jednocześnie `pub mod` w `lib.rs`. | ✅ **DONE 2026-07-31** (Opcja A1, commit `ca263de`). `main.rs` = cienki konsument lib; 9 modułów bin-only → `lib.rs`. Każdy moduł kompiluje się raz, `clippy --all-targets` = jeden spójny set. Suita: core 28, angeld lib **199** (było 186 — +13 testów modułów bin-only teraz widocznych w `--lib`). |
+| **P2-007** ✅ | **Dekompozycja `db.rs`** (10 649 linii, ~14 domen, 238 `pub async fn`). Wskazany w audycie `2026-05-11-code-audit.md §2.1` jako najpilniejszy, zalecany **przed mobile** (UniFFI). | ✅ **DONE 2026-07-31**, commity `d68bdc1..da092f7` PUSHED. `angeld/src/db/` = 29 modułów + `test_support.rs`. Płaskie re-eksporty (`pub use xxx::*`) → **912 call-site'ów `db::` nietkniętych**, zero zmian poza katalogiem. `mod.rs` 138 linii; największe: `graft.rs` 986 kodu, `uploads.rs` 789, `schema.rs` 788. 58 testów rozdzielonych do 16 modułów. **Zero-drift udowodniony maszynowo:** przeniesienie deterministycznym ekstraktorem (parser z round-tripem baseline'u co do bajtu), kontrola końcowa = **342 bloki produkcyjne identyczne** + 58 nazw testów zachowanych; jedyna zmiana widoczności `normalize_policy_path` → `pub(super)`. Bramka: fmt + clippy `-D warnings` oba tryby + release + core 28 + angeld lib 199. Bez bumpu wersji, bez migracji, bez nowych testów. |
+
+**Pozostały dług z audytu §2:** `smart_sync.rs` 2 197 linii (§2.2, split bezryzykowny — wszystkie wewnętrzne fn prywatne) · `downloader.rs` 1 712 · `onboarding.rs` 1 293 · `api/onboarding.rs` 1 153 · `disaster_recovery.rs` 1 126 · `uploader.rs` 1 084 · `api/vault.rs` 1 078.
+
+---
+
 ### 12.8 Faza δ — Multi-User Infra Closure *(pod maską, bez UI)*
 
 > **Cel:** zamknąć Epic 34 — multi-user/Family Cloud infrastruktura w pełni działa _pod maską_, ale UI single-user. v5.0 = włączenie UI, żadnego dotykania krypto/schema.
