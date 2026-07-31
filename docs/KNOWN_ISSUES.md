@@ -64,6 +64,15 @@
 
 ## Closed
 
+### P1-008 — Placeholder serwował starą wersję pliku po aktualizacji (2026-07-31)
+
+- **Wykryto:** live smoke. Hydracja uporczywie prosiła o `revision=1410`, mimo że bieżąca rewizja pliku była już 1419, potem 1445. Dopiero ręczne skasowanie placeholdera i ponowna projekcja przestawiały go na aktualną.
+- **Przyczyna źródłowa:** placeholder cfapi trzyma parę `(inode_id, revision_id)` w blobie `FileIdentity`, nadanym w chwili tworzenia. `create_projection_placeholder` miał wczesne wyjście `if !target_path.exists()`, więc dla **istniejącego** pliku nie robił nic — ani nie przestawiał tożsamości, ani nie aktualizował rozmiaru. Baza (`smart_sync_state.revision_id`) była aktualizowana poprawnie, więc rozjazd był niewidoczny z poziomu danych.
+- **Skutek:** po zmianie pliku Eksplorator serwował **poprzednią zawartość** — cicho, bez błędu, z nieaktualnym rozmiarem. Dotyczyło też scenariusza wielourządzeniowego: plik zmieniony na urządzeniu A byłby na urządzeniu B nadal stary.
+- **Status:** ✅ FIXED, commit `0228239`. Nowe `update_placeholder_revision` (`CfUpdatePlaceholder` z nową tożsamością, rozmiarem i czasem + `DEHYDRATE` starej treści + `MARK_IN_SYNC`). Wywoływane **tylko** gdy rewizja faktycznie się zmieniła — porównanie z wartością odczytaną **przed** nadpisaniem przez `ensure_smart_sync_state`. Bezwarunkowa aktualizacja kasowałaby lokalne kopie przy każdej projekcji i generowała niepotrzebny egress, który w tym projekcie jest limitowany.
+- **Naprawione w trzech miejscach z tą samą wadą:** projekcja całego vaulta, `sync_placeholder_pin_state`, `hydrate_placeholder_now` — to ostatnie sprawiało, że „Pobierz teraz" na zmienionym pliku ściągało starą wersję.
+- **Weryfikacja:** cfapi nie da się sensownie pokryć testem jednostkowym, więc dowód jest z żywego vaulta: plik A (1 MB, rew. 1469) → nadpisany B (2 MB, rew. 1473) → re-projekcja **bez** kasowania placeholdera → odczyt z `O:\` zwrócił 2 097 152 B i sha256 wersji B; log `placeholder repointed to revision`, hydracja prosi o rew. 1473. Bramka: fmt + clippy oba tryby + release + core 28 + angeld lib 204.
+
 ### P1-003 + P1-004 — PRAWDZIWA przyczyna: automatyczne sumy kontrolne SDK (2026-07-31)
 
 > **To jest korekta wcześniejszej diagnozy.** P1-004 zamknięto 2026-06-06 jako „R2 zrywa idle keep-alive, hyper reużywa martwy socket" i naprawiono `pool_idle_timeout=10s` + retry. P1-003 przypisano IAM-owi Scaleway. Obie diagnozy były **niepełne** — objawy wracały, bo prawdziwa przyczyna leżała gdzie indziej.
