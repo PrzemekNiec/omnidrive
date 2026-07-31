@@ -64,6 +64,16 @@
 
 ## Closed
 
+### P2-010 — Watcher przepakowywał niezmienione pliki co 30 sekund (2026-07-31)
+
+- **Wykryto:** live smoke. `smoke-5mb.bin` miał **1425 rewizji** od 4 kwietnia (50 z jednego dnia), a plik testowy utworzony 26 minut wcześniej — **39 rewizji**, przy niezmienionej treści.
+- **Przyczyna źródłowa:** `scan_existing_files` tworzył **własną, pustą** `processed_files` zamiast używać długo żyjącej mapy z pętli głównej. `previous_state` było więc `None` dla każdego pliku przy każdym tiku, a obie zabezpieczające ścieżki — porównanie rozmiar+mtime oraz dedup po skrócie SHA-256 treści — były **martwe**. Ścieżka zdarzeniowa (`flush_ready_paths`) używała właściwej mapy i działała poprawnie; wada dotyczyła wyłącznie skanu okresowego (`OMNIDRIVE_WATCH_RESCAN_MS`, domyślnie 30 s).
+- **Skutki:** nowa rewizja na każdy tik na każdy obserwowany plik (bloat metadanych) oraz pełny SHA-256 i ponowne szyfrowanie każdego pliku co 30 s (koszt CPU/IO). Packi się deduplikowały — 4 unikalne na 1425 rewizji — więc chmura **nie** puchła.
+- **Status:** ✅ FIXED, commit `e371ca8`. Skan przyjmuje mapę od wołającego; mapa powstaje przed skanem początkowym. Logika dedupu nietknięta — była poprawna, dostawała wyzerowane dane.
+- **Weryfikacja na żywo, dwuczęściowa:** (1) 3 minuty bez dotykania plików = 6 tików → przyrost rewizji **0** (było ~6); (2) realna zmiana pliku → **dokładnie 1** nowa rewizja. Część (2) jest istotniejsza — dowodzi, że wykrywanie zmian nadal działa. Bramka: fmt + clippy oba tryby + release + core 28 + angeld lib 204.
+- **⚠️ Brak testu regresyjnego.** `process_file` wymaga pełnego stosu (packer + odblokowany skarbiec), a wada siedziała w **cyklu życia mapy**, nie w logice — test samej logiki by ją przepuścił. Zmiana sygnatury (`scan_existing_files` przyjmuje mapę) utrudnia przypadkowe przywrócenie usterki, ale nie zabezpiecza przed nim.
+- **Nie sprzątnięto:** 1425 historycznych rewizji `smoke-5mb.bin` zostaje w bazie. To plik testowy; czyszczenie historii rewizji = osobna decyzja.
+
 ### P1-008 — Placeholder serwował starą wersję pliku po aktualizacji (2026-07-31)
 
 - **Wykryto:** live smoke. Hydracja uporczywie prosiła o `revision=1410`, mimo że bieżąca rewizja pliku była już 1419, potem 1445. Dopiero ręczne skasowanie placeholdera i ponowna projekcja przestawiały go na aktualną.
