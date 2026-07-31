@@ -391,6 +391,7 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
 
     ensure_column_exists(&pool, "upload_job_targets", "last_attempt_at", "INTEGER").await?;
     ensure_column_exists(&pool, "upload_job_targets", "updated_at", "INTEGER").await?;
+    ensure_column_exists(&pool, "upload_jobs", "next_attempt_at", "INTEGER").await?;
     ensure_column_exists(&pool, "file_revisions", "device_id", "TEXT").await?;
     ensure_column_exists(
         &pool,

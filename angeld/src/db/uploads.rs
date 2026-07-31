@@ -101,6 +101,10 @@ pub async fn get_next_upload_job(pool: &SqlitePool) -> Result<Option<UploadJob>,
         SELECT id, pack_id, status, attempts
         FROM upload_jobs
         WHERE status = 'PENDING'
+          AND (
+            next_attempt_at IS NULL
+            OR next_attempt_at <= CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+          )
         ORDER BY id ASC
         LIMIT 1
         "#,
@@ -567,15 +571,24 @@ pub async fn has_incomplete_upload_targets(
 }
 
 #[allow(dead_code)]
-pub async fn requeue_upload_job(pool: &SqlitePool, job_id: i64) -> Result<i64, sqlx::Error> {
+/// Zwraca zadanie do kolejki i odracza je o `delay_ms`. Odroczenie musi byc
+/// zapisane w bazie, a nie przespane w workerze: worker jest jeden, wiec sen
+/// w petli zatrzymuje rowniez wszystkie pozostale zadania.
+pub async fn requeue_upload_job_after(
+    pool: &SqlitePool,
+    job_id: i64,
+    delay_ms: i64,
+) -> Result<i64, sqlx::Error> {
     sqlx::query(
         r#"
         UPDATE upload_jobs
         SET status = 'PENDING',
-            attempts = COALESCE(attempts, 0) + 1
+            attempts = COALESCE(attempts, 0) + 1,
+            next_attempt_at = CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) + ?
         WHERE id = ?
         "#,
     )
+    .bind(delay_ms)
     .bind(job_id)
     .execute(pool)
     .await?;
@@ -774,16 +787,101 @@ pub async fn get_completed_pack_targets(
 }
 
 #[allow(dead_code)]
+/// Start daemona traktujemy jako jawna intencje ponowienia: kasuje odroczenia,
+/// zeby naprawiony provider byl probowany od razu, a nie po godzinie plateau.
 pub async fn reset_in_progress_upload_jobs(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
         r#"
         UPDATE upload_jobs
-        SET status = 'PENDING'
+        SET status = CASE WHEN status = 'IN_PROGRESS' THEN 'PENDING' ELSE status END,
+            next_attempt_at = NULL
         WHERE status = 'IN_PROGRESS'
+           OR next_attempt_at IS NOT NULL
         "#,
     )
     .execute(pool)
     .await?;
 
     Ok(result.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::init_db;
+
+    #[tokio::test]
+    async fn deferred_job_does_not_starve_later_jobs() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        queue_pack_for_upload(&pool, "pack-a").await.unwrap();
+        queue_pack_for_upload(&pool, "pack-b").await.unwrap();
+
+        let first = get_next_upload_job(&pool).await.unwrap().unwrap();
+        assert_eq!(first.pack_id, "pack-a");
+
+        let attempts = requeue_upload_job_after(&pool, first.id, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(attempts, 1);
+
+        let second = get_next_upload_job(&pool)
+            .await
+            .unwrap()
+            .expect("odroczone zadanie nie moze blokowac kolejnych");
+        assert_eq!(
+            second.pack_id, "pack-b",
+            "zepsuty provider na zadaniu o nizszym id glodzi cala kolejke"
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_job_returns_once_its_delay_elapsed() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        queue_pack_for_upload(&pool, "pack-a").await.unwrap();
+
+        let job = get_next_upload_job(&pool).await.unwrap().unwrap();
+        requeue_upload_job_after(&pool, job.id, 0).await.unwrap();
+
+        let again = get_next_upload_job(&pool).await.unwrap().unwrap();
+        assert_eq!(again.pack_id, "pack-a");
+        assert_eq!(again.attempts, Some(1));
+    }
+
+    #[tokio::test]
+    async fn all_jobs_deferred_yields_no_work() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        queue_pack_for_upload(&pool, "pack-a").await.unwrap();
+        queue_pack_for_upload(&pool, "pack-b").await.unwrap();
+
+        for _ in 0..2 {
+            let job = get_next_upload_job(&pool).await.unwrap().unwrap();
+            requeue_upload_job_after(&pool, job.id, 60_000)
+                .await
+                .unwrap();
+        }
+
+        assert!(
+            get_next_upload_job(&pool).await.unwrap().is_none(),
+            "gdy wszystko odroczone, worker ma czekac na poll_interval, nie krecic petla"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_clears_deferrals_so_operator_fix_takes_effect() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        queue_pack_for_upload(&pool, "pack-a").await.unwrap();
+
+        let job = get_next_upload_job(&pool).await.unwrap().unwrap();
+        requeue_upload_job_after(&pool, job.id, 3_600_000)
+            .await
+            .unwrap();
+        assert!(get_next_upload_job(&pool).await.unwrap().is_none());
+
+        reset_in_progress_upload_jobs(&pool).await.unwrap();
+
+        assert!(
+            get_next_upload_job(&pool).await.unwrap().is_some(),
+            "restart daemona to jawna intencja ponowienia -- odroczenia maja zniknac"
+        );
+    }
 }

@@ -395,7 +395,9 @@ impl UploadWorker {
                     delay,
                     failed_shards,
                 } => {
-                    let attempts = db::requeue_upload_job(&self.pool, job.id).await?;
+                    let attempts =
+                        db::requeue_upload_job_after(&self.pool, job.id, delay.as_millis() as i64)
+                            .await?;
                     let message = format!(
                         "upload job {} remains pending for [{}]; retry after {:?} (job_attempts={})",
                         job.pack_id,
@@ -405,8 +407,6 @@ impl UploadWorker {
                     );
                     diagnostics::record_upload_error(message.clone());
                     warn!("{message}");
-                    diagnostics::set_worker_status(WorkerKind::Uploader, WorkerStatus::Idle);
-                    sleep(delay).await;
                 }
                 JobProcessOutcome::Failed => {
                     db::mark_upload_job_failed(&self.pool, job.id).await?;
