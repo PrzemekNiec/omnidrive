@@ -25,29 +25,29 @@
 - [x] **Step 2:** round-trip parsera na całym pliku
 - [x] **Step 3:** round-trip parsera na ciele `impl Downloader` (dedent 4 → split → rekonstrukcja) — **OK**
 - [x] **Step 4:** inwentarz: 59 bloków top-level, 17 metod w `impl Downloader`
-- [ ] **Step 5:** `dl_build.py` — generator z manifestem nazwa→moduł, obsługą podziału `impl` i wyliczaniem `pub(super)`
-- [ ] **Step 6:** `dl_verify.py` — kontrola kompletności metod i treści; dozwolone różnice: `pub(super)` oraz przeformatowanie == `rustfmt(baseline)`
+- [x] **Step 5:** `dl_build.py` — generator z manifestem nazwa→moduł, obsługą podziału `impl` i wyliczaniem `pub(super)`
+- [x] **Step 6:** `dl_verify.py` — kontrola kompletności metod i treści; dozwolone różnice: `pub(super)` oraz przeformatowanie == `rustfmt(baseline)`
 
 ### Task 1: Rename i wygenerowanie struktury
 
-- [ ] **Step 1:** `git mv angeld/src/downloader.rs angeld/src/downloader/mod.rs`, potwierdź `R … (100%)`
-- [ ] **Step 2:** `dl_build.py` → `mod.rs` + 7 plików
-- [ ] **Step 3:** `dl_verify.py` — 17 metod obecnych dokładnie raz, treść zgodna
-- [ ] **Step 4:** `cargo check --workspace --all-targets`, przycięcie importów z diagnostyki (część wspólna obu trybów)
-- [ ] **Step 5:** Commit
+- [x] **Step 1:** `git mv angeld/src/downloader.rs angeld/src/downloader/mod.rs`, potwierdź `R … (100%)`
+- [x] **Step 2:** `dl_build.py` → `mod.rs` + 7 plików
+- [x] **Step 3:** `dl_verify.py` — 17 metod obecnych dokładnie raz, treść zgodna
+- [x] **Step 4:** `cargo check --workspace --all-targets`, przycięcie importów z diagnostyki (część wspólna obu trybów)
+- [x] **Step 5:** Commit
 
 ### Task 2: Testy i pełna bramka
 
-- [ ] **Step 1:** rozdzielenie 4 testów do modułów wg asertowanego zachowania
-- [ ] **Step 2:** `cargo fmt --all` + ponowna weryfikacja
-- [ ] **Step 3:** clippy oba tryby, `build --release --workspace`
-- [ ] **Step 4:** core 28, angeld lib 199, kompilacja testów e2e
-- [ ] **Step 5:** kontrola zakresu diffu
-- [ ] **Step 6:** Commit + push
+- [x] **Step 1:** rozdzielenie 4 testów do modułów wg asertowanego zachowania
+- [x] **Step 2:** `cargo fmt --all` + ponowna weryfikacja
+- [x] **Step 3:** clippy oba tryby, `build --release --workspace`
+- [x] **Step 4:** core 28, angeld lib 199, kompilacja testów e2e
+- [x] **Step 5:** kontrola zakresu diffu
+- [x] **Step 6:** Commit + push
 
 ### Task 3: Dokumentacja
 
-- [ ] **Step 1:** `KNOWN_ISSUES.md` P2-009 zamknięty (rozmiary, lista `pub(super)`, wyniki bramki, zakres pokrycia testami)
-- [ ] **Step 2:** `STATUS.md` §12.7b + skreślenie `downloader.rs` z listy długu
-- [ ] **Step 3:** pamięć: blok STAN + komenda startowa
-- [ ] **Step 4:** Commit + push
+- [x] **Step 1:** `KNOWN_ISSUES.md` P2-009 zamknięty (rozmiary, lista `pub(super)`, wyniki bramki, zakres pokrycia testami)
+- [x] **Step 2:** `STATUS.md` §12.7b + skreślenie `downloader.rs` z listy długu
+- [x] **Step 3:** pamięć: blok STAN + komenda startowa
+- [x] **Step 4:** Commit + push

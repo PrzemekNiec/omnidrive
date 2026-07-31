@@ -81,6 +81,19 @@
 
 ## Closed
 
+### P2-009 — `downloader.rs` monolit 1 730 linii (dekompozycja, 2026-07-31)
+
+- **Wykryto:** audyt `docs/superpowers/specs/2026-05-11-code-audit.md §2.4` — „częściowy split: dekrypcja chunków V1/V2, prefetcher, peer client, pack cache. Średni risk."
+- **Symptom:** 1 730 linii, z czego **988 to jeden blok `impl Downloader`** (17 metod). Rozdanie bloków top-level — metoda z P2-007 i P2-008 — niczego by nie rozwiązało.
+- **Status:** ✅ CLOSED, commit `0701a59`. `angeld/src/downloader/` = `mod.rs` 163 (typy, `DownloaderError`, konwersje `From`) + `read.rs` 729 (z testem roundtrip 158 linii + 7 helperów mock S3), `pack.rs` 309, `chunk.rs` 264, `provider.rs` 209, `prefetch.rs` 114, `util.rs` 38.
+- **Metoda:** blok `impl Downloader` rozbity na **4 bloki `impl Downloader`** w modułach `read`/`pack`/`provider`/`prefetch` (Rust dopuszcza inherent `impl` w dowolnym module crate'a definiującego typ). Z zewnątrz typ zachowuje się identycznie.
+- **Widoczność:** podział wymusił `pub(super)` na **13 elementach** — 7 metod prywatnych (`load_plaintext_chunk`, `try_fetch_chunk_from_peer`, `maybe_schedule_prefetch`, `download_pack`, `probe_latency`) i 6 wolnych funkcji (`reconstruct_ciphertext`, `build_manifest_bytes`, `decrypt_chunk_record`, `env_path`, `duration_from_env`, `to_usize`, `to_u64`, `format_error_details`).
+- **API zachowane:** `EncryptedChunkBytes` był publiczny na poziomie `downloader::`; po przeniesieniu do `downloader::chunk` ścieżka jest przywrócona przez `pub use chunk::*` w `mod.rs`.
+- **Weryfikacja zero-drift:** 17 metod `impl` + 26 bloków top-level = **43, w tym 42 bajt-w-bajt**. Jedyny wyjątek: `download_pack` — dopisanie `pub(super) ` wypchnęło sygnaturę poza 100 kolumn i `rustfmt` ją złamał. Kryterium: wynik identyczny z `rustfmt(baseline + ta sama widoczność)`, formatowanym **w kontekście `impl`** (tam rustfmt ma 4 kolumny mniej).
+- **Bramka:** fmt + clippy `--all-targets -D warnings` oba tryby + `build --release --workspace` + core **28** + angeld lib **199** + kompilacja wszystkich testów e2e (konsumują `Downloader` jako library consumer). Bez bumpu wersji.
+- **Pokrycie testami:** 3 testy w pliku (roundtrip pack→download→`restore_file` z mockiem S3 → `read.rs`, dwa na format `EncryptedChunkBytes` → `chunk.rs`). Ścieżkę sieciową pokrywają dodatkowo `angeld/tests/e2e_*`.
+- Spec `docs/superpowers/specs/2026-07-31-downloader-decomposition-design.md`, plan `…/plans/2026-07-31-downloader-decomposition.md`.
+
 ### P2-008 — `smart_sync.rs` monolit 2 236 linii (dekompozycja, 2026-07-31)
 
 - **Wykryto:** audyt `docs/superpowers/specs/2026-05-11-code-audit.md §2.2` — „clean split candidate", ocena ryzyka: zero.

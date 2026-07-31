@@ -83,10 +83,10 @@ Trzystopniowa, jak przy `smart_sync`, z jednym rozszerzeniem wymuszonym podział
 
 ## 8. Definition of Done
 
-- [ ] `angeld/src/downloader.rs` nie istnieje; `angeld/src/downloader/` z 8 plikami, żaden > ~470 linii
-- [ ] fmt czysty; clippy `--all-targets -D warnings` czysty w obu trybach
-- [ ] `cargo build --release --workspace` OK; core **28**, angeld lib **199**
-- [ ] Testy e2e konsumujące `Downloader` kompilują się i przechodzą
-- [ ] 17 metod `impl Downloader` obecnych dokładnie raz; treść identyczna modulo `pub(super)`
-- [ ] `git diff` poza `downloader/` i `docs/` pusty
-- [ ] Wpis `KNOWN_ISSUES.md` P2-009 + `STATUS.md` §12.7b
+- [x] `angeld/src/downloader.rs` nie istnieje; `angeld/src/downloader/` z 8 plikami, żaden > ~470 linii
+- [x] fmt czysty; clippy `--all-targets -D warnings` czysty w obu trybach
+- [x] `cargo build --release --workspace` OK; core **28**, angeld lib **199**
+- [x] Testy e2e konsumujące `Downloader` kompilują się i przechodzą
+- [x] 17 metod `impl Downloader` obecnych dokładnie raz; treść identyczna modulo `pub(super)`
+- [x] `git diff` poza `downloader/` i `docs/` pusty
+- [x] Wpis `KNOWN_ISSUES.md` P2-009 + `STATUS.md` §12.7b
