@@ -64,6 +64,18 @@
 
 ## Closed
 
+### P1-003 + P1-004 — PRAWDZIWA przyczyna: automatyczne sumy kontrolne SDK (2026-07-31)
+
+> **To jest korekta wcześniejszej diagnozy.** P1-004 zamknięto 2026-06-06 jako „R2 zrywa idle keep-alive, hyper reużywa martwy socket" i naprawiono `pool_idle_timeout=10s` + retry. P1-003 przypisano IAM-owi Scaleway. Obie diagnozy były **niepełne** — objawy wracały, bo prawdziwa przyczyna leżała gdzie indziej.
+
+- **Objaw:** `cloudflare-r2 put_object failed: ConnectionReset 10054` oraz `scaleway put_object failed: request has timed out after 120s` — na shardach o rozmiarze 1,5–2 MB. Backblaze B2 wysyłał te same shardy w 0,6 s.
+- **Dowód rozstrzygający:** ten sam shard, ta sama minuta — `repair.rs` wysłał go na R2 w 0,8 s, a `uploader.rs` poległ. Różnica: `repair.rs` używa `ByteStream::from(bytes.to_vec())` (bufor), `uploader.rs` używa ciała **strumieniowego**.
+- **Przyczyna źródłowa:** `aws-sdk-s3` 1.119 ma domyślnie `request_checksum_calculation = WhenSupported`. Dla ciała strumieniowego SDK dokleja CRC32 w kodowaniu **`aws-chunked` z trailerem**. R2 zrywa wtedy połączenie, Scaleway czeka do timeoutu operacji. B2 to toleruje — i to właśnie tolerancja B2 przez tygodnie kierowała diagnozę na sieć i IAM.
+- **Status:** ✅ FIXED, commit `338e641`. `.request_checksum_calculation(RequestChecksumCalculation::WhenRequired)` w konfiguracji klienta S3. Diff: 7 linii.
+- **Weryfikacja na żywo:** przed — R2 0 udanych / 2 błędy, Scaleway 0 udanych / 2 błędy; po — **R2 i Scaleway 0 błędów, wszystkie 21 shardów `COMPLETED`**, cały zaległy backlog wyczyszczony. Test `s3_config_does_not_add_automatic_checksums` pilnuje ustawienia, bo regresja byłaby niewidoczna w CI (B2 przechodzi mimo błędu).
+- **Hipotezy obalone po drodze** (obie wycofane z kodu, żeby nie zostawiać martwych łatek): brak `SizeHint` w strumieniu; własne ciało `http-body` 1.x przechodzące przez adapter hyper 0.14 (`ByteStream::from_path` też nie pomógł).
+- **Do rozważenia osobno:** `pool_idle_timeout=10s` z β.c był leczeniem objawu tej samej choroby. Nie usuwam go — nie szkodzi — ale nie jest już potrzebny z tego powodu.
+
 ### P1-007 — Jeden zepsuty provider blokował całą kolejkę uploadu (2026-07-31)
 
 - **Wykryto:** live smoke po dekompozycjach P2-007/008/009. Job #7 `IN_PROGRESS` z 9 próbami (R2 „dispatch failure", Scaleway timeout), a jobs #8 i #9 stały `PENDING` z **zerem prób** — mimo że Backblaze B2 działał bez zarzutu.
