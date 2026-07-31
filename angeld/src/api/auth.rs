@@ -53,6 +53,12 @@ async fn post_unlock(
             message: e.to_string(),
         })?;
 
+    // Odblokowanie MUSI odswiezyc licznik bezczynnosci. Licznik nie tyka tylko
+    // przy zablokowanym skarbcu, wiec bez tego pierwszy tik po odblokowaniu
+    // widzi stara wartosc i natychmiast lockuje z powrotem -- montowanie O:
+    // zderza sie wtedy z demontazem.
+    crate::auto_lock::touch(crate::auto_lock::TouchSource::AuthApi);
+
     state
         .vault_keys
         .spawn_post_unlock_maintenance(&state.pool, request.passphrase.expose_secret());
@@ -420,6 +426,12 @@ async fn post_windows_hello_unlock(
             code: "unlock_failed",
             message: e.to_string(),
         })?;
+
+    // Odblokowanie MUSI odswiezyc licznik bezczynnosci. Licznik nie tyka tylko
+    // przy zablokowanym skarbcu, wiec bez tego pierwszy tik po odblokowaniu
+    // widzi stara wartosc i natychmiast lockuje z powrotem -- montowanie O:
+    // zderza sie wtedy z demontazem.
+    crate::auto_lock::touch(crate::auto_lock::TouchSource::AuthApi);
 
     state
         .vault_keys
