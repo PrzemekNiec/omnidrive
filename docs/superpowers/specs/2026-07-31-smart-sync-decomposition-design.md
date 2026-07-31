@@ -85,7 +85,7 @@ Blok 30 importów `imp` zawiera dwie duże grupy klamrowe (`windows::Win32::Stor
 
 ## 9. Definition of Done
 
-- [x] `angeld/src/smart_sync.rs` nie istnieje; istnieje `angeld/src/smart_sync/` z 9 plikami, żaden > ~550 linii
+- [x] `angeld/src/smart_sync.rs` nie istnieje; istnieje `angeld/src/smart_sync/` z 9 plikami — ⚠️ **cel ~550 linii przekroczony w jednym pliku**: `registration.rs` = 622 (rejestracja + connect + audit + repair + tożsamość providera to jedna spójna domena; dalszy podział wymagałby rozdzielenia `register_sync_root` od `inspect_existing_sync_root`, które dzielą stan rejestracji). Pozostałe: 480, 340, 321, 298, 148, 86, 86, 13
 - [x] `cargo fmt --all --check` czysty; clippy `--all-targets -D warnings` czysty w obu trybach
 - [x] `cargo build --release --workspace` OK; core **28**, angeld lib **199**
 - [x] Wszystkie bloki baseline obecne, treść identyczna modulo `pub(super)`; lista podniesień zaraportowana
