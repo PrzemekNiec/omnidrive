@@ -64,6 +64,23 @@
 
 ## Closed
 
+### P1-009 — Odblokowanie nie zerowało licznika bezczynności → dysk `O:` znikał po sekundzie (2026-07-31)
+
+- **Wykryto:** przy sprzątaniu po smoke. Skarbiec raportował `unlocked:false` mimo świeżego odblokowania, a `O:` nie istniał.
+- **Przyczyna źródłowa:** pętla auto-locka pomija zablokowany skarbiec (`require_key().is_err() → return`), więc `last_activity` zostaje **zamrożone** na wartości sprzed zablokowania. Licznik odświeżały wyłącznie uwierzytelnione żądania API (`require_session`) i callbacki cfapi — a samo odblokowanie idzie **bez sesji**, bo dopiero ją tworzy. Gdy skarbiec był bezczynny dłużej niż idle timeout (domyślnie 5 min), pierwszy tik po odblokowaniu widział starą wartość i lockował z powrotem.
+- **Objaw dla użytkownika:** odblokowujesz skarbiec, `O:` pojawia się na sekundę i znika. Log: `[UNLOCK] vault mounted at O:` a sekundę później `[AUTO-LOCK] idle exceeded (410s >= 300s)`.
+- **Mylące objawy uboczne:** przy rozjeździe demontaż od auto-locka wyrywał sync root spod trwającego montowania, dając błędy cfapi `CfConnectSyncRoot 0x80070186` (NOT_UNDER_SYNC_ROOT) oraz `0x80070178` (NOT_A_CLOUD_FILE). **Oba były skutkiem wyścigu, nie przyczyną** — diagnoza dwukrotnie poszła w złą stronę, zanim to wyszło.
+- **Status:** ✅ FIXED, commit `8097327`. `auto_lock::touch(AuthApi)` po udanym odblokowaniu w obu produkcyjnych ścieżkach — hasłem i przez Windows Hello.
+- **Weryfikacja na żywo:** daemon bezczynny **19 minut** → odblokowanie → `CF sync root ready` + `vault mounted at O:` → **zero** zdarzeń auto-lock, `O:` zamontowany po 30, 60 i 90 s. Przed poprawką auto-lock wchodził sekundę po montowaniu.
+- **⚠️ Brak testu regresyjnego.** Handler wymaga pełnego stanu aplikacji; test samego `auto_lock` nie pokryłby tego, bo wada leżała w tym, że handler w ogóle nie wołał `touch`. Powiązane: `α.A.b` naprawiało już raz reset licznika w ACL (`8e0d116`) — to ta sama klasa usterki w innym miejscu.
+
+### P2-011 — Jeden problematyczny plik blokował montowanie całego skarbca (2026-07-31)
+
+- **Wykryto:** przy diagnozie P1-009.
+- **Przyczyna:** w `project_vault_to_sync_root` błąd pojedynczego pliku szedł przez `?`, więc przerywał projekcję **wszystkich pozostałych** i zostawiał dysk niezamontowany. Sąsiednie `mark_in_sync` było obsłużone jako ostrzeżenie — reszta kroków nie.
+- **Status:** ✅ FIXED, commit `b892b23`. Błąd pojedynczego pliku jest logowany i pomijany, reszta skarbca się montuje; na końcu zbiorcze ostrzeżenie ile plików pominięto. Dodatkowo trzy fatalne kroki (`ensure_placeholder_directory_chain`, `update_placeholder_revision`, `apply_pin_state`) niosą teraz kontekst: nazwa kroku + ścieżka pliku. Wcześniej log pokazywał goły kod błędu Windows i diagnoza sprowadzała się do zgadywania.
+- **Uwaga:** to nie była przyczyna niezamontowanego `O:` (tą było P1-009), tylko wzmocnienie odporności — pojedynczy uszkodzony placeholder nie powinien odcinać dostępu do całego skarbca.
+
 ### P2-010 — Watcher przepakowywał niezmienione pliki co 30 sekund (2026-07-31)
 
 - **Wykryto:** live smoke. `smoke-5mb.bin` miał **1425 rewizji** od 4 kwietnia (50 z jednego dnia), a plik testowy utworzony 26 minut wcześniej — **39 rewizji**, przy niezmienionej treści.
