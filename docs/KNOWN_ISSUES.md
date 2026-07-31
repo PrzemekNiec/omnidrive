@@ -81,6 +81,17 @@
 
 ## Closed
 
+### P2-008 — `smart_sync.rs` monolit 2 236 linii (dekompozycja, 2026-07-31)
+
+- **Wykryto:** audyt `docs/superpowers/specs/2026-05-11-code-audit.md §2.2` — „clean split candidate", ocena ryzyka: zero.
+- **Symptom:** warstwa publiczna (16 `pub fn`) i 1 940 linii wnętrza `mod imp` (cfapi/Cloud Files) w jednym pliku; ~60 funkcji, 3 callbacki `unsafe extern "system"`, statiki połączenia i kontekstu hydracji.
+- **Status:** ✅ CLOSED, commit `d0f7876`. `angeld/src/smart_sync/` = `mod.rs` (298, warstwa publiczna bez zmian) + `imp/` z 7 modułami: `registration.rs` 622, `callbacks.rs` 480, `placeholder.rs` 340, `projection.rs` 321, `paths.rs` 148, `state.rs` 86, `lifecycle.rs` 86, `mod.rs` 13. Wywołania `imp::*` z warstwy publicznej nietknięte (re-eksporty w `imp/mod.rs`); moduły siostrzane importują wprost z `super::<moduł>::*`.
+- **⚠️ Korekta oceny ryzyka z audytu:** „risk zero" było niedoszacowane. Prywatność funkcji `imp` nie jest ułatwieniem, tylko źródłem jedynego realnego kosztu: podział wymusił **`pub(super)` na 30 elementach + 13 polach struktur** (`CONNECTION_KEY`, `HYDRATION_CONTEXT`, `HydrationContext`/`HydrationRequest` z polami, `ComApartmentGuard`, stałe providera, `wide_path`, `wide_str`, `apply_pin_state`, `mark_in_sync`, `dehydrate_placeholder`, `create_projection_placeholder`, `projection_path_for_inode`, callbacki i inne). Widoczność wyliczona z realnych referencji + domknięcie przechodnie na typy wyciekające przez podniesione sygnatury — nie z intuicji.
+- **Weryfikacja zero-drift:** **100 bloków**, z czego **97 bajt-w-bajt**; 3 (`create_projection_placeholder`, `ensure_path_inside_user_profile`, `powershell_literal_output`) różnią się wyłącznie łamaniem linii — zmniejszenie wcięcia o 4 znaki zmieniło zawijanie na 100 kolumnach. Dla nich kryterium było ostrzejsze niż porównanie tekstu: wynik musi być **dokładnie tym, co `rustfmt` produkuje z bloku baseline**.
+- **Bramka:** fmt + clippy `--all-targets -D warnings` oba tryby + `build --release --workspace` + core **28** + angeld lib **199**. Bez bumpu wersji, bez migracji.
+- **⚠️ Brak testów jednostkowych modułu.** Ten plik nie miał i nadal nie ma testów; suita 199 go nie pokrywa. Bezpiecznikiem był kompilator (kod `cfg(windows)`, realnie budowany na tej maszynie) i dowód zero-drift. **Poprawność runtime cfapi weryfikuje wyłącznie live smoke — nieprzeprowadzony.** Jeden przebieg suity w trakcie bramki zgłosił 1 fail bez zapisanej nazwy testu; trzy kolejne przebiegi 199/199.
+- Spec `docs/superpowers/specs/2026-07-31-smart-sync-decomposition-design.md`, plan `…/plans/2026-07-31-smart-sync-decomposition.md`.
+
 ### P2-007 — `db.rs` monolit 10 649 linii (dekompozycja, 2026-07-31)
 
 - **Wykryto:** audyt `docs/superpowers/specs/2026-05-11-code-audit.md §2.1` (2026-05-17) — wskazany jako najpilniejszy kandydat do dekompozycji, zalecany **przed mobile** (UniFFI łatwiej projektować na modułach niż na monolicie).

@@ -1,6 +1,6 @@
 # Dekompozycja `angeld/src/smart_sync.rs` — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans. Kroki oznaczone `- [ ]`.
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans. Kroki oznaczone `- [x]`.
 
 **Goal:** Rozbić `angeld/src/smart_sync.rs` (2 236 linii) na `angeld/src/smart_sync/` z 9 plikami, bez żadnej zmiany zachowania.
 
@@ -24,24 +24,24 @@
 
 ### Task 0: Narzędzia i baseline
 
-- [ ] **Step 1:** `git show 0639e0c:angeld/src/smart_sync.rs > $SCRATCH/smart_sync_baseline.rs` (2 236 linii)
-- [ ] **Step 2:** Round-trip parsera — rekonstrukcja `mod imp` z bloków identyczna z baseline co do bajtu. **Bez zielonego round-tripu nie wolno przenosić niczego.**
-- [ ] **Step 3:** Inwentarz bloków: warstwa zewnętrzna + wnętrze `imp` z rozmiarami.
+- [x] **Step 1:** `git show 0639e0c:angeld/src/smart_sync.rs > $SCRATCH/smart_sync_baseline.rs` (2 236 linii)
+- [x] **Step 2:** Round-trip parsera — rekonstrukcja `mod imp` z bloków identyczna z baseline co do bajtu. **Bez zielonego round-tripu nie wolno przenosić niczego.**
+- [x] **Step 3:** Inwentarz bloków: warstwa zewnętrzna + wnętrze `imp` z rozmiarami.
 
 *(Kroki 1–3 wykonane przed napisaniem planu: round-trip OK, inwentarz = 79 bloków w `imp`.)*
 
-- [ ] **Step 4:** `ss_build.py` — generator plików z manifestu nazwa→moduł, z automatycznym wyliczeniem `pub(super)` z realnych referencji między modułami.
-- [ ] **Step 5:** `ss_verify.py` — kontrola kompletności i treści bloków; różnica wyłącznie w prefiksie `pub(super) ` jest dozwolona i **raportowana imiennie**, każda inna = błąd.
+- [x] **Step 4:** `ss_build.py` — generator plików z manifestu nazwa→moduł, z automatycznym wyliczeniem `pub(super)` z realnych referencji między modułami.
+- [x] **Step 5:** `ss_verify.py` — kontrola kompletności i treści bloków; różnica wyłącznie w prefiksie `pub(super) ` jest dozwolona i **raportowana imiennie**, każda inna = błąd.
 
 ### Task 1: Rename + wygenerowanie struktury
 
 **Files:** `angeld/src/smart_sync.rs` → `angeld/src/smart_sync/mod.rs` + `smart_sync/imp/*.rs`
 
-- [ ] **Step 1:** `git mv angeld/src/smart_sync.rs angeld/src/smart_sync/mod.rs`; potwierdź `R … (100%)` w `git status --short`
-- [ ] **Step 2:** Uruchom `ss_build.py` — zapisuje `mod.rs` (warstwa publiczna + `#[cfg(windows)] mod imp;`) oraz 8 plików w `imp/`
-- [ ] **Step 3:** `ss_verify.py` — komplet bloków, treść identyczna modulo `pub(super)`
-- [ ] **Step 4:** `cargo check --workspace --all-targets`; brakujące importy uzupełnia iteracyjne przycinanie (`prune_lines.py`), nie ręczne zgadywanie
-- [ ] **Step 5:** Commit
+- [x] **Step 1:** `git mv angeld/src/smart_sync.rs angeld/src/smart_sync/mod.rs`; potwierdź `R … (100%)` w `git status --short`
+- [x] **Step 2:** Uruchom `ss_build.py` — zapisuje `mod.rs` (warstwa publiczna + `#[cfg(windows)] mod imp;`) oraz 8 plików w `imp/`
+- [x] **Step 3:** `ss_verify.py` — komplet bloków, treść identyczna modulo `pub(super)`
+- [x] **Step 4:** `cargo check --workspace --all-targets`; brakujące importy uzupełnia iteracyjne przycinanie (`prune_lines.py`), nie ręczne zgadywanie
+- [x] **Step 5:** Commit
 
 ```bash
 git add angeld/src/smart_sync
@@ -50,17 +50,17 @@ git commit -m "refactor(smart_sync): rozbij monolit na smart_sync/ + imp/"
 
 ### Task 2: Przycięcie importów i pełna bramka
 
-- [ ] **Step 1:** `prune_lines.py` — usuwa importy zbędne w **obu** trybach (część wspólna, nie suma), do zbieżności
-- [ ] **Step 2:** `cargo fmt --all`, potem ponowny `ss_verify.py` (fmt nie ma prawa ruszyć treści bloków)
-- [ ] **Step 3:** `cargo clippy --workspace --all-targets -- -D warnings` oraz to samo z `--features test-helpers`
-- [ ] **Step 4:** `cargo build --release --workspace`
-- [ ] **Step 5:** `cargo test -p omnidrive-core` = 28; `cargo test -p angeld --lib` = 199
-- [ ] **Step 6:** Kontrola zakresu: `git diff --stat` poza `smart_sync/` i `docs/` musi być pusty
-- [ ] **Step 7:** Commit + `git push origin main`
+- [x] **Step 1:** `prune_lines.py` — usuwa importy zbędne w **obu** trybach (część wspólna, nie suma), do zbieżności
+- [x] **Step 2:** `cargo fmt --all`, potem ponowny `ss_verify.py` (fmt nie ma prawa ruszyć treści bloków)
+- [x] **Step 3:** `cargo clippy --workspace --all-targets -- -D warnings` oraz to samo z `--features test-helpers`
+- [x] **Step 4:** `cargo build --release --workspace`
+- [x] **Step 5:** `cargo test -p omnidrive-core` = 28; `cargo test -p angeld --lib` = 199
+- [x] **Step 6:** Kontrola zakresu: `git diff --stat` poza `smart_sync/` i `docs/` musi być pusty
+- [x] **Step 7:** Commit + `git push origin main`
 
 ### Task 3: Dokumentacja
 
-- [ ] **Step 1:** `KNOWN_ISSUES.md` — wpis **P2-008** od razu zamknięty (wzorzec P2-007): rozmiary plików, pełna lista podniesień `pub(super)`, wyniki bramki, jawna adnotacja o braku testów jednostkowych modułu
-- [ ] **Step 2:** `STATUS.md` §12.7b — wiersz P2-008, aktualizacja listy pozostałego długu (skreślenie `smart_sync.rs`)
-- [ ] **Step 3:** Pamięć: blok STAN + komenda startowa następnej sesji (Faza δ albo `downloader.rs` 1 712)
-- [ ] **Step 4:** Commit + push
+- [x] **Step 1:** `KNOWN_ISSUES.md` — wpis **P2-008** od razu zamknięty (wzorzec P2-007): rozmiary plików, pełna lista podniesień `pub(super)`, wyniki bramki, jawna adnotacja o braku testów jednostkowych modułu
+- [x] **Step 2:** `STATUS.md` §12.7b — wiersz P2-008, aktualizacja listy pozostałego długu (skreślenie `smart_sync.rs`)
+- [x] **Step 3:** Pamięć: blok STAN + komenda startowa następnej sesji (Faza δ albo `downloader.rs` 1 712)
+- [x] **Step 4:** Commit + push

@@ -85,9 +85,9 @@ Blok 30 importów `imp` zawiera dwie duże grupy klamrowe (`windows::Win32::Stor
 
 ## 9. Definition of Done
 
-- [ ] `angeld/src/smart_sync.rs` nie istnieje; istnieje `angeld/src/smart_sync/` z 9 plikami, żaden > ~550 linii
-- [ ] `cargo fmt --all --check` czysty; clippy `--all-targets -D warnings` czysty w obu trybach
-- [ ] `cargo build --release --workspace` OK; core **28**, angeld lib **199**
-- [ ] Wszystkie bloki baseline obecne, treść identyczna modulo `pub(super)`; lista podniesień zaraportowana
-- [ ] `git diff` poza `smart_sync/` i `docs/` pusty
-- [ ] Wpis w `KNOWN_ISSUES.md` (P2-008) + `STATUS.md` §12.7b
+- [x] `angeld/src/smart_sync.rs` nie istnieje; istnieje `angeld/src/smart_sync/` z 9 plikami, żaden > ~550 linii
+- [x] `cargo fmt --all --check` czysty; clippy `--all-targets -D warnings` czysty w obu trybach
+- [x] `cargo build --release --workspace` OK; core **28**, angeld lib **199**
+- [x] Wszystkie bloki baseline obecne, treść identyczna modulo `pub(super)`; lista podniesień zaraportowana
+- [x] `git diff` poza `smart_sync/` i `docs/` pusty
+- [x] Wpis w `KNOWN_ISSUES.md` (P2-008) + `STATUS.md` §12.7b
