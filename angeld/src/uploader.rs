@@ -212,6 +212,13 @@ impl Uploader {
             .region(Region::new(config.region.clone()))
             .timeout_config(timeout_config)
             .force_path_style(config.force_path_style)
+            // Domyslne `WhenSupported` dokleja CRC32 w kodowaniu aws-chunked
+            // z trailerem, gdy cialo jest strumieniowe. R2 zrywa wtedy polaczenie,
+            // Scaleway czeka do timeoutu; B2 to toleruje -- stad mylny trop, ze
+            // wina lezy po stronie sieci.
+            .request_checksum_calculation(
+                aws_sdk_s3::config::RequestChecksumCalculation::WhenRequired,
+            )
             .build();
 
         Ok(Self {
@@ -1075,4 +1082,35 @@ fn format_error_details(err: &impl std::error::Error) -> String {
         current = source.source();
     }
     details.join(" | ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R2 zrywa polaczenie, a Scaleway czeka do timeoutu, gdy SDK dokleja CRC32
+    /// w kodowaniu aws-chunked do ciala strumieniowego. B2 to toleruje, wiec bez
+    /// tego assertu regresja bylaby widoczna dopiero na zywym vaulcie.
+    #[tokio::test]
+    async fn s3_config_does_not_add_automatic_checksums() {
+        let uploader = Uploader::from_provider_config(ProviderConfig {
+            provider_name: "cloudflare-r2",
+            endpoint: "https://example.invalid".to_string(),
+            region: "auto".to_string(),
+            bucket: "test-bucket".to_string(),
+            access_key_id: "key".to_string(),
+            secret_access_key: "secret".to_string(),
+            force_path_style: true,
+        })
+        .await
+        .expect("konfiguracja klienta nie wymaga sieci");
+
+        assert!(
+            matches!(
+                uploader.client.config().request_checksum_calculation(),
+                Some(aws_sdk_s3::config::RequestChecksumCalculation::WhenRequired)
+            ),
+            "automatyczne sumy kontrolne musza pozostac wylaczone"
+        );
+    }
 }
