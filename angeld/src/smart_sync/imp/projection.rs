@@ -63,6 +63,7 @@ pub async fn project_vault_to_sync_root(
         return Ok(());
     }
 
+    let mut failed = 0usize;
     for file in files {
         // Read the previously projected revision BEFORE ensure_* overwrites it:
         // that comparison is the only way to tell whether an existing placeholder
@@ -73,7 +74,27 @@ pub async fn project_vault_to_sync_root(
         let state = db::ensure_smart_sync_state(pool, file.inode_id, file.revision_id).await?;
         let revision_changed =
             projected_revision.is_some_and(|revision| revision != file.revision_id);
-        create_projection_placeholder(&sync_root, &file, state.pin_state != 0, revision_changed)?;
+
+        // One unprojectable file must not stop the whole vault from mounting.
+        // Before this guard a single cfapi error aborted projection for every
+        // remaining file and left the virtual drive unmounted.
+        if let Err(err) =
+            create_projection_placeholder(&sync_root, &file, state.pin_state != 0, revision_changed)
+        {
+            failed += 1;
+            warn!(
+                "smart-sync: projection failed for inode={} revision={} path='{}': {}",
+                file.inode_id, file.revision_id, file.path, err
+            );
+        }
+    }
+
+    if failed > 0 {
+        warn!(
+            "smart-sync: {} file(s) could not be projected into {}; the rest of the vault is mounted",
+            failed,
+            sync_root.display()
+        );
     }
 
     Ok(())
@@ -92,7 +113,12 @@ pub(super) fn create_projection_placeholder(
     // directories created by std::fs::create_dir_all in a prior session
     // remain plain folders and cldflt.sys blocks enumeration.
     let file_time = file_time_from_unix_millis(file.created_at)?;
-    ensure_placeholder_directory_chain(sync_root, &relative_path, file_time)?;
+    ensure_placeholder_directory_chain(sync_root, &relative_path, file_time).map_err(|err| {
+        SmartSyncError::InvalidPathWithContext(
+            "ensure_placeholder_directory_chain",
+            format!("{relative_path}: {err}"),
+        )
+    })?;
 
     if !target_path.exists() {
         let base_directory = target_path.parent().unwrap_or(sync_root);
@@ -183,7 +209,13 @@ pub(super) fn create_projection_placeholder(
             file.revision_id,
             file.size,
             file_time,
-        )?;
+        )
+        .map_err(|err| {
+            SmartSyncError::InvalidPathWithContext(
+                "update_placeholder_revision",
+                format!("{relative_path}: {err}"),
+            )
+        })?;
         info!(
             "smart-sync: placeholder repointed to revision {} for {}",
             file.revision_id, relative_path
@@ -197,7 +229,10 @@ pub(super) fn create_projection_placeholder(
         } else {
             CF_PIN_STATE_UNPINNED
         },
-    )?;
+    )
+    .map_err(|err| {
+        SmartSyncError::InvalidPathWithContext("apply_pin_state", format!("{relative_path}: {err}"))
+    })?;
 
     // New placeholder is in-sync with the cloud (its content matches the known revision).
     if let Err(err) = mark_in_sync(&target_path, true) {
