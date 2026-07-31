@@ -730,7 +730,24 @@ v0.4 → v5.0 → v6.0      (◄── = bieżący krok)
 
 | **P2-009** ✅ | **Dekompozycja `downloader.rs`** (1 730 linii, z czego **988 to jeden `impl Downloader`** — 17 metod). Audyt §2.4: „split częściowy, średni risk". | ✅ **DONE 2026-07-31**, commit `0701a59`. `downloader/mod.rs` 163 + `read` 729 (z testem roundtrip), `pack` 309, `chunk` 264, `provider` 209, `prefetch` 114, `util` 38. **Nowa metoda wobec P2-007/008:** blok `impl` rozbity na 4 bloki `impl Downloader` w osobnych modułach — rozdanie bloków top-level nic by nie dało. `pub(super)` na 13 elementach. `EncryptedChunkBytes` zachowuje ścieżkę `downloader::` przez `pub use chunk::*`. Zero-drift: 43 bloki, **42 bajt-w-bajt**; `download_pack` przełamany przez rustfmt, bo `pub(super) ` wypchnął sygnaturę poza 100 kolumn — kryterium = `rustfmt(baseline + ta sama widoczność)` w kontekście `impl`. Bramka + kompilacja testów e2e zielone. |
 
-**Pozostały dług z audytu §2:** `onboarding.rs` 1 293 · `api/onboarding.rs` 1 153 · `disaster_recovery.rs` 1 126 · `uploader.rs` 1 084 · `api/vault.rs` 1 078. **Trzy największe monolity (`db.rs`, `smart_sync.rs`, `downloader.rs`) zamknięte.**
+**Pozostały dług — rozmiary ZMIERZONE 2026-07-31, nie przepisane z audytu** (audyt z maja jest w tym punkcie nieaktualny — kilka plików urosło od tamtej pory):
+
+| Plik | Linie | Uwaga |
+|---|---|---|
+| `disaster_recovery.rs` | **3 044** | audyt podawał 1 126 — urósł 2,7× w Fazie γ.d (restore-fallback, lokalne `.bak`, sanity guard). **Największy plik w repo**, nowy czołowy kandydat |
+| `vault.rs` | **1 795** | audyt: 1 157 z werdyktem „clean, zostawić” — ten werdykt się zdezaktualizował |
+| `db/graft.rs` | 1 621 | 986 kodu + testy; efekt P2-007, świadomie trzymany w całości (hot zone P1-001) |
+| `onboarding.rs` | 1 341 | |
+| `api/onboarding.rs` | 1 238 | |
+| `main.rs` | 1 193 | |
+| `api/vault.rs` | 1 167 | |
+| `identity.rs` | 1 127 | |
+| `uploader.rs` | 1 078 | |
+| `repair.rs` | 959 | nie było na liście audytu |
+| `api/maintenance.rs` | 921 | nie było na liście audytu |
+| `packer.rs` | 840 | nie było na liście audytu |
+
+**Trzy monolity wskazane przez audyt (`db.rs`, `smart_sync.rs`, `downloader.rs`) zamknięte.**
 
 ---
 

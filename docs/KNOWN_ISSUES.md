@@ -51,8 +51,18 @@
 - **Wykryto:** Subiektywna obserwacja Przemka, brak benchmarku
 - **Symptom:** Otwarcie dużego pliku (>50MB?) z O:\ trwa zauważalnie długo
 - **SLA cel:** Cold fetch < 2s/10MB, < 10s/100MB; warm < 100ms (per roadmap v0.4)
-- **Fix scope:** (1) Benchmark: cold fetch 1MB/10MB/100MB/1GB; warm fetch tych samych. (2) Audit `angeld/src/smart_sync.rs` (2197 linii — monolit do dekomponozycji). Sprawdzić: streaming hydration czy fetch-all-then-decrypt? EC reconstruction blokująca? Cache hit path?
-- **Status:** OPEN. **Faza ε.a/β.e** (po pomiarach — dekompozycja smart_sync.rs).
+- **Fix scope:** (1) Benchmark: cold fetch 1MB/10MB/100MB/1GB; warm fetch tych samych. (2) Audit ścieżki hydracji — sprawdzić: streaming hydration czy fetch-all-then-decrypt? EC reconstruction blokująca? Cache hit path? **Punkt (2) jest teraz tańszy:** `smart_sync.rs` został zdekomponowany (P2-008), ścieżka callbacków cfapi siedzi w `smart_sync/imp/callbacks.rs`, hydracja w `imp/placeholder.rs`.
+- **Status:** OPEN — **jedyny otwarty dług funkcjonalny w trackerze**. Wymaga pomiarów; dekompozycja `smart_sync.rs` nie była fixem, tylko usunięciem przeszkody. **Faza ε.a**.
+
+---
+
+## P3 — Drobne UX / kosmetyka
+
+*Brak otwartych.*
+
+---
+
+## Closed
 
 ### P2-003 — Bin `angeld` duplikuje 27 modułów z lib (dual-compile)
 
@@ -70,16 +80,6 @@
   - **Opcja C (status quo + safeguard):** Zostawić duplikację, ale dodać do CI sztywne `cargo clippy --workspace --all-targets -- -D warnings` żeby zawsze sprawdzać obie konfiguracje.
 - **Impact:** Dług techniczny. Nie blokuje funkcjonalności, ale zwiększa risk regresji (jeden review nie wystarczy — trzeba uruchomić oba targety) + 2× czas CI + utrudnia świadome projektowanie API biblioteki.
 - **Status:** ✅ CLOSED 2026-07-31 (Opcja A1). `main.rs` nie deklaruje już żadnego `mod` — 9 modułów bin-only przeniesionych do `lib.rs`, referencje `crate::`→`angeld::`, moduły gołe przez `use angeld::{…}`. Podniesiono do `pub` itemy lib używane przez bin (`onboarding::get_active_provider_configs`, `downloader::from_provider_configs`, `uploader::ProviderConfig`+`provider_name`). Każdy moduł kompiluje się raz; `clippy --all-targets` = jeden spójny set. Suita: core 28, angeld lib 199. Commit `ca263de`. Spec `docs/superpowers/specs/2026-07-30-p2-003-dual-compile-design.md`, plan `…/plans/2026-07-30-p2-003-dual-compile.md`.
-
----
-
-## P3 — Drobne UX / kosmetyka
-
-*Brak otwartych.*
-
----
-
-## Closed
 
 ### P2-009 — `downloader.rs` monolit 1 730 linii (dekompozycja, 2026-07-31)
 
