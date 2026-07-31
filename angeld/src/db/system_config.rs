@@ -1,13 +1,5 @@
-use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
@@ -246,5 +238,34 @@ pub async fn apply_cloud_usage_delta_with_limits(
             let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
             Err(err)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::*;
+
+    #[tokio::test]
+    async fn roster_snapshot_marker_round_trips() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        assert_eq!(
+            get_last_applied_roster_snapshot_at(&pool).await.unwrap(),
+            None
+        );
+        set_last_applied_roster_snapshot_at(&pool, 1234)
+            .await
+            .unwrap();
+        assert_eq!(
+            get_last_applied_roster_snapshot_at(&pool).await.unwrap(),
+            Some(1234)
+        );
+        set_last_applied_roster_snapshot_at(&pool, 5678)
+            .await
+            .unwrap();
+        assert_eq!(
+            get_last_applied_roster_snapshot_at(&pool).await.unwrap(),
+            Some(5678)
+        );
     }
 }

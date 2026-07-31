@@ -1,13 +1,5 @@
-use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
@@ -274,5 +266,154 @@ fn validate_inode_kind(kind: &str) -> Result<(), sqlx::Error> {
         _ => Err(sqlx::Error::InvalidArgument(format!(
             "invalid inode kind '{kind}', expected FILE or DIR"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::*;
+
+    #[tokio::test]
+    async fn root_level_inode_names_are_unique() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        create_inode(&pool, None, "dup.txt", "FILE", 1).await?;
+        let second = create_inode(&pool, None, "dup.txt", "FILE", 1).await;
+        match second {
+            Err(sqlx::Error::Database(err)) if err.is_unique_violation() => Ok(()),
+            other => panic!("expected unique violation for duplicate root name, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn soft_delete_sets_timestamp_and_preserves_chunks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "f.txt", "FILE", 10).await?;
+        let rev =
+            create_file_revision(&pool, inode, 10, None, None, None, "local_write", None).await?;
+        register_chunk(&pool, rev, &[7u8; 32], 0, 10).await?;
+
+        let changed = soft_delete_inode(&pool, inode, 1_000).await?;
+        assert!(changed);
+
+        let deleted_at: Option<i64> =
+            sqlx::query_scalar("SELECT deleted_at FROM inodes WHERE id = ?")
+                .bind(inode)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(deleted_at, Some(1_000));
+
+        let chunk_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chunk_refs WHERE revision_id = ?")
+                .bind(rev)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(chunk_count, 1, "soft-delete must not touch chunk_refs");
+
+        let second = soft_delete_inode(&pool, inode, 2_000).await?;
+        assert!(!second, "already soft-deleted → no change");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn soft_deleted_excluded_from_lookup_but_visible_by_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "gone.txt", "FILE", 1).await?;
+        soft_delete_inode(&pool, inode, 1_000).await?;
+
+        assert!(
+            get_inode_by_path(&pool, None, "gone.txt").await?.is_none(),
+            "soft-deleted must not resolve by path"
+        );
+        assert!(
+            resolve_path(&pool, "/gone.txt").await?.is_none(),
+            "soft-deleted must not resolve as live"
+        );
+        assert!(
+            get_inode_by_id(&pool, inode).await?.is_some(),
+            "raw by-id must still see soft-deleted"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_and_restore_soft_deleted() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let a = create_inode(&pool, None, "a.txt", "FILE", 5).await?;
+        soft_delete_inode(&pool, a, 1_000).await?;
+
+        let listed = list_soft_deleted(&pool).await?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].inode_id, a);
+        assert_eq!(listed[0].name, "a.txt");
+        assert_eq!(listed[0].deleted_at, 1_000);
+
+        let name = restore_soft_deleted_inode(&pool, a).await?;
+        assert_eq!(name, "a.txt");
+        assert!(
+            get_inode_by_path(&pool, None, "a.txt").await?.is_some(),
+            "restored file resolves again"
+        );
+        assert!(list_soft_deleted(&pool).await?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restore_disambiguates_on_name_collision() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let old = create_inode(&pool, None, "dup.txt", "FILE", 1).await?;
+        soft_delete_inode(&pool, old, 1_000).await?;
+        create_inode(&pool, None, "dup.txt", "FILE", 1).await?;
+
+        let name = restore_soft_deleted_inode(&pool, old).await?;
+        assert_ne!(name, "dup.txt", "must not collide with live file");
+        assert!(name.contains("restored"), "restored name: {name}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_expired_returns_only_past_cutoff() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let old = create_inode(&pool, None, "old.txt", "FILE", 1).await?;
+        let fresh = create_inode(&pool, None, "fresh.txt", "FILE", 1).await?;
+        soft_delete_inode(&pool, old, 1_000).await?;
+        soft_delete_inode(&pool, fresh, 9_000).await?;
+
+        let expired = list_expired_soft_deleted(&pool, 5_000).await?;
+        assert_eq!(expired, vec![old]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sweeper_hard_deletes_expired_only() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let old = create_inode(&pool, None, "old.txt", "FILE", 1).await?;
+        let rev =
+            create_file_revision(&pool, old, 1, None, None, None, "local_write", None).await?;
+        register_chunk(&pool, rev, &[1u8; 32], 0, 1).await?;
+        let fresh = create_inode(&pool, None, "fresh.txt", "FILE", 1).await?;
+        soft_delete_inode(&pool, old, 1_000).await?;
+        soft_delete_inode(&pool, fresh, 9_000).await?;
+
+        for inode_id in list_expired_soft_deleted(&pool, 5_000).await? {
+            delete_file_chunks(&pool, inode_id).await?;
+            delete_inode_record(&pool, inode_id).await?;
+        }
+
+        assert!(
+            get_inode_by_id(&pool, old).await?.is_none(),
+            "expired hard-deleted"
+        );
+        assert!(
+            get_inode_by_id(&pool, fresh).await?.is_some(),
+            "fresh survives"
+        );
+        let chunks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chunk_refs")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(chunks, 0, "expired file chunks reclaimed");
+        Ok(())
     }
 }

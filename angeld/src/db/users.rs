@@ -1,12 +1,6 @@
 use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
 use uuid::Uuid;
 
 // ── Epic 34: Multi-user record types ─────────────────────────────────
@@ -422,4 +416,244 @@ pub async fn backfill_uuid_user_ids(pool: &SqlitePool) -> Result<u32, sqlx::Erro
         .execute(&mut *conn)
         .await?;
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Epic 34: Multi-user CRUD tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn user_crud_lifecycle() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+
+        // Create
+        create_user(
+            &pool,
+            "u1",
+            "Alice",
+            Some("alice@example.com"),
+            "local",
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Read
+        let user = get_user(&pool, "u1").await.unwrap().unwrap();
+        assert_eq!(user.display_name, "Alice");
+        assert_eq!(user.email.as_deref(), Some("alice@example.com"));
+        assert_eq!(user.auth_provider, "local");
+
+        // List
+        create_user(&pool, "u2", "Bob", None, "google", Some("goog-sub-1"))
+            .await
+            .unwrap();
+        let all = list_users(&pool).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Update display name
+        assert!(
+            update_user_display_name(&pool, "u1", "Alice Z")
+                .await
+                .unwrap()
+        );
+        let updated = get_user(&pool, "u1").await.unwrap().unwrap();
+        assert_eq!(updated.display_name, "Alice Z");
+
+        // Update non-existent
+        assert!(
+            !update_user_display_name(&pool, "u999", "Ghost")
+                .await
+                .unwrap()
+        );
+
+        // Delete
+        assert!(delete_user(&pool, "u2").await.unwrap());
+        assert!(get_user(&pool, "u2").await.unwrap().is_none());
+        assert!(!delete_user(&pool, "u2").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn vault_member_crud_lifecycle() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_user(&pool, "u1", "Alice", None, "local", None)
+            .await
+            .unwrap();
+        create_user(&pool, "u2", "Bob", None, "local", None)
+            .await
+            .unwrap();
+
+        // Add members
+        add_vault_member(&pool, "u1", "vault-1", "owner", None)
+            .await
+            .unwrap();
+        add_vault_member(&pool, "u2", "vault-1", "member", Some("u1"))
+            .await
+            .unwrap();
+
+        // Get
+        let member = get_vault_member(&pool, "u2", "vault-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(member.role, "member");
+        assert_eq!(member.invited_by.as_deref(), Some("u1"));
+
+        // List
+        let members = list_vault_members(&pool, "vault-1").await.unwrap();
+        assert_eq!(members.len(), 2);
+
+        // Update role
+        assert!(
+            update_vault_member_role(&pool, "u2", "vault-1", "admin")
+                .await
+                .unwrap()
+        );
+        let updated = get_vault_member(&pool, "u2", "vault-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.role, "admin");
+
+        // Remove
+        assert!(remove_vault_member(&pool, "u2", "vault-1").await.unwrap());
+        assert!(
+            get_vault_member(&pool, "u2", "vault-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(!remove_vault_member(&pool, "u2", "vault-1").await.unwrap());
+    }
+
+    // ── Epic 34.0b: Migration tests ────────────────────────────────
+
+    #[tokio::test]
+    async fn migrate_single_to_multi_user_creates_owner() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+
+        // Simulate existing single-user vault: device identity exists, no users
+        upsert_local_device_identity(&pool, "dev-abc123", "TestPC", "tok-secret")
+            .await
+            .unwrap();
+
+        // Migration should succeed
+        let migrated = migrate_single_to_multi_user(&pool, "vault-42")
+            .await
+            .unwrap();
+        assert!(migrated);
+
+        // Verify owner user created with UUID v4
+        let users = list_users(&pool).await.unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].user_id.len(), 36, "user_id must be UUID v4");
+        assert!(
+            !users[0].user_id.starts_with("owner-"),
+            "user_id must not use legacy owner- prefix"
+        );
+        assert_eq!(users[0].display_name, "TestPC");
+        assert_eq!(users[0].auth_provider, "local");
+        let owner_uid = users[0].user_id.clone();
+
+        // Verify device linked to owner
+        let dev = get_device(&pool, "dev-abc123").await.unwrap().unwrap();
+        assert_eq!(dev.user_id, owner_uid);
+        assert_eq!(dev.device_name, "TestPC");
+        assert!(dev.wrapped_vault_key.is_none()); // owner uses passphrase
+        assert!(dev.revoked_at.is_none());
+
+        // Verify vault membership
+        let member = get_vault_member(&pool, &owner_uid, "vault-42")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(member.role, "owner");
+        assert!(member.invited_by.is_none());
+
+        // Verify audit log
+        let logs = list_audit_logs(&pool, "vault-42", 10).await.unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].action, "migrate_single_to_multi");
+        assert_eq!(logs[0].actor_user_id.as_deref(), Some(owner_uid.as_str()));
+    }
+
+    #[tokio::test]
+    async fn migrate_single_to_multi_user_is_idempotent() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        upsert_local_device_identity(&pool, "dev-abc123", "TestPC", "tok-secret")
+            .await
+            .unwrap();
+
+        // First migration
+        assert!(
+            migrate_single_to_multi_user(&pool, "vault-42")
+                .await
+                .unwrap()
+        );
+
+        // Second call is a no-op
+        assert!(
+            !migrate_single_to_multi_user(&pool, "vault-42")
+                .await
+                .unwrap()
+        );
+
+        // Still only one user
+        let users = list_users(&pool).await.unwrap();
+        assert_eq!(users.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn migrate_single_to_multi_user_noop_without_device() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+
+        // No device identity → migration is a no-op
+        assert!(
+            !migrate_single_to_multi_user(&pool, "vault-42")
+                .await
+                .unwrap()
+        );
+        let users = list_users(&pool).await.unwrap();
+        assert!(users.is_empty());
+    }
+
+    #[tokio::test]
+    async fn backfill_uuid_user_ids_renames_legacy() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        // Insert a legacy owner- user directly
+        let now = epoch_secs();
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('owner-dev-abc', 'Alice', NULL, 'local', NULL, ?)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Insert a device referencing the legacy user
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('dev-abc', 'owner-dev-abc', 'PC', x'00', ?)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let count = backfill_uuid_user_ids(&pool).await.unwrap();
+        assert_eq!(count, 1);
+
+        let users = list_users(&pool).await.unwrap();
+        assert_eq!(users.len(), 1);
+        assert!(!users[0].user_id.starts_with("owner-"));
+        assert_eq!(users[0].user_id.len(), 36);
+
+        let dev = get_device(&pool, "dev-abc").await.unwrap().unwrap();
+        assert_eq!(dev.user_id, users[0].user_id);
+
+        // Second call is no-op
+        assert_eq!(backfill_uuid_user_ids(&pool).await.unwrap(), 0);
+    }
 }

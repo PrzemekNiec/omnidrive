@@ -1,13 +1,6 @@
 use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
@@ -218,4 +211,109 @@ fn sanitize_conflict_component(value: &str) -> String {
             _ => ch,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn materialize_conflict_copy_creates_inode_copies_chunks_and_records_event()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "report.txt", "FILE", 20).await?;
+        let source = create_file_revision(
+            &pool,
+            inode,
+            20,
+            None,
+            Some("dev-a"),
+            None,
+            "local_write",
+            None,
+        )
+        .await?;
+        register_chunk(&pool, source, &[1u8; 32], 0, 20).await?;
+
+        let (copy_inode, copy_rev, name, conflict_id) = materialize_conflict_copy_from_revision(
+            &pool,
+            source,
+            Some("dev-a"),
+            "Laptop",
+            "parallel_local_edit",
+        )
+        .await?;
+
+        assert_ne!(copy_inode, inode, "conflict copy must be a distinct inode");
+        assert!(
+            name.starts_with("report (conflict - Laptop - "),
+            "unexpected name: {name}"
+        );
+        assert!(
+            name.ends_with(").txt"),
+            "extension must be preserved: {name}"
+        );
+
+        let copied = get_chunk_refs_for_revision(&pool, copy_rev).await?;
+        assert_eq!(
+            copied.len(),
+            1,
+            "chunk refs must be copied so the conflict copy is recoverable"
+        );
+        assert_eq!(copied[0].size, 20);
+
+        let events = list_recent_conflicts(&pool, 10).await?;
+        let event = events
+            .iter()
+            .find(|e| e.conflict_id == conflict_id)
+            .expect("conflict event surfaced");
+        assert_eq!(event.reason, "parallel_local_edit");
+        assert_eq!(event.inode_id, inode);
+        assert_eq!(event.materialized_inode_id, Some(copy_inode));
+        assert_eq!(event.materialized_revision_id, Some(copy_rev));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn materialize_conflict_copy_disambiguates_name_on_collision()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "notes.md", "FILE", 5).await?;
+        let source = create_file_revision(
+            &pool,
+            inode,
+            5,
+            None,
+            Some("dev-a"),
+            None,
+            "local_write",
+            None,
+        )
+        .await?;
+        register_chunk(&pool, source, &[2u8; 32], 0, 5).await?;
+
+        let (_i1, _r1, name1, _c1) = materialize_conflict_copy_from_revision(
+            &pool,
+            source,
+            Some("dev-a"),
+            "PC",
+            "stale_local_base",
+        )
+        .await?;
+        let (_i2, _r2, name2, _c2) = materialize_conflict_copy_from_revision(
+            &pool,
+            source,
+            Some("dev-a"),
+            "PC",
+            "stale_local_base",
+        )
+        .await?;
+
+        assert_ne!(name1, name2, "second copy must not collide with the first");
+        assert!(
+            name2.contains(" [1]"),
+            "second copy must be disambiguated: {name2}"
+        );
+        Ok(())
+    }
 }

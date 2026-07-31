@@ -1,13 +1,5 @@
-use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 // ── Shared Links (Epic 33) ───────────────────────────────────────────
 
@@ -212,4 +204,214 @@ pub async fn cleanup_expired_share_tokens(pool: &SqlitePool) -> Result<u64, sqlx
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::*;
+
+    #[tokio::test]
+    async fn shared_link_crud_lifecycle() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+
+        // Create a shared link
+        create_shared_link(&pool, "abc123", 1, 10, "test.txt", 4096, None, None, None)
+            .await
+            .unwrap();
+
+        // Read it back
+        let link = get_shared_link(&pool, "abc123").await.unwrap().unwrap();
+        assert_eq!(link.share_id, "abc123");
+        assert_eq!(link.inode_id, 1);
+        assert_eq!(link.revision_id, 10);
+        assert_eq!(link.file_name, "test.txt");
+        assert_eq!(link.file_size, 4096);
+        assert_eq!(link.download_count, 0);
+        assert_eq!(link.revoked, 0);
+        assert!(link.expires_at.is_none());
+        assert!(link.max_downloads.is_none());
+        assert!(link.password_hash.is_none());
+
+        // List all
+        let all = list_shared_links(&pool).await.unwrap();
+        assert_eq!(all.len(), 1);
+
+        // List by inode
+        let by_inode = list_shared_links_for_inode(&pool, 1).await.unwrap();
+        assert_eq!(by_inode.len(), 1);
+        let empty = list_shared_links_for_inode(&pool, 999).await.unwrap();
+        assert!(empty.is_empty());
+
+        // Increment download count
+        increment_shared_link_download_count(&pool, "abc123")
+            .await
+            .unwrap();
+        let link = get_shared_link(&pool, "abc123").await.unwrap().unwrap();
+        assert_eq!(link.download_count, 1);
+
+        // Delete
+        let deleted = delete_shared_link(&pool, "abc123").await.unwrap();
+        assert!(deleted);
+        let gone = get_shared_link(&pool, "abc123").await.unwrap();
+        assert!(gone.is_none());
+
+        // Delete non-existent returns false
+        let nope = delete_shared_link(&pool, "abc123").await.unwrap();
+        assert!(!nope);
+    }
+
+    #[tokio::test]
+    async fn shared_link_revoke() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_shared_link(&pool, "rev1", 1, 10, "file.bin", 100, None, None, None)
+            .await
+            .unwrap();
+
+        // Valid before revoke
+        let link = get_shared_link(&pool, "rev1").await.unwrap().unwrap();
+        assert!(is_shared_link_valid(&link));
+
+        // Revoke
+        let revoked = revoke_shared_link(&pool, "rev1").await.unwrap();
+        assert!(revoked);
+
+        // Invalid after revoke
+        let link = get_shared_link(&pool, "rev1").await.unwrap().unwrap();
+        assert!(!is_shared_link_valid(&link));
+        assert_eq!(link.revoked, 1);
+
+        // Double revoke returns false
+        let again = revoke_shared_link(&pool, "rev1").await.unwrap();
+        assert!(!again);
+    }
+
+    #[test]
+    fn shared_link_expired() {
+        let link = SharedLinkRecord {
+            share_id: "exp1".into(),
+            inode_id: 1,
+            revision_id: 10,
+            file_name: "old.txt".into(),
+            file_size: 50,
+            created_at: 1000,
+            expires_at: Some(1), // expired long ago (epoch + 1ms)
+            max_downloads: None,
+            download_count: 0,
+            revoked: 0,
+            password_hash: None,
+        };
+        assert!(!is_shared_link_valid(&link));
+    }
+
+    #[test]
+    fn shared_link_not_yet_expired() {
+        let far_future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            + 3_600_000; // +1 hour
+        let link = SharedLinkRecord {
+            share_id: "fut1".into(),
+            inode_id: 1,
+            revision_id: 10,
+            file_name: "future.txt".into(),
+            file_size: 50,
+            created_at: 1000,
+            expires_at: Some(far_future),
+            max_downloads: None,
+            download_count: 0,
+            revoked: 0,
+            password_hash: None,
+        };
+        assert!(is_shared_link_valid(&link));
+    }
+
+    #[test]
+    fn shared_link_download_limit_reached() {
+        let link = SharedLinkRecord {
+            share_id: "dl1".into(),
+            inode_id: 1,
+            revision_id: 10,
+            file_name: "limited.txt".into(),
+            file_size: 50,
+            created_at: 1000,
+            expires_at: None,
+            max_downloads: Some(3),
+            download_count: 3,
+            revoked: 0,
+            password_hash: None,
+        };
+        assert!(!is_shared_link_valid(&link));
+    }
+
+    #[test]
+    fn shared_link_download_limit_not_reached() {
+        let link = SharedLinkRecord {
+            share_id: "dl2".into(),
+            inode_id: 1,
+            revision_id: 10,
+            file_name: "limited.txt".into(),
+            file_size: 50,
+            created_at: 1000,
+            expires_at: None,
+            max_downloads: Some(3),
+            download_count: 2,
+            revoked: 0,
+            password_hash: None,
+        };
+        assert!(is_shared_link_valid(&link));
+    }
+
+    #[tokio::test]
+    async fn shared_link_with_password() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_shared_link(
+            &pool,
+            "pw1",
+            1,
+            10,
+            "secret.pdf",
+            2048,
+            None,
+            None,
+            Some("salt$hash"),
+        )
+        .await
+        .unwrap();
+
+        let link = get_shared_link(&pool, "pw1").await.unwrap().unwrap();
+        assert_eq!(link.password_hash.as_deref(), Some("salt$hash"));
+    }
+
+    #[tokio::test]
+    async fn password_token_lifecycle() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+
+        // Create token with 10-second TTL
+        create_share_password_token(&pool, "tok1", "share1", 10)
+            .await
+            .unwrap();
+
+        // Valid immediately
+        assert!(
+            validate_share_password_token(&pool, "tok1", "share1")
+                .await
+                .unwrap()
+        );
+
+        // Wrong share_id
+        assert!(
+            !validate_share_password_token(&pool, "tok1", "share2")
+                .await
+                .unwrap()
+        );
+
+        // Wrong token
+        assert!(
+            !validate_share_password_token(&pool, "tok_bad", "share1")
+                .await
+                .unwrap()
+        );
+    }
 }

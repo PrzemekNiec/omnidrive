@@ -1,13 +1,6 @@
-use crate::db::*;
 use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 // ── Stats (Epic 36 G-BE) ────────────────────────────────────────────
 

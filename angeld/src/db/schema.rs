@@ -1,13 +1,8 @@
-use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::FromRow;
 use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::SqlitePoolOptions;
 use std::str::FromStr;
-use uuid::Uuid;
 
 #[allow(dead_code)]
 pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
@@ -771,4 +766,23 @@ async fn ensure_column_exists(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::*;
+
+    #[tokio::test]
+    async fn inodes_deleted_at_defaults_null() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = init_db("sqlite::memory:").await?;
+        let inode = create_inode(&pool, None, "f.txt", "FILE", 1).await?;
+        let deleted_at: Option<i64> =
+            sqlx::query_scalar("SELECT deleted_at FROM inodes WHERE id = ?")
+                .bind(inode)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(deleted_at, None);
+        Ok(())
+    }
 }

@@ -1,14 +1,7 @@
-use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::FromRow;
-use sqlx::Row;
-use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 use crate::db::sync_policies::normalize_policy_path;
+use crate::db::*;
+use sqlx::FromRow;
+use sqlx::SqlitePool;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]

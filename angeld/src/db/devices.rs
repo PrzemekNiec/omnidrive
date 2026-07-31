@@ -1,13 +1,6 @@
 use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
@@ -191,4 +184,170 @@ pub async fn touch_device_last_seen(pool: &SqlitePool, device_id: &str) -> Resul
         .execute(pool)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn device_crud_lifecycle() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_user(&pool, "u1", "Alice", None, "local", None)
+            .await
+            .unwrap();
+
+        let pubkey = vec![0u8; 32];
+
+        // Create device
+        create_device(&pool, "dev1", "u1", "Laptop", &pubkey)
+            .await
+            .unwrap();
+
+        // Read
+        let dev = get_device(&pool, "dev1").await.unwrap().unwrap();
+        assert_eq!(dev.device_name, "Laptop");
+        assert_eq!(dev.user_id, "u1");
+        assert_eq!(dev.public_key, pubkey);
+        assert!(dev.wrapped_vault_key.is_none());
+        assert!(dev.revoked_at.is_none());
+
+        // List by user
+        create_device(&pool, "dev2", "u1", "Phone", &pubkey)
+            .await
+            .unwrap();
+        let devs = list_devices_for_user(&pool, "u1").await.unwrap();
+        assert_eq!(devs.len(), 2);
+
+        // Set wrapped vault key
+        let wvk = vec![1u8; 48];
+        assert!(
+            set_device_wrapped_vault_key(&pool, "dev1", &wvk, 1)
+                .await
+                .unwrap()
+        );
+        let dev = get_device(&pool, "dev1").await.unwrap().unwrap();
+        assert_eq!(dev.wrapped_vault_key.as_deref(), Some(wvk.as_slice()));
+        assert_eq!(dev.vault_key_generation, Some(1));
+
+        // Revoke
+        assert!(revoke_device(&pool, "dev1").await.unwrap());
+        let dev = get_device(&pool, "dev1").await.unwrap().unwrap();
+        assert!(dev.revoked_at.is_some());
+
+        // Double revoke returns false
+        assert!(!revoke_device(&pool, "dev1").await.unwrap());
+
+        // Touch last_seen
+        touch_device_last_seen(&pool, "dev2").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_and_get_safety_verified_roundtrip() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u1', 'Test User', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('d1', 'u1', 'test', X'0102', 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let before = get_device_safety_verified_at(&pool, "d1").await.unwrap();
+        assert!(before.is_none());
+
+        set_device_safety_verified(&pool, "d1").await.unwrap();
+
+        let after = get_device_safety_verified_at(&pool, "d1").await.unwrap();
+        assert!(after.is_some());
+        assert!(after.unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn set_and_read_device_wrapped_kyber() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u-kyber', 'Test', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('dev-x', 'u-kyber', 'PC', X'090909', 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let kyber_pub = vec![0x22u8; 1184];
+        let wrapped_kyber = vec![0x44u8; 1128];
+        set_device_kyber_public_key(&pool, "dev-x", &kyber_pub)
+            .await
+            .unwrap();
+        set_device_wrapped_vault_key_kyber(&pool, "dev-x", &wrapped_kyber)
+            .await
+            .unwrap();
+
+        let dev = get_device(&pool, "dev-x").await.unwrap().unwrap();
+        assert_eq!(dev.kyber_public_key.as_deref(), Some(kyber_pub.as_slice()));
+        assert_eq!(
+            dev.wrapped_vault_key_kyber.as_deref(),
+            Some(wrapped_kyber.as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_device_nulls_both_wraps() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u-kyber', 'Test', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('dev-x', 'u-kyber', 'PC', X'090909', 1000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let kyber_pub = vec![0x22u8; 1184];
+        let wrapped_kyber = vec![0x44u8; 1128];
+        set_device_kyber_public_key(&pool, "dev-x", &kyber_pub)
+            .await
+            .unwrap();
+        set_device_wrapped_vault_key_kyber(&pool, "dev-x", &wrapped_kyber)
+            .await
+            .unwrap();
+        let wvk = vec![0x11u8; 48];
+        set_device_wrapped_vault_key(&pool, "dev-x", &wvk, 1)
+            .await
+            .unwrap();
+
+        assert!(revoke_device(&pool, "dev-x").await.unwrap());
+        let dev = get_device(&pool, "dev-x").await.unwrap().unwrap();
+        assert!(dev.revoked_at.is_some());
+        assert!(dev.wrapped_vault_key.is_none());
+        assert!(dev.wrapped_vault_key_kyber.is_none());
+        assert!(
+            dev.vault_key_generation.is_none(),
+            "generation cleared on revoke"
+        );
+        assert!(
+            dev.kyber_public_key.is_some(),
+            "public key survives revoke by design"
+        );
+    }
 }

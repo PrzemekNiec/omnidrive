@@ -1,13 +1,5 @@
 use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 // ── Sesja C: OAuth2 state management ────────────────────────────────
 
@@ -114,4 +106,85 @@ pub async fn clear_plaintext_refresh_token(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Sesja C: OAuth state tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn oauth_state_create_and_retrieve() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_oauth_state(&pool, "state-abc", "verifier-xyz", 600)
+            .await
+            .unwrap();
+        let v = get_and_delete_oauth_state(&pool, "state-abc")
+            .await
+            .unwrap();
+        assert_eq!(v.as_deref(), Some("verifier-xyz"));
+    }
+
+    #[tokio::test]
+    async fn oauth_state_is_single_use() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_oauth_state(&pool, "state-once", "verifier-once", 600)
+            .await
+            .unwrap();
+        assert!(
+            get_and_delete_oauth_state(&pool, "state-once")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            get_and_delete_oauth_state(&pool, "state-once")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_state_csrf_mismatch_returns_none() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_oauth_state(&pool, "real-state", "verifier-real", 600)
+            .await
+            .unwrap();
+        let v = get_and_delete_oauth_state(&pool, "attacker-state")
+            .await
+            .unwrap();
+        assert!(v.is_none());
+    }
+
+    #[tokio::test]
+    async fn oauth_state_expired_returns_none() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_oauth_state(&pool, "expired-state", "verifier-exp", -1)
+            .await
+            .unwrap();
+        let v = get_and_delete_oauth_state(&pool, "expired-state")
+            .await
+            .unwrap();
+        assert!(v.is_none(), "expired state must return None");
+    }
+
+    #[tokio::test]
+    async fn oauth_state_cleanup_removes_expired() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_oauth_state(&pool, "exp-1", "v1", -10).await.unwrap();
+        create_oauth_state(&pool, "exp-2", "v2", -5).await.unwrap();
+        create_oauth_state(&pool, "live-1", "v3", 600)
+            .await
+            .unwrap();
+        assert_eq!(delete_expired_oauth_states(&pool).await.unwrap(), 2);
+        assert_eq!(
+            get_and_delete_oauth_state(&pool, "live-1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("v3")
+        );
+    }
 }

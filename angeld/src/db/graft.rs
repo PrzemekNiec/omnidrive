@@ -1,13 +1,6 @@
 use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
 use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VaultRestoreApplyReport {
@@ -982,5 +975,647 @@ pub async fn graft_roster_additive(
             let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
             Err(err)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_support::*;
+
+    fn temp_test_dir(tag: &str) -> std::path::PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        std::env::temp_dir().join(format!(
+            "omnidrive-acb-{}-{}",
+            tag,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    async fn build_source_vault(
+        dir: &std::path::Path,
+    ) -> Result<
+        (
+            sqlx::SqlitePool,
+            std::path::PathBuf,
+            Vec<u8>,
+            String,
+            i64,
+            Vec<u8>,
+            String,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        use crate::disaster_recovery::create_metadata_snapshot;
+        use crate::vault::VaultKeyStore;
+
+        let source_path = dir.join("source.db");
+        let snapshot_path = dir.join("snapshot.db");
+        let source_url = format!(
+            "sqlite://{}",
+            source_path.to_string_lossy().replace('\\', "/")
+        );
+
+        let source_pool = init_db(&source_url).await?;
+
+        let store = VaultKeyStore::new();
+        store.unlock(&source_pool, "test-pass").await?;
+        let envelope_key = store.require_envelope_key().await?.to_vec();
+        let safety = store
+            .safety_numbers(USER_FIXTURE)
+            .await
+            .expect("source must produce safety numbers");
+
+        let inode_id = create_inode(&source_pool, None, "graft-test.txt", "FILE", 42).await?;
+        store.get_or_create_dek(&source_pool, inode_id).await?;
+        let wrapped_dek: Vec<u8> =
+            sqlx::query_scalar("SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&source_pool)
+                .await?;
+
+        let vault_id: String = sqlx::query_scalar("SELECT vault_id FROM vault_state WHERE id = 1")
+            .fetch_one(&source_pool)
+            .await?;
+
+        insert_recovery_key(&source_pool, &vault_id, &[0xABu8; 40], 1, Some("test")).await?;
+
+        sqlx::query("UPDATE vault_state SET legacy_read_key = ? WHERE id = 1")
+            .bind(vec![0x5Au8; 60])
+            .execute(&source_pool)
+            .await?;
+
+        create_metadata_snapshot(&source_pool, &snapshot_path).await?;
+
+        Ok((
+            source_pool,
+            snapshot_path,
+            envelope_key,
+            safety,
+            inode_id,
+            wrapped_dek,
+            vault_id,
+        ))
+    }
+
+    // ── β.1 graft_roster_additive tests ─────────────────────────────────────
+
+    async fn build_roster_snapshot(
+        path: &std::path::Path,
+        vault_id: &str,
+        devices: &[(&str, &str, Option<i64>)],
+        members: &[(&str, &str)],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        if let Some(p) = path.parent() {
+            fs::create_dir_all(p).await?;
+        }
+        let url = format!("sqlite://{}", path.to_string_lossy().replace('\\', "/"));
+        let pool = init_db(&url).await?;
+
+        sqlx::query(
+            "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+             VALUES (1, ?, 'test', ?)",
+        )
+        .bind(vec![0u8; 16])
+        .bind(vault_id)
+        .execute(&pool)
+        .await?;
+
+        for (device_id, user_id, revoked_at) in devices {
+            sqlx::query(
+                "INSERT OR IGNORE INTO users \
+                 (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+                 VALUES (?, 'Test', NULL, 'local', NULL, 1000)",
+            )
+            .bind(user_id)
+            .execute(&pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO devices \
+                 (device_id, user_id, device_name, public_key, created_at, revoked_at) \
+                 VALUES (?, ?, 'PC', X'01', 1000, ?)",
+            )
+            .bind(device_id)
+            .bind(user_id)
+            .bind(revoked_at)
+            .execute(&pool)
+            .await?;
+        }
+
+        for (user_id, role) in members {
+            sqlx::query(
+                "INSERT OR IGNORE INTO users \
+                 (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+                 VALUES (?, 'Test', NULL, 'local', NULL, 1000)",
+            )
+            .bind(user_id)
+            .execute(&pool)
+            .await?;
+            sqlx::query(
+                "INSERT INTO vault_members (user_id, vault_id, role, invited_by, joined_at) \
+                 VALUES (?, ?, ?, NULL, 1000)",
+            )
+            .bind(user_id)
+            .bind(vault_id)
+            .bind(role)
+            .execute(&pool)
+            .await?;
+        }
+
+        pool.close().await;
+        drop(pool);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_copies_encrypted_vault_key_generation_and_legacy_read_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("vaultstate");
+        fs::create_dir_all(&dir).await?;
+
+        let (source_pool, snapshot_path, _evk, _safety, _inode, _dek, _vid) =
+            build_source_vault(&dir).await?;
+        let source_evk: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&source_pool)
+                .await?;
+        let source_gen: Option<i64> =
+            sqlx::query_scalar("SELECT vault_key_generation FROM vault_state WHERE id = 1")
+                .fetch_one(&source_pool)
+                .await?;
+        assert!(source_evk.is_some(), "source must have an envelope key");
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target_pool = init_db(&target_url).await?;
+        crate::vault::VaultKeyStore::new()
+            .unlock(&target_pool, "test-pass")
+            .await?;
+        let dell_evk_before: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target_pool)
+                .await?;
+
+        graft_restored_metadata_snapshot(&target_pool, &snapshot_path).await?;
+
+        let after_evk: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target_pool)
+                .await?;
+        let after_gen: Option<i64> =
+            sqlx::query_scalar("SELECT vault_key_generation FROM vault_state WHERE id = 1")
+                .fetch_one(&target_pool)
+                .await?;
+        let after_legacy: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT legacy_read_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target_pool)
+                .await?;
+
+        assert_eq!(after_evk, source_evk, "EVK must be adopted from snapshot");
+        assert_ne!(
+            after_evk, dell_evk_before,
+            "EVK must overwrite the device's own"
+        );
+        assert_eq!(after_gen, source_gen, "generation must be adopted");
+        assert_eq!(
+            after_legacy,
+            Some(vec![0x5Au8; 60]),
+            "legacy_read_key must be grafted"
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_copies_data_encryption_keys() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("deks");
+        fs::create_dir_all(&dir).await?;
+
+        let (source_pool, snapshot_path, _evk, _safety, inode_id, wrapped_dek, _vid) =
+            build_source_vault(&dir).await?;
+        let source_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&source_pool)
+            .await?;
+        assert_eq!(source_count, 1, "source has exactly one DEK");
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target_pool = init_db(&target_url).await?;
+
+        graft_restored_metadata_snapshot(&target_pool, &snapshot_path).await?;
+
+        let got = get_wrapped_dek(&target_pool, inode_id).await?;
+        let got = got.expect("DEK must be grafted for the inode");
+        assert_eq!(
+            got.wrapped_dek, wrapped_dek,
+            "wrapped DEK bytes must match source"
+        );
+
+        let src_dek_id: i64 =
+            sqlx::query_scalar("SELECT dek_id FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&source_pool)
+                .await?;
+        assert_eq!(got.dek_id, src_dek_id, "dek_id must be preserved verbatim");
+
+        let target_dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&target_pool)
+            .await?;
+        assert_eq!(
+            target_dek_count, 1,
+            "exactly one DEK must be grafted (no dupes/misses)"
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_copies_vault_recovery_keys() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("recovery");
+        fs::create_dir_all(&dir).await?;
+
+        let (source_pool, snapshot_path, _evk, _safety, _inode, _dek, vault_id) =
+            build_source_vault(&dir).await?;
+        let src_id: i64 =
+            sqlx::query_scalar("SELECT id FROM vault_recovery_keys WHERE vault_id = ?")
+                .bind(&vault_id)
+                .fetch_one(&source_pool)
+                .await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target_pool = init_db(&target_url).await?;
+
+        graft_restored_metadata_snapshot(&target_pool, &snapshot_path).await?;
+
+        let active = list_active_recovery_keys(&target_pool, &vault_id).await?;
+        assert_eq!(active.len(), 1, "the source recovery key must be grafted");
+        assert_eq!(active[0].wrapped_vault_key, vec![0xABu8; 40]);
+        assert_eq!(active[0].vk_generation, 1);
+
+        let target_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault_recovery_keys")
+            .fetch_one(&target_pool)
+            .await?;
+        assert_eq!(
+            target_count, 1,
+            "exactly one recovery key grafted (no dupes/misses)"
+        );
+
+        let tgt_id: i64 =
+            sqlx::query_scalar("SELECT id FROM vault_recovery_keys WHERE vault_id = ?")
+                .bind(&vault_id)
+                .fetch_one(&target_pool)
+                .await?;
+        assert_eq!(tgt_id, src_id, "recovery key id must be preserved verbatim");
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_makes_joining_device_derive_same_evk_safety_and_dek()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use secrecy::ExposeSecret;
+        use tokio::fs;
+        let dir = temp_test_dir("roundtrip");
+        fs::create_dir_all(&dir).await?;
+
+        let (source_pool, snapshot_path, source_evk, source_safety, inode_id, _dek, _vid) =
+            build_source_vault(&dir).await?;
+        let source_store = crate::vault::VaultKeyStore::new();
+        source_store.unlock(&source_pool, "test-pass").await?;
+        let (_id, source_dek) = source_store
+            .get_or_create_dek(&source_pool, inode_id)
+            .await?;
+        let source_dek_bytes = source_dek.expose_secret()[..].to_vec();
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target_pool = init_db(&target_url).await?;
+        crate::vault::VaultKeyStore::new()
+            .unlock(&target_pool, "test-pass")
+            .await?;
+
+        graft_restored_metadata_snapshot(&target_pool, &snapshot_path).await?;
+
+        let joined = crate::vault::VaultKeyStore::new();
+        joined.unlock(&target_pool, "test-pass").await?;
+
+        let joined_evk = joined.require_envelope_key().await?.to_vec();
+        assert_eq!(joined_evk, source_evk, "joined EVK must equal source EVK");
+
+        let joined_safety = joined.safety_numbers(USER_FIXTURE).await.unwrap();
+        assert_eq!(
+            joined_safety, source_safety,
+            "safety numbers must match (P1-005)"
+        );
+
+        let (_id2, joined_dek) = joined.get_or_create_dek(&target_pool, inode_id).await?;
+        assert_eq!(
+            joined_dek.expose_secret()[..].to_vec(),
+            source_dek_bytes,
+            "grafted DEK must unwrap to the same plaintext (P1-001)"
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_from_legacy_v1_snapshot_does_not_panic() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use tokio::fs;
+        let dir = temp_test_dir("v1compat");
+        fs::create_dir_all(&dir).await?;
+
+        let source_url = format!(
+            "sqlite://{}",
+            dir.join("source.db").to_string_lossy().replace('\\', "/")
+        );
+        let source_pool = init_db(&source_url).await?;
+        sqlx::query(
+            "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+             VALUES (1, ?, ?, ?)",
+        )
+        .bind(vec![1u8; 16])
+        .bind("v1-params")
+        .bind("vault-legacy")
+        .execute(&source_pool)
+        .await?;
+
+        let snapshot_path = dir.join("snapshot.db");
+        crate::disaster_recovery::create_metadata_snapshot(&source_pool, &snapshot_path).await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target_pool = init_db(&target_url).await?;
+
+        graft_restored_metadata_snapshot(&target_pool, &snapshot_path).await?;
+
+        let evk: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target_pool)
+                .await?;
+        assert!(
+            evk.is_none(),
+            "V1 snapshot has no envelope key — must stay NULL"
+        );
+        let dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&target_pool)
+            .await?;
+        assert_eq!(dek_count, 0);
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_roster_additive_adds_missing_device() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("roster-add");
+        fs::create_dir_all(&dir).await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target = init_db(&target_url).await?;
+        sqlx::query(
+            "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+             VALUES (1, ?, 'test', 'v1')",
+        )
+        .bind(vec![0u8; 16])
+        .execute(&target)
+        .await?;
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u1', 'Owner', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&target)
+        .await?;
+        sqlx::query(
+            "INSERT INTO devices (device_id, user_id, device_name, public_key, created_at) \
+             VALUES ('A', 'u1', 'PC-A', X'01', 1000)",
+        )
+        .execute(&target)
+        .await?;
+
+        let snap = dir.join("snap.db");
+        build_roster_snapshot(&snap, "v1", &[("A", "u1", None), ("B", "u1", None)], &[]).await?;
+
+        let summary = graft_roster_additive(&target, &snap, "v1").await?;
+        assert_eq!(summary.devices_added, 1, "only device B should be added");
+
+        let dev_b = get_device(&target, "B").await?;
+        assert!(dev_b.is_some(), "device B must exist after graft");
+        let dev_a = get_device(&target, "A").await?;
+        assert!(dev_a.is_some(), "device A must still exist");
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_roster_additive_does_not_clobber_existing_device()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("roster-noclobber");
+        fs::create_dir_all(&dir).await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target = init_db(&target_url).await?;
+        sqlx::query(
+            "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+             VALUES (1, ?, 'test', 'v1')",
+        )
+        .bind(vec![0u8; 16])
+        .execute(&target)
+        .await?;
+        sqlx::query(
+            "INSERT INTO users (user_id, display_name, email, auth_provider, auth_subject, created_at) \
+             VALUES ('u1', 'Owner', NULL, 'local', NULL, 1000)",
+        )
+        .execute(&target)
+        .await?;
+        sqlx::query(
+            "INSERT INTO devices \
+             (device_id, user_id, device_name, public_key, created_at, revoked_at) \
+             VALUES ('A', 'u1', 'PC-A', X'01', 1000, 123)",
+        )
+        .execute(&target)
+        .await?;
+
+        let snap = dir.join("snap.db");
+        build_roster_snapshot(&snap, "v1", &[("A", "u1", None)], &[]).await?;
+
+        graft_roster_additive(&target, &snap, "v1").await?;
+
+        let dev_a = get_device(&target, "A").await?.unwrap();
+        assert_eq!(
+            dev_a.revoked_at,
+            Some(123),
+            "INSERT OR IGNORE must not overwrite local revoked_at"
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_roster_additive_never_touches_dek() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::fs;
+        let dir = temp_test_dir("roster-dek-guard");
+        fs::create_dir_all(&dir).await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target = init_db(&target_url).await?;
+        sqlx::query(
+            "INSERT INTO vault_state \
+             (id, master_key_salt, argon2_params, vault_id, encrypted_vault_key, vault_key_generation) \
+             VALUES (1, ?, 'test', 'v1', X'AABB', 7)",
+        )
+        .bind(vec![0u8; 16])
+        .execute(&target)
+        .await?;
+        let inode_id = create_inode(&target, None, "guard.txt", "FILE", 10).await?;
+        insert_wrapped_dek(&target, inode_id, &[0xCCu8; 32], 1, 7).await?;
+
+        let before_dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&target)
+            .await?;
+        let before_dek_bytes: Vec<u8> =
+            sqlx::query_scalar("SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&target)
+                .await?;
+        let before_evk: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target)
+                .await?;
+        let before_gen: Option<i64> =
+            sqlx::query_scalar("SELECT vault_key_generation FROM vault_state WHERE id = 1")
+                .fetch_one(&target)
+                .await?;
+
+        let snap = dir.join("snap.db");
+        {
+            let url = format!("sqlite://{}", snap.to_string_lossy().replace('\\', "/"));
+            let sp = init_db(&url).await?;
+            sqlx::query(
+                "INSERT INTO vault_state \
+                 (id, master_key_salt, argon2_params, vault_id, encrypted_vault_key, vault_key_generation) \
+                 VALUES (1, ?, 'test', 'v1', X'DDEE', 99)",
+            )
+            .bind(vec![1u8; 16])
+            .execute(&sp)
+            .await?;
+            let snap_inode = create_inode(&sp, None, "snap.txt", "FILE", 5).await?;
+            insert_wrapped_dek(&sp, snap_inode, &[0xFFu8; 32], 1, 99).await?;
+            sp.close().await;
+            drop(sp);
+        }
+
+        graft_roster_additive(&target, &snap, "v1").await?;
+
+        let after_dek_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM data_encryption_keys")
+            .fetch_one(&target)
+            .await?;
+        let after_dek_bytes: Vec<u8> =
+            sqlx::query_scalar("SELECT wrapped_dek FROM data_encryption_keys WHERE inode_id = ?")
+                .bind(inode_id)
+                .fetch_one(&target)
+                .await?;
+        let after_evk: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT encrypted_vault_key FROM vault_state WHERE id = 1")
+                .fetch_one(&target)
+                .await?;
+        let after_gen: Option<i64> =
+            sqlx::query_scalar("SELECT vault_key_generation FROM vault_state WHERE id = 1")
+                .fetch_one(&target)
+                .await?;
+
+        assert_eq!(
+            after_dek_count, before_dek_count,
+            "DEK row count must not change"
+        );
+        assert_eq!(
+            after_dek_bytes, before_dek_bytes,
+            "DEK bytes must be unchanged"
+        );
+        assert_eq!(after_evk, before_evk, "encrypted_vault_key must not change");
+        assert_eq!(
+            after_gen, before_gen,
+            "vault_key_generation must not change"
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graft_roster_additive_rejects_foreign_vault() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use tokio::fs;
+        let dir = temp_test_dir("roster-foreign");
+        fs::create_dir_all(&dir).await?;
+
+        let target_url = format!(
+            "sqlite://{}",
+            dir.join("target.db").to_string_lossy().replace('\\', "/")
+        );
+        let target = init_db(&target_url).await?;
+        sqlx::query(
+            "INSERT INTO vault_state (id, master_key_salt, argon2_params, vault_id) \
+             VALUES (1, ?, 'test', 'v1')",
+        )
+        .bind(vec![0u8; 16])
+        .execute(&target)
+        .await?;
+
+        let before_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices")
+            .fetch_one(&target)
+            .await?;
+
+        let snap = dir.join("snap.db");
+        build_roster_snapshot(&snap, "v-OTHER", &[("X", "u9", None)], &[]).await?;
+
+        let result = graft_roster_additive(&target, &snap, "v1").await;
+        assert!(result.is_err(), "must return Err for foreign vault");
+
+        let after_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices")
+            .fetch_one(&target)
+            .await?;
+        assert_eq!(
+            after_count, before_count,
+            "no device must be inserted on vault_id mismatch"
+        );
+
+        let _ = fs::remove_dir_all(&dir).await;
+        Ok(())
     }
 }

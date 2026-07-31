@@ -1,13 +1,6 @@
 use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 // ── Epic 34.3a: User Sessions ───────────────────────────────────────
 
@@ -133,4 +126,122 @@ pub async fn cleanup_expired_sessions(pool: &SqlitePool) -> Result<u64, sqlx::Er
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Epic 34.3a: Session token tests ─────────────────────────────
+
+    #[tokio::test]
+    async fn session_create_validate_delete() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_user(&pool, "user-1", "Alice", None, "local", None)
+            .await
+            .unwrap();
+
+        let token = generate_session_token();
+        assert_eq!(token.len(), 43); // 32 bytes → 43 base64url chars (no pad)
+
+        let session = create_user_session(&pool, &token, "user-1", "dev-a", SESSION_TTL_SECONDS)
+            .await
+            .unwrap();
+        assert_eq!(session.user_id, "user-1");
+        assert_eq!(session.device_id, "dev-a");
+        assert!(session.expires_at > session.created_at);
+
+        // Validate
+        let valid = validate_user_session(&pool, &token).await.unwrap();
+        assert!(valid.is_some());
+        let valid = valid.unwrap();
+        assert_eq!(valid.user_id, "user-1");
+
+        // Invalid token returns None
+        let bogus = validate_user_session(&pool, "not-a-real-token")
+            .await
+            .unwrap();
+        assert!(bogus.is_none());
+
+        // Delete (logout)
+        assert!(delete_user_session(&pool, &token).await.unwrap());
+        let gone = validate_user_session(&pool, &token).await.unwrap();
+        assert!(gone.is_none());
+
+        // Double-delete returns false
+        assert!(!delete_user_session(&pool, &token).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn session_expires() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_user(&pool, "user-1", "Alice", None, "local", None)
+            .await
+            .unwrap();
+
+        // Create session with TTL=0 so it's already expired
+        let token = generate_session_token();
+        create_user_session(&pool, &token, "user-1", "dev-a", 0)
+            .await
+            .unwrap();
+
+        // Should not validate — already expired
+        let result = validate_user_session(&pool, &token).await.unwrap();
+        assert!(result.is_none());
+
+        // Cleanup removes it
+        let cleaned = cleanup_expired_sessions(&pool).await.unwrap();
+        assert_eq!(cleaned, 1);
+    }
+
+    #[tokio::test]
+    async fn session_renew() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_user(&pool, "user-1", "Alice", None, "local", None)
+            .await
+            .unwrap();
+
+        let token = generate_session_token();
+        let session = create_user_session(&pool, &token, "user-1", "dev-a", 3600)
+            .await
+            .unwrap();
+        let old_expires = session.expires_at;
+
+        // Renew with longer TTL
+        assert!(
+            renew_user_session(&pool, &token, SESSION_TTL_SECONDS)
+                .await
+                .unwrap()
+        );
+
+        let renewed = validate_user_session(&pool, &token).await.unwrap().unwrap();
+        assert!(renewed.expires_at > old_expires);
+    }
+
+    #[tokio::test]
+    async fn session_delete_all_for_user() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        create_user(&pool, "user-1", "Alice", None, "local", None)
+            .await
+            .unwrap();
+
+        // Create 3 sessions
+        for i in 0..3 {
+            let t = generate_session_token();
+            create_user_session(
+                &pool,
+                &t,
+                "user-1",
+                &format!("dev-{i}"),
+                SESSION_TTL_SECONDS,
+            )
+            .await
+            .unwrap();
+        }
+
+        let deleted = delete_user_sessions_for_user(&pool, "user-1")
+            .await
+            .unwrap();
+        assert_eq!(deleted, 3);
+    }
 }

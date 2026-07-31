@@ -1,13 +1,6 @@
 use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
@@ -331,4 +324,33 @@ pub async fn get_trusted_peer_by_id(
     .bind(peer_id)
     .fetch_optional(pool)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn store_and_read_kyber_keypair() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        upsert_local_device_identity(&pool, "dev-kyber", "TestPC", "tok-1")
+            .await
+            .unwrap();
+
+        let sealed_priv = vec![0x11u8; 2428];
+        let kyber_pub = vec![0x22u8; 1184];
+        store_kyber_keypair(&pool, &sealed_priv, &kyber_pub)
+            .await
+            .unwrap();
+
+        let device = get_local_device_identity(&pool).await.unwrap().unwrap();
+        assert_eq!(
+            device.encrypted_kyber_private_key.as_deref(),
+            Some(sealed_priv.as_slice())
+        );
+        assert_eq!(
+            device.kyber_public_key.as_deref(),
+            Some(kyber_pub.as_slice())
+        );
+    }
 }

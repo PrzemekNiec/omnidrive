@@ -1,13 +1,6 @@
 use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
@@ -462,4 +455,108 @@ pub async fn get_deks_by_generation(
     .bind(vault_key_gen)
     .fetch_all(pool)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "test-helpers")]
+    use super::*;
+
+    #[cfg(feature = "test-helpers")]
+    async fn test_pool() -> SqlitePool {
+        init_db("sqlite::memory:").await.unwrap()
+    }
+
+    #[cfg(feature = "test-helpers")]
+    async fn seed_vault_state_v1(pool: &SqlitePool) {
+        set_vault_config(pool, &[1u8; 16], 1, 65_536, 3, 1)
+            .await
+            .unwrap();
+        set_vault_params(
+            pool,
+            &[2u8; 32],
+            r#"{"mode":"LOCAL_VAULT","parameter_set_version":1,"memory_cost_kib":65536,"time_cost":3,"lanes":1}"#,
+            "vault-test-001",
+        )
+        .await
+        .unwrap();
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[tokio::test]
+    async fn migrate_kdf_params_tx_writes_all_fields() {
+        use omnidrive_core::crypto::WRAPPED_KEY_LEN;
+
+        let pool = test_pool().await;
+        seed_vault_state_v1(&pool).await;
+
+        let writes = KdfMigrationWrites {
+            new_salt: &[7u8; 16],
+            new_argon2_params_json: r#"{"mode":"LOCAL_VAULT","parameter_set_version":2,"memory_cost_kib":262144,"time_cost":3,"lanes":1}"#,
+            new_param_version: 2,
+            new_memory_cost_kib: 262_144,
+            new_time_cost: 3,
+            new_lanes: 1,
+            new_encrypted_vault_key: &[9u8; WRAPPED_KEY_LEN],
+            legacy_read_key_blob: &[5u8; 60],
+            new_encrypted_device_private_key: Some(&[6u8; 60]),
+        };
+        migrate_kdf_params_tx(&pool, writes).await.unwrap();
+
+        let cfg = get_vault_config(&pool).await.unwrap().unwrap();
+        assert_eq!(cfg.parameter_set_version, 2);
+        assert_eq!(cfg.memory_cost_kib, 262_144);
+        assert_eq!(cfg.salt, vec![7u8; 16]);
+        let v = get_vault_params(&pool).await.unwrap().unwrap();
+        assert_eq!(v.encrypted_vault_key.unwrap(), vec![9u8; WRAPPED_KEY_LEN]);
+        assert_eq!(
+            get_legacy_read_key(&pool).await.unwrap().unwrap(),
+            vec![5u8; 60]
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[tokio::test]
+    async fn migrate_kdf_params_tx_rolls_back_on_failure() {
+        use omnidrive_core::crypto::WRAPPED_KEY_LEN;
+
+        let pool = test_pool().await;
+        seed_vault_state_v1(&pool).await;
+
+        set_migration_failpoint(true);
+        let writes = KdfMigrationWrites {
+            new_salt: &[7u8; 16],
+            new_argon2_params_json: "{}",
+            new_param_version: 2,
+            new_memory_cost_kib: 262_144,
+            new_time_cost: 3,
+            new_lanes: 1,
+            new_encrypted_vault_key: &[9u8; WRAPPED_KEY_LEN],
+            legacy_read_key_blob: &[5u8; 60],
+            new_encrypted_device_private_key: Some(&[6u8; 60]),
+        };
+        let result = migrate_kdf_params_tx(&pool, writes).await;
+        set_migration_failpoint(false);
+
+        assert!(result.is_err());
+        let cfg = get_vault_config(&pool).await.unwrap().unwrap();
+        assert_eq!(
+            cfg.parameter_set_version, 1,
+            "version must be unchanged after rollback"
+        );
+        assert!(
+            get_legacy_read_key(&pool).await.unwrap().is_none(),
+            "no legacy key written on rollback"
+        );
+        let v = get_vault_params(&pool).await.unwrap().unwrap();
+        assert_eq!(
+            v.master_key_salt,
+            vec![2u8; 32],
+            "salt unchanged after rollback"
+        );
+        assert!(
+            v.encrypted_vault_key.is_none(),
+            "encrypted_vault_key untouched after rollback"
+        );
+    }
 }

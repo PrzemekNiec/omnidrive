@@ -1,13 +1,6 @@
 use crate::db::*;
-use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-use sqlx::Row;
 use sqlx::SqlitePool;
-use std::path::Path;
-use std::str::FromStr;
-use uuid::Uuid;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq, FromRow)]
@@ -68,4 +61,57 @@ pub async fn list_audit_logs(
     .bind(limit)
     .fetch_all(pool)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn audit_log_lifecycle() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+
+        // Insert logs
+        let id1 = insert_audit_log(
+            &pool,
+            "vault-1",
+            "invite",
+            Some("u1"),
+            Some("dev1"),
+            Some("u2"),
+            None,
+            Some(r#"{"role":"member"}"#),
+        )
+        .await
+        .unwrap();
+        assert!(id1 > 0);
+
+        let id2 = insert_audit_log(
+            &pool,
+            "vault-1",
+            "join",
+            Some("u2"),
+            Some("dev2"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(id2 > id1);
+
+        // List (DESC order)
+        let logs = list_audit_logs(&pool, "vault-1", 10).await.unwrap();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].action, "join"); // most recent first
+        assert_eq!(logs[1].action, "invite");
+
+        // Limit
+        let one = list_audit_logs(&pool, "vault-1", 1).await.unwrap();
+        assert_eq!(one.len(), 1);
+
+        // Different vault is empty
+        let empty = list_audit_logs(&pool, "vault-other", 10).await.unwrap();
+        assert!(empty.is_empty());
+    }
 }
