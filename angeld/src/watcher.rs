@@ -187,7 +187,8 @@ impl FileWatcher {
         for root in watch_roots.clone() {
             watcher.watch(root.as_path(), RecursiveMode::Recursive)?;
         }
-        if let Err(err) = self.scan_existing_files().await {
+        let mut processed_files = HashMap::new();
+        if let Err(err) = self.scan_existing_files(&mut processed_files).await {
             if is_vault_locked_error(&err) {
                 warn!("watcher initial scan skipped while vault is locked");
             } else {
@@ -196,7 +197,6 @@ impl FileWatcher {
         }
         diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Idle);
 
-        let mut processed_files = HashMap::new();
         let mut pending_paths: HashMap<PathBuf, Instant> = HashMap::new();
         let mut rescan_tick = interval(self.rescan_interval);
         rescan_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -218,7 +218,7 @@ impl FileWatcher {
                     }
                     _ = rescan_tick.tick() => {
                         diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Active);
-                        if let Err(err) = self.scan_existing_files().await {
+                        if let Err(err) = self.scan_existing_files(&mut processed_files).await {
                             if is_vault_locked_error(&err) {
                                 warn!("watcher periodic scan skipped while vault is locked");
                             } else {
@@ -238,7 +238,7 @@ impl FileWatcher {
                     }
                     _ = rescan_tick.tick() => {
                         diagnostics::set_worker_status(WorkerKind::Watcher, WorkerStatus::Active);
-                        if let Err(err) = self.scan_existing_files().await {
+                        if let Err(err) = self.scan_existing_files(&mut processed_files).await {
                             if is_vault_locked_error(&err) {
                                 warn!("watcher periodic scan skipped while vault is locked");
                             } else {
@@ -254,11 +254,17 @@ impl FileWatcher {
         Ok(())
     }
 
-    async fn scan_existing_files(&self) -> Result<(), WatcherError> {
-        let mut processed_files = HashMap::new();
+    /// Skan okresowy MUSI dostac te sama mape co sciezka zdarzeniowa. Wlasna,
+    /// pusta mapa zerowala `previous_state`, przez co obie zabezpieczajace
+    /// sciezki (rozmiar+mtime oraz dedup po skrocie tresci) byly martwe i kazdy
+    /// tick przepakowywal niezmieniony plik, tworzac nowa rewizje.
+    async fn scan_existing_files(
+        &self,
+        processed_files: &mut HashMap<PathBuf, TrackedFileState>,
+    ) -> Result<(), WatcherError> {
         let watch_roots = self.watch_roots.clone();
         for root in watch_roots {
-            self.process_event_path(root.clone(), &mut processed_files)
+            self.process_event_path(root.clone(), processed_files)
                 .await?;
         }
         Ok(())
