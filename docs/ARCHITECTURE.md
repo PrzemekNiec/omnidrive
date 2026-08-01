@@ -36,7 +36,7 @@ rozdział 7. Ustalenie robocze: **jedna warstwa na sesję** — przy tej gęsto�
 | 1. Bootstrap | ✅ pełne czytanie |
 | 2. Baza danych (24 pliki) | ✅ pełne czytanie |
 | 3. Krypto i vault | ✅ pełne czytanie |
-| 4. Pipeline zapisu | ⚠️ `packer`, `watcher`, `ingest` przeczytane; **`uploader.rs` (1020 linii) i `aws_http.rs` NIE** |
+| 4. Pipeline zapisu | ✅ pełne czytanie (`uploader.rs` + `aws_http.rs` domknięte — rozdział 4b) |
 | 5. Pipeline odczytu | ✅ `downloader/*` + `cache.rs` |
 | 6. Integralność | ⚠️ `cloud_guard`, `gc` pełne; **`scrubber.rs` i `repair.rs` tylko strukturalnie** |
 | 7. Windows / Ghost Shell | ✅ pełne czytanie (18 znalezisk, 7 × 🔴) |
@@ -47,7 +47,6 @@ rozdział 7. Ustalenie robocze: **jedna warstwa na sesję** — przy tej gęsto�
 ### Co zostało do przeczytania
 
 ```
-warstwa 4 (dokończyć): uploader.rs (1020), aws_http.rs (50)
 warstwa 6 (dokończyć): scrubber.rs (504), repair.rs (881)
 warstwa 8: onboarding (1213), db/graft (1460), disaster_recovery (2689),
            peer (535), pipe_server (309), sharing (107 — juz czytane przy Z4-01)
@@ -96,6 +95,7 @@ zielonych.
 3. [Krypto i vault](#3-krypto-i-vault)
 4. [Pipeline zapisu](#4-pipeline-zapisu) — *bez `uploader.rs`*
 5. [Pipeline odczytu](#5-pipeline-odczytu)
+4b. [Pipeline zapisu — dokończenie](#4b-pipeline-zapisu--dokonczenie-uploaderrs-aws_httprs)
 6. [Integralność danych](#6-integralnosc-danych)
 7. [Windows / Ghost Shell](#7-windows--ghost-shell)
 8. Cross-device — *do zrobienia*
@@ -131,6 +131,14 @@ zielonych.
 | Z4-04 | ⚠️ | Każdy restart przepakowuje cały watch root (stąd 1429 rewizji) | czytanie + baza |
 | Z4-05 | ⚠️ | Watcher bierny do restartu po zakończeniu onboardingu | czytanie |
 | Z4-06 | 🔴 | Ingest ocenia packi regułami `EC_2_1` — `STANDARD`/`LOCAL` zawsze `FAILED` | grep + tabela progów |
+| Z4-07 | 🔴 | Pack zablokowany kwotą wraca co 2 s bez końca — `mark_*_failed` nie rusza `attempts` | czytanie + `db/shards.rs:163` |
+| Z4-08 | 🔴 | `is_retryable()` uznaje 403/404 za przejściowe — odwołane klucze ponawiane ~37 dni | czytanie |
+| Z4-09 | 🔴 | `UploadWorker::run` kończy pętlę na dowolnym błędzie SQLite (w parze z Z1-02) | czytanie |
+| Z4-10 | ⚠️ | `all_from_env()` wymaga kompletu 3 providerów; `ALLOW_EMPTY_UPLOADERS` daje zero | czytanie |
+| Z4-11 | ⚠️ | Trzy warstwy ponawiania mnożą się (SDK `adaptive` × attempt timeout × pętla) | czytanie |
+| Z4-12 | ⚠️ | `with_webpki_roots()` — magazyn zaufania systemu ignorowany | czytanie |
+| Z4-13 | ⚠️ | `allow_http` z prefiksu endpointu — literówka cicho degraduje transport do HTTP | czytanie |
+| Z4-14 | ⚠️ | `#![allow(dead_code)]` na całym pliku 1116 linii | czytanie |
 | Z5-01 | 🔴 | Cache pisze do alternatywnych strumieni NTFS (`:` w nazwie pliku) | sonda NTFS |
 | Z6-01 | 🔴 | Wyłącznik awaryjny chmury zatrzaskuje się do restartu daemona | grep: 1 wołający |
 | Z6-02 | ⚠️ | `AppConfig::from_env()` przy każdej operacji chmurowej | czytanie |
@@ -1550,3 +1558,142 @@ istnieje, zhydratowane pliki rosną na dysku bez ograniczenia aż do blokady ska
 | Z7-16 | ⚠️ | `assert_sync_root_writable` zostawia `.omnidrive_acl_probe` w sync roocie przy ubiciu procesu | czytanie |
 | Z7-17 | ⚠️ | Hartowanie ACL wyłączone w buildach debug — testy nigdy nie wchodzą na tę ścieżkę | czytanie |
 | Z7-18 | ⚠️ | `evict_unpinned_hydrated_files` bez wywołujących — brak polityki eksmisji cache'u | grep: 0 wywołujących |
+
+---
+
+# 4b. Pipeline zapisu — dokończenie (`uploader.rs`, `aws_http.rs`)
+
+Uzupełnienie rozdziału 4, dopisane 2026-08-01 po przeczytaniu 1116 linii `uploader.rs`
+i 55 linii `aws_http.rs`. To jest warstwa, która płaci rachunki za chmurę — każdy błąd
+w logice ponawiania widać na fakturze, nie w logu.
+
+## 4b.1 Kształt modułu
+
+`Uploader` to cienka koperta na klienta S3 (jeden na providera). `UploadWorker` to pętla:
+`get_next_upload_job` → `process_job` → oznacz wynik → `sleep`. Praca dzieje się per **shard**,
+nie per pack: `get_incomplete_pack_shards` zwraca to, co jeszcze nie jest `COMPLETED` ani
+`PERMANENTLY_FAILED`, a status packa wyliczany jest na końcu z `summarize_pack_shards`.
+
+Trzy rzeczy zrobione dobrze i warte zachowania przy każdej przyszłej zmianie:
+
+- **Poprawka `request_checksum_calculation(WhenRequired)`** ma komentarz wyjaśniający WHY
+  (domyślne `WhenSupported` dokleja CRC32 w kodowaniu `aws-chunked` z trailerem przy ciele
+  strumieniowym: R2 zrywa połączenie, Scaleway czeka do timeoutu, B2 toleruje — stąd mylny
+  trop, że winna jest sieć) **oraz test regresyjny** `s3_config_does_not_add_automatic_checksums`.
+  To jest dokładnie ta poprawka z live smoke'u opisana w [[project-next-session-plan]], zapisana
+  tak, że nie da się jej cofnąć niezauważenie.
+- `throttled_byte_stream` opakowuje plik w `SdkBody::retryable` z buforem 64 KiB i token-bucketem,
+  więc ponowienie po stronie SDK czyta plik od nowa zamiast trzymać go w RAM. `buffered_uploads`
+  (całe ciało w pamięci) jest opt-in przez env i domyślnie wyłączone.
+- `cleanup_remote_backed_pack_spool` kasuje spool przez `secure_delete`, i tylko wtedy, gdy pack
+  jest realnie w chmurze (`storage_mode != LocalOnly` i status `Healthy`/`Degraded`).
+
+## 4b.2 Dwa liczniki prób, które się nie spotykają
+
+W `process_job` każdy nieudany shard idzie jedną z dwóch dróg:
+
+```
+requeue_pack_shard / requeue_upload_target   -> attempts += 1, max_attempts aktualizowane
+mark_pack_shard_failed / mark_upload_target_failed -> status = FAILED, attempts BEZ ZMIAN
+```
+
+Drogą „failed bez inkrementu" idą dokładnie dwa przypadki: przekroczenie limitu rozmiaru
+pojedynczego uploadu (`enforce_single_upload_size_limit`) i **przekroczenie kwoty providera**
+(`projected_usage > max_physical_bytes_per_provider`). Oraz brak pliku shardu w spoolu.
+
+Pierwszy odruch przy czytaniu tego jest taki, że `FAILED` to stan końcowy i pack umiera na
+zawsze. Sprawdzenie w bazie mówi co innego — `db/shards.rs:163` wyklucza tylko `COMPLETED`
+i `PERMANENTLY_FAILED`, więc shard `FAILED` **wraca** do kolejki przy następnym przebiegu.
+Fałszywy alarm.
+
+Problem jest odwrotny i gorszy. Skoro `attempts` nie rośnie, to:
+
+- `max_attempts` zostaje `0`, więc na końcu `process_job` leci `retry_delay(max_attempts.max(1))`
+  = `retry_delay(1)` = `retry_base_delay` = **2 sekundy**;
+- plateau po 100 próbach (1 próba/h) nigdy nie zadziała, bo licznik stoi;
+- `UPLOAD_PERMANENT_FAILURE_AT` (1000) nigdy nie zostanie osiągnięte, bo
+  `escalate_target_if_permanent` dostaje `target_attempts` wyłącznie z `requeue_*`.
+
+Pack zablokowany kwotą wraca więc do przetwarzania **co 2 sekundy, bez końca**, a każdy przebieg
+to komplet zapytań do SQLite (`get_pack`, `get_pack_shards`, `ensure_upload_targets`,
+`get_incomplete_pack_shards`, `get_physical_usage_for_provider` per shard) plus wpis do
+`diagnostics`. Dokładnie ten kształt — gorąca pętla ponawiania, która nie eskaluje — opisuje
+[[project-b2-bleeding-root-cause]] (Z4-07).
+
+## 4b.3 Czym naprawdę jest „retryable"
+
+```rust
+fn is_retryable(&self) -> bool {
+    matches!(self, Self::Upload { .. } | Self::Timeout { .. })
+}
+```
+
+`UploaderError::Upload` powstaje w `sdk_error()` z **każdego** błędu SDK — 500 od providera,
+zerwane połączenie, ale też `403 InvalidAccessKeyId`, `403 SignatureDoesNotMatch` i
+`404 NoSuchBucket`. Odwołany klucz dostępu jest więc klasyfikowany jako błąd przejściowy.
+
+Ścieżka takiego błędu: 100 prób z narastającym backoffem (do 60 s), potem plateau 1 próba/h,
+aż do 1000 prób. To jest **około 900 godzin, czyli 37 dni**, zanim cokolwiek zostanie oznaczone
+`PERMANENTLY_FAILED` i przestanie pukać do providera. Komentarz nad `UPLOAD_RETRY_PLATEAU_AT`
+mówi wprost: *„Prevents retry storms against persistently broken providers (e.g., revoked
+credentials)"* — nie zapobiega, tylko rozrzedza do jednej próby na godzinę i robi to przez
+ponad miesiąc (Z4-08).
+
+Do tego ponawiania są trzy niezależne warstwy, które się mnożą: `RetryConfig::adaptive()`
+w `aws_http.rs`, `operation_attempt_timeout` (90 s) wewnątrz jednej operacji SDK, i pętla
+workera. Jedna „próba" workera to w rzeczywistości kilka żądań HTTP (Z4-11).
+
+## 4b.4 Pętla, która umiera po cichu
+
+```rust
+pub async fn run(mut self) -> Result<(), UploaderError> {
+    ...
+    match self.process_job(&job).await? { ... }
+}
+```
+
+Każdy błąd SQLite — w `get_next_upload_job`, w dowolnym `mark_*`, w `summarize_pack_shards` —
+propaguje się przez `?` i **kończy pętlę workera**. `process_job` woła bazę kilkanaście razy na
+przebieg, a CLAUDE.md ostrzega osobno, że operacje na `omnidrive.db` bywają blokowane przez
+Defendera i Eksploratora. Jedna taka blokada zatrzymuje uploady do restartu daemona, a ponieważ
+worker stoi poza `tokio::select!` (Z1-02), nikt się o tym nie dowie (Z4-09).
+
+Kontrast wewnątrz tego samego pliku jest wymowny: pojedynczy shard ma pełną obsługę błędów
+z trzema wariantami wyniku i eskalacją, a pętla, która to wszystko trzyma, nie ma żadnej.
+
+## 4b.5 Konfiguracja providerów i transport
+
+`Uploader::all_from_env()` woła `from_r2_env()?`, `from_scaleway_env()?` i `from_b2_env()?`
+z operatorem `?` na każdym. Skonfigurowanie **dwóch** providerów zamiast trzech wywala całość
+na `MissingEnv`. Jedyne wyjście to `OMNIDRIVE_ALLOW_EMPTY_UPLOADERS`, które daje **zero**
+uploaderów zamiast dwóch działających — z `warn!` jako całą informacją dla użytkownika. Ścieżka
+z bazy (`reload_uploaders_from_db`) jest wolna od tego problemu, ale ścieżka `from_env` dalej
+istnieje i jest tą, której używa `--no-onboarding` (Z4-10). To ten sam rdzeń co Z4-03.
+
+W `aws_http.rs` dwie decyzje warte odnotowania:
+
+- `with_webpki_roots()` — zaufanie jest przypięte do korzeni **wkompilowanych w binarkę**,
+  magazyn certyfikatów systemu jest ignorowany. Rotacja CA u providera albo firmowy proxy TLS
+  kończy się nieprzechodzącym uploadem, którego nie da się naprawić konfiguracją (Z4-12).
+- `allow_http` jest wyprowadzane z `config.endpoint.starts_with("http://")`. Literówka albo
+  wklejony niepoprawnie endpoint cicho przełącza transport na czysty HTTP — bez ostrzeżenia,
+  bez wpisu w logu. Zawartość jest zaszyfrowana klientem, więc nie jest to wyciek treści, ale
+  metadane (nazwy obiektów, rozmiary, wzorzec ruchu) idą wtedy otwartym tekstem (Z4-13).
+
+Na koniec drobiazg o dużym zasięgu: `#![allow(dead_code)]` stoi na górze całego pliku
+z komentarzem *„reserved for Epic 32.5 / Epic 33"*. W module o 1116 liniach, który obsługuje
+pieniądze i integralność danych, wyłącza to na stałe jedyny automatyczny sygnał o kodzie,
+który przestał być używany (Z4-14).
+
+## 4b.6 Znaleziska
+
+| ID | Waga | Rzecz | Potwierdzone jak |
+| --- | --- | --- | --- |
+| Z4-07 | 🔴 | Pack zablokowany kwotą wraca co 2 s bez końca: `mark_*_failed` nie rusza `attempts`, więc plateau i `PERMANENTLY_FAILED` są nieosiągalne | czytanie + `db/shards.rs:163` |
+| Z4-08 | 🔴 | `is_retryable()` uznaje 403/404 za przejściowe — odwołane klucze ponawiane ~37 dni zanim ustaną | czytanie |
+| Z4-09 | 🔴 | `UploadWorker::run` kończy pętlę na dowolnym błędzie SQLite; w parze z Z1-02 śmierć niezauważona | czytanie |
+| Z4-10 | ⚠️ | `all_from_env()` wymaga kompletu trzech providerów; `ALLOW_EMPTY_UPLOADERS` daje zero zamiast dwóch | czytanie |
+| Z4-11 | ⚠️ | Trzy warstwy ponawiania mnożą się (SDK `adaptive` × attempt timeout × pętla workera) | czytanie |
+| Z4-12 | ⚠️ | `with_webpki_roots()` — magazyn zaufania systemu ignorowany | czytanie |
+| Z4-13 | ⚠️ | `allow_http` z prefiksu endpointu — literówka cicho degraduje transport do HTTP | czytanie |
+| Z4-14 | ⚠️ | `#![allow(dead_code)]` na całym pliku 1116 linii | czytanie |
