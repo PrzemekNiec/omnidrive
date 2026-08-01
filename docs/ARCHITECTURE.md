@@ -12,9 +12,17 @@
 
 ## ⏸️ STAN PRZEGLĄDU — czytaj to najpierw przy wznowieniu
 
-**Ostatnia sesja: 2026-08-01 (druga).** Warstwa 7 przeczytana w całości i zapisana jako
-rozdział 7. Ustalenie robocze: **jedna warstwa na sesję** — przy tej gęstości kodu warstwa 8
-(`disaster_recovery.rs` 2689 linii, `db/graft.rs` 1460) sama zajmie cały kontekst.
+**Ostatnia sesja: 2026-08-01 (trzecia).** Warstwa 6 domknięta — `scrubber.rs` (545) i `repair.rs`
+(959) przeczytane w całości, wynik w rozdziale 6b, 14 nowych znalezisk (5 × 🔴). Ustalenie
+robocze: **jedna warstwa na sesję** — przy tej gęstości kodu warstwa 8 (`disaster_recovery.rs`
+2689 linii, `db/graft.rs` 1460) sama zajmie cały kontekst.
+
+Krótsza warstwa (1500 linii zamiast 2455) pozwoliła zrobić to, na co przy dużych warstwach nie
+starcza kontekstu: **sprawdzać tezy zapytaniami do bazy roboczej** (kopia + `ROLLBACK`, nigdy
+zapis do oryginału). Trzy znaleziska mają dzięki temu twarde potwierdzenie zamiast rozumowania:
+Z6-03 (świeży shard `PENDING` = pozycja 1 w kolejce scrubbera), Z6-04 (2 z 10 packów mają zero
+referencji → `pack_requires_healthy = false`), Z6-09 (jedyna weryfikacja DEEP w bazie wynika
+z `batch_index == 0`, nie z modulusa). Warto to powtórzyć przy warstwach 8-10.
 
 ### Metoda (trzymać się jej — sprawdziła się)
 
@@ -38,7 +46,7 @@ rozdział 7. Ustalenie robocze: **jedna warstwa na sesję** — przy tej gęsto�
 | 3. Krypto i vault | ✅ pełne czytanie |
 | 4. Pipeline zapisu | ✅ pełne czytanie (`uploader.rs` + `aws_http.rs` domknięte — rozdział 4b) |
 | 5. Pipeline odczytu | ✅ `downloader/*` + `cache.rs` |
-| 6. Integralność | ⚠️ `cloud_guard`, `gc` pełne; **`scrubber.rs` i `repair.rs` tylko strukturalnie** |
+| 6. Integralność | ✅ pełne czytanie (`scrubber.rs` + `repair.rs` domknięte — rozdział 6b) |
 | 7. Windows / Ghost Shell | ✅ pełne czytanie (18 znalezisk, 7 × 🔴) |
 | 8. Cross-device | ⛔ nie zaczęta |
 | 9. API i Web UI | ⛔ nie zaczęta |
@@ -47,7 +55,6 @@ rozdział 7. Ustalenie robocze: **jedna warstwa na sesję** — przy tej gęsto�
 ### Co zostało do przeczytania
 
 ```
-warstwa 6 (dokończyć): scrubber.rs (504), repair.rs (881)
 warstwa 8: onboarding (1213), db/graft (1460), disaster_recovery (2689),
            peer (535), pipe_server (309), sharing (107 — juz czytane przy Z4-01)
 warstwa 9: api/* (14 plikow, ~5500), api_error (160), static/*
@@ -97,6 +104,7 @@ zielonych.
 5. [Pipeline odczytu](#5-pipeline-odczytu)
 4b. [Pipeline zapisu — dokończenie](#4b-pipeline-zapisu--dokonczenie-uploaderrs-aws_httprs)
 6. [Integralność danych](#6-integralnosc-danych)
+6b. [Integralność — dokończenie](#6b-integralnosc--dokonczenie-scrubberrs-repairrs)
 7. [Windows / Ghost Shell](#7-windows--ghost-shell)
 8. Cross-device — *do zrobienia*
 9. API i Web UI — *do zrobienia*
@@ -142,6 +150,20 @@ zielonych.
 | Z5-01 | 🔴 | Cache pisze do alternatywnych strumieni NTFS (`:` w nazwie pliku) | sonda NTFS |
 | Z6-01 | 🔴 | Wyłącznik awaryjny chmury zatrzaskuje się do restartu daemona | grep: 1 wołający |
 | Z6-02 | ⚠️ | `AppConfig::from_env()` przy każdej operacji chmurowej | czytanie |
+| Z6-03 | 🔴 | Scrubber weryfikuje shardy jeszcze niewysłane — `PENDING` idzie pierwszy w kolejce, 404 → `FAILED` → pack degradowany → repair pobiera 4 MiB bez powodu | czytanie + sonda SQLite |
+| Z6-04 | 🔴 | `run_batch_now` bez `sleep`/kursora — `POST /repair/now` i `/reconcile/now` mogą nigdy nie wrócić | czytanie + sonda SQLite |
+| Z6-05 | 🔴 | Repair bez licznika prób: nienaprawialny pack wraca co 10 s (~34 GiB egressu/dobę) i blokuje wszystkie pozostałe | czytanie |
+| Z6-06 | 🔴 | Repair nie sprawdza `pack_shards.checksum` — odtwarza z niezweryfikowanych shardów i kasuje oryginał przez gc | czytanie |
+| Z6-07 | 🔴 | Wyścig reconcile ↔ gc w gałęzi `LocalOnly` (brak osłony `!= 'UPLOADING'`, brak FK na `pack_locations`) | czytanie + schemat |
+| Z6-08 | ⚠️ | Dwie definicje sieroty; endpoint `/api/maintenance/gc` kasuje metadane bez obiektów w chmurze | czytanie + sonda SQLite |
+| Z6-09 | ⚠️ | DEEP verify zawsze na pierwszym shardzie partii (`batch_index == 0`) — ≥576 MiB/dobę przy limicie 500 MiB | czytanie + sonda SQLite |
+| Z6-10 | ⚠️ | Klasyfikacja błędów przez `contains("404"/"500"/"tls")` na sklejce `display + debug + source` | czytanie |
+| Z6-11 | ⚠️ | Poprawka `request_checksum_calculation` tylko w `uploader.rs`; repair/scrubber/gc bez niej | grep |
+| Z6-12 | ⚠️ | `repair_pack` przy statusie Healthy nie zapisuje wyniku → gorąca pętla w workerze | czytanie |
+| Z6-13 | ⚠️ | Globalny `reset_in_progress_pack_shards()` na starcie repaira kradnie shardy uploaderowi | czytanie |
+| Z6-14 | ⚠️ | Spool rośnie ~4 MiB na każdą naprawę — nikt nie kasuje pobranych shardów | czytanie + spool |
+| Z6-15 | ⚠️ | Pętle scrubbera i repaira giną na pierwszym błędzie SQLite, poza `tokio::select!` | czytanie |
+| Z6-16 | ⚠️ | `#![allow(dead_code)]` na obu produkcyjnych modułach integralności | grep |
 | Z7-01 | 🔴 | Menu kontekstowe Eksploratora nie wysyła `Authorization` — 5/5 pozycji zwraca 401, po cichu | czytanie + grep endpointów |
 | Z7-02 | 🔴 | „Windows Hello" to samo DPAPI — brak biometrii, hasło odzyskiwalne przez dowolny proces użytkownika | grep: 0 trafień API Hello |
 | Z7-03 | 🔴 | Bufor po `CryptUnprotectData` niezwolniony i niewyzerowany; hasło jako zwykły `String` | czytanie |
@@ -1255,9 +1277,10 @@ ten ostatni jest najciaśniejszy i to on odpali się pierwszy.
 - **`repair`** odtwarza brakujące shardy z parzystości Reed-Solomon i dokonuje rekoncyliacji,
   gdy faktyczny tryb składowania packa rozjechał się z polityką (`get_next_pack_requiring_reconciliation`).
 
-> **Głębokość przeglądu:** `cloud_guard.rs` i `gc.rs` przeczytane w całości.
-> `scrubber.rs` i `repair.rs` — struktura i punkty styku z bazą; pełne czytanie ich logiki
-> rekonstrukcji EC pozostaje do zrobienia.
+> **Głębokość przeglądu:** cała warstwa przeczytana w całości. Skrót powyżej opisuje intencję —
+> **pełne czytanie `scrubber.rs` i `repair.rs` jest w rozdziale 6b** i w kilku miejscach
+> prostuje ten skrót (m.in. opis `gc` miesza worker z endpointem — patrz §6b.10, oraz
+> „co dwudziesty shard" w scrubberze nie działa tak, jak wygląda — §6b.3).
 
 ---
 
@@ -1697,3 +1720,314 @@ który przestał być używany (Z4-14).
 | Z4-12 | ⚠️ | `with_webpki_roots()` — magazyn zaufania systemu ignorowany | czytanie |
 | Z4-13 | ⚠️ | `allow_http` z prefiksu endpointu — literówka cicho degraduje transport do HTTP | czytanie |
 | Z4-14 | ⚠️ | `#![allow(dead_code)]` na całym pliku 1116 linii | czytanie |
+
+---
+
+# 6b. Integralność — dokończenie (`scrubber.rs`, `repair.rs`)
+
+Uzupełnienie rozdziału 6, dopisane 2026-08-01 po przeczytaniu 545 linii `scrubber.rs`
+i 959 linii `repair.rs` (rozdział 6 podawał 504/881 — liczby były z wcześniejszego stanu plików).
+To jest warstwa, która **pisze do plików użytkownika i kasuje obiekty w chmurze** na podstawie
+własnej oceny stanu. Każdy błąd tej oceny jest drogi w obie strony: albo płacimy za egress,
+albo tracimy jedyną dobrą kopię.
+
+Punkt wyjścia dla rachunków niżej: `DEFAULT_CHUNK_SIZE` = 4 MiB, `DATA_SHARDS` = 2,
+`PARITY_SHARDS` = 1, więc jeden shard pełnego chunka to **2 MiB**, a odtworzenie jednego
+brakującego shardu wymaga pobrania **dwóch** (4 MiB egressu na pack).
+
+## 6b.1 Pętla integralności — kto komu przekazuje pałeczkę
+
+Cztery workery tworzą łańcuch, który w kodzie nigdzie nie jest opisany jako całość:
+
+```
+scrubber:  HEAD/GET obiektu -> update_shard_verification_status
+              status HEALTHY   -> pack_shards.status = 'COMPLETED'
+              cokolwiek innego -> pack_shards.status = 'FAILED'   <-- przekazanie palki
+           -> summarize_pack_shards -> resolve_pack_status_for_mode -> packs.status
+repair:    get_next_degraded_pack (status = 'COMPLETED_DEGRADED')
+           -> pobierz 2 shardy -> Reed-Solomon reconstruct -> PUT brakujacego -> Healthy
+gc:        pack bez wiersza w pack_locations -> DELETE obiektow + wierszy + plikow spoola
+```
+
+Spoiwem jest **jedna linijka** w `db/shards.rs:354`: `update_shard_verification_status` mapuje
+wynik weryfikacji na operacyjny `status` shardu (`HEALTHY` → `COMPLETED`, wszystko inne →
+`FAILED`). Bez niej scrubber byłby tylko rejestratorem. Konsekwencja uboczna: shard oznaczony
+`FAILED` wraca również do kolejki **uploadera** (`db/shards.rs:163` wyklucza tylko `COMPLETED`
+i `PERMANENTLY_FAILED`), a jego plik w spoolu dawno skasował `cleanup_remote_backed_pack_spool`.
+Uploader trafia więc na „brak pliku shardu" → `mark_*_failed` → i mamy gorącą pętlę co 2 sekundy
+z Z4-07. **Jedna nieudana weryfikacja starego packa uruchamia sztorm ponawiania w innym module.**
+
+Co jest zrobione dobrze i warto zachować:
+
+- **Każde** wyjście do sieci w obu modułach przechodzi przez `cloud_guard` — HEAD autoryzowany
+  na 0 bajtów, GET na `shard.size`, a po pobraniu `reconcile_read_bytes` koryguje licznik
+  o różnicę między szacunkiem a rzeczywistością. To jest ten sam fallback, który uratował
+  `probe_latency` w rozdziale 6; tutaj jest zastosowany konsekwentnie.
+- Wszystkie wywołania SDK są opakowane w `tokio::time::timeout`, niezależnie od timeoutów
+  z `TimeoutConfig`.
+- Istnieje test e2e pełnej pętli: `e2e_scrubber_repair.rs` (886 linii) —
+  `scrubber_detects_missing_shard_and_repair_restores_health_without_read_failures` sabotuje
+  wybrany shard w mocku S3 na dysku, czeka na `COMPLETED_DEGRADED` i sprawdza, że repair
+  przywraca `COMPLETED_HEALTHY` **i że odczyt pliku po drodze się nie psuje**. Ścieżka szczęśliwa
+  jest więc pilnowana. Wszystko poniżej dotyczy przypadków, których ten test nie tworzy.
+
+## 6b.2 Kolejka scrubbera nie odróżnia „wysłane" od „jeszcze nie wysłane"
+
+`get_next_shards_for_scrub` (`db/shards.rs:309`) nie ma **żadnego** `WHERE`. Bierze wszystkie
+wiersze `pack_shards`, a sortowanie stawia na początku te, które nigdy nie były weryfikowane:
+
+```sql
+ORDER BY CASE WHEN last_verified_at IS NULL THEN 0 ELSE 1 END ASC, ...
+```
+
+Shard świeżo zarejestrowany przez packera ma `last_verified_at = NULL` i status `PENDING` —
+czyli ląduje **na pierwszym miejscu kolejki weryfikacji, zanim ktokolwiek go wyśle**.
+Sonda na kopii bazy roboczej (`ROLLBACK`): po wstawieniu jednego świeżego shardu `PENDING`
+zapytanie scrubbera zwraca go jako pozycję **1 z 16**, przed wszystkimi realnie wysłanymi.
+
+`verify_shard` nie patrzy na `shard.status` (pole jest w `ScrubShardRecord`, tylko nieużywane).
+Robi HEAD, dostaje 404, `is_missing_error` mówi „MISSING", więc:
+
+- `pack_shards.status` = `'FAILED'`, `verification_failures += 1`, `last_error` = treść 404,
+- `summarize_pack_shards` + `resolve_pack_status_for_mode` przeliczają status packa.
+
+Dla packa, którego dwa shardy już poszły, a trzeci jeszcze czeka w kolejce, daje to
+`completed = 2` → **`COMPLETED_DEGRADED`**. Repair budzi się na packu, któremu nic nie jest,
+pobiera 2 shardy (**4 MiB egressu**), odtwarza z parzystości trzeci i wysyła go — równolegle
+z uploaderem, który właśnie miał wysłać oryginał. Pierwszy przebieg scrubbera startuje
+natychmiast po starcie daemona (pętla robi partię *przed* pierwszym `sleep`), czyli dokładnie
+wtedy, gdy backlog uploadu jest największy.
+
+Docelowo shard i tak zostanie wysłany i oznaczony `COMPLETED`, więc stan sam się goi — ale po
+drodze płacimy egress, zapisujemy fałszywy `MISSING` do historii weryfikacji i pokazujemy
+użytkownikowi zdegradowany skarbiec (Z6-03).
+
+## 6b.3 Deep verify: „co dwudziesty shard" to w rzeczywistości „pierwszy z każdej partii"
+
+```rust
+batch_index.is_multiple_of(modulus)
+    || usize::try_from(shard.id).ok().is_some_and(|id| id % modulus == 0)
+```
+
+`batch_index` zaczyna się od zera, a **zero jest wielokrotnością każdej liczby**. Pierwszy shard
+każdej partii idzie więc w tryb `DEEP` (pełny GET + SHA-256) niezależnie od modulusa. Cały
+mechanizm „spokojnego harmonogramu dla małego vaulta" (`SMALL_VAULT_DEEP_MODULUS = 100`)
+nie potrafi zejść poniżej jednego pełnego pobrania na partię.
+
+Potwierdzenie w bazie roboczej: na 30 shardów jest **29 weryfikacji `LIGHT` i dokładnie jedna
+`DEEP`** — shard `id = 36`. `36 % 100 ≠ 0`, więc reguła identyfikatora nie zadziałała; jedyna
+głęboka weryfikacja w historii tej bazy wzięła się z `batch_index == 0`. Przy `id` od 1 do 36
+reguła modulusa nie ma prawa nigdy trafić — cała realna próbka DEEP to „pierwszy shard partii".
+
+Rachunek dla vaulta powyżej progu 100 packów (poll co 300 s): 288 partii na dobę × co najmniej
+1 pełny GET × 2 MiB = **≥ 576 MiB egressu na dobę z samego scrubbera**, przy dziennym limicie
+500 MiB z `config.rs`. Scrubber sam z siebie przekracza limit, `cloud_guard` zawiesza chmurę,
+a zawieszenie — patrz **Z6-01** — nie odwiesza się do restartu daemona (Z6-09).
+
+## 6b.4 Repair: jeden pack blokuje wszystkie pozostałe
+
+```sql
+SELECT ... FROM packs WHERE status = 'COMPLETED_DEGRADED' ORDER BY pack_id ASC LIMIT 1
+```
+
+`get_next_degraded_pack` zwraca zawsze **ten sam, leksykograficznie pierwszy** wiersz, a
+`RepairWorker` nie ma żadnego licznika prób, backoffu narastającego ani listy pomijanych packów
+(`pack_shards.attempts` rośnie przy `requeue_pack_shard`, ale repair go nie czyta). Pack, którego
+nie da się naprawić — brak skonfigurowanego providera dla brakującego shardu, trwały błąd PUT,
+niezgodna długość shardu — wraca do przetwarzania co `retry_delay` = **10 sekund, bez końca**,
+i **żaden inny zdegradowany pack nigdy nie zostanie naprawiony**, bo kolejka nie idzie dalej.
+
+Cena jest w egressie, nie w CPU: każda próba najpierw pobiera 2 shardy (4 MiB), zanim wywróci
+się na uploadzie. 4 MiB co 10 s to **~34 GiB na dobę**. Realnym hamulcem jest tu wyłącznie
+`cloud_guard` — po ~125 próbach (500 MiB) chmura idzie w `Suspended` i zostaje tam do restartu
+(Z6-01). To samo dotyczy gałęzi rekoncyliacji, która przed każdą nieudaną próbą pobiera pełny
+ciphertext packa (Z6-05).
+
+## 6b.5 Trzy wyjścia z `repair_pack`, które nic nie zapisują
+
+`repair_pack` ma trzy wczesne `return Ok(())`. Sprawdzenie, czy któreś potrafi zapętlić workera
+(metoda: najpierw szukaj fallbacku):
+
+| Wyjście | Czy osiągalne | Skutek |
+| --- | --- | --- |
+| `storage_mode != Ec2_1` | **nie** — `COMPLETED_DEGRADED` powstaje wyłącznie w gałęzi `Ec2_1` funkcji `resolve_pack_status_for_mode`, a grep po całym `angeld/src` nie znajduje innego zapisu tego statusu | — |
+| `PackStatus::Unreadable` | tak | zapisuje `UNREADABLE`, wiersz wypada z kolejki — poprawnie |
+| `PackStatus::Healthy` | tak | **nic nie zapisuje**; wiersz zostaje `COMPLETED_DEGRADED` |
+
+Trzeci przypadek to klasyczne „wykrył i zapomniał zapisać". Powstaje w oknie między oznaczeniem
+shardu jako `COMPLETED` przez uploadera a przeliczeniem przez niego statusu packa. W workerze
+gałąź sukcesu `repair_pack` **nie ma `sleep`** — pętla wraca natychmiast po ten sam wiersz
+i kręci się na pełnych obrotach, logując przy każdym obiegu `repair worker restored pack X to
+healthy` (w parze z Z1-01: log rośnie bez ograniczeń). Jedyne, co to gasi, to uploader zapisujący
+status kilka milisekund później. Fallback istnieje, ale jest cudzy i przypadkowy (Z6-12).
+
+## 6b.6 `run_batch_now` — pętle, z których nie ma wyjścia
+
+`run_batch_now` obsługuje trzy endpointy administracyjne: `POST /scrub/now`, `POST /repair/now`,
+`POST /reconcile/now` (`api/maintenance.rs:393/434/486`) oraz jedną ścieżkę onboardingu
+(`api/onboarding.rs:988`). W przeciwieństwie do `run()` **nie ma tu ani jednego `sleep`, ani
+kursora** — pętla kończy się dopiero wtedy, gdy zapytanie zwróci `None`:
+
+```rust
+if !db::pack_requires_healthy(&self.pool, &pack.pack_id).await? {
+    continue;                      // stan bazy sie nie zmienil
+}                                  // -> to samo zapytanie -> ten sam pack -> ...
+```
+
+`pack_requires_healthy` zwraca `false`, gdy pack nie ma **żadnego** referencjonującego inode'a
+(`db/packs.rs:578`). Sonda na bazie roboczej: takie packi **istnieją** — dwa z dziesięciu
+(`c56049a3…`, `809f521b…`) mają zero referencji przez `pack_locations ⋈ chunk_refs ⋈
+file_revisions`. Wystarczy, że jeden z nich znajdzie się w stanie `COMPLETED_DEGRADED`
+(np. po weryfikacji z 6b.2), a `POST /api/maintenance/repair/now` **nigdy nie wraca** i wysyca
+rdzeń CPU. Ta sama konstrukcja w gałęzi `ReconcileOnly` powtarza pracę w kółko, jeśli
+`reconcile_pack_mode` skończy się wczesnym `Ok(())`.
+
+Warto zestawić: `run()` w tym samym przypadku śpi 5 s i idzie dalej. Ta sama logika w dwóch
+opakowaniach — w jednym z zabezpieczeniem, w drugim bez (Z6-04).
+
+## 6b.7 Reconcile — jedyne miejsce, w którym chunk zmienia pack pod użytkownikiem
+
+`reconcile_pack_mode` jest najcięższą operacją w całym daemonie i jedyną, która **podmienia
+docelowy pack dla istniejącego chunka**:
+
+```
+load_ciphertext_for_pack (GET z chmury albo odczyt spoola)
+  -> build_manifest_bytes -> compute_pack_id(desired_mode) -> nowy pack_id
+  -> create_pack(status = Uploading | Healthy dla LocalOnly)
+  -> register_pack_shard x N (PENDING)
+  -> upload_shard x N
+  -> update_pack_status
+  -> link_chunk_to_pack   <-- SWAP: pack_locations to UPSERT po chunk_id
+```
+
+`pack_locations` ma `chunk_id` jako **PRIMARY KEY**, więc `link_chunk_to_pack` nie dodaje
+powiązania, tylko **przenosi** je na nowy pack. Stary pack w tej samej chwili traci wiersz
+w `pack_locations` → staje się sierotą dla workera gc → `collect_pack` kasuje jego **obiekty
+w chmurze**, wiersze w bazie i pliki spoola. Podmiana jest więc nieodwracalna w ciągu ~10 sekund.
+
+**Wyścig z gc.** Między `create_pack` a `link_chunk_to_pack` nowy pack nie ma wiersza
+w `pack_locations`, czyli spełnia definicję sieroty. Sprawdzenie fallbacku:
+`get_orphaned_pack_ids` ma warunek `AND p.status != 'UPLOADING'` — i to ratuje ścieżkę chmurową,
+bo nowy pack powstaje jako `UPLOADING` i zmienia status dopiero po wszystkich uploadach.
+**Fałszywy alarm dla EC/STANDARD.** Ale:
+
+- gałąź `LocalOnly` tworzy pack od razu jako `PackStatus::Healthy`, więc **nie jest osłonięta**.
+  W oknie między `create_pack` a `link_chunk_to_pack` gc może skasować wiersz packa **oraz plik
+  `.odpk` ze spoola** (`gc.cleanup_local_files`), a `pack_locations` **nie ma klucza obcego do
+  `packs`** (`schema.rs:345` — zwykły `TEXT NOT NULL`), więc `link_chunk_to_pack` spokojnie
+  wskaże nieistniejący pack. Efekt: plik objęty polityką `LOCAL` przestaje być odczytywalny,
+  a jego jedyna kopia zniknęła ze spoola. Okno to dwa zapytania (~ms), gc chodzi co 10 s —
+  prawdopodobieństwo niskie, skutek nieodwracalny (Z6-07).
+- endpoint `POST /api/maintenance/gc` woła **inną** funkcję (`db::gc_orphan_packs`), która
+  warunku `!= 'UPLOADING'` nie ma w ogóle — ręczne uruchomienie gc w trakcie rekoncyliacji
+  skasuje metadane nowego packa również w trybie chmurowym.
+
+**Co się dzieje, gdy nowy pack zniknie w trakcie uploadu** (prześledzone krok po kroku):
+kolejne `mark_pack_shard_completed` trafiają w zero wierszy, `summarize_pack_shards` zwraca same
+zera, `resolve_pack_status_for_mode` daje `Unreadable`, warunek `status == Healthy` nie
+przechodzi i **SWAP się nie wykonuje**. Dane użytkownika są bezpieczne — ale wysłane shardy
+zostają w bucketach bez żadnego wiersza w `pack_shards`, więc gc nigdy ich nie znajdzie.
+Płacimy za nie bez końca, a rekoncyliacja rusza od zera przy następnym obiegu.
+
+## 6b.8 Repair ufa bajtom, których nie sprawdził
+
+`pack_shards.checksum` (`TEXT NOT NULL`, SHA-256 shardu) jest w `PackShardRecord`, jest liczony
+przy pakowaniu i jest weryfikowany przez scrubber w trybie DEEP. **`repair.rs` nie odwołuje się
+do niego ani razu.** `download_shard` sprawdza wyłącznie długość:
+
+```rust
+if bytes.len() != shard_len { return Err(RepairError::InvalidShardLayout(...)); }
+```
+
+Shard uszkodzony w środku, ale o poprawnej długości — a to jest typowa postać bit rotu i
+dokładnie ten przypadek, dla którego istnieje tryb DEEP — przechodzi. Reed-Solomon nie ma jak
+tego wykryć przy 2+1 (brak nadmiaru na detekcję), więc `reconstruct` zwraca poprawnie wyglądające
+śmieci. Dalej: PUT, `mark_pack_shard_completed`, `COMPLETED_HEALTHY`.
+
+Skutki idą w dwie strony:
+
+- **Naprawa:** przebudowany shard ma teraz inną treść niż suma kontrolna w bazie. Najbliższa
+  weryfikacja DEEP zgłosi `CORRUPTED` → `FAILED` → `COMPLETED_DEGRADED` → repair znowu odtworzy
+  go z tych samych złych danych. Pętla wykrywania i „naprawiania" tego samego uszkodzenia,
+  z pełnym egressem przy każdym obiegu.
+- **Rekoncyliacja:** ciphertext złożony z niezweryfikowanych shardów staje się podstawą nowego
+  packa, `link_chunk_to_pack` przepina na niego chunk, a gc kasuje stary pack **wraz z obiektami
+  w chmurze**. Jedyną linią obrony jest tu AES-GCM przy odczycie — wykryje, że dane są złe, ale
+  wykrycie następuje po skasowaniu dobrej kopii. To jest **detekcja bez ratunku** (Z6-06).
+
+Weryfikacja sum kontrolnych w `download_shard` to kilka linii i cała ta klasa problemów znika —
+odnotowane, nie naprawione, zgodnie z ustaleniem.
+
+## 6b.9 Drobiazgi o dużym zasięgu
+
+- **Klasyfikacja błędów przez `contains()` na sklejce tekstu.** `format_error_details` skleja
+  `display`, `debug` i cały łańcuch `source`, a `is_missing_error` / `is_transient_error` szukają
+  w tym podciągów `"404"`, `"500"`, `"tls"`, `"dns"`. Identyfikator żądania, nagłówek albo treść
+  XML od providera wystarczą, by błąd przejściowy został zaklasyfikowany jako `MISSING`
+  (a więc: shard → `FAILED`, pack → degradacja, repair → egress). `is_missing_error` jest
+  sprawdzane **przed** `is_transient_error`, więc kolizja rozstrzyga się na niekorzyść.
+  Ten sam wzorzec siedzi w `gc.rs` (`is_not_found_details`), gdzie decyduje, czy uznać
+  skasowanie obiektu za udane (Z6-10).
+- **Poprawka `request_checksum_calculation(WhenRequired)` nie obowiązuje w tej warstwie.**
+  Grep po repozytorium: występuje wyłącznie w `uploader.rs:219` (plus test regresyjny).
+  `repair.rs`, `scrubber.rs` i `gc.rs` budują własne `aws_sdk_s3::config::Builder` bez niej.
+  Dziś repair wysyła ciało w pamięci (`ByteStream::from(Vec<u8>)`), więc SDK policzy sumę jako
+  zwykły nagłówek zamiast kodowania `aws-chunked` z trailerem i objaw z live smoke'u (R2 zrywa
+  połączenie, Scaleway czeka do timeoutu) najpewniej się nie powtarza — **to jest rozumowanie
+  o mechanizmie, nie obserwacja z sieci**. Ryzyko jest inne: test regresyjny pilnuje tylko
+  uploadera, więc przejście repair na ciało strumieniowe przywróci błąd po cichu (Z6-11).
+- **`reset_in_progress_pack_shards()` na starcie repaira** to globalny `UPDATE pack_shards SET
+  status='PENDING' WHERE status='IN_PROGRESS'` — bez ograniczenia do packów, którymi repair się
+  zajmuje. Uploader startuje w tej samej serii `tokio::spawn` w `main.rs`; shard, który zdążył
+  oznaczyć jako `IN_PROGRESS`, wraca do kolejki i zostanie wysłany drugi raz (podwójny PUT,
+  podwójny licznik kwoty) (Z6-13).
+- **Spool rośnie po każdej naprawie.** `download_shard` zapisuje każdy pobrany shard do spoola
+  i nikt tego nie kasuje, dopóki pack nie zostanie osierocony. Naprawa jednego packa zostawia
+  ~4 MiB. W bieżącym `.omnidrive/spool` leży 6 plików `.shard*` (7,3 MB) po testach (Z6-14).
+- **Obie pętle umierają po cichu.** `ScrubberWorker::run` i `RepairWorker::run` propagują każdy
+  błąd SQLite przez `?`, a oba zadania stoją poza `tokio::select!` w `main.rs` (Z1-02, Z4-09).
+  Jedna blokada bazy przez Defendera i integralność przestaje być pilnowana aż do restartu —
+  diagnostyka zostaje na ostatnio ustawionym statusie, więc UI dalej pokazuje `Idle` (Z6-15).
+- **`#![allow(dead_code)]` na obu plikach**, z komentarzami „reserved for future integrity-scrubbing
+  epic" i „reserved for future repair epic" — przy modułach, które są spawnowane w `main.rs`,
+  wystawione na trzech endpointach i objęte testem e2e. Realnie martwe są: `provider_clients_from_env`
+  (w obu plikach) i `ScrubberWorker::should_deep_verify` — zero wywołujących (Z6-16).
+
+## 6b.10 Sprostowanie do §6.2
+
+Opis gc w rozdziale 6 miesza dwie różne funkcje. Obie istnieją i mają **różne definicje sieroty
+oraz różne skutki**:
+
+| | worker `GcWorker::run` | endpoint `POST /api/maintenance/gc` |
+| --- | --- | --- |
+| funkcja | `db::get_orphaned_pack_ids` | `db::gc_orphan_packs` |
+| kryterium | brak wiersza w `pack_locations` **i** `status != 'UPLOADING'` | brak `pack_locations ⋈ chunk_refs` |
+| kasuje obiekty w chmurze | **tak** (`delete_object` per shard) | **nie** |
+| kasuje pliki spoola | tak | nie |
+
+Zdanie z §6.2 („`gc` kasuje packi bez żadnego `chunk_refs` wskazującego na nie… usuwa komplet:
+`upload_job_targets` → `upload_jobs` → `pack_locations` → `packs`") opisuje **endpoint**,
+a przypisuje to workerowi. Praktyczna konsekwencja rozjazdu: pack, który stracił `chunk_refs`,
+ale zachował wiersz w `pack_locations`, jest niewidzialny dla workera, a endpoint skasuje jego
+metadane **bez kasowania obiektów** — po czym `pack_shards` zniknie kaskadą i nikt już nie będzie
+wiedział, jakie klucze zostały w bucketach. Sonda: w bieżącej bazie roboczej są **2 takie packi
+z 10** (Z6-08).
+
+## 6b.11 Znaleziska
+
+| ID | Waga | Rzecz | Potwierdzone jak |
+| --- | --- | --- | --- |
+| Z6-03 | 🔴 | Scrubber weryfikuje shardy jeszcze niewysłane: `get_next_shards_for_scrub` bez `WHERE`, a `last_verified_at IS NULL` stawia je pierwsze → 404 → `FAILED` + `MISSING` → pack `COMPLETED_DEGRADED` → repair pobiera 4 MiB na packu, któremu nic nie było | czytanie + sonda SQLite (świeży `PENDING` = pozycja 1 z 16) |
+| Z6-04 | 🔴 | `run_batch_now` bez `sleep` i bez kursora: `continue` przy `!pack_requires_healthy` i przy wczesnym `Ok(())` z `repair_pack` daje pętlę bez wyjścia w handlerze HTTP (`/repair/now`, `/reconcile/now`) | czytanie + sonda (2 z 10 packów mają zero referencji → `pack_requires_healthy` = false) |
+| Z6-05 | 🔴 | `get_next_degraded_pack` = `ORDER BY pack_id LIMIT 1`, zero prób/backoffu/skip-listy → nienaprawialny pack wraca co 10 s (4 MiB egressu za każdym razem, ~34 GiB/dobę) i blokuje naprawę wszystkich pozostałych | czytanie zapytania + `retry_delay` |
+| Z6-06 | 🔴 | Repair nie sprawdza `pack_shards.checksum` — tylko długość; uszkodzony shard → RS odtwarza śmieci → `COMPLETED_HEALTHY`. Przy rekoncyliacji chunk zostaje przepięty na nowy pack, a gc kasuje stary **wraz z obiektami w chmurze** | czytanie + `PackShardRecord.checksum` bez odwołań w `repair.rs` |
+| Z6-07 | 🔴 | Wyścig reconcile ↔ gc w gałęzi `LocalOnly`: pack powstaje jako `Healthy`, więc osłona `status != 'UPLOADING'` go nie obejmuje; gc kasuje wiersz **i manifest `.odpk` ze spoola**, a `pack_locations` nie ma FK do `packs` → chunk wskazuje nieistniejący pack | czytanie + `schema.rs:345` (brak FK) + sprawdzony fallback dla ścieżki chmurowej |
+| Z6-08 | ⚠️ | Dwie definicje sieroty; endpoint `/api/maintenance/gc` kasuje metadane **bez** kasowania obiektów w chmurze — klucze przepadają razem z `pack_shards` | czytanie obu funkcji + sonda (2 z 10 packów spełniają tylko kryterium endpointu) |
+| Z6-09 | ⚠️ | `batch_index.is_multiple_of(modulus)` — indeks 0 zawsze trafia, więc pierwszy shard każdej partii idzie DEEP; „spokojny tryb" małego vaulta nic nie zmienia. Dla vaulta >100 packów daje ≥576 MiB/dobę przy limicie 500 MiB → zatrzask z Z6-01 | czytanie + sonda (jedyna weryfikacja DEEP: `id=36`, `36 % 100 ≠ 0`) |
+| Z6-10 | ⚠️ | Klasyfikacja błędów przez `contains("404"/"500"/"tls"/"dns")` na sklejce `display + debug + source`; `MISSING` sprawdzane przed `transient`. Ten sam wzorzec decyduje w `gc.rs` o uznaniu skasowania za udane | czytanie |
+| Z6-11 | ⚠️ | Poprawka `request_checksum_calculation(WhenRequired)` istnieje wyłącznie w `uploader.rs`; repair/scrubber/gc budują klienta S3 bez niej, a test regresyjny pilnuje tylko uploadera | grep: 1 trafienie w kodzie produkcyjnym |
+| Z6-12 | ⚠️ | `repair_pack` przy `PackStatus::Healthy` nie zapisuje statusu; wiersz zostaje `COMPLETED_DEGRADED`, a gałąź sukcesu w `run()` nie ma `sleep` → gorąca pętla z logiem „restored pack X to healthy" do czasu, aż status zapisze uploader | czytanie + tabela osiągalności wyjść |
+| Z6-13 | ⚠️ | `reset_in_progress_pack_shards()` na starcie repaira jest globalny — kasuje `IN_PROGRESS` również uploaderowi startującemu w tej samej serii `spawn` → podwójny PUT | czytanie + `main.rs:757-760` |
+| Z6-14 | ⚠️ | `download_shard` zapisuje każdy pobrany shard do spoola i nikt tego nie kasuje, dopóki pack nie osieroci → ~4 MiB na każdą naprawę | czytanie + zawartość `.omnidrive/spool` |
+| Z6-15 | ⚠️ | `ScrubberWorker::run` i `RepairWorker::run` kończą się na `?` przy pierwszym błędzie SQLite, oba poza `tokio::select!` — integralność cicho przestaje być pilnowana (para z Z1-02, Z4-09) | czytanie |
+| Z6-16 | ⚠️ | `#![allow(dead_code)]` na obu plikach („reserved for future … epic") przy modułach produkcyjnych; realnie martwe: `provider_clients_from_env` ×2, `should_deep_verify` | grep: 0 wywołujących |
