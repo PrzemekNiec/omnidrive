@@ -151,7 +151,7 @@ zielonych.
 | Z6-01 | 🔴 | Wyłącznik awaryjny chmury zatrzaskuje się do restartu daemona | grep: 1 wołający |
 | Z6-02 | ⚠️ | `AppConfig::from_env()` przy każdej operacji chmurowej | czytanie |
 | Z6-03 | 🔴 | Scrubber weryfikuje shardy jeszcze niewysłane — `PENDING` idzie pierwszy w kolejce, 404 → `FAILED` → pack degradowany → repair pobiera 4 MiB bez powodu | czytanie + sonda SQLite |
-| Z6-04 | 🔴 | `run_batch_now` bez `sleep`/kursora — `POST /repair/now` i `/reconcile/now` mogą nigdy nie wrócić | czytanie + sonda SQLite |
+| Z6-04 | ✅ | `run_batch_now` bez `sleep`/kursora — `POST /repair/now` i `/reconcile/now` mogły nigdy nie wrócić | **NAPRAWIONE** `9768a5e` (ubocznie przy Z6-05) |
 | Z6-05 | ✅ | Repair bez licznika prób: nienaprawialny pack wracał co 10 s (~34 GiB egressu/dobę) i blokował wszystkie pozostałe | **NAPRAWIONE** `9768a5e` |
 | Z6-06 | ✅ | Repair nie sprawdzał `pack_shards.checksum` — odtwarzał z niezweryfikowanych shardów, a gc kasował oryginał | **NAPRAWIONE** `f667d4f` |
 | Z6-07 | 🔴 | Wyścig reconcile ↔ gc w gałęzi `LocalOnly` (brak osłony `!= 'UPLOADING'`, brak FK na `pack_locations`) | czytanie + schemat |
@@ -1900,7 +1900,11 @@ rdzeń CPU. Ta sama konstrukcja w gałęzi `ReconcileOnly` powtarza pracę w kó
 `reconcile_pack_mode` skończy się wczesnym `Ok(())`.
 
 Warto zestawić: `run()` w tym samym przypadku śpi 5 s i idzie dalej. Ta sama logika w dwóch
-opakowaniach — w jednym z zabezpieczeniem, w drugim bez (Z6-04).
+opakowaniach — w jednym z zabezpieczeniem, w drugim bez.
+
+**Naprawione w `9768a5e`** ubocznie przy Z6-05: `run_batch_now` prowadzi zbiór odwiedzonych
+`pack_id` i przerywa pętlę, gdy zapytanie odda pack już przetworzony. Partia przestaje być
+nieskończona niezależnie od tego, czy pack zmienił stan.
 
 ## 6b.7 Reconcile — jedyne miejsce, w którym chunk zmienia pack pod użytkownikiem
 
@@ -2046,9 +2050,9 @@ z 10** (Z6-08).
 | ID | Waga | Rzecz | Potwierdzone jak |
 | --- | --- | --- | --- |
 | Z6-03 | 🔴 | Scrubber weryfikuje shardy jeszcze niewysłane: `get_next_shards_for_scrub` bez `WHERE`, a `last_verified_at IS NULL` stawia je pierwsze → 404 → `FAILED` + `MISSING` → pack `COMPLETED_DEGRADED` → repair pobiera 4 MiB na packu, któremu nic nie było | czytanie + sonda SQLite (świeży `PENDING` = pozycja 1 z 16) |
-| Z6-04 | 🔴 | `run_batch_now` bez `sleep` i bez kursora: `continue` przy `!pack_requires_healthy` i przy wczesnym `Ok(())` z `repair_pack` daje pętlę bez wyjścia w handlerze HTTP (`/repair/now`, `/reconcile/now`) | czytanie + sonda (2 z 10 packów mają zero referencji → `pack_requires_healthy` = false) |
-| Z6-05 | 🔴 | `get_next_degraded_pack` = `ORDER BY pack_id LIMIT 1`, zero prób/backoffu/skip-listy → nienaprawialny pack wraca co 10 s (4 MiB egressu za każdym razem, ~34 GiB/dobę) i blokuje naprawę wszystkich pozostałych | czytanie zapytania + `retry_delay` |
-| Z6-06 | 🔴 | Repair nie sprawdza `pack_shards.checksum` — tylko długość; uszkodzony shard → RS odtwarza śmieci → `COMPLETED_HEALTHY`. Przy rekoncyliacji chunk zostaje przepięty na nowy pack, a gc kasuje stary **wraz z obiektami w chmurze** | czytanie + `PackShardRecord.checksum` bez odwołań w `repair.rs` |
+| Z6-04 | ✅ | `run_batch_now` bez `sleep` i bez kursora: `continue` przy `!pack_requires_healthy` i przy wczesnym `Ok(())` z `repair_pack` dawał pętlę bez wyjścia w handlerze HTTP | **NAPRAWIONE** `9768a5e` — kursor odwiedzonych packów |
+| Z6-05 | ✅ | `get_next_degraded_pack` = `ORDER BY pack_id LIMIT 1`, zero prób/backoffu/skip-listy → nienaprawialny pack wracał co 10 s i blokował naprawę wszystkich pozostałych | **NAPRAWIONE** `9768a5e` — odroczenie jak w `upload_jobs` |
+| Z6-06 | ✅ | Repair nie sprawdzał `pack_shards.checksum` — tylko długość; uszkodzony shard → RS odtwarzał śmieci → `COMPLETED_HEALTHY`, a przy rekoncyliacji gc kasował oryginał **wraz z obiektami w chmurze** | **NAPRAWIONE** `f667d4f` |
 | Z6-07 | 🔴 | Wyścig reconcile ↔ gc w gałęzi `LocalOnly`: pack powstaje jako `Healthy`, więc osłona `status != 'UPLOADING'` go nie obejmuje; gc kasuje wiersz **i manifest `.odpk` ze spoola**, a `pack_locations` nie ma FK do `packs` → chunk wskazuje nieistniejący pack | czytanie + `schema.rs:345` (brak FK) + sprawdzony fallback dla ścieżki chmurowej |
 | Z6-08 | ⚠️ | Dwie definicje sieroty; endpoint `/api/maintenance/gc` kasuje metadane **bez** kasowania obiektów w chmurze — klucze przepadają razem z `pack_shards` | czytanie obu funkcji + sonda (2 z 10 packów spełniają tylko kryterium endpointu) |
 | Z6-09 | ⚠️ | `batch_index.is_multiple_of(modulus)` — indeks 0 zawsze trafia, więc pierwszy shard każdej partii idzie DEEP; „spokojny tryb" małego vaulta nic nie zmienia. Dla vaulta >100 packów daje ≥576 MiB/dobę przy limicie 500 MiB → zatrzask z Z6-01 | czytanie + sonda (jedyna weryfikacja DEEP: `id=36`, `36 % 100 ≠ 0`) |
