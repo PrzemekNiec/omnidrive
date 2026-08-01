@@ -258,12 +258,93 @@ pub async fn get_next_degraded_pack(pool: &SqlitePool) -> Result<Option<PackReco
             status
         FROM packs
         WHERE status = 'COMPLETED_DEGRADED'
+          AND (
+            repair_next_attempt_at IS NULL
+            OR repair_next_attempt_at <= CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+          )
         ORDER BY pack_id ASC
         LIMIT 1
         "#,
     )
     .fetch_optional(pool)
     .await
+}
+
+#[allow(dead_code)]
+pub async fn defer_pack_repair(
+    pool: &SqlitePool,
+    pack_id: &str,
+    base_delay_ms: i64,
+    max_delay_ms: i64,
+) -> Result<i64, sqlx::Error> {
+    let attempts = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(repair_attempts, 0) FROM packs WHERE pack_id = ?",
+    )
+    .bind(pack_id)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(0);
+
+    let delay_ms = base_delay_ms
+        .saturating_mul(1i64 << attempts.clamp(0, 8))
+        .min(max_delay_ms);
+
+    sqlx::query(
+        r#"
+        UPDATE packs
+        SET repair_attempts = COALESCE(repair_attempts, 0) + 1,
+            repair_next_attempt_at =
+                CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) + ?
+        WHERE pack_id = ?
+        "#,
+    )
+    .bind(delay_ms)
+    .bind(pack_id)
+    .execute(pool)
+    .await?;
+
+    Ok(attempts + 1)
+}
+
+#[allow(dead_code)]
+pub async fn clear_pack_repair_backoff(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE packs
+        SET repair_attempts = 0,
+            repair_next_attempt_at = NULL
+        WHERE pack_id = ?
+        "#,
+    )
+    .bind(pack_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn pack_repair_is_deferred(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let deferred = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM packs
+        WHERE pack_id = ?
+          AND repair_next_attempt_at IS NOT NULL
+          AND repair_next_attempt_at > CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+        "#,
+    )
+    .bind(pack_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(deferred > 0)
 }
 
 #[allow(dead_code)]
@@ -564,12 +645,121 @@ pub async fn get_next_pack_requiring_reconciliation(
 ) -> Result<Option<PackRecord>, sqlx::Error> {
     for pack in list_active_packs(pool, 256).await? {
         let desired = get_desired_storage_mode_for_pack(pool, &pack.pack_id).await?;
-        if StorageMode::from_str(&pack.storage_mode) != desired {
+        if StorageMode::from_str(&pack.storage_mode) != desired
+            && !pack_repair_is_deferred(pool, &pack.pack_id).await?
+        {
             return Ok(Some(pack));
         }
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::init_db;
+    use crate::db::link_chunk_to_pack;
+
+    async fn insert_pack(pool: &SqlitePool, pack_id: &str, mode: StorageMode, status: PackStatus) {
+        create_pack(
+            pool,
+            pack_id,
+            pack_id.as_bytes(),
+            "",
+            mode,
+            1,
+            "rs_2_1",
+            0,
+            0,
+            0,
+            b"",
+            b"",
+            status,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn deferred_pack_does_not_starve_later_degraded_packs() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        insert_pack(&pool, "pack-a", StorageMode::Ec2_1, PackStatus::Degraded).await;
+        insert_pack(&pool, "pack-b", StorageMode::Ec2_1, PackStatus::Degraded).await;
+
+        let first = get_next_degraded_pack(&pool).await.unwrap().unwrap();
+        assert_eq!(first.pack_id, "pack-a");
+
+        let attempts = defer_pack_repair(&pool, "pack-a", 60_000, 3_600_000)
+            .await
+            .unwrap();
+        assert_eq!(attempts, 1);
+
+        let second = get_next_degraded_pack(&pool)
+            .await
+            .unwrap()
+            .expect("odroczony pack nie moze blokowac kolejnych");
+        assert_eq!(
+            second.pack_id, "pack-b",
+            "nienaprawialny pack glodzi cala kolejke napraw"
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_pack_returns_once_delay_elapsed() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        insert_pack(&pool, "pack-a", StorageMode::Ec2_1, PackStatus::Degraded).await;
+
+        defer_pack_repair(&pool, "pack-a", 0, 0).await.unwrap();
+
+        let again = get_next_degraded_pack(&pool).await.unwrap().unwrap();
+        assert_eq!(again.pack_id, "pack-a");
+    }
+
+    #[tokio::test]
+    async fn successful_repair_clears_the_backoff() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        insert_pack(&pool, "pack-a", StorageMode::Ec2_1, PackStatus::Degraded).await;
+
+        defer_pack_repair(&pool, "pack-a", 3_600_000, 3_600_000)
+            .await
+            .unwrap();
+        assert!(get_next_degraded_pack(&pool).await.unwrap().is_none());
+
+        clear_pack_repair_backoff(&pool, "pack-a").await.unwrap();
+        let attempts = defer_pack_repair(&pool, "pack-a", 0, 0).await.unwrap();
+        assert_eq!(attempts, 1, "licznik prob musi ruszac od zera po sukcesie");
+    }
+
+    #[tokio::test]
+    async fn deferred_pack_is_skipped_by_reconciliation_queue() {
+        let pool = init_db("sqlite::memory:").await.unwrap();
+        insert_pack(
+            &pool,
+            "pack-a",
+            StorageMode::SingleReplica,
+            PackStatus::Healthy,
+        )
+        .await;
+        link_chunk_to_pack(&pool, b"pack-a", "pack-a", 0, 0)
+            .await
+            .unwrap();
+
+        let candidate = get_next_pack_requiring_reconciliation(&pool).await.unwrap();
+        assert_eq!(candidate.map(|pack| pack.pack_id).as_deref(), Some("pack-a"));
+
+        defer_pack_repair(&pool, "pack-a", 3_600_000, 3_600_000)
+            .await
+            .unwrap();
+
+        assert!(
+            get_next_pack_requiring_reconciliation(&pool)
+                .await
+                .unwrap()
+                .is_none(),
+            "odroczona rekoncyliacja musi wypuscic kolejke"
+        );
+    }
 }
 
 #[allow(dead_code)]

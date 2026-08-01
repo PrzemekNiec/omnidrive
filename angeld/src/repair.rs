@@ -17,7 +17,7 @@ use aws_sdk_s3::config::{Credentials, Region};
 use aws_sdk_s3::primitives::ByteStream;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt;
 use std::path::PathBuf;
@@ -25,6 +25,8 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::time::{sleep, timeout};
 use tracing::{error, info, warn};
+
+const REPAIR_MAX_RETRY_DELAY: Duration = Duration::from_secs(3600);
 
 pub struct RepairWorker {
     pool: SqlitePool,
@@ -166,6 +168,7 @@ impl RepairWorker {
                     db::get_desired_storage_mode_for_pack(&self.pool, &pack.pack_id).await?;
                 match self.reconcile_pack_mode(&pack).await {
                     Ok(()) => {
+                        db::clear_pack_repair_backoff(&self.pool, &pack.pack_id).await?;
                         info!(
                             "repair worker reconciled pack {} to mode {}",
                             pack.pack_id,
@@ -173,9 +176,10 @@ impl RepairWorker {
                         );
                     }
                     Err(err) => {
+                        let attempts = self.defer_pack(&pack.pack_id).await?;
                         warn!(
-                            "repair worker reconciliation failed for pack {}: {}",
-                            pack.pack_id, err
+                            "repair worker reconciliation failed for pack {} (attempt {}): {}",
+                            pack.pack_id, attempts, err
                         );
                         diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Idle);
                         sleep(self.retry_delay).await;
@@ -186,6 +190,7 @@ impl RepairWorker {
 
             if let Some(pack) = db::get_next_degraded_pack(&self.pool).await? {
                 if !db::pack_requires_healthy(&self.pool, &pack.pack_id).await? {
+                    self.defer_pack(&pack.pack_id).await?;
                     diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Idle);
                     sleep(self.poll_interval).await;
                     continue;
@@ -194,10 +199,15 @@ impl RepairWorker {
                 diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Active);
                 match self.repair_pack(&pack).await {
                     Ok(()) => {
+                        db::clear_pack_repair_backoff(&self.pool, &pack.pack_id).await?;
                         info!("repair worker restored pack {} to healthy", pack.pack_id);
                     }
                     Err(err) => {
-                        error!("repair worker failed for pack {}: {}", pack.pack_id, err);
+                        let attempts = self.defer_pack(&pack.pack_id).await?;
+                        error!(
+                            "repair worker failed for pack {} (attempt {}): {}",
+                            pack.pack_id, attempts, err
+                        );
                         diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Idle);
                         sleep(self.retry_delay).await;
                     }
@@ -227,6 +237,7 @@ impl RepairWorker {
             repaired_packs: 0,
             reconciled_packs: 0,
         };
+        let mut visited: HashSet<String> = HashSet::new();
 
         diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Active);
 
@@ -237,6 +248,9 @@ impl RepairWorker {
                     else {
                         break;
                     };
+                    if !visited.insert(pack.pack_id.clone()) {
+                        break;
+                    }
                     self.reconcile_pack_mode(&pack).await?;
                     report.processed_packs += 1;
                     report.reconciled_packs += 1;
@@ -245,6 +259,9 @@ impl RepairWorker {
                     let Some(pack) = db::get_next_degraded_pack(&self.pool).await? else {
                         break;
                     };
+                    if !visited.insert(pack.pack_id.clone()) {
+                        break;
+                    }
 
                     if !db::pack_requires_healthy(&self.pool, &pack.pack_id).await? {
                         continue;
@@ -259,6 +276,12 @@ impl RepairWorker {
 
         diagnostics::set_worker_status(WorkerKind::Repair, WorkerStatus::Idle);
         Ok(report)
+    }
+
+    async fn defer_pack(&self, pack_id: &str) -> Result<i64, RepairError> {
+        let base_delay_ms = i64::try_from(self.retry_delay.as_millis()).unwrap_or(i64::MAX);
+        let max_delay_ms = i64::try_from(REPAIR_MAX_RETRY_DELAY.as_millis()).unwrap_or(i64::MAX);
+        Ok(db::defer_pack_repair(&self.pool, pack_id, base_delay_ms, max_delay_ms).await?)
     }
 
     async fn repair_pack(&self, pack: &db::PackRecord) -> Result<(), RepairError> {
