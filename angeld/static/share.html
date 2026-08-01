@@ -227,6 +227,45 @@ async function fetchMeta() {
   return resp;
 }
 
+// Kazdy pack ma wlasny DEK. Link niesie jeden share_key; serwer wydaje DEK-i juz
+// zawiniete pod nim, wiec nadal nie zna zadnego z nich.
+// Rust: derive_subkey = HKDF-Expand bez kroku extract, czyli dla 32 bajtow
+// dokladnie HMAC-SHA256(share_key, info || 0x01). WebCrypto HKDF robi extract+expand,
+// wiec nie da sie go tu uzyc — liczymy ten jeden blok recznie.
+async function deriveShareWrappingKey(shareKeyBytes) {
+  const info = new TextEncoder().encode('omnidrive-share-dek-v1');
+  const block = new Uint8Array(info.length + 1);
+  block.set(info, 0);
+  block[info.length] = 0x01;
+
+  const hmacKey = await crypto.subtle.importKey(
+    'raw', shareKeyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const derived = await crypto.subtle.sign('HMAC', hmacKey, block);
+  return crypto.subtle.importKey(
+    'raw', new Uint8Array(derived), { name: 'AES-GCM' }, false, ['decrypt']
+  );
+}
+
+// Rozwija DEK jednego packa. pack_id jest uwierzytelniony jako AAD, wiec podmiana
+// zawinietego klucza miedzy packami zostanie wykryta.
+async function openSealedDek(wrappingKey, packId, sealedBase64url) {
+  const sealed = base64urlToBytes(sealedBase64url);
+  const raw = await crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: sealed.slice(0, 12),
+      tagLength: 128,
+      additionalData: new TextEncoder().encode(packId)
+    },
+    wrappingKey,
+    sealed.slice(12)
+  );
+  return crypto.subtle.importKey(
+    'raw', new Uint8Array(raw), { name: 'AES-GCM' }, false, ['decrypt']
+  );
+}
+
 async function init() {
   if (!dekFragment) {
     showError('Ten link jest niekompletny. Brak klucza deszyfrujacego w adresie URL.');
@@ -239,15 +278,13 @@ async function init() {
   }
 
   try {
-    const dekBytes = base64urlToBytes(dekFragment);
-    if (dekBytes.length !== 32) {
+    const shareKeyBytes = base64urlToBytes(dekFragment);
+    if (shareKeyBytes.length !== 32) {
       showError('Klucz deszyfrujacy ma nieprawidlowa dlugosc.');
       return;
     }
 
-    cryptoKey = await crypto.subtle.importKey(
-      'raw', dekBytes, { name: 'AES-GCM' }, false, ['decrypt']
-    );
+    cryptoKey = await deriveShareWrappingKey(shareKeyBytes);
   } catch (e) {
     showError('Nie udalo sie zaimportowac klucza deszyfrujacego.');
     return;
@@ -426,9 +463,12 @@ async function startDownload() {
       var nonce = encryptedArr.slice(0, 12);
       var ciphertextWithTag = encryptedArr.slice(12);
 
+      var chunkKey = await openSealedDek(
+        cryptoKey, fileMeta.chunks[i].pack_id, fileMeta.chunks[i].sealed_dek
+      );
       var plaintext = await crypto.subtle.decrypt(
         { name: 'AES-GCM', iv: nonce, tagLength: 128 },
-        cryptoKey,
+        chunkKey,
         ciphertextWithTag
       );
 

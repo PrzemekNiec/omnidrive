@@ -1,6 +1,5 @@
 use super::*;
 use crate::db;
-use secrecy::ExposeSecret;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -84,12 +83,6 @@ impl Downloader {
         }
 
         let vault_key = self.vault_keys.vault_key_for_v1_read(&self.pool).await?;
-        let dek_option = self
-            .vault_keys
-            .get_or_create_dek(&self.pool, inode_id)
-            .await
-            .ok()
-            .map(|(_, secret)| secret.expose_secret().clone());
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         for chunk in chunk_locations
             .into_iter()
@@ -101,7 +94,6 @@ impl Downloader {
                     revision_id,
                     inode_path,
                     &vault_key,
-                    dek_option.as_ref(),
                     &mut downloaded_packs,
                     &chunk,
                     true,

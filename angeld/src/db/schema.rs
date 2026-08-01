@@ -489,6 +489,17 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS pack_deks (
+            pack_id TEXT PRIMARY KEY,
+            dek_id  INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS ingest_jobs (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             file_path       TEXT NOT NULL,
@@ -537,6 +548,19 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE shared_links ADD COLUMN password_hash TEXT")
         .execute(&pool)
         .await;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS share_pack_keys (
+            share_id   TEXT NOT NULL,
+            pack_id    TEXT NOT NULL,
+            sealed_dek BLOB NOT NULL,
+            PRIMARY KEY (share_id, pack_id)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
 
     sqlx::query(
         r#"

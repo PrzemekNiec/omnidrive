@@ -440,6 +440,69 @@ impl VaultKeyStore {
         Ok((dek_id, SecretBox::new(Box::new(dek))))
     }
 
+    async fn unwrap_dek_bytes(&self, wrapped_dek: &[u8]) -> Result<KeyBytes, VaultError> {
+        let envelope_key = self.require_envelope_key().await?;
+        let wrapped: [u8; WRAPPED_KEY_LEN] = wrapped_dek
+            .try_into()
+            .map_err(|_| VaultError::InvalidConfig("wrapped_dek has invalid length"))?;
+        match unwrap_key(&envelope_key, &wrapped) {
+            Ok(key) => Ok(key),
+            Err(first_err) => match self.previous_envelope_key().await {
+                Some(previous) => Ok(unwrap_key(&previous, &wrapped)?),
+                None => Err(VaultError::Crypto(first_err)),
+            },
+        }
+    }
+
+    /// Mints a fresh DEK that belongs to a single pack. `creating_inode_id` is recorded
+    /// for provenance only — the authoritative binding lives in `pack_deks`.
+    pub async fn create_pack_dek(
+        &self,
+        pool: &SqlitePool,
+        creating_inode_id: i64,
+    ) -> Result<(i64, SecretBox<KeyBytes>), VaultError> {
+        let envelope_key = self.require_envelope_key().await?;
+        let dek = generate_random_key();
+        let wrapped = wrap_key(&envelope_key, &dek)?;
+        let key_version = db::next_dek_key_version(pool, creating_inode_id).await?;
+        let vault_key_gen = self.current_vault_key_generation(pool).await?;
+        let dek_id =
+            db::insert_wrapped_dek(pool, creating_inode_id, &wrapped, key_version, vault_key_gen)
+                .await?;
+        Ok((dek_id, SecretBox::new(Box::new(dek))))
+    }
+
+    /// Returns the DEK that decrypts `pack_id`, no matter which inode is asking.
+    ///
+    /// Packs written before the key moved from the inode to the pack have no
+    /// `pack_deks` row; for those the creating inode is derived from the earliest
+    /// revision referencing the pack, and the mapping is recorded so the fallback
+    /// runs at most once per pack.
+    pub async fn dek_for_pack(
+        &self,
+        pool: &SqlitePool,
+        pack_id: &str,
+    ) -> Result<SecretBox<KeyBytes>, VaultError> {
+        if let Some(dek_id) = db::get_pack_dek_id(pool, pack_id).await? {
+            let record = db::get_wrapped_dek_by_id(pool, dek_id)
+                .await?
+                .ok_or(VaultError::InvalidConfig("pack_deks points at a missing DEK"))?;
+            let dek = self.unwrap_dek_bytes(&record.wrapped_dek).await?;
+            return Ok(SecretBox::new(Box::new(dek)));
+        }
+
+        let inode_id = db::creating_inode_for_pack(pool, pack_id)
+            .await?
+            .ok_or(VaultError::InvalidConfig("pack has no referencing revision"))?;
+        let record = db::get_wrapped_dek(pool, inode_id)
+            .await?
+            .ok_or(VaultError::InvalidConfig("legacy pack has no DEK for its inode"))?;
+        let dek = self.unwrap_dek_bytes(&record.wrapped_dek).await?;
+        db::set_pack_dek(pool, pack_id, record.dek_id).await?;
+        info!("[DEK] backfilled pack_deks for legacy pack {pack_id}");
+        Ok(SecretBox::new(Box::new(dek)))
+    }
+
     /// Read the current vault_key_generation from DB (defaults to 1).
     async fn current_vault_key_generation(&self, pool: &SqlitePool) -> Result<i64, VaultError> {
         let vault = db::get_vault_params(pool).await?;

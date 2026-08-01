@@ -6,6 +6,8 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -65,6 +67,10 @@ struct ShareChunkMeta {
     file_offset: i64,
     plain_size: i64,
     encrypted_size: i64,
+    /// Pack identity, authenticated as AAD when the recipient opens `sealed_dek`.
+    pack_id: String,
+    /// This pack's DEK sealed under the link's share key (base64url).
+    sealed_dek: String,
 }
 
 /// Token TTL for password-verified share access (10 minutes).
@@ -126,20 +132,10 @@ async fn create_share_link(
             id: inode_id.to_string(),
         })?;
 
-    let (_dek_id, dek_secret) = state
-        .vault_keys
-        .get_or_create_dek(&state.pool, inode_id)
-        .await
-        .map_err(|err| {
-            error!("failed to get DEK for sharing: {err}");
-            ApiError::Internal {
-                message: "dek_unavailable".to_string(),
-            }
-        })?;
-
     let _ = envelope_key; // used to verify vault is unlocked
 
-    let dek_base64url = crate::sharing::encode_dek_for_url(dek_secret.expose_secret().as_ref());
+    let share_key = crate::sharing::generate_share_key();
+    let dek_base64url = crate::sharing::encode_dek_for_url(&share_key);
     let share_id = crate::sharing::generate_share_id();
 
     let expires_at = request.expires_in_hours.map(|hours| {
@@ -171,6 +167,34 @@ async fn create_share_link(
         password_hash.as_deref(),
     )
     .await?;
+
+    // Seal every pack's DEK under the share key. One key in the fragment, N keys in
+    // the vault — the daemon stores only ciphertext it cannot open itself.
+    let chunks = db::get_chunk_locations_for_revision(&state.pool, revision.revision_id).await?;
+    for chunk in &chunks {
+        let dek = state
+            .vault_keys
+            .dek_for_pack(&state.pool, &chunk.pack_id)
+            .await
+            .map_err(|err| {
+                error!("failed to resolve DEK for pack {}: {err}", chunk.pack_id);
+                ApiError::Internal {
+                    message: "dek_unavailable".to_string(),
+                }
+            })?;
+        let sealed = crate::sharing::seal_dek_for_share(
+            &share_key,
+            &chunk.pack_id,
+            dek.expose_secret().as_ref(),
+        )
+        .map_err(|err| {
+            error!("failed to seal DEK for share: {err}");
+            ApiError::Internal {
+                message: "share_key_seal_failed".to_string(),
+            }
+        })?;
+        db::insert_share_pack_key(&state.pool, &share_id, &chunk.pack_id, &sealed).await?;
+    }
 
     let base = share_base_url(&headers);
     let share_url = format!("{base}/share/{share_id}");
@@ -238,6 +262,9 @@ async fn revoke_share(
 
     let revoked = db::revoke_shared_link(&state.pool, &share_id).await?;
     if revoked {
+        // Drop the sealed DEKs too: a revoked link must stay dead even if the
+        // recipient kept the fragment and the server is later compromised.
+        db::delete_share_pack_keys(&state.pool, &share_id).await?;
         let _ = db::insert_audit_log(
             &state.pool,
             &caller.vault_id,
@@ -267,6 +294,7 @@ async fn delete_share(
 
     let deleted = db::delete_shared_link(&state.pool, &share_id).await?;
     if deleted {
+        db::delete_share_pack_keys(&state.pool, &share_id).await?;
         let _ = db::insert_audit_log(
             &state.pool,
             &caller.vault_id,
@@ -399,15 +427,22 @@ async fn get_share_meta(
 
     let chunks = db::get_chunk_locations_for_revision(&state.pool, link.revision_id).await?;
 
-    let chunk_meta: Vec<ShareChunkMeta> = chunks
-        .iter()
-        .map(|c| ShareChunkMeta {
+    let mut chunk_meta = Vec::with_capacity(chunks.len());
+    for c in &chunks {
+        let sealed = db::get_share_pack_key(&state.pool, &share_id, &c.pack_id)
+            .await?
+            .ok_or(ApiError::Gone {
+                message: "share predates per-pack keys and must be recreated".to_string(),
+            })?;
+        chunk_meta.push(ShareChunkMeta {
             index: c.chunk_index,
             file_offset: c.file_offset,
             plain_size: c.size,
             encrypted_size: c.encrypted_size,
-        })
-        .collect();
+            pack_id: c.pack_id.clone(),
+            sealed_dek: URL_SAFE_NO_PAD.encode(&sealed),
+        });
+    }
 
     Ok(Json(ShareMetaResponse {
         file_name: link.file_name,

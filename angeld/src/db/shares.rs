@@ -147,6 +147,50 @@ pub async fn delete_shared_link(pool: &SqlitePool, share_id: &str) -> Result<boo
     Ok(result.rows_affected() > 0)
 }
 
+// ── Share Pack Keys (dwupoziomowa koperta) ───────────────────────────
+
+/// Stores one pack's DEK sealed under the link's `share_key`. The daemon never sees
+/// `share_key` — it lives only in the URL fragment — so these rows are opaque to it.
+pub async fn insert_share_pack_key(
+    pool: &SqlitePool,
+    share_id: &str,
+    pack_id: &str,
+    sealed_dek: &[u8],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO share_pack_keys (share_id, pack_id, sealed_dek) VALUES (?, ?, ?) \
+         ON CONFLICT(share_id, pack_id) DO UPDATE SET sealed_dek = excluded.sealed_dek",
+    )
+    .bind(share_id)
+    .bind(pack_id)
+    .bind(sealed_dek)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_share_pack_key(
+    pool: &SqlitePool,
+    share_id: &str,
+    pack_id: &str,
+) -> Result<Option<Vec<u8>>, sqlx::Error> {
+    sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT sealed_dek FROM share_pack_keys WHERE share_id = ? AND pack_id = ?",
+    )
+    .bind(share_id)
+    .bind(pack_id)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn delete_share_pack_keys(pool: &SqlitePool, share_id: &str) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM share_pack_keys WHERE share_id = ?")
+        .bind(share_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 // ── Share Password Tokens ────────────────────────────────────────────
 
 pub async fn create_share_password_token(

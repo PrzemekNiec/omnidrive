@@ -15,6 +15,16 @@ use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 
 impl Downloader {
+    /// Resolves the V2 key from the pack that holds the chunk. `None` means the pack
+    /// predates envelope encryption and the V1 vault key applies instead.
+    async fn pack_dek(&self, pack_id: &str) -> Option<KeyBytes> {
+        self.vault_keys
+            .dek_for_pack(&self.pool, pack_id)
+            .await
+            .ok()
+            .map(|secret| secret.expose_secret().clone())
+    }
+
     pub async fn restore_file(
         &self,
         inode_id: i64,
@@ -22,13 +32,6 @@ impl Downloader {
     ) -> Result<RestoreResult, DownloaderError> {
         let output_path = output_path.as_ref().to_path_buf();
         let vault_key = self.vault_keys.vault_key_for_v1_read(&self.pool).await?;
-        // Try to get V2 DEK for this inode (may not exist for V1-only files)
-        let dek_option = self
-            .vault_keys
-            .get_or_create_dek(&self.pool, inode_id)
-            .await
-            .ok()
-            .map(|(_, secret)| secret.expose_secret().clone());
         let chunk_locations = db::get_file_chunk_locations(&self.pool, inode_id).await?;
         if chunk_locations.is_empty() {
             return Err(DownloaderError::NoChunksForInode(inode_id));
@@ -52,6 +55,7 @@ impl Downloader {
             };
 
             let pack_bytes = fs::read(&source.local_path).await?;
+            let dek_option = self.pack_dek(&chunk.pack_id).await;
             let plaintext =
                 decrypt_chunk_record(&pack_bytes, &chunk, &vault_key, dek_option.as_ref())?;
 
@@ -118,12 +122,6 @@ impl Downloader {
             .await?
             .unwrap_or_else(|| format!("inode/{inode_id}"));
         let vault_key = self.vault_keys.vault_key_for_v1_read(&self.pool).await?;
-        let dek_option = self
-            .vault_keys
-            .get_or_create_dek(&self.pool, inode_id)
-            .await
-            .ok()
-            .map(|(_, secret)| secret.expose_secret().clone());
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         let mut result = Vec::with_capacity(
             usize::try_from(length)
@@ -139,7 +137,6 @@ impl Downloader {
                     revision_id,
                     &inode_path,
                     &vault_key,
-                    dek_option.as_ref(),
                     &mut downloaded_packs,
                     &chunk,
                     false,
@@ -238,12 +235,6 @@ impl Downloader {
             .await?
             .unwrap_or_else(|| format!("inode/{inode_id}"));
         let vault_key = self.vault_keys.vault_key_for_v1_read(&self.pool).await?;
-        let dek_option = self
-            .vault_keys
-            .get_or_create_dek(&self.pool, inode_id)
-            .await
-            .ok()
-            .map(|(_, secret)| secret.expose_secret().clone());
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         let first_chunk_index = chunk_locations.first().map(|chunk| chunk.chunk_index);
         let last_chunk_index = chunk_locations.last().map(|chunk| chunk.chunk_index);
@@ -256,7 +247,6 @@ impl Downloader {
                     revision_id,
                     &inode_path,
                     &vault_key,
-                    dek_option.as_ref(),
                     &mut downloaded_packs,
                     &chunk,
                     false,
@@ -317,12 +307,7 @@ impl Downloader {
         }
 
         let vault_key = self.vault_keys.vault_key_for_v1_read(&self.pool).await?;
-        let dek_option = self
-            .vault_keys
-            .get_or_create_dek(&self.pool, chunk.inode_id)
-            .await
-            .ok()
-            .map(|(_, secret)| secret.expose_secret().clone());
+        let dek_option = self.pack_dek(&chunk.pack_id).await;
         let mut downloaded_packs = HashMap::<String, RestoredPackSource>::new();
         let file_chunk = db::FileChunkLocation {
             chunk_id: chunk.chunk_id,
@@ -420,7 +405,6 @@ impl Downloader {
         revision_id: i64,
         inode_path: &str,
         vault_key: &KeyBytes,
-        dek: Option<&KeyBytes>,
         downloaded_packs: &mut HashMap<String, RestoredPackSource>,
         chunk: &db::FileChunkLocation,
         is_prefetched: bool,
@@ -453,7 +437,8 @@ impl Downloader {
         };
 
         let pack_bytes = fs::read(&source.local_path).await?;
-        let plaintext = decrypt_chunk_record(&pack_bytes, chunk, vault_key, dek)?;
+        let dek = self.pack_dek(&chunk.pack_id).await;
+        let plaintext = decrypt_chunk_record(&pack_bytes, chunk, vault_key, dek.as_ref())?;
         self.cache
             .put_chunk(
                 inode_id,

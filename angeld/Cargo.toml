@@ -1,6 +1,6 @@
 ﻿[package]
 name = "angeld"
-version = "0.3.28"
+version = "0.3.29"
 edition = "2024"
 
 [dependencies]
@@ -47,6 +47,7 @@ sysinfo = { version = "0.30", default-features = false }
 zerocopy = { version = "0.7", features = ["derive"] }
 
 [dev-dependencies]
+hmac = "0.12"
 mockito = "0.31"
 tokio = { version = "1", features = ["test-util"] }
 

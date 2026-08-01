@@ -163,10 +163,10 @@ impl MigrationManager {
 
         let plaintext = decrypt_chunk(vault_key, &chunk_id, &[], ciphertext, &gcm_tag)?;
 
-        // ── Step 3: Get/create DEK for the owning inode ──
+        // ── Step 3: Mint a DEK for the pack being written ──
         let (dek_id, dek_secret) = self
             .vault_keys
-            .get_or_create_dek(&self.pool, v1_pack.inode_id)
+            .create_pack_dek(&self.pool, v1_pack.inode_id)
             .await?;
         let dek: KeyBytes = dek_secret.expose_secret().clone();
 
@@ -230,6 +230,8 @@ impl MigrationManager {
             },
         )
         .await?;
+
+        db::set_pack_dek(&self.pool, &new_pack_id, dek_id).await?;
 
         // Update pack_locations to point chunk_id → new pack
         db::link_chunk_to_pack(
@@ -534,8 +536,17 @@ mod tests {
         // Verify record_version byte is 2
         assert_eq!(v2_pack_bytes[4], 2, "record_version should be 2");
 
+        // Klucz nalezy do packa, wiec migracja musi zwiazac nowy pack z DEK-iem,
+        // ktorym go zaszyfrowala. Bez tego wpisu odczyt spada na heurystyke
+        // "najwczesniejsza rewizja = tworca packa", ktora jest zalozeniem o kolejnosci.
+        let bound = db::get_pack_dek_id(&pool, &loc.pack_id).await.unwrap();
+        assert!(
+            bound.is_some(),
+            "migracja V1->V2 musi zapisac pack_deks dla nowego packa"
+        );
+
         // Decrypt with V2 DEK and verify plaintext
-        let (_, dek_secret) = vault_keys.get_or_create_dek(&pool, inode_id).await.unwrap();
+        let dek_secret = vault_keys.dek_for_pack(&pool, &loc.pack_id).await.unwrap();
         let dek: KeyBytes = dek_secret.expose_secret().clone();
 
         let cipher_len = u64::from_be_bytes(v2_pack_bytes[48..56].try_into().unwrap()) as usize;

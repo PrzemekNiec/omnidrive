@@ -45,12 +45,44 @@ function base64urlToBytes(b64) {
   return bytes;
 }
 
+// Musi zgadzac sie co do bajtu z deriveShareWrappingKey w share.html oraz z
+// derive_subkey w Rust (HKDF-Expand bez extract = jeden blok HMAC dla 32 bajtow).
+async function deriveShareWrappingKey(shareKeyBytes) {
+  const info = new TextEncoder().encode('omnidrive-share-dek-v1');
+  const block = new Uint8Array(info.length + 1);
+  block.set(info, 0);
+  block[info.length] = 0x01;
+
+  const hmacKey = await crypto.subtle.importKey(
+    'raw', shareKeyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const derived = await crypto.subtle.sign('HMAC', hmacKey, block);
+  return crypto.subtle.importKey(
+    'raw', new Uint8Array(derived), { name: 'AES-GCM' }, false, ['decrypt']
+  );
+}
+
+async function openSealedDek(wrappingKey, packId, sealedBase64url) {
+  const sealed = base64urlToBytes(sealedBase64url);
+  const raw = await crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: sealed.slice(0, 12),
+      tagLength: 128,
+      additionalData: new TextEncoder().encode(packId)
+    },
+    wrappingKey,
+    sealed.slice(12)
+  );
+  return crypto.subtle.importKey(
+    'raw', new Uint8Array(raw), { name: 'AES-GCM' }, false, ['decrypt']
+  );
+}
+
 async function handleStreamDownload(shareId, dekBase64url, token) {
   try {
-    const dekBytes = base64urlToBytes(dekBase64url);
-    const cryptoKey = await crypto.subtle.importKey(
-      'raw', dekBytes, { name: 'AES-GCM' }, false, ['decrypt']
-    );
+    const shareKeyBytes = base64urlToBytes(dekBase64url);
+    const cryptoKey = await deriveShareWrappingKey(shareKeyBytes);
 
     const tokenParam = token ? '?token=' + encodeURIComponent(token) : '';
     const metaResp = await fetch('/api/share/' + shareId + '/meta' + tokenParam);
@@ -80,9 +112,12 @@ async function handleStreamDownload(shareId, dekBase64url, token) {
             const nonce = encryptedArr.slice(0, 12);
             const ciphertextWithTag = encryptedArr.slice(12);
 
+            const chunkKey = await openSealedDek(
+              cryptoKey, meta.chunks[i].pack_id, meta.chunks[i].sealed_dek
+            );
             const plaintext = await crypto.subtle.decrypt(
               { name: 'AES-GCM', iv: nonce, tagLength: 128 },
-              cryptoKey,
+              chunkKey,
               ciphertextWithTag
             );
 

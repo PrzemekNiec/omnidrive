@@ -92,6 +92,7 @@ struct PreparedPack {
     gcm_tag: [u8; 16],
     shards: Vec<PreparedShard>,
     is_deduplicated: bool,
+    dek_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -210,12 +211,6 @@ impl Packer {
         fs::create_dir_all(&self.config.spool_dir).await?;
 
         let created_at_ms = unix_timestamp_ms()?;
-        // V2: get per-file DEK (generates if first time for this inode)
-        let (dek_id, dek_secret) = self
-            .vault_keys
-            .get_or_create_dek(&self.pool, inode_id)
-            .await?;
-        let dek: KeyBytes = dek_secret.expose_secret().clone();
         let storage_mode = db::get_storage_mode_for_inode(&self.pool, inode_id).await?;
         let mut file = File::open(&source_path).await?;
         let mut read_buffer = vec![0u8; self.config.chunk_size];
@@ -254,6 +249,7 @@ impl Packer {
                     gcm_tag: vec_to_array_16(&existing_pack.gcm_tag, "gcm_tag")?,
                     shards: Vec::new(),
                     is_deduplicated: true,
+                    dek_id: None,
                 });
 
                 logical_size += bytes_read as u64;
@@ -263,6 +259,8 @@ impl Packer {
                 continue;
             }
 
+            let (dek_id, dek_secret) = self.vault_keys.create_pack_dek(&self.pool, inode_id).await?;
+            let dek: KeyBytes = dek_secret.expose_secret().clone();
             let encrypted = encrypt_chunk_v2(&dek, plaintext, &[])?;
             let manifest_bytes = build_manifest_bytes_v2(
                 encrypted.chunk_id,
@@ -312,6 +310,7 @@ impl Packer {
                 gcm_tag: encrypted.gcm_tag,
                 shards,
                 is_deduplicated: false,
+                dek_id: Some(dek_id),
             });
 
             logical_size += bytes_read as u64;
@@ -457,6 +456,10 @@ impl Packer {
                 },
             )
             .await?;
+
+            if let Some(dek_id) = pack.dek_id {
+                db::set_pack_dek(&self.pool, &pack.pack_id, dek_id).await?;
+            }
 
             for shard in &pack.shards {
                 db::register_pack_shard(
@@ -702,7 +705,154 @@ mod tests {
     use super::*;
     use crate::db;
     use crate::vault::VaultKeyStore;
+    use omnidrive_core::crypto::decrypt_chunk_v2_verified;
     use std::env;
+
+    async fn temp_root(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let root = env::temp_dir().join(format!(
+            "omnidrive-packer-{tag}-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ));
+        fs::create_dir_all(&root).await?;
+        Ok(root)
+    }
+
+    /// Decrypts a single-chunk pack straight from the spool file, resolving the key
+    /// from the pack itself. Mirrors what `downloader::chunk::decrypt_chunk_record`
+    /// must do, without dragging the provider machinery into a unit test.
+    async fn read_back_chunk(
+        pool: &SqlitePool,
+        vault_keys: &VaultKeyStore,
+        spool_dir: &Path,
+        pack_id: &str,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let bytes = fs::read(local_pack_path(spool_dir, pack_id)).await?;
+        let chunk_id: [u8; 32] = bytes[8..40].try_into()?;
+        let cipher_len = u64::from_be_bytes(bytes[48..56].try_into()?) as usize;
+        let nonce: [u8; 12] = bytes[56..68].try_into()?;
+        let ct_start = ChunkRecordPrefix::SIZE;
+        let ct_end = ct_start + cipher_len;
+        let tag: [u8; 16] = bytes[ct_end..ct_end + 16].try_into()?;
+
+        let dek = vault_keys.dek_for_pack(pool, pack_id).await?;
+        let plaintext = decrypt_chunk_v2_verified(
+            dek.expose_secret(),
+            &chunk_id,
+            &nonce,
+            &[],
+            &bytes[ct_start..ct_end],
+            &tag,
+        )?;
+        Ok(plaintext)
+    }
+
+    /// Z4-01 wektor A: ten sam chunk zdeduplikowany miedzy dwoma inode'ami.
+    /// Pack nalezy do danych, nie do pliku — kazdy inode, ktory sie na niego
+    /// powoluje, musi go odczytac.
+    #[tokio::test]
+    async fn deduplicated_chunk_stays_readable_from_the_second_inode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_root("dedup").await?;
+        let spool_dir = root.join("spool");
+        let payload = vec![0x5Au8; 4096];
+        let src_a = root.join("a.bin");
+        let src_b = root.join("b.bin");
+        fs::create_dir_all(&spool_dir).await?;
+        fs::write(&src_a, &payload).await?;
+        fs::write(&src_b, &payload).await?;
+
+        let pool = db::init_db("sqlite::memory:").await?;
+        let vault_keys = VaultKeyStore::new();
+        vault_keys.unlock(&pool, "test-passphrase").await?;
+        let packer = Packer::new(
+            pool.clone(),
+            vault_keys.clone(),
+            PackerConfig::new(&spool_dir),
+        )?;
+
+        let inode_a = db::create_inode(&pool, None, "a.bin", "FILE", payload.len() as i64).await?;
+        let inode_b = db::create_inode(&pool, None, "b.bin", "FILE", payload.len() as i64).await?;
+
+        let result_a = packer.pack_file(inode_a, &src_a).await?;
+        let result_b = packer.pack_file(inode_b, &src_b).await?;
+
+        let pack_a = result_a.pack_id.clone().expect("inode A produced a pack");
+        let pack_b = result_b.pack_id.clone().expect("inode B produced a pack");
+        assert_eq!(
+            pack_a, pack_b,
+            "identyczna tresc musi trafic w ten sam pack (dedup)"
+        );
+
+        let chunks_b = db::get_file_chunks(&pool, inode_b).await?;
+        assert_eq!(chunks_b.len(), 1, "inode B ma jeden chunk");
+
+        let back = read_back_chunk(&pool, &vault_keys, &spool_dir, &pack_b)
+            .await
+            .expect("klucz packa musi odszyfrowac pack niezaleznie od tego, kto pyta");
+        assert_eq!(back, payload, "zdeduplikowany chunk odczytany poprawnie");
+
+        let _ = fs::remove_dir_all(&root).await;
+        Ok(())
+    }
+
+    /// Z4-01 wektor B: kopia konfliktu to NOWY inode, ktory przez `copy_chunk_refs`
+    /// dziedziczy chunk_id oryginalu. To wlasnie ten wektor wystrzelil na Lenovo
+    /// (inode 16 w omnidrive.db) i uczynil kopie nieodczytywalna.
+    #[tokio::test]
+    async fn conflict_copy_stays_readable() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_root("conflict").await?;
+        let spool_dir = root.join("spool");
+        let payload = vec![0xC7u8; 2048];
+        let source = root.join("doc.bin");
+        fs::create_dir_all(&spool_dir).await?;
+        fs::write(&source, &payload).await?;
+
+        let pool = db::init_db("sqlite::memory:").await?;
+        let vault_keys = VaultKeyStore::new();
+        vault_keys.unlock(&pool, "test-passphrase").await?;
+        let packer = Packer::new(
+            pool.clone(),
+            vault_keys.clone(),
+            PackerConfig::new(&spool_dir),
+        )?;
+
+        let inode = db::create_inode(&pool, None, "doc.bin", "FILE", payload.len() as i64).await?;
+        let packed = packer.pack_file(inode, &source).await?;
+        let pack_id = packed.pack_id.clone().expect("pack powstal");
+        let revision_id = packed.revision_id.expect("rewizja powstala");
+
+        let (copy_inode, copy_revision, _name, _conflict_id) =
+            db::materialize_conflict_copy_from_revision(
+                &pool,
+                revision_id,
+                Some("dev-a"),
+                "PN-THINKPAD",
+                "parallel_local_edit",
+            )
+            .await?;
+        assert_ne!(copy_inode, inode, "kopia konfliktu to osobny inode");
+
+        let copied = db::get_chunk_refs_for_revision(&pool, copy_revision).await?;
+        assert_eq!(copied.len(), 1, "kopia dziedziczy chunk oryginalu");
+
+        // Sedno regresji: kopia ma WLASNY klucz, rozny od klucza packa. Dopoki odczyt
+        // szukal klucza po inodzie czytelnika, siegal wlasnie po ten i tag GCM nie przechodzil.
+        let (_id, copy_own_dek) = vault_keys.get_or_create_dek(&pool, copy_inode).await?;
+        let pack_dek = vault_keys.dek_for_pack(&pool, &pack_id).await?;
+        assert_ne!(
+            copy_own_dek.expose_secret().as_ref() as &[u8],
+            pack_dek.expose_secret().as_ref() as &[u8],
+            "klucz inode'a-kopii nie moze byc kluczem packa — inaczej test niczego nie rozroznia"
+        );
+
+        let back = read_back_chunk(&pool, &vault_keys, &spool_dir, &pack_id)
+            .await
+            .expect("kopia konfliktu musi byc odczytywalna");
+        assert_eq!(back, payload, "kopia konfliktu zwraca oryginalna tresc");
+
+        let _ = fs::remove_dir_all(&root).await;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn splits_into_default_4mb_chunks() -> Result<(), Box<dyn std::error::Error>> {

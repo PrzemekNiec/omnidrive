@@ -137,6 +137,83 @@ pub async fn insert_wrapped_dek(
     Ok(result.last_insert_rowid())
 }
 
+/// Binds a pack to the DEK that encrypted it. The pack — not the inode — owns the key,
+/// so every reference to the pack (dedup, conflict copy, restore) resolves the same one.
+pub async fn set_pack_dek(
+    pool: &SqlitePool,
+    pack_id: &str,
+    dek_id: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO pack_deks (pack_id, dek_id) VALUES (?, ?) \
+         ON CONFLICT(pack_id) DO NOTHING",
+    )
+    .bind(pack_id)
+    .bind(dek_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_pack_dek_id(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT dek_id FROM pack_deks WHERE pack_id = ?")
+        .bind(pack_id)
+        .fetch_optional(pool)
+        .await
+}
+
+pub async fn get_wrapped_dek_by_id(
+    pool: &SqlitePool,
+    dek_id: i64,
+) -> Result<Option<WrappedDekRecord>, sqlx::Error> {
+    sqlx::query_as::<_, WrappedDekRecord>(
+        "SELECT dek_id, inode_id, wrapped_dek, key_version, vault_key_gen, created_at \
+         FROM data_encryption_keys WHERE dek_id = ?",
+    )
+    .bind(dek_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Next free `key_version` for an inode. `data_encryption_keys` enforces
+/// `UNIQUE(inode_id, key_version)` and that constraint cannot be dropped under the
+/// additive-migration model, so one inode creating several pack DEKs must count up.
+pub async fn next_dek_key_version(
+    pool: &SqlitePool,
+    inode_id: i64,
+) -> Result<i64, sqlx::Error> {
+    let current: Option<i64> = sqlx::query_scalar(
+        "SELECT MAX(key_version) FROM data_encryption_keys WHERE inode_id = ?",
+    )
+    .bind(inode_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(current.unwrap_or(0) + 1)
+}
+
+/// Resolves which inode's write created `pack_id`, by the earliest revision that
+/// references any of its chunks. Used to backfill `pack_deks` for packs written
+/// before the key moved from the inode to the pack.
+pub async fn creating_inode_for_pack(
+    pool: &SqlitePool,
+    pack_id: &str,
+) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT fr.inode_id \
+         FROM pack_locations pl \
+         JOIN chunk_refs cr ON cr.chunk_id = pl.chunk_id \
+         JOIN file_revisions fr ON fr.revision_id = cr.revision_id \
+         WHERE pl.pack_id = ? \
+         ORDER BY fr.revision_id ASC LIMIT 1",
+    )
+    .bind(pack_id)
+    .fetch_optional(pool)
+    .await
+}
+
 #[allow(dead_code)]
 pub async fn get_vault_config(pool: &SqlitePool) -> Result<Option<VaultConfigRecord>, sqlx::Error> {
     sqlx::query_as::<_, VaultConfigRecord>(
