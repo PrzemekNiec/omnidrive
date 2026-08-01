@@ -153,7 +153,7 @@ zielonych.
 | Z6-03 | 🔴 | Scrubber weryfikuje shardy jeszcze niewysłane — `PENDING` idzie pierwszy w kolejce, 404 → `FAILED` → pack degradowany → repair pobiera 4 MiB bez powodu | czytanie + sonda SQLite |
 | Z6-04 | 🔴 | `run_batch_now` bez `sleep`/kursora — `POST /repair/now` i `/reconcile/now` mogą nigdy nie wrócić | czytanie + sonda SQLite |
 | Z6-05 | 🔴 | Repair bez licznika prób: nienaprawialny pack wraca co 10 s (~34 GiB egressu/dobę) i blokuje wszystkie pozostałe | czytanie |
-| Z6-06 | 🔴 | Repair nie sprawdza `pack_shards.checksum` — odtwarza z niezweryfikowanych shardów i kasuje oryginał przez gc | czytanie |
+| Z6-06 | ✅ | Repair nie sprawdzał `pack_shards.checksum` — odtwarzał z niezweryfikowanych shardów, a gc kasował oryginał | **NAPRAWIONE** `f667d4f` |
 | Z6-07 | 🔴 | Wyścig reconcile ↔ gc w gałęzi `LocalOnly` (brak osłony `!= 'UPLOADING'`, brak FK na `pack_locations`) | czytanie + schemat |
 | Z6-08 | ⚠️ | Dwie definicje sieroty; endpoint `/api/maintenance/gc` kasuje metadane bez obiektów w chmurze | czytanie + sonda SQLite |
 | Z6-09 | ⚠️ | DEEP verify zawsze na pierwszym shardzie partii (`batch_index == 0`) — ≥576 MiB/dobę przy limicie 500 MiB | czytanie + sonda SQLite |
@@ -1955,8 +1955,19 @@ Skutki idą w dwie strony:
   w chmurze**. Jedyną linią obrony jest tu AES-GCM przy odczycie — wykryje, że dane są złe, ale
   wykrycie następuje po skasowaniu dobrej kopii. To jest **detekcja bez ratunku** (Z6-06).
 
-Weryfikacja sum kontrolnych w `download_shard` to kilka linii i cała ta klasa problemów znika —
-odnotowane, nie naprawione, zgodnie z ustaleniem.
+**Naprawione w `f667d4f`** (decyzja Przemka, 2026-08-01): `download_shard` porównuje
+`hex_sha256(bytes)` z `pack_shards.checksum` i odrzuca bajty **przed** zapisem do spoola,
+na wszystkich trzech ścieżkach pobrania. Sprawdzone przed zmianą, żeby bramka nie zablokowała
+istniejących packów: sumę zapisują tylko `packer`, `migrator` i sam `repair` (wszystkie przez
+`hex_sha256` po dokładnie tych bajtach, które idą do chmury), a `db/graft.rs` przepisuje
+wartość ze snapshotu — format jest jednolity. Testy: `rejects_bytes_with_flipped_bit`
+i `accepts_bytes_matching_registered_checksum` budują prawdziwy shard przez
+`packer::build_shards` i porównują z jego zarejestrowaną sumą.
+
+**Skutek uboczny do świadomego przyjęcia:** uszkodzony shard zamiast po cichu zepsuć packa
+zatrzymuje teraz naprawę tego packa — a przez Z6-05 (kolejka bez kursora) zatrzymuje też
+naprawę wszystkich pozostałych. To jest zamiana utraty danych na zator, czyli właściwa strona
+kompromisu, ale **Z6-05 zyskuje przez to na pilności**.
 
 ## 6b.9 Drobiazgi o dużym zasięgu
 
