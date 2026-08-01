@@ -8,6 +8,73 @@
 > Stan: **v0.3.28**, branch `main`, HEAD `7ba32f2`, data przeglądu **2026-08-01**.
 > Skala: 121 plików `.rs`, ~48 000 linii, 6 crate'ów.
 
+---
+
+## ⏸️ STAN PRZEGLĄDU — czytaj to najpierw przy wznowieniu
+
+**Ostatnia sesja: 2026-08-01.** Przegląd przerwany na warstwie 7 z powodu wyczerpania kontekstu,
+nie z powodu problemu w kodzie.
+
+### Metoda (trzymać się jej — sprawdziła się)
+
+1. **Czytać kod, nie dokumentację.** Każde znalezisko w tym pliku zostało potwierdzone
+   w kodzie albo empirycznie (sonda SQLite, sonda NTFS, test na czerwono). Zero dedukcji
+   podawanej jako fakt.
+2. **Pisać rozdział na dysk natychmiast po przeczytaniu warstwy**, nie na końcu — inaczej
+   kompresja kontekstu zjada detale, po które się szło.
+3. **Znaleziska notować, nie naprawiać** (ustalenie użytkownika), z wyjątkiem sytuacji, gdy
+   dotyczą integralności danych — wtedy zapytać.
+4. Przy każdym „X jest zepsute" **najpierw sprawdzić**, czy nie ma fallbacku, który to ratuje.
+   Dwa razy uratowało to przed fałszywym alarmem (`probe_latency` przechodzi przez `cloud_guard`;
+   pierwsza wersja testu kopii konfliktu przechodziła mimo wyłączonej naprawy).
+
+### Co zrobione
+
+| Warstwa | Stan |
+| --- | --- |
+| 1. Bootstrap | ✅ pełne czytanie |
+| 2. Baza danych (24 pliki) | ✅ pełne czytanie |
+| 3. Krypto i vault | ✅ pełne czytanie |
+| 4. Pipeline zapisu | ⚠️ `packer`, `watcher`, `ingest` przeczytane; **`uploader.rs` (1020 linii) i `aws_http.rs` NIE** |
+| 5. Pipeline odczytu | ✅ `downloader/*` + `cache.rs` |
+| 6. Integralność | ⚠️ `cloud_guard`, `gc` pełne; **`scrubber.rs` i `repair.rs` tylko strukturalnie** |
+| 7. Windows / Ghost Shell | ⛔ ledwo zaczęta — przeczytany wyłącznie `lock_flow.rs` |
+| 8. Cross-device | ⛔ nie zaczęta |
+| 9. API i Web UI | ⛔ nie zaczęta |
+| 10. Satelity i testy | ⛔ nie zaczęta |
+
+### Co zostało do przeczytania
+
+```
+warstwa 4 (dokończyć): uploader.rs (1020), aws_http.rs (50)
+warstwa 6 (dokończyć): scrubber.rs (504), repair.rs (881)
+warstwa 7: smart_sync/* (2292), virtual_drive (348), shell_state (435),
+           shell_integration (238), auto_lock (479), win_session (213),
+           win_acl (266), acl (300), secure_fs (162), windows_hello (142),
+           autostart (175)
+warstwa 8: onboarding (1213), db/graft (1460), disaster_recovery (2689),
+           peer (535), pipe_server (309), sharing (107 — juz czytane przy Z4-01)
+warstwa 9: api/* (14 plikow, ~5500), api_error (160), static/*
+warstwa 10: omnidrive-tray (353), omnidrive-shell-ext (567), omnidrive-cli (607),
+            angelctl (3), angeld/tests/* (~2600), bin/cfapi_repro (137)
+```
+
+### Zadania otwarte poza przeglądem
+
+- **Z4-06** — `ingest.rs:391` używa reguł `EC_2_1` dla każdego packa; pliki z polityką
+  `STANDARD`/`LOCAL` zawsze lądują w `FAILED` przy Inbox upload. Naprawa jednolinijkowa.
+- **Odświeżyć `docs/PROJECT_OVERVIEW.md`** — stan na 2026-06-04 / v0.3.27, nieaktualny.
+- **Rewizja `STATUS.md`** (100 KB) przeciw ustaleniom z tego pliku.
+
+### Zamknięte w tej sesji
+
+`Z4-01` — DEK per pack zamiast per inode (commit `8d24755`), wraz z dwupoziemową kopertą dla
+linków share, poprawką migratora V1→V2 i testem e2e. Wersja podbita do **0.3.29**,
+`dist/installer/output/OmniDrive-Setup-0.3.29.exe` zbudowany. 210 testów lib + 18 integracyjnych
+zielonych.
+
+---
+
 ## Legenda stanu modułu
 
 | Znak | Znaczenie |
@@ -21,13 +88,46 @@
 1. [Bootstrap i konfiguracja](#1-bootstrap-i-konfiguracja)
 2. [Baza danych (`db/*`)](#2-baza-danych)
 3. [Krypto i vault](#3-krypto-i-vault)
-4. [Pipeline zapisu](#4-pipeline-zapisu) — *częściowy: packer gotowy, watcher/ingest/uploader w trakcie*
-5. Pipeline odczytu — *w trakcie*
-6. Integralność danych — *w trakcie*
-7. Windows / Ghost Shell — *w trakcie*
-8. Cross-device — *w trakcie*
-9. API i Web UI — *w trakcie*
-10. Satelity i testy — *w trakcie*
+4. [Pipeline zapisu](#4-pipeline-zapisu) — *bez `uploader.rs`*
+5. [Pipeline odczytu](#5-pipeline-odczytu)
+6. [Integralność danych](#6-integralnosc-danych)
+7. Windows / Ghost Shell — *do zrobienia*
+8. Cross-device — *do zrobienia*
+9. API i Web UI — *do zrobienia*
+10. Satelity i testy — *do zrobienia*
+
+## Rejestr znalezisk
+
+| ID | Waga | Rzecz | Potwierdzone jak |
+| --- | --- | --- | --- |
+| Z1-01 | 🔴 | `angeld.log` rośnie bez końca; prune po `mtime` nigdy nie tknie aktywnego pliku | grep: zero `RollingFileAppender` |
+| Z1-02 | 🔴 | 3 workery poza `tokio::select!` (m.in. `pipe_server`) — śmierć niezauważona | czytanie `main.rs` |
+| Z1-03 | ⚠️ | ~450 linii zduplikowanego shutdownu w 4 gałęziach trybów | czytanie |
+| Z1-04 | ⚠️ | `panic!` przy niespójności vaulta w procesie GUI-subsystem — niewidoczny | czytanie |
+| Z1-05 | ⚠️ | Komentarze z numerami zadań łamią CLAUDE.md §3 | czytanie |
+| Z1-06 | ⚠️ | Kod diagnostyczny w binarce produkcyjnej, poza `cloud_guard` | czytanie |
+| Z2-01 | 🔴 | Soft-delete blokuje odtworzenie pliku w **podkatalogu** | sonda SQLite |
+| Z2-02 | 🔴 | `/api/stats/overview` zawsze 0 plików (`kind = 'file'` małymi) | sonda SQLite |
+| Z2-03 | 🔴 | `backfill_uuid_user_ids` może oddać do puli połączenie z `FK = OFF` | czytanie |
+| Z2-04 | ⚠️ | `cleanup_expired_sessions` i `delete_expired_oauth_states` nigdy nie wołane | grep |
+| Z2-05 | ⚠️ | Projekcja po pojedynczym inode ignoruje soft-delete | czytanie |
+| Z2-06 | ⚠️ | Brak FK na `shared_links` i `user_sessions` | czytanie schematu |
+| Z2-07 | ⚠️ | `PERMANENTLY_FAILED` niepoliczony w `summarize_pack_shards` | czytanie |
+| Z3-01 | 🔴 | Zmiana hasła nietransakcyjna — awaria = trwała utrata DEK-ów | czytanie |
+| Z3-02 | 🔴 | Uszkodzony `encrypted_vault_key` cicho nadpisywany zamiast błędu | czytanie |
+| Z3-03 | ⚠️ | `Box::leak` na ścieżce błędu | czytanie |
+| Z3-04 | ⚠️ | `payloads.rs` w całości nieużywany, `layout.rs` w 4/5 (relikt VFS) | grep |
+| Z3-05 | ⚠️ | Trzy klucze root wyprowadzane i nigdy nieużywane | grep |
+| Z3-06 | ⚠️ | ML-KEM opisany w roadmapie jako odroczony — **jest zbudowany i podpięty** | grep + czytanie |
+| Z4-01 | ✅ | DEK per inode → pliki nieodszyfrowywalne | **NAPRAWIONE** `8d24755` |
+| Z4-02 | ⚠️ | `split_ciphertext_into_shards` kopiuje bajt po bajcie (4 mln iteracji/chunk) | czytanie |
+| Z4-03 | ⚠️ | Providerzy zaszyci pozycyjnie; `EC_2_1` wymaga dokładnie tych trzech | czytanie |
+| Z4-04 | ⚠️ | Każdy restart przepakowuje cały watch root (stąd 1429 rewizji) | czytanie + baza |
+| Z4-05 | ⚠️ | Watcher bierny do restartu po zakończeniu onboardingu | czytanie |
+| Z4-06 | 🔴 | Ingest ocenia packi regułami `EC_2_1` — `STANDARD`/`LOCAL` zawsze `FAILED` | grep + tabela progów |
+| Z5-01 | 🔴 | Cache pisze do alternatywnych strumieni NTFS (`:` w nazwie pliku) | sonda NTFS |
+| Z6-01 | 🔴 | Wyłącznik awaryjny chmury zatrzaskuje się do restartu daemona | grep: 1 wołający |
+| Z6-02 | ⚠️ | `AppConfig::from_env()` przy każdej operacji chmurowej | czytanie |
 
 ---
 
@@ -680,8 +780,41 @@ wyłącznie treść `info!`. Ok. 25 linii duplikatu; warunek `initialized` nie w
 
 # 4. Pipeline zapisu
 
-> **Status rozdziału:** `packer.rs` i `watcher.rs` przeczytane i opisane.
-> `ingest.rs`, `uploader.rs`, `aws_http.rs` — do dokończenia.
+> **Status rozdziału:** `packer.rs`, `watcher.rs`, `ingest.rs` przeczytane i opisane.
+> `uploader.rs`, `aws_http.rs` — do dokończenia.
+
+## 4.3 `ingest.rs` — świadome przyjęcie pliku (Inbox)
+
+Druga, niezależna droga wejścia obok watchera. Watcher reaguje na zdarzenia systemu plików;
+ingest obsługuje jawne „weź ten plik" i **kończy zamianą pliku w placeholder**.
+
+Maszyna stanów z twardo zadeklarowanymi przejściami (`valid_transitions`):
+
+```
+PENDING ──▶ CHUNKING ──▶ UPLOADING ──▶ GHOSTED ──▶ (wiersz kasowany)
+   │            │             │
+   └────────────┴─────────────┴──▶ FAILED ──▶ PENDING (tylko ręcznie, z API)
+```
+
+Dwie rzeczy zrobione tu dobrze i warte zapamiętania:
+
+1. **Przejście w bazie idzie PRZED pracą.** `transition()` robi warunkowy `UPDATE … WHERE state = ?`
+   i dopiero po jego powodzeniu rusza robota. Jeśli proces zginie w połowie,
+   `recover_interrupted_jobs` przy starcie zresetuje `CHUNKING`/`UPLOADING` → `PENDING`.
+   Stan nigdy nie kłamie o tym, co zostało zrobione.
+2. **Ghost swap czeka na potwierdzenie z chmury.** `do_uploading` odpytuje w pętli
+   `summarize_pack_shards` aż wszystkie packi osiągną `Healthy` albo `Degraded`, z limitem
+   `UPLOAD_TIMEOUT = 600 s` i pollingiem co 2 s. Dopiero potem plik zostaje odchudzony do
+   placeholdera. To właściwa kolejność — bez tego zamiana pliku na placeholder przed trwałym
+   zapisem w chmurze byłaby utratą danych.
+
+   Uwaga: `Degraded` jest **akceptowane** jako „gotowe". Przy `EC_2_1` (Reed-Solomon 2+1) oznacza
+   to 2 z 3 shardów, z których plik da się odtworzyć — więc jest to bezpieczne, ale świadomie
+   rezygnuje z pełnej nadmiarowości w momencie odchudzenia pliku.
+
+`FAILED` nie wraca samo do `PENDING` — `get_next_pending_ingest_job` bierze wyłącznie `PENDING`,
+więc nieudane zadanie czeka na ręczne `retry_ingest_job` z API. To chroni przed pętlą ponowień,
+ale znaczy też, że nikt nie ponowi zadania bez interwencji użytkownika.
 
 ## 4.0 `watcher.rs` — kiedy pipeline w ogóle rusza
 
@@ -908,6 +1041,29 @@ z dzieleniem i modulo na każdy bajt. Dla domyślnego chunka 4 MiB to ~4,2 mln i
 zamiast dwóch `copy_from_slice` na wyliczonych zakresach. Semantyka jest poprawna, koszt
 niepotrzebny — i leży dokładnie na ścieżce, po której idzie każdy zapisywany bajt.
 
+### 🔴 Z4-06 — ingest ocenia każdy pack regułami `EC_2_1`, więc tryby inne niż EC zawsze „padają"
+
+`ingest.rs:391` woła `db::resolve_pack_status(summary)` — wariant **bez** trybu składowania,
+który w `db/packs.rs:466` na sztywno podstawia `StorageMode::Ec2_1`. Wszystkie pozostałe miejsca
+w kodzie (`scrubber.rs:259`, `uploader.rs:546`, `uploader.rs:809`) używają
+`resolve_pack_status_for_mode` z faktycznym trybem packa. Ingest jest jedynym wyjątkiem.
+
+Skutek, wprost z tabeli progów w §2.2:
+
+| Tryb packa | Stan po udanym uploadzie | Werdykt reguł `EC_2_1` |
+| --- | --- | --- |
+| `EC_2_1` | 3 shardy `COMPLETED` | `Healthy` — poprawnie |
+| `SINGLE_REPLICA` | 1 shard `COMPLETED` | `completed < 2` i brak pending → **`Unreadable`** |
+| `LOCAL_ONLY` | 0 shardów (z założenia) | same zera → **`Unreadable`** |
+
+`Unreadable` ustawia `any_failed = true`, więc `do_uploading` zwraca błąd
+„one or more packs failed upload", a zadanie ląduje w `FAILED`. Plik z polityką `STANDARD`
+lub `LOCAL` **nigdy nie przejdzie przez Inbox**, mimo że jego packi są w komplecie.
+
+Łagodzące: ponieważ `do_uploading` zawodzi **przed** ghost swapem, oryginalny plik zostaje
+nietknięty — to fałszywa porażka, nie utrata danych. Poprawka to pobranie trybu packa i użycie
+`resolve_pack_status_for_mode`, dokładnie jak robi to `uploader.rs`.
+
 ### ⚠️ Z4-04 — każdy restart daemona przepakowuje wszystkie pliki
 
 `TrackedFileState` — w tym `content_hash` — żyje **wyłącznie w pamięci** (`processed_files`).
@@ -933,6 +1089,175 @@ zabezpieczane, dopóki ktoś nie zrestartuje procesu. Komunikat w logu mówi o t
 wygląda jak cicha awaria synchronizacji tuż po udanej konfiguracji.
 
 ### ⚠️ Z4-03 — providerzy zaszyci pozycyjnie w kodzie
+
+---
+
+# 5. Pipeline odczytu
+
+## 5.1 Mapa warstwy
+
+| Plik | Linie | Rola |
+| --- | --- | --- |
+| `downloader/read.rs` | 657 | `restore_file`, `read_range`, hydracja pojedynczego chunka. |
+| `downloader/pack.rs` | 285 | Pobranie packa: wybór providera, EC, fallback na peera. |
+| `downloader/chunk.rs` | 232 | Parsowanie `ChunkRecordPrefix` i deszyfrowanie rekordu. |
+| `downloader/provider.rs` | 190 | Konstrukcja providerów, `probe_latency`. |
+| `downloader/prefetch.rs` | 103 | Wyprzedzające pobieranie sąsiednich chunków. |
+| `cache.rs` | 278 | Cache chunków na dysku — **szyfrowany**, LRU. |
+
+## 5.2 Ścieżka odczytu chunka — pięć poziomów, w tej kolejności
+
+```
+1. cache lokalny        cache.get_chunk(revision_id:chunk_index)
+2. peer w LAN           try_fetch_chunk_from_peer  (tylko w load_plaintext_chunk)
+3. spool pobrań         plik już leży w download_spool_dir
+4. chmura               download_shard × N, wybór po zmierzonym opóźnieniu
+5. rekonstrukcja EC     reconstruct_ciphertext, gdy brakuje sharda
+```
+
+**Wybór providera jest mierzony, nie zgadywany.** `download_pack` odpytuje `probe_latency`
+dla każdego sharda, sortuje kandydatów po `(opóźnienie, czy status = COMPLETED)` i pobiera
+**tylko tyle shardów, ile trzeba** (`required_shards`: 2 dla `EC_2_1`, 1 dla `SINGLE_REPLICA`),
+po czym przerywa pętlę. Dzięki temu zdrowy pack EC nigdy nie kosztuje trzeciego pobrania.
+
+Warto znać koszt operacyjny tej strategii: sonda też przechodzi przez `cloud_guard`
+z `count: 1`, więc jeden pack `EC_2_1` to **3 sondy + 2 pobrania = 5 operacji odczytu**.
+Przy `DEFAULT_CLOUD_DAILY_READ_OPS_LIMIT = 5000` daje to ok. 1000 chunków, czyli ~4 GiB
+odczytu na dobę, zanim bezpiecznik zacznie odmawiać.
+
+Deduplikacja równoległych pobrań: `pack_download_locks` (mapa `Mutex` per `pack_id`) sprawia,
+że gdy kilka callbacków cfapi zażąda tego samego packa, do chmury idzie tylko pierwszy —
+reszta czeka na mutex i trafia w gotowy plik w spoolu.
+
+## 5.3 `cache.rs` — cache też jest zero-knowledge
+
+Cache **nie trzyma plaintextu**. Każdy chunk jest szyfrowany AES-256-GCM kluczem wyprowadzonym
+z `master_key` (`derive_cache_key`), a jako AAD idzie `cache_key` (`revision_id:chunk_index`) —
+więc podmiana pliku cache'u między chunkami zostanie wykryta.
+
+Cache sam się leczy: nieudane deszyfrowanie albo niezgodność rozmiaru kasuje wpis i zgłasza
+chybienie, zamiast zwrócić śmieci. Eksmisja LRU po `last_accessed_at`, z ochroną właśnie
+zapisanego klucza (`protected_key`), żeby świeży wpis nie wypadł natychmiast przy pełnym cache'u.
+Metryki trafień/chybień w `AtomicU64` w `OnceLock` — globalne, wspólne dla wszystkich instancji.
+
+---
+
+## Znaleziska — rozdział 5
+
+### 🔴 Z5-01 — cache zapisuje dane do alternatywnych strumieni NTFS (POTWIERDZONE)
+
+`cache_path_for_key` buduje ścieżkę `root/aa/bb/{cache_key}.bin`, gdzie
+`cache_key = format!("{revision_id}:{chunk_index}")`. Nazwa pliku zawiera więc **dwukropek**,
+a Windows interpretuje `plik:strumień` jako Alternate Data Stream, nie jako nazwę.
+
+**Weryfikacja** (zapis pliku `1468:0.bin` w pustym katalogu):
+
+```
+zapis:  OK        odczyt: OK (dane wracają)
+os.listdir  →  ['1468']            ← widać plik "1468", 0 bajtów
+dir /r      →  23  1468:0.bin:$DATA ← dane siedzą w strumieniu
+```
+
+Czyli: **działa przez przypadek.** Wszystkie chunki jednej rewizji lądują jako strumienie
+doczepione do jednego zerobajtowego pliku o nazwie równej `revision_id`. Konsekwencje:
+
+- **Zajętość dysku jest niewidoczna.** Eksplorator, `dir`, większość narzędzi pokazują 0 bajtów.
+  Użytkownik szukający, co zjadło 50 GiB (`DEFAULT_CACHE_MAX_BYTES`), nie znajdzie nic.
+  Rozliczenie w `evict_if_needed` opiera się na sumie z bazy, więc sama eksmisja działa.
+- **Działa wyłącznie na NTFS.** Na exFAT (pendrive), FAT32 czy udziale sieciowym zapis się
+  wywali — a `OMNIDRIVE_CACHE_DIR` jest konfigurowalny.
+- Strumienie są **po cichu gubione** przy kopiowaniu na inne systemy plików i bywają usuwane
+  przez narzędzia backupowe oraz antywirusy.
+- `delete_entry` kasuje strumień, ale **plik-nosiciel zostaje** jako zerobajtowa sierota;
+  nic go nigdy nie sprząta.
+
+Naprawa jest jednoliniowa — separator inny niż `:` w `cache_key` (np. `-`) albo kodowanie
+nazwy pliku z samego skrótu, który i tak już jest liczony w `cache_path_for_key`.
+
+---
+
+# 6. Integralność danych
+
+Cztery workery pilnujące, żeby to, co poszło do chmury, dało się z niej odzyskać —
+plus bezpiecznik, który powstał po incydencie „B2 bleeding".
+
+| Plik | Linie | Rola |
+| --- | --- | --- |
+| `repair.rs` | 881 | Odtworzenie brakujących shardów z parzystości; rekoncyliacja trybu składowania. |
+| `scrubber.rs` | 504 | Okresowa weryfikacja shardów w chmurze (LIGHT / DEEP). |
+| `cloud_guard.rs` | 305 | Bezpiecznik: DRY-RUN, dzienne limity, wyłącznik awaryjny. |
+| `gc.rs` | 275 | Kasowanie osieroconych packów. |
+| `migrator.rs` | 485 | Przepakowanie V1 → V2 (opisane w §3.3). |
+| `diagnostics.rs` | 153 | Statusy workerów dla UI. |
+
+## 6.1 `cloud_guard.rs` — bezpiecznik po „B2 bleeding"
+
+Każda operacja chmurowa przechodzi przez `current_decision`, które zwraca jeden z czterech
+werdyktów: `Allowed`, `DryRun`, `Suspended`, `QuotaExceeded`. Kolejność sprawdzeń ma znaczenie:
+
+```
+1. DRY-RUN?      (env ALBO flaga w system_config)   → DryRun, nic nie leci do chmury
+2. zawieszone?   (system_config cloud_suspended)     → Suspended
+3. limit dzienny (apply_cloud_usage_delta_with_limits, BEGIN IMMEDIATE)
+      przekroczony → set_cloud_suspension + QuotaExceeded
+4. dopisz do licznika sesji (AtomicU64 w OnceLock)   → Allowed
+```
+
+**Kluczowa właściwość:** sprawdzenie limitu i inkrementacja licznika są w jednej transakcji
+`BEGIN IMMEDIATE` (§2.6). Bez tego dwa workery przepuściłyby operację ponad limit — a to był
+dokładnie mechanizm „B2 bleeding". Liczniki dzienne trzymane w `cloud_usage_daily`, sesyjne
+w pamięci.
+
+Domyślne progi z `config.rs`: 1 000 zapisów, 5 000 odczytów, **500 MiB egressu na dobę** —
+ten ostatni jest najciaśniejszy i to on odpali się pierwszy.
+
+## 6.2 `gc.rs`, `scrubber.rs`, `repair.rs` — skrót
+
+- **`gc`** (co 10 s) kasuje packi bez żadnego `chunk_refs` wskazującego na nie
+  (`gc_orphan_packs`, §2.1). Usuwa komplet: `upload_job_targets` → `upload_jobs` →
+  `pack_locations` → `packs`, a `pack_shards` schodzi kaskadą FK.
+- **`scrubber`** wybiera shardy do weryfikacji zapytaniem, które priorytetyzuje nigdy
+  nieweryfikowane (`last_verified_at IS NULL` idzie pierwsze), potem najstarsze, potem te
+  z największą liczbą wcześniejszych porażek. Rozróżnia weryfikację `LIGHT` (rozmiar) i `DEEP`
+  (suma kontrolna, kosztuje egress). Używa `resolve_pack_status_for_mode` z faktycznym trybem.
+- **`repair`** odtwarza brakujące shardy z parzystości Reed-Solomon i dokonuje rekoncyliacji,
+  gdy faktyczny tryb składowania packa rozjechał się z polityką (`get_next_pack_requiring_reconciliation`).
+
+> **Głębokość przeglądu:** `cloud_guard.rs` i `gc.rs` przeczytane w całości.
+> `scrubber.rs` i `repair.rs` — struktura i punkty styku z bazą; pełne czytanie ich logiki
+> rekonstrukcji EC pozostaje do zrobienia.
+
+---
+
+## Znaleziska — rozdział 6
+
+### 🔴 Z6-01 — wyłącznik awaryjny zatrzaskuje się do restartu daemona (POTWIERDZONE)
+
+Po przekroczeniu dziennego limitu `current_decision` woła `set_cloud_suspension`, które zapisuje
+`cloud_suspended = 1` w `system_config`. Sprawdzenie tej flagi (linia 138) jest **przed** logiką
+limitów dziennych, więc od tej chwili każda operacja zwraca `Suspended`.
+
+`clear_cloud_suspension` ma w całym kodzie **dokładnie jednego wołającego**:
+`sync_runtime_flags` (`cloud_guard.rs:99`), uruchamiane wyłącznie z `main.rs` przy starcie.
+Nie ma endpointu API, nie ma zadania czyszczącego, nie ma resetu o północy.
+
+**Skutek:** licznik dzienny zeruje się o północy (nowy `day_epoch`), ale flaga zawieszenia — nie.
+Użytkownik, który w środę w południe wyczerpie 500 MiB egressu, ma OmniDrive **martwy aż do
+restartu daemona** — nie do końca doby, tylko na zawsze. Objaw wygląda jak zerwana łączność
+z chmurą, a przyczyna jest jednym wierszem w `system_config`.
+
+Naprawa: czyścić zawieszenie przy zmianie `day_epoch` albo wystawić je jako operację w API.
+
+### ⚠️ Z6-02 — `AppConfig::from_env()` przy każdej operacji chmurowej
+
+`current_decision` na wejściu robi pełne `AppConfig::from_env()` — ok. 20 odczytów zmiennych
+środowiskowych i cztery `RuntimePaths::detect()` w środku (Z1-07). Do tego 2–3 zapytania do bazy
+na flagi i osobna transakcja `BEGIN IMMEDIATE` na licznik.
+
+Rachunek dla jednego packa `EC_2_1` przy odczycie (§5.2): 5 wywołań strażnika × (1 × from_env
++ ~4 zapytania) ≈ **20 zapytań do SQLite i 100 odczytów env na każde 4 MiB**. Nie jest to błąd
+poprawnościowy, ale to najgorętsza ścieżka w programie i najtańsze możliwe przyspieszenie
+całego I/O.
 
 `SHARD_PROVIDERS: [&str; 3] = ["cloudflare-r2","backblaze-b2","scaleway"]` oraz
 `SINGLE_REPLICA_PROVIDER = "backblaze-b2"` to stałe kompilacji, choć providerzy są
