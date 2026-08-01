@@ -12,8 +12,9 @@
 
 ## ⏸️ STAN PRZEGLĄDU — czytaj to najpierw przy wznowieniu
 
-**Ostatnia sesja: 2026-08-01.** Przegląd przerwany na warstwie 7 z powodu wyczerpania kontekstu,
-nie z powodu problemu w kodzie.
+**Ostatnia sesja: 2026-08-01 (druga).** Warstwa 7 przeczytana w całości i zapisana jako
+rozdział 7. Ustalenie robocze: **jedna warstwa na sesję** — przy tej gęstości kodu warstwa 8
+(`disaster_recovery.rs` 2689 linii, `db/graft.rs` 1460) sama zajmie cały kontekst.
 
 ### Metoda (trzymać się jej — sprawdziła się)
 
@@ -38,7 +39,7 @@ nie z powodu problemu w kodzie.
 | 4. Pipeline zapisu | ⚠️ `packer`, `watcher`, `ingest` przeczytane; **`uploader.rs` (1020 linii) i `aws_http.rs` NIE** |
 | 5. Pipeline odczytu | ✅ `downloader/*` + `cache.rs` |
 | 6. Integralność | ⚠️ `cloud_guard`, `gc` pełne; **`scrubber.rs` i `repair.rs` tylko strukturalnie** |
-| 7. Windows / Ghost Shell | ⛔ ledwo zaczęta — przeczytany wyłącznie `lock_flow.rs` |
+| 7. Windows / Ghost Shell | ✅ pełne czytanie (18 znalezisk, 7 × 🔴) |
 | 8. Cross-device | ⛔ nie zaczęta |
 | 9. API i Web UI | ⛔ nie zaczęta |
 | 10. Satelity i testy | ⛔ nie zaczęta |
@@ -48,10 +49,6 @@ nie z powodu problemu w kodzie.
 ```
 warstwa 4 (dokończyć): uploader.rs (1020), aws_http.rs (50)
 warstwa 6 (dokończyć): scrubber.rs (504), repair.rs (881)
-warstwa 7: smart_sync/* (2292), virtual_drive (348), shell_state (435),
-           shell_integration (238), auto_lock (479), win_session (213),
-           win_acl (266), acl (300), secure_fs (162), windows_hello (142),
-           autostart (175)
 warstwa 8: onboarding (1213), db/graft (1460), disaster_recovery (2689),
            peer (535), pipe_server (309), sharing (107 — juz czytane przy Z4-01)
 warstwa 9: api/* (14 plikow, ~5500), api_error (160), static/*
@@ -91,7 +88,7 @@ zielonych.
 4. [Pipeline zapisu](#4-pipeline-zapisu) — *bez `uploader.rs`*
 5. [Pipeline odczytu](#5-pipeline-odczytu)
 6. [Integralność danych](#6-integralnosc-danych)
-7. Windows / Ghost Shell — *do zrobienia*
+7. [Windows / Ghost Shell](#7-windows--ghost-shell)
 8. Cross-device — *do zrobienia*
 9. API i Web UI — *do zrobienia*
 10. Satelity i testy — *do zrobienia*
@@ -128,6 +125,24 @@ zielonych.
 | Z5-01 | 🔴 | Cache pisze do alternatywnych strumieni NTFS (`:` w nazwie pliku) | sonda NTFS |
 | Z6-01 | 🔴 | Wyłącznik awaryjny chmury zatrzaskuje się do restartu daemona | grep: 1 wołający |
 | Z6-02 | ⚠️ | `AppConfig::from_env()` przy każdej operacji chmurowej | czytanie |
+| Z7-01 | 🔴 | Menu kontekstowe Eksploratora nie wysyła `Authorization` — 5/5 pozycji zwraca 401, po cichu | czytanie + grep endpointów |
+| Z7-02 | 🔴 | „Windows Hello" to samo DPAPI — brak biometrii, hasło odzyskiwalne przez dowolny proces użytkownika | grep: 0 trafień API Hello |
+| Z7-03 | 🔴 | Bufor po `CryptUnprotectData` niezwolniony i niewyzerowany; hasło jako zwykły `String` | czytanie |
+| Z7-04 | 🔴 | DACL sync roota daje `Authenticated Users` GR/GW/GX, dziedziczenie włączone | czytanie SDDL + icacls |
+| Z7-05 | 🔴 | Teardown po blokadzie detached; błędy dehydratacji i wyrejestrowania połykane | czytanie |
+| Z7-06 | 🔴 | UI i tick loop inaczej czytają `last_activity == 0`; praca w Eksploratorze nie dotyka licznika | czytanie + grep `touch` |
+| Z7-07 | 🔴 | Hydratacja bez providerów zwraca `STATUS_SUCCESS` z zerem bajtów zamiast błędu | czytanie |
+| Z7-08 | ⚠️ | `HYDRATION_CONTEXT` to `OnceLock` z `let _ = set()` — drugi wywołujący przegrywa | grep: 2 wywołujących |
+| Z7-09 | ⚠️ | `CANCEL_FETCH_DATA` tylko loguje; pobieranie leci dalej i płaci za egress | czytanie |
+| Z7-10 | ⚠️ | `powershell.exe` + `icacls` na każde odblokowanie tylko dla `trace!` | czytanie |
+| Z7-11 | ⚠️ | Błędy `subst` rozpoznawane po tekście PL/EN — zależne od języka systemu | czytanie |
+| Z7-12 | ⚠️ | Ikona/etykieta dysku w rejestrze wbrew CLAUDE.md, a `is_healthy()` tego wymaga | czytanie + CLAUDE.md |
+| Z7-13 | ⚠️ | `require_session_no_touch` identyczne z `require_session` | czytanie + test |
+| Z7-14 | ⚠️ | Obserwator WTS ignoruje przełączenie użytkownika i rozłączenie RDP | czytanie |
+| Z7-15 | ⚠️ | `CLAUDE.md` wskazuje nieistniejący katalog `angeld/src/cfapi/` | glob: brak plików |
+| Z7-16 | ⚠️ | `.omnidrive_acl_probe` zostaje w sync roocie przy ubiciu procesu | czytanie |
+| Z7-17 | ⚠️ | Hartowanie ACL wyłączone w buildach debug | czytanie |
+| Z7-18 | ⚠️ | `evict_unpinned_hydrated_files` bez wywołujących — brak eksmisji cache'u | grep: 0 wywołujących |
 
 ---
 
@@ -1265,3 +1280,257 @@ konfigurowalni w bazie (`provider_configs`). Skonfigurowanie innego zestawu (alb
 nie zmienia tego przypisania — shardy dalej pójdą pod te nazwy, a `EC_2_1` po cichu nigdy nie
 osiągnie `COMPLETED_HEALTHY`. To wyjaśnia, dlaczego zaległość „Scaleway IAM" blokuje więcej,
 niż mogłoby się wydawać.
+
+---
+
+# 7. Windows / Ghost Shell
+
+Warstwa, która zamienia „daemon z bazą" w **dysk `O:\`, który widzi Eksplorator**. Cztery
+niezależne mechanizmy Windows, spięte razem: Cloud Files API (`cldflt.sys`), `subst`, rejestr
+HKCU i sesja WTS. Żaden z nich nie wie o pozostałych — spójność trzyma się na kolejności wywołań
+w `api/auth.rs` i `lock_flow.rs`.
+
+## 7.1 Mapa warstwy
+
+| Plik | Rola |
+| --- | --- |
+| `smart_sync/mod.rs` (265) | Fasada `#[cfg(windows)]` — 12 funkcji publicznych, każda z gałęzią `UnsupportedPlatform`. |
+| `smart_sync/imp/registration.rs` (577) | `CfRegisterSyncRoot` / `CfConnectSyncRoot` / audyt / naprawa. |
+| `smart_sync/imp/callbacks.rs` (436) | Trzy callbacki cfapi: FETCH_DATA, FETCH_PLACEHOLDERS, CANCEL_FETCH_DATA. |
+| `smart_sync/imp/placeholder.rs` (383) | Pin/unpin, hydratacja, dehydratacja, `convert_to_ghost`. |
+| `smart_sync/imp/projection.rs` (353) | Rzutowanie bazy na placeholdery + łańcuch katalogów. |
+| `smart_sync/imp/lifecycle.rs` (77) | `dismount_after_lock` / `mount_after_unlock`. |
+| `smart_sync/imp/paths.rs` (130) | Normalizacja ścieżek, konwersja czasu na FILETIME. |
+| `smart_sync/imp/state.rs` (71) | Globalne `CONNECTION_KEY`, `HYDRATION_CONTEXT`, apartament COM. |
+| `virtual_drive.rs` (348) | `subst O: <ścieżka>` + ikona/etykieta w rejestrze + ukrycie sync roota. |
+| `shell_state.rs` (435) | Audyt i naprawa stanu powłoki (dysk + rejestr + autostart). |
+| `shell_integration.rs` (238) | Menu kontekstowe Eksploratora (`HKCU\Software\Classes`). |
+| `auto_lock.rs` (479) | Monitor bezczynności (`AtomicU64`, tick 10 s). |
+| `win_session.rs` (213) | Obserwator WTS — Win+L → lock. |
+| `lock_flow.rs` (127) | Jedno źródło prawdy dla „zablokuj i rozmontuj". |
+| `win_acl.rs` (266) | SDDL dla sync roota (+ fallback `icacls`). |
+| `acl.rs` (300) | RBAC dla API (nie ma związku z `win_acl.rs` mimo nazwy). |
+| `secure_fs.rs` (162) | Retry na blokadach plików + „bezpieczne" kasowanie. |
+| `windows_hello.rs` (142) | Zapamiętane hasło w Credential Managerze. |
+| `autostart.rs` (175) | Wpis w `HKCU\...\Run`. |
+
+**Rozjazd z dokumentacją:** `CLAUDE.md` wskazuje `angeld/src/cfapi/` jako miejsce integracji
+z Cloud Files. Taki katalog nie istnieje (glob: zero plików) — kod żyje w `smart_sync/`.
+
+## 7.2 Cykl życia sync roota
+
+```
+unlock  -> register_sync_root_public -> CfRegisterSyncRoot -> CfConnectSyncRoot
+                                     -> project_vault_to_sync_root (N x CfCreatePlaceholders)
+                                     -> hide_sync_root + subst O:
+lock    -> dehydrate_directory_recursive (rekursja po FS)
+        -> CfDisconnectSyncRoot -> CfUnregisterSyncRoot -> subst O: /D
+```
+
+Trzy rzeczy w tym cyklu są zrobione **świadomie i dobrze**:
+
+- `CONNECTION_KEY` został celowo zmieniony z `OnceLock` na `Mutex<Option<_>>`, żeby cykl
+  lock ↔ unlock w ogóle był możliwy (komentarz w `state.rs:32`). To jest właściwa poprawka.
+- Wszystkie trzy callbacki cfapi są opakowane w `catch_unwind`, a FETCH_DATA na ścieżce paniki
+  domyka transfer przez `complete_transfer_failure`. Panika w callbacku `extern "system"` to UB;
+  tutaj tego nie ma.
+- `FETCH_PLACEHOLDERS` zwraca zero wpisów z flagą `DISABLE_ON_DEMAND_POPULATION` (0x2). Komentarz
+  przy tym miejscu tłumaczy WHY (bez tego `cldflt.sys` blokuje tworzenie plików błędem
+  `0x80070781`) — to jest dokładnie ten rodzaj komentarza, którego CLAUDE.md §3 wymaga.
+
+Ale **`HYDRATION_CONTEXT` pozostał `OnceLock`** i jest ustawiany przez `let _ = set(...)`, czyli
+z zignorowanym wynikiem. Wywołujących jest dwóch: `main.rs:536` i `api/onboarding.rs:1039`. Drugi
+zawsze przegrywa po cichu. Ratuje to jedynie fakt, że onboarding w gałęzi `Some` używa **tego
+samego** `Arc<Downloader>` i odświeża go przez `reload_active_providers_from_db()`, a
+`has_remote_providers()` czyta `RwLock` na żywo. W gałęzi `None` powstaje nowy `Downloader`,
+który jest natychmiast wyrzucany do kosza (Z7-08).
+
+## 7.3 Hydratacja — od kliknięcia w Eksploratorze do bajtów
+
+`fetch_data_callback` dekoduje 16-bajtowy `PlaceholderIdentity { inode_id, revision_id }`
+z `FileIdentity`, dotyka licznika bezczynności, po czym wypycha pracę na runtime Tokio.
+`read_range_streamed` woła zwrotkę per chunk, a każdy chunk trafia do Windows osobnym
+`CfExecute` — szczyt RAM to jeden chunk, nie cały plik. To jest dobra architektura i widać,
+że była projektowana pod duże pliki.
+
+Dwa miejsca psują ten obraz:
+
+**Brak providerów = sukces z zerem bajtów.** Gdy `has_remote_providers()` zwraca `false`,
+callback woła `complete_transfer_success(&request, &[])` — czyli `CF_OPERATION_TYPE_TRANSFER_DATA`
+ze `STATUS_SUCCESS`, `Buffer: null`, `Length: 0`. Aplikacja czytająca plik dostaje udany odczyt
+zakresu, w którym nie ma danych, zamiast błędu. Wynik `CfExecute` jest dodatkowo połknięty przez
+`let _ =` (Z7-07).
+
+**Anulowanie nic nie anuluje.** `cancel_fetch_data_callback` tylko loguje `warn!`. Zadanie
+pobierające leci dalej, dalej płaci za egress i dalej woła `CfExecute` na unieważnionym
+`TransferKey`. Przy dużym pliku i użytkowniku, który wciśnie Esc, pobranie i tak zostanie
+opłacone w całości — kontekst do [[project-b2-bleeding-root-cause]] (Z7-09).
+
+## 7.4 Blokada skarbca — czym naprawdę jest „P0 lock sequence"
+
+Docstring w `smart_sync/mod.rs:162` obiecuje: *„Recursive dehydrate of every file in OmniSync
+(removes decrypted cache)"*. Co robi kod:
+
+1. `lock_flow::force_lock_and_dismount` kasuje klucze, wpisuje audyt i **odpala teardown przez
+   `tokio::spawn`**, po czym natychmiast zwraca `true`. API odpowiada „zablokowane", zanim
+   cokolwiek zostało usunięte z dysku.
+2. `dehydrate_directory_recursive` idzie rekurencyjnie po katalogach i na każdym błędzie robi
+   `trace!` + `continue`. Plik trzymany otwarty przez inny proces (Word, Defender, indekser)
+   **zostaje zhydratowany, czyli w plaintekście**, i nikt się o tym nie dowie.
+3. `unregister_sync_root` łapie każdy błąd `CfUnregisterSyncRoot` i mimo to zwraca `Ok(())`.
+
+Sumarycznie: sekwencja blokady nie ma ani synchronicznej gwarancji, ani weryfikacji, ani kanału
+raportowania. Jeśli daemon zostanie ubity zaraz po `logout` (a przy wylogowaniu to scenariusz
+domyślny), spawnowane zadanie ginie razem z procesem (Z7-05).
+
+Poboczna obserwacja o tej samej wadze co całość: `win_session.rs` reaguje **wyłącznie** na
+`WTS_SESSION_LOCK`. Przełączenie użytkownika i rozłączenie sesji RDP
+(`WTS_CONSOLE_DISCONNECT`, `WTS_REMOTE_DISCONNECT`) zostawiają skarbiec otwarty (Z7-14).
+
+## 7.5 Licznik bezczynności — dwie różne definicje „bezczynny"
+
+`AutoLockMonitor` trzyma `last_activity: AtomicU64` (sekundy od startu daemona, `Relaxed`) —
+wzorzec zgodny z [[feedback-atomic-for-hot-path]] i słusznie. Problem jest w tym, że dwie
+funkcje czytają tę samą liczbę w **sprzeczny sposób**:
+
+```rust
+// remaining_secs() — to, co widzi UI
+if last == 0 { return timeout; }          // „jeszcze nie wystartował"
+
+// run_tick_loop() — to, co blokuje skarbiec
+let elapsed = now.saturating_sub(last);   // last == 0 -> elapsed == uptime
+if elapsed < timeout { return; }
+```
+
+Dopóki cokolwiek dotknie licznika, obie zgadzają się co do wyniku. Ale dotykają go tylko dwa
+źródła: `TouchSource::AuthApi` (dwa miejsca w `api/auth.rs`) i `TouchSource::CfApi` (dwa
+callbacki). **Przeglądanie dysku w Eksploratorze, otwieranie już zhydratowanych plików i zapis
+do nich nie generują żadnego dotknięcia** — cfapi woła FETCH_DATA tylko dla plików
+odhydratowanych. Użytkownik pracujący na przypiętych plikach jest dla monitora bezczynny (Z7-06).
+
+Świadoma decyzja, którą warto odnotować, żeby jej przypadkiem nie „naprawić": `require_session`
+i `require_session_no_touch` **celowo** nie dotykają licznika, co utrwala test
+`require_session_variants_do_not_touch`. Skutek uboczny jest taki, że obie funkcje mają
+identyczne ciała, a docstring drugiej opisuje nieistniejącą różnicę (Z7-13).
+
+## 7.6 Menu kontekstowe Eksploratora — pięć pozycji, zero działania
+
+`register_explorer_context_menu` zakłada pod `HKCU\Software\Classes\{*,Directory}\shell\OmniDrive`
+pięć podpoleceń (trzy polityki ochrony, „Free up space", „Always keep on this device"). Każde
+uruchamia `powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass` z `Invoke-RestMethod`
+do lokalnego API. Wygenerowane żądanie ma dokładnie jeden nagłówek: `Content-Type`.
+
+Wszystkie trzy endpointy docelowe wymagają sesji:
+
+```
+api/files.rs:370   acl::require_role(&state.pool, &headers, Role::Member).await?;   // set-policy
+api/files.rs:405   acl::require_role(...)                                           // pin
+api/files.rs:432   acl::require_role(...)                                           // unpin
+```
+
+Bez nagłówka `Authorization: Bearer …` `extract_session_or_401` zwraca 401, zanim cokolwiek się
+wydarzy. Menu kontekstowe **nie działa w żadnej pozycji**, a ponieważ okno jest ukryte, a wynik
+idzie w `| Out-Null`, użytkownik nie widzi nawet błędu — kliknięcie po prostu nic nie robi
+(Z7-01). To nie jest regresja jednego endpointu, tylko cała funkcja Ghost Shell, o której
+`STATUS.md` mówi „35.2 DONE".
+
+## 7.7 Uprawnienia i tożsamość
+
+`win_acl::build_sync_root_sddl` nadaje sync rootowi:
+
+```
+D:AI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;<SID użytkownika>)(A;OICI;GRGWGX;;;AU)
+```
+
+Ostatni ACE to **Authenticated Users z prawem odczytu, zapisu i wykonania**, a `D:AI` (zamiast
+`D:PAI`) zostawia dziedziczenie włączone. Fallback przez `icacls` robi to samo
+(`*S-1-5-11:(OI)(CI)RX`). Dopóki pliki są odhydratowane, wyciekają tylko nazwy i rozmiary; w
+momencie hydratacji **każde inne konto na maszynie czyta plaintext** (Z7-04). Do zweryfikowania
+z Przemkiem, czy ten ACE był potrzebny dla `cldflt.sys` — filtr działa jako `SYSTEM`, które ma
+osobny ACE, więc na pierwszy rzut oka jest zbędny.
+
+Osobno: całe hartowanie ACL jest wyłączone w buildach debug (`#[cfg(not(debug_assertions))]`
+w obu funkcjach). Testy nigdy nie przechodzą przez tę ścieżkę (Z7-17).
+
+`windows_hello.rs` nie ma nic wspólnego z Windows Hello. Grep po całym repozytorium:
+`KeyCredentialManager`, `UserConsentVerifier`, `RequestVerificationAsync` — **zero trafień**.
+Moduł robi `CryptProtectData` (DPAPI, zakres użytkownika, `CRYPTPROTECT_UI_FORBIDDEN` = zakaz
+jakiegokolwiek promptu) i zapisuje wynik do Credential Managera. Znaczy to, że:
+
+- odblokowanie „przez Hello" nie prosi o odcisk palca ani PIN — biometria nie występuje w tym
+  przepływie w ogóle;
+- dowolny proces działający na tym koncie Windows odzyskuje **hasło do skarbca w plaintekście**
+  jednym wywołaniem `CryptUnprotectData` (Z7-02);
+- przechowywane jest samo hasło, nie klucz pochodny dla tego urządzenia — kompromitacja daje
+  dostęp do skarbca na każdym urządzeniu, nie tylko na tym.
+
+Do tego bufor zwrócony przez `CryptUnprotectData` nie jest ani zerowany, ani zwalniany
+(`LocalFree`), a hasło wraca jako zwykły `String` bez `Zeroizing` — plaintext hasła zostaje
+w pamięci procesu do końca jego życia (Z7-03).
+
+## 7.8 Dysk wirtualny i rejestr
+
+`virtual_drive.rs` opiera się na `subst` — proces potomny na każdą operację montowania,
+odmontowania i **każde odpytanie o stan** (`list_virtual_drives`). Rozpoznanie „nie ma takiego
+dysku" przy odmontowaniu robione jest przez porównanie tekstu stderr z dwoma zaszytymi
+łańcuchami: angielskim i polskim (`virtual_drive.rs:240-248`). Na systemie z innym językiem
+interfejsu zwyczajne „dysku nie ma" zamieni się w twardy błąd `CommandFailed` (Z7-11).
+
+`configure_virtual_drive_appearance` zapisuje ikonę i etykietę do
+`HKCU\...\Explorer\DriveIcons\{litera}`. `CLAUDE.md` deklaruje wprost: *„Nie używamy hacków
+w rejestrze do podmiany ikon wirtualnego dysku (rezygnacja z mystyfikacji)"*. Kod nie tylko to
+robi, ale `ShellStateSnapshot::is_healthy()` **wymaga** obecności obu kluczy, żeby uznać stan
+powłoki za zdrowy (Z7-12). Kod wygrywa — decyzja z CLAUDE.md nie została wykonana.
+
+Sondę bezpieczeństwa `debug_log_sync_root_security`, odpalaną przy **każdej** rejestracji sync
+roota (czyli przy każdym odblokowaniu), warto zobaczyć w całości: uruchamia `powershell.exe`
+z `Get-Acl` i osobno `icacls`, czeka na oba, a wynik wrzuca do `trace!` — czyli przy domyślnym
+poziomie logowania wyrzuca do kosza. Dwa procesy potomne na odblokowanie za nic (Z7-10). To
+ta sama rodzina co Z1-06.
+
+## 7.9 Co jest napisane dobrze
+
+Żeby rejestr znalezisk nie zniekształcił obrazu — kilka miejsc w tej warstwie jest zrobionych
+lepiej niż średnia repozytorium:
+
+- `normalize_relative_placeholder_path` odrzuca segmenty puste, `.`, `..` **oraz zawierające
+  `:`**. To jest dokładnie ta walidacja, której zabrakło w `cache.rs` i która wyprodukowała
+  Z5-01 (zapis do alternatywnych strumieni NTFS). Wzorzec do przeniesienia.
+- `project_vault_to_sync_root` liczy błędy per plik i mimo nich montuje resztę skarbca; komentarz
+  przy tej pętli opisuje regresję, której zapobiega. Jeden nieprojektowalny plik nie zabiera
+  dostępu do całości.
+- `convert_to_ghost` przed konwersją porównuje rozmiar pliku z tym, co zostało zaingestowane,
+  i przerywa przy niezgodności zamiast zamienić w ducha plik, który zmienił się w trakcie.
+- `secure_fs::retry_io` rozróżnia `ERROR_SHARING_VIOLATION`/`ERROR_LOCK_VIOLATION` od reszty
+  i nie ponawia niczego innego — realizacja zalecenia z CLAUDE.md, nie ślepa pętla.
+- `read_registry_string` czyta rejestr przez API zamiast przez `reg.exe`, z komentarzem
+  wyjaśniającym dlaczego (bezpieczne w pętli odpytującej).
+
+Dwie rzeczy pośrednie, bez kategorii „błąd": `secure_fs::secure_delete` nadpisuje plik zerami
+przed skasowaniem, co na SSD z wear-levellingiem, przy kopiach w cieniu (VSS) i przy
+`$LogFile` NTFS nie daje gwarancji, którą sugeruje nazwa. Oraz `evict_unpinned_hydrated_files`
+nie ma **żadnego wywołującego** (stąd `#[allow(dead_code)]`) — polityka eksmisji cache'u nie
+istnieje, zhydratowane pliki rosną na dysku bez ograniczenia aż do blokady skarbca (Z7-18).
+
+## 7.10 Znaleziska
+
+| ID | Waga | Rzecz | Potwierdzone jak |
+| --- | --- | --- | --- |
+| Z7-01 | 🔴 | Menu kontekstowe Eksploratora nie wysyła `Authorization` — wszystkie 5 pozycji zwraca 401, po cichu | czytanie + grep endpointów |
+| Z7-02 | 🔴 | „Windows Hello" to samo DPAPI — brak biometrii, hasło odzyskiwalne przez dowolny proces użytkownika | grep: 0 trafień API Hello |
+| Z7-03 | 🔴 | Bufor po `CryptUnprotectData` niezwolniony i niewyzerowany; hasło jako zwykły `String` | czytanie |
+| Z7-04 | 🔴 | DACL sync roota daje `Authenticated Users` GR/GW/GX, dziedziczenie włączone | czytanie SDDL + fallbacku icacls |
+| Z7-05 | 🔴 | Teardown po blokadzie jest detached, błędy dehydratacji i wyrejestrowania połykane | czytanie |
+| Z7-06 | 🔴 | `remaining_secs()` i `run_tick_loop()` inaczej czytają `last_activity == 0`; praca w Eksploratorze nie dotyka licznika | czytanie + grep `touch` |
+| Z7-07 | 🔴 | Hydratacja bez providerów zwraca `STATUS_SUCCESS` z zerem bajtów zamiast błędu | czytanie |
+| Z7-08 | ⚠️ | `HYDRATION_CONTEXT` to `OnceLock` z `let _ = set()` — drugi wywołujący przegrywa po cichu | grep: 2 wywołujących |
+| Z7-09 | ⚠️ | `CANCEL_FETCH_DATA` tylko loguje; pobieranie leci dalej i płaci za egress | czytanie |
+| Z7-10 | ⚠️ | `powershell.exe` + `icacls` na każde odblokowanie tylko po to, by zapisać `trace!` | czytanie |
+| Z7-11 | ⚠️ | Obsługa błędów `subst` porównuje stringi po angielsku i polsku — zależna od języka systemu | czytanie |
+| Z7-12 | ⚠️ | Ikona/etykieta dysku w rejestrze wbrew CLAUDE.md, a `is_healthy()` tego **wymaga** | czytanie + CLAUDE.md |
+| Z7-13 | ⚠️ | `require_session_no_touch` identyczne z `require_session`; docstring opisuje nieistniejącą różnicę | czytanie + test |
+| Z7-14 | ⚠️ | Obserwator WTS ignoruje przełączenie użytkownika i rozłączenie RDP; `Drop` na `OnceLock` nigdy nie biegnie | czytanie |
+| Z7-15 | ⚠️ | `CLAUDE.md` wskazuje nieistniejący katalog `angeld/src/cfapi/` | glob: brak plików |
+| Z7-16 | ⚠️ | `assert_sync_root_writable` zostawia `.omnidrive_acl_probe` w sync roocie przy ubiciu procesu | czytanie |
+| Z7-17 | ⚠️ | Hartowanie ACL wyłączone w buildach debug — testy nigdy nie wchodzą na tę ścieżkę | czytanie |
+| Z7-18 | ⚠️ | `evict_unpinned_hydrated_files` bez wywołujących — brak polityki eksmisji cache'u | grep: 0 wywołujących |
