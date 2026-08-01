@@ -56,6 +56,15 @@ warstwa 10: omnidrive-tray (353), omnidrive-shell-ext (567), omnidrive-cli (607)
             angelctl (3), angeld/tests/* (~2600), bin/cfapi_repro (137)
 ```
 
+### Decyzje z sesji 2026-08-01 (druga)
+
+- **Z7-02 zostaje w rejestrze, nie jest naprawiane teraz** (decyzja Przemka) — mimo że jako
+  jedyne z 47 znalezisk kompromituje hasło główne, a nie pojedyncze urządzenie.
+- **Z7-04**: pochodzenie ustalone przez `git log -S` (commit `04a58e7`, „test: stabilize Smart
+  Sync e2e bootstrap diagnostics", 2026-03-24) — ACE wszedł ubocznie przy naprawianiu
+  bootstrapu w testach, nie ma commita, który by go uzasadniał. Przed usunięciem trzeba to
+  sprawdzić na żywo, patrz §7.7.
+
 ### Zadania otwarte poza przeglądem
 
 - **Z4-06** — `ingest.rs:391` używa reguł `EC_2_1` dla każdego packa; pliki z polityką
@@ -128,7 +137,7 @@ zielonych.
 | Z7-01 | 🔴 | Menu kontekstowe Eksploratora nie wysyła `Authorization` — 5/5 pozycji zwraca 401, po cichu | czytanie + grep endpointów |
 | Z7-02 | 🔴 | „Windows Hello" to samo DPAPI — brak biometrii, hasło odzyskiwalne przez dowolny proces użytkownika | grep: 0 trafień API Hello |
 | Z7-03 | 🔴 | Bufor po `CryptUnprotectData` niezwolniony i niewyzerowany; hasło jako zwykły `String` | czytanie |
-| Z7-04 | 🔴 | DACL sync roota daje `Authenticated Users` GR/GW/GX, dziedziczenie włączone | czytanie SDDL + icacls |
+| Z7-04 | 🔴 | DACL sync roota daje `Authenticated Users` GR/GW/GX, dziedziczenie włączone; wszedł ubocznie w `04a58e7` (commit o testach e2e), brak uzasadnienia | czytanie SDDL + `git log -S` |
 | Z7-05 | 🔴 | Teardown po blokadzie detached; błędy dehydratacji i wyrejestrowania połykane | czytanie |
 | Z7-06 | 🔴 | UI i tick loop inaczej czytają `last_activity == 0`; praca w Eksploratorze nie dotyka licznika | czytanie + grep `touch` |
 | Z7-07 | 🔴 | Hydratacja bez providerów zwraca `STATUS_SUCCESS` z zerem bajtów zamiast błędu | czytanie |
@@ -1445,9 +1454,16 @@ D:AI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;<SID użytkownika>)(A;OICI;GRGW
 Ostatni ACE to **Authenticated Users z prawem odczytu, zapisu i wykonania**, a `D:AI` (zamiast
 `D:PAI`) zostawia dziedziczenie włączone. Fallback przez `icacls` robi to samo
 (`*S-1-5-11:(OI)(CI)RX`). Dopóki pliki są odhydratowane, wyciekają tylko nazwy i rozmiary; w
-momencie hydratacji **każde inne konto na maszynie czyta plaintext** (Z7-04). Do zweryfikowania
-z Przemkiem, czy ten ACE był potrzebny dla `cldflt.sys` — filtr działa jako `SYSTEM`, które ma
-osobny ACE, więc na pierwszy rzut oka jest zbędny.
+momencie hydratacji **każde inne konto na maszynie czyta plaintext** (Z7-04).
+
+Pochodzenie tego ACE ustalone przez `git log -S`: wszedł **2026-03-24 w commicie `04a58e7`
+„test: stabilize Smart Sync e2e bootstrap diagnostics"**, razem ze 151 liniami zmian w
+`win_acl.rs`, 183 w `smart_sync.rs` i nowym plikiem `e2e_sync.rs`. Czyli powstał podczas
+walki z bootstrapem `CfRegisterSyncRoot` w testach, a nie jako decyzja o modelu uprawnień —
+nie ma osobnego commita, który by go uzasadniał. `cldflt.sys` działa jako `SYSTEM`, które ma
+własny ACE `(A;OICI;FA;;;SY)`, więc hipoteza „to było potrzebne dla filtra" nie broni się na
+pierwszy rzut oka. Usunięcie wymaga jednak testu na żywo (rejestracja sync roota + hydratacja),
+bo dokładny powód dodania nie jest udokumentowany nigdzie poza tym commitem.
 
 Osobno: całe hartowanie ACL jest wyłączone w buildach debug (`#[cfg(not(debug_assertions))]`
 w obu funkcjach). Testy nigdy nie przechodzą przez tę ścieżkę (Z7-17).
