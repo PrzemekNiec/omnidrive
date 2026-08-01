@@ -7,7 +7,7 @@ use crate::db::{PackStatus, StorageMode};
 use crate::diagnostics::{self, WorkerKind, WorkerStatus};
 use crate::packer::{
     DATA_SHARDS, PARITY_SHARDS, TOTAL_SHARDS, build_manifest_bytes, build_shards, compute_pack_id,
-    local_pack_path, local_shard_path, storage_mode_scheme,
+    hex_sha256, local_pack_path, local_shard_path, storage_mode_scheme,
 };
 use crate::secure_fs::write_ephemeral_bytes;
 use crate::uploader::ProviderConfig;
@@ -72,6 +72,10 @@ pub enum RepairError {
     },
     MissingShardRecord(&'static str),
     InvalidShardLayout(String),
+    ShardChecksumMismatch {
+        pack_id: String,
+        shard_index: i64,
+    },
     NumericOverflow(&'static str),
     Packer(String),
 }
@@ -100,6 +104,13 @@ impl fmt::Display for RepairError {
             Self::InvalidShardLayout(pack_id) => {
                 write!(f, "invalid shard layout for pack {pack_id}")
             }
+            Self::ShardChecksumMismatch {
+                pack_id,
+                shard_index,
+            } => write!(
+                f,
+                "checksum mismatch for pack {pack_id} shard {shard_index}; refusing to rebuild from unverified data"
+            ),
             Self::NumericOverflow(ctx) => write!(f, "numeric overflow while handling {ctx}"),
             Self::Packer(message) => write!(f, "packer error: {message}"),
         }
@@ -312,6 +323,7 @@ impl RepairWorker {
                     &pack.pack_id,
                     shard.shard_index,
                     pack.shard_size,
+                    &shard.checksum,
                 )
                 .await?;
             if bytes.len() != shard_len {
@@ -646,6 +658,7 @@ impl RepairWorker {
                     &pack.pack_id,
                     shard.shard_index,
                     pack.shard_size,
+                    &shard.checksum,
                 )
                 .await?;
             if bytes.len() != shard_len {
@@ -701,6 +714,7 @@ impl RepairWorker {
             &pack.pack_id,
             shard.shard_index,
             pack.shard_size,
+            &shard.checksum,
         )
         .await
     }
@@ -730,6 +744,7 @@ impl RepairWorker {
         pack_id: &str,
         shard_index: i64,
         estimated_size: i64,
+        expected_checksum: &str,
     ) -> Result<Vec<u8>, RepairError> {
         if let Err(reason) =
             cloud_guard::try_authorize_read(&self.pool, estimated_size.max(0)).await
@@ -773,6 +788,8 @@ impl RepairWorker {
                 pack_id, shard_index, err
             );
         }
+
+        ensure_shard_checksum(pack_id, shard_index, &bytes, expected_checksum)?;
 
         let shard_path = local_shard_path(
             &self.spool_dir,
@@ -956,4 +973,57 @@ fn vec_to_array_16(bytes: &[u8], field: &'static str) -> Result<[u8; 16], Repair
 fn vec_to_array_12(bytes: &[u8], field: &'static str) -> Result<[u8; 12], RepairError> {
     <[u8; 12]>::try_from(bytes)
         .map_err(|_| RepairError::Packer(format!("invalid stored {field} length")))
+}
+
+fn ensure_shard_checksum(
+    pack_id: &str,
+    shard_index: i64,
+    bytes: &[u8],
+    expected_checksum: &str,
+) -> Result<(), RepairError> {
+    if hex_sha256(bytes) == expected_checksum {
+        return Ok(());
+    }
+    Err(RepairError::ShardChecksumMismatch {
+        pack_id: pack_id.to_string(),
+        shard_index,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packer::build_shards;
+    use tokio::fs;
+
+    async fn prepared_shard_bytes() -> (String, Vec<u8>, std::path::PathBuf) {
+        let spool = std::env::temp_dir().join(format!("od-repair-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&spool).await;
+        fs::create_dir_all(&spool).await.unwrap();
+        let ciphertext = vec![0x5Au8; 8192];
+        let prepared = build_shards(&spool, "testpack", &ciphertext, StorageMode::Ec2_1)
+            .await
+            .unwrap();
+        let shard = &prepared[0];
+        let bytes = fs::read(&shard.local_path).await.unwrap();
+        (shard.checksum.clone(), bytes, spool)
+    }
+
+    #[tokio::test]
+    async fn accepts_bytes_matching_registered_checksum() {
+        let (checksum, bytes, spool) = prepared_shard_bytes().await;
+        assert!(ensure_shard_checksum("testpack", 0, &bytes, &checksum).is_ok());
+        let _ = fs::remove_dir_all(&spool).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_bytes_with_flipped_bit() {
+        let (checksum, mut bytes, spool) = prepared_shard_bytes().await;
+        bytes[64] ^= 0x01;
+        let err = ensure_shard_checksum("testpack", 0, &bytes, &checksum)
+            .expect_err("corrupted shard must not pass the checksum gate");
+        let message = err.to_string();
+        assert!(message.contains("testpack"), "message was: {message}");
+        let _ = fs::remove_dir_all(&spool).await;
+    }
 }
