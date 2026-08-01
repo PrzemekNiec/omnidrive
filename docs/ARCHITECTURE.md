@@ -152,7 +152,7 @@ zielonych.
 | Z6-02 | ⚠️ | `AppConfig::from_env()` przy każdej operacji chmurowej | czytanie |
 | Z6-03 | 🔴 | Scrubber weryfikuje shardy jeszcze niewysłane — `PENDING` idzie pierwszy w kolejce, 404 → `FAILED` → pack degradowany → repair pobiera 4 MiB bez powodu | czytanie + sonda SQLite |
 | Z6-04 | 🔴 | `run_batch_now` bez `sleep`/kursora — `POST /repair/now` i `/reconcile/now` mogą nigdy nie wrócić | czytanie + sonda SQLite |
-| Z6-05 | 🔴 | Repair bez licznika prób: nienaprawialny pack wraca co 10 s (~34 GiB egressu/dobę) i blokuje wszystkie pozostałe | czytanie |
+| Z6-05 | ✅ | Repair bez licznika prób: nienaprawialny pack wracał co 10 s (~34 GiB egressu/dobę) i blokował wszystkie pozostałe | **NAPRAWIONE** `9768a5e` |
 | Z6-06 | ✅ | Repair nie sprawdzał `pack_shards.checksum` — odtwarzał z niezweryfikowanych shardów, a gc kasował oryginał | **NAPRAWIONE** `f667d4f` |
 | Z6-07 | 🔴 | Wyścig reconcile ↔ gc w gałęzi `LocalOnly` (brak osłony `!= 'UPLOADING'`, brak FK na `pack_locations`) | czytanie + schemat |
 | Z6-08 | ⚠️ | Dwie definicje sieroty; endpoint `/api/maintenance/gc` kasuje metadane bez obiektów w chmurze | czytanie + sonda SQLite |
@@ -1841,7 +1841,24 @@ Cena jest w egressie, nie w CPU: każda próba najpierw pobiera 2 shardy (4 MiB)
 się na uploadzie. 4 MiB co 10 s to **~34 GiB na dobę**. Realnym hamulcem jest tu wyłącznie
 `cloud_guard` — po ~125 próbach (500 MiB) chmura idzie w `Suspended` i zostaje tam do restartu
 (Z6-01). To samo dotyczy gałęzi rekoncyliacji, która przed każdą nieudaną próbą pobiera pełny
-ciphertext packa (Z6-05).
+ciphertext packa.
+
+**Naprawione w `9768a5e`.** Zastosowany wzorzec **już istniał w tym repozytorium** — `upload_jobs`
+mają kolumnę `next_attempt_at`, funkcję `requeue_upload_job_after` i test
+`deferred_job_does_not_starve_later_jobs`, czyli dokładnie to samo lekarstwo na dokładnie tę samą
+chorobę, tylko warstwę wyżej. Packi dostały analogiczne, addytywne kolumny `repair_attempts`
+i `repair_next_attempt_at` (§2.3), odroczenie z backoffem wykładniczym od `retry_delay` (10 s)
+do 1 godziny, czyszczone po udanej naprawie. `get_next_degraded_pack` pomija odroczone w SQL,
+`get_next_pack_requiring_reconciliation` — przez `pack_repair_is_deferred`.
+
+Odraczany jest też pack, który **nie** jest objęty wymogiem `healthy`: nie jest błędem, ale bez
+odroczenia dalej stałby na czele kolejki i blokował resztę. Do tego `run_batch_now` dostał kursor
+odwiedzonych packów, więc pętla kończy się zamiast kręcić w miejscu — to przy okazji zamyka obie
+pętle bez wyjścia z **Z6-04**.
+
+Cztery testy w `db/packs.rs` (napisane przed poprawką, każdy najpierw czerwony) pilnują, że
+odroczony pack nie głodzi następnych, że wraca po upływie zwłoki, że sukces zeruje licznik prób
+i że rekoncyliacja też respektuje odroczenie.
 
 ## 6b.5 Trzy wyjścia z `repair_pack`, które nic nie zapisują
 
@@ -1964,10 +1981,10 @@ wartość ze snapshotu — format jest jednolity. Testy: `rejects_bytes_with_fli
 i `accepts_bytes_matching_registered_checksum` budują prawdziwy shard przez
 `packer::build_shards` i porównują z jego zarejestrowaną sumą.
 
-**Skutek uboczny do świadomego przyjęcia:** uszkodzony shard zamiast po cichu zepsuć packa
-zatrzymuje teraz naprawę tego packa — a przez Z6-05 (kolejka bez kursora) zatrzymuje też
-naprawę wszystkich pozostałych. To jest zamiana utraty danych na zator, czyli właściwa strona
-kompromisu, ale **Z6-05 zyskuje przez to na pilności**.
+**Skutek uboczny:** uszkodzony shard zamiast po cichu zepsuć packa zatrzymuje teraz naprawę tego
+packa. Dopóki kolejka nie miała kursora, zatrzymywał też naprawę wszystkich pozostałych — dlatego
+**Z6-05 zostało naprawione w tej samej sesji** (`9768a5e`, §6b.4). Po obu zmianach pack z
+uszkodzonym shardem jest odraczany z narastającym backoffem i reszta kolejki idzie dalej.
 
 ## 6b.9 Drobiazgi o dużym zasięgu
 
