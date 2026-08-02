@@ -155,10 +155,7 @@ pub async fn set_pack_dek(
     Ok(())
 }
 
-pub async fn get_pack_dek_id(
-    pool: &SqlitePool,
-    pack_id: &str,
-) -> Result<Option<i64>, sqlx::Error> {
+pub async fn get_pack_dek_id(pool: &SqlitePool, pack_id: &str) -> Result<Option<i64>, sqlx::Error> {
     sqlx::query_scalar::<_, i64>("SELECT dek_id FROM pack_deks WHERE pack_id = ?")
         .bind(pack_id)
         .fetch_optional(pool)
@@ -181,16 +178,12 @@ pub async fn get_wrapped_dek_by_id(
 /// Next free `key_version` for an inode. `data_encryption_keys` enforces
 /// `UNIQUE(inode_id, key_version)` and that constraint cannot be dropped under the
 /// additive-migration model, so one inode creating several pack DEKs must count up.
-pub async fn next_dek_key_version(
-    pool: &SqlitePool,
-    inode_id: i64,
-) -> Result<i64, sqlx::Error> {
-    let current: Option<i64> = sqlx::query_scalar(
-        "SELECT MAX(key_version) FROM data_encryption_keys WHERE inode_id = ?",
-    )
-    .bind(inode_id)
-    .fetch_one(pool)
-    .await?;
+pub async fn next_dek_key_version(pool: &SqlitePool, inode_id: i64) -> Result<i64, sqlx::Error> {
+    let current: Option<i64> =
+        sqlx::query_scalar("SELECT MAX(key_version) FROM data_encryption_keys WHERE inode_id = ?")
+            .bind(inode_id)
+            .fetch_one(pool)
+            .await?;
     Ok(current.unwrap_or(0) + 1)
 }
 

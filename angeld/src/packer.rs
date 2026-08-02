@@ -259,7 +259,10 @@ impl Packer {
                 continue;
             }
 
-            let (dek_id, dek_secret) = self.vault_keys.create_pack_dek(&self.pool, inode_id).await?;
+            let (dek_id, dek_secret) = self
+                .vault_keys
+                .create_pack_dek(&self.pool, inode_id)
+                .await?;
             let dek: KeyBytes = dek_secret.expose_secret().clone();
             let encrypted = encrypt_chunk_v2(&dek, plaintext, &[])?;
             let manifest_bytes = build_manifest_bytes_v2(

@@ -746,7 +746,10 @@ mod tests {
             .unwrap();
 
         let candidate = get_next_pack_requiring_reconciliation(&pool).await.unwrap();
-        assert_eq!(candidate.map(|pack| pack.pack_id).as_deref(), Some("pack-a"));
+        assert_eq!(
+            candidate.map(|pack| pack.pack_id).as_deref(),
+            Some("pack-a")
+        );
 
         defer_pack_repair(&pool, "pack-a", 3_600_000, 3_600_000)
             .await

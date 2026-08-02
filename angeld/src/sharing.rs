@@ -6,7 +6,9 @@
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use omnidrive_core::crypto::{CryptoError, KeyBytes, decrypt_secret, derive_subkey, encrypt_secret};
+use omnidrive_core::crypto::{
+    CryptoError, KeyBytes, decrypt_secret, derive_subkey, encrypt_secret,
+};
 use rand::RngCore;
 
 /// Length of the random share ID in bytes (128-bit).

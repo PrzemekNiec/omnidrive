@@ -466,9 +466,14 @@ impl VaultKeyStore {
         let wrapped = wrap_key(&envelope_key, &dek)?;
         let key_version = db::next_dek_key_version(pool, creating_inode_id).await?;
         let vault_key_gen = self.current_vault_key_generation(pool).await?;
-        let dek_id =
-            db::insert_wrapped_dek(pool, creating_inode_id, &wrapped, key_version, vault_key_gen)
-                .await?;
+        let dek_id = db::insert_wrapped_dek(
+            pool,
+            creating_inode_id,
+            &wrapped,
+            key_version,
+            vault_key_gen,
+        )
+        .await?;
         Ok((dek_id, SecretBox::new(Box::new(dek))))
     }
 
@@ -484,19 +489,28 @@ impl VaultKeyStore {
         pack_id: &str,
     ) -> Result<SecretBox<KeyBytes>, VaultError> {
         if let Some(dek_id) = db::get_pack_dek_id(pool, pack_id).await? {
-            let record = db::get_wrapped_dek_by_id(pool, dek_id)
-                .await?
-                .ok_or(VaultError::InvalidConfig("pack_deks points at a missing DEK"))?;
+            let record =
+                db::get_wrapped_dek_by_id(pool, dek_id)
+                    .await?
+                    .ok_or(VaultError::InvalidConfig(
+                        "pack_deks points at a missing DEK",
+                    ))?;
             let dek = self.unwrap_dek_bytes(&record.wrapped_dek).await?;
             return Ok(SecretBox::new(Box::new(dek)));
         }
 
-        let inode_id = db::creating_inode_for_pack(pool, pack_id)
-            .await?
-            .ok_or(VaultError::InvalidConfig("pack has no referencing revision"))?;
-        let record = db::get_wrapped_dek(pool, inode_id)
-            .await?
-            .ok_or(VaultError::InvalidConfig("legacy pack has no DEK for its inode"))?;
+        let inode_id =
+            db::creating_inode_for_pack(pool, pack_id)
+                .await?
+                .ok_or(VaultError::InvalidConfig(
+                    "pack has no referencing revision",
+                ))?;
+        let record =
+            db::get_wrapped_dek(pool, inode_id)
+                .await?
+                .ok_or(VaultError::InvalidConfig(
+                    "legacy pack has no DEK for its inode",
+                ))?;
         let dek = self.unwrap_dek_bytes(&record.wrapped_dek).await?;
         db::set_pack_dek(pool, pack_id, record.dek_id).await?;
         info!("[DEK] backfilled pack_deks for legacy pack {pack_id}");
