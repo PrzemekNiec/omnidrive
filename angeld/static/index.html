@@ -4015,21 +4015,9 @@
           return fetch('/api/vault/status', { headers: { 'Accept': 'application/json' } })
             .then(r => r.ok ? r.json() : Promise.reject())
             .then(data => {
-              if (data && data.unlocked) {
-                VAULT_STATE.unlocked = true;
-                // Prefer the wizard-handoff token if we already adopted one above —
-                // /api/vault/status mints a fresh session on every call, so the older
-                // boot token would otherwise be replaced unnecessarily. Either token
-                // is valid; we just avoid churn.
-                if (!VAULT_STATE.sessionToken) {
-                  VAULT_STATE.sessionToken = data.session_token || null;
-                }
-                startDashboard();
-              } else {
-                VAULT_STATE.unlocked = false;
-                showLockScreen();
-                if (lsInp) setTimeout(() => lsInp.focus(), 100);
-              }
+              VAULT_STATE.unlocked = Boolean(data && data.unlocked);
+              showLockScreen();
+              if (lsInp) setTimeout(() => lsInp.focus(), 100);
             });
         })
         .catch(() => {
