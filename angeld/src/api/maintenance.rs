@@ -17,7 +17,7 @@ use serde::Serialize;
 use tracing::{error, info};
 
 use super::error::ApiError;
-use super::gate::ViewerCaller;
+use super::gate::{AdminCaller, ViewerCaller};
 use super::{
     ApiState, MaintenanceLevel, MaintenanceOverviewItem, MaintenanceStatus, unix_timestamp_millis,
 };
@@ -355,6 +355,7 @@ async fn post_gc_orphans(
 
 async fn get_retry_storms(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<RetryStormsResponse>, ApiError> {
     let targets =
         db::list_retry_storm_targets(&state.pool, crate::uploader::UPLOAD_RETRY_PLATEAU_AT).await?;
@@ -369,6 +370,7 @@ async fn get_retry_storms(
 
 async fn get_scrub_errors(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<Vec<ScrubErrorResponse>>, ApiError> {
     let errors = db::list_scrub_errors(&state.pool, 100).await?;
     Ok(Json(
@@ -530,7 +532,7 @@ async fn post_reconcile_now(
     }
 }
 
-async fn post_repair_shell() -> Result<Json<serde_json::Value>, ApiError> {
+async fn post_repair_shell(_: AdminCaller) -> Result<Json<serde_json::Value>, ApiError> {
     let mut actions = Vec::new();
 
     let drive_report = shell_state::repair_virtual_drive().map_err(|err| {

@@ -1,6 +1,7 @@
 // angeld/src/api/onboarding.rs — Onboarding API handlers (extracted from mod.rs)
 
 use super::error::ApiError;
+use super::gate::AdminAfterOnboarding;
 use super::{ApiState, MaintenanceLevel, MaintenanceStatus, unix_timestamp_millis};
 use crate::config::AppConfig;
 use crate::db;
@@ -229,6 +230,7 @@ async fn post_setup_identity(
 
 async fn post_setup_provider(
     State(state): State<ApiState>,
+    _: AdminAfterOnboarding,
     Json(request): Json<SetupProviderRequest>,
 ) -> Result<Json<SetupProviderResponse>, ApiError> {
     let provider_name = request.provider_name.trim();
@@ -409,6 +411,7 @@ async fn post_setup_provider(
 
 async fn post_complete_onboarding(
     State(state): State<ApiState>,
+    _: AdminAfterOnboarding,
 ) -> Result<Json<CompleteOnboardingResponse>, ApiError> {
     let active_provider_configs = crate::onboarding::get_active_provider_configs(&state.pool)
         .await
@@ -858,6 +861,7 @@ struct DeleteProviderResponse {
 
 async fn post_test_provider(
     State(state): State<ApiState>,
+    _: AdminAfterOnboarding,
     Path(provider_name): Path<String>,
 ) -> Result<Json<ValidationReport>, ApiError> {
     let provider_name = provider_name.trim();
@@ -895,6 +899,7 @@ async fn post_test_provider(
 
 async fn delete_provider(
     State(state): State<ApiState>,
+    _: AdminAfterOnboarding,
     Path(provider_name): Path<String>,
 ) -> Result<Json<DeleteProviderResponse>, ApiError> {
     let provider_name = provider_name.trim().to_string();
@@ -922,6 +927,7 @@ async fn delete_provider(
 
 async fn post_reset_onboarding(
     State(state): State<ApiState>,
+    _: AdminAfterOnboarding,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Capture vault_id BEFORE reset (reset_onboarding may clear vault_state)
     let vault_before = db::get_vault_params(&state.pool).await.ok().flatten();

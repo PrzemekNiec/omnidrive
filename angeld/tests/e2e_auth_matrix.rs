@@ -331,3 +331,43 @@ async fn vault_status_never_returns_a_session_token()
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn setup_provider_is_open_during_onboarding_and_gated_after()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+
+    let body = serde_json::json!({
+        "provider_name": "backblaze-b2",
+        "endpoint": "http://127.0.0.1:1",
+        "region": "eu-central-003",
+        "bucket": "test"
+    });
+
+    let during = h
+        .request_without_token("POST", "/api/onboarding/setup-provider", Some(&body))
+        .await?;
+    assert_ne!(during.status, 401, "w trakcie kreatora endpoint musi byc otwarty");
+
+    h.unlock().await?;
+    h.post("/api/onboarding/complete").await?;
+
+    let after = h
+        .request_without_token("POST", "/api/onboarding/setup-provider", Some(&body))
+        .await?;
+    assert_eq!(
+        after.status, 401,
+        "po zakonczeniu onboardingu endpoint musi wymagac sesji; got {} body={}",
+        after.status, after.body
+    );
+
+    let reset_after = h
+        .request_without_token("POST", "/api/onboarding/reset", None)
+        .await?;
+    assert_eq!(
+        reset_after.status, 401,
+        "reset onboardingu po zakonczeniu tez musi wymagac Admina, inaczej otwiera droge ucieczki z powrotem do trybu otwartego kreatora; got {} body={}",
+        reset_after.status, reset_after.body
+    );
+    Ok(())
+}

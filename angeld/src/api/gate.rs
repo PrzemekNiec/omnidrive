@@ -3,6 +3,7 @@ use axum::http::request::Parts;
 
 use crate::acl::{self, AuthorizedCaller, Role};
 use crate::db::UserSession;
+use crate::onboarding::{OnboardingState, SYSTEM_CONFIG_ONBOARDING_STATE};
 
 use super::ApiState;
 use super::error::ApiError;
@@ -43,6 +44,29 @@ impl FromRequestParts<ApiState> for SessionCaller {
         acl::require_session(&state.pool, &parts.headers)
             .await
             .map(Self)
+    }
+}
+
+pub(super) struct AdminAfterOnboarding;
+
+impl FromRequestParts<ApiState> for AdminAfterOnboarding {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ApiState,
+    ) -> Result<Self, Self::Rejection> {
+        let completed =
+            crate::db::get_system_config_value(&state.pool, SYSTEM_CONFIG_ONBOARDING_STATE)
+                .await?
+                .is_some_and(|value| {
+                    value.eq_ignore_ascii_case(OnboardingState::Completed.as_str())
+                });
+
+        if completed {
+            acl::require_role(&state.pool, &parts.headers, Role::Admin).await?;
+        }
+        Ok(Self)
     }
 }
 
