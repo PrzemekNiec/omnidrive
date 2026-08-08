@@ -101,13 +101,9 @@ struct ProviderHealth {
 }
 
 #[derive(Deserialize)]
-struct IngestJob {
-    state: String,
-}
-
-#[derive(Deserialize)]
-struct IngestResponse {
-    jobs: Vec<IngestJob>,
+struct HealthResponse {
+    providers: Vec<ProviderHealth>,
+    ingest_failed: bool,
 }
 
 // ── Daemon poller ──────────────────────────────────────────────────────────
@@ -134,39 +130,20 @@ async fn poll_daemon_state(client: &reqwest::Client) -> TrayState {
         return TrayState::Locked;
     }
 
-    // 2. Check provider health
+    // 2. Check provider health + ingest failure signal
     if let Ok(resp) = client
         .get(format!("{DAEMON_BASE}/api/health"))
         .timeout(Duration::from_secs(2))
         .send()
         .await
-        && let Ok(providers) = resp.json::<Vec<ProviderHealth>>().await
+        && let Ok(health) = resp.json::<HealthResponse>().await
     {
-        let any_failed = providers.iter().any(|p| p.connection_status == "FAILED");
-        if any_failed {
-            return TrayState::Error;
-        }
-    }
-
-    // 3. Check ingest queue
-    if let Ok(resp) = client
-        .get(format!("{DAEMON_BASE}/api/ingest"))
-        .timeout(Duration::from_secs(2))
-        .send()
-        .await
-        && let Ok(ingest) = resp.json::<IngestResponse>().await
-    {
-        let has_failed = ingest.jobs.iter().any(|j| j.state == "FAILED");
-        if has_failed {
-            return TrayState::Error;
-        }
-
-        let has_active = ingest
-            .jobs
+        let any_failed = health
+            .providers
             .iter()
-            .any(|j| matches!(j.state.as_str(), "PENDING" | "CHUNKING" | "UPLOADING"));
-        if has_active {
-            return TrayState::Syncing;
+            .any(|p| p.connection_status == "FAILED");
+        if any_failed || health.ingest_failed {
+            return TrayState::Error;
         }
     }
 

@@ -13,6 +13,7 @@ use crate::smart_sync;
 use crate::uploader::KNOWN_PROVIDERS;
 
 use super::error::ApiError;
+use super::gate::ViewerCaller;
 use super::{ApiState, MaintenanceLevel, MaintenanceStatus, unix_timestamp_millis};
 use axum::extract::State;
 use axum::response::IntoResponse;
@@ -56,6 +57,12 @@ struct ProviderHealthResponse {
     last_attempt_at: Option<i64>,
     last_success_at: Option<i64>,
     last_error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    providers: Vec<ProviderHealthResponse>,
+    ingest_failed: bool,
 }
 
 #[derive(Serialize)]
@@ -158,6 +165,7 @@ pub fn routes() -> Router<ApiState> {
 /// fields. Previously the route was missing → 404 → "ERROR" badge with all values dashed out.
 async fn get_diagnostics_overview(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let snapshot = cloud_guard::snapshot(&state.pool)
         .await
@@ -190,6 +198,7 @@ async fn get_diagnostics_overview(
 
 async fn get_transfers(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<Vec<TransferResponse>>, ApiError> {
     let jobs = db::list_recent_upload_jobs(&state.pool, 50).await?;
     let mut transfers = Vec::with_capacity(jobs.len());
@@ -225,7 +234,7 @@ async fn get_transfers(
 
 async fn get_health(
     State(state): State<ApiState>,
-) -> Result<Json<Vec<ProviderHealthResponse>>, ApiError> {
+) -> Result<Json<HealthResponse>, ApiError> {
     let mut providers = Vec::with_capacity(KNOWN_PROVIDERS.len());
     let mut latest_by_provider = HashMap::with_capacity(KNOWN_PROVIDERS.len());
 
@@ -260,7 +269,15 @@ async fn get_health(
         providers.push(response);
     }
 
-    Ok(Json(providers))
+    let ingest_failed = db::count_ingest_jobs_in_state(&state.pool, "FAILED")
+        .await
+        .unwrap_or(0)
+        > 0;
+
+    Ok(Json(HealthResponse {
+        providers,
+        ingest_failed,
+    }))
 }
 
 async fn get_diagnostics_health(
@@ -270,11 +287,13 @@ async fn get_diagnostics_health(
     Ok(Json(response))
 }
 
-async fn get_shell_state() -> Json<MaintenanceStatus<shell_state::ShellStateSnapshot>> {
+async fn get_shell_state(
+    _: ViewerCaller,
+) -> Json<MaintenanceStatus<shell_state::ShellStateSnapshot>> {
     Json(build_shell_state_response())
 }
 
-async fn get_sync_root_state() -> impl IntoResponse {
+async fn get_sync_root_state(_: ViewerCaller) -> impl IntoResponse {
     match build_sync_root_state_response() {
         Ok(response) => Json(serde_json::to_value(response).unwrap_or_default()),
         Err(err) => Json(serde_json::json!({
@@ -287,6 +306,7 @@ async fn get_sync_root_state() -> impl IntoResponse {
 
 async fn get_storage_cost(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<StorageCostResponse>, ApiError> {
     let response = build_storage_cost_response(&state).await?;
     Ok(Json(response))
@@ -294,6 +314,7 @@ async fn get_storage_cost(
 
 async fn get_multidevice_status(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let Some(local_device) = db::get_local_device_identity(&state.pool).await? else {
         return Ok(Json(serde_json::json!({
@@ -342,6 +363,7 @@ struct RestoreStateResponse {
 
 async fn get_restore_state(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<RestoreStateResponse>, ApiError> {
     let restore_state = db::get_system_config_value(&state.pool, SYSTEM_CONFIG_RESTORE_STATE)
         .await?

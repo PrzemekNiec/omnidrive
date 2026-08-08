@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 
 use super::ApiState;
 use super::error::ApiError;
+use super::gate::ViewerCaller;
 
 static SYSINFO: OnceLock<Mutex<System>> = OnceLock::new();
 
@@ -35,6 +36,7 @@ struct StatsOverviewResponse {
 
 async fn get_stats_overview(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<StatsOverviewResponse>, ApiError> {
     let overview = db::get_stats_overview(&state.pool).await?;
     let devices_count = db::count_active_devices(&state.pool).await?;
@@ -70,6 +72,7 @@ struct TrafficResponse {
 
 async fn get_stats_traffic(
     State(state): State<ApiState>,
+    _: ViewerCaller,
     Query(query): Query<TrafficQuery>,
 ) -> Result<Json<TrafficResponse>, ApiError> {
     let hours = query.hours.unwrap_or(24).min(168); // max 7 days
@@ -91,6 +94,7 @@ struct StatsSystemResponse {
 
 async fn get_stats_system(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<StatsSystemResponse>, ApiError> {
     // Nodes: count trusted peers (non-stale)
     let peers = db::list_trusted_peers(&state.pool).await?;

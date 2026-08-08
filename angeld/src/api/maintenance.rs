@@ -17,6 +17,7 @@ use serde::Serialize;
 use tracing::{error, info};
 
 use super::error::ApiError;
+use super::gate::ViewerCaller;
 use super::{
     ApiState, MaintenanceLevel, MaintenanceOverviewItem, MaintenanceStatus, unix_timestamp_millis,
 };
@@ -763,6 +764,7 @@ async fn post_fetch_now(
 
 async fn get_ingest_jobs(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let rows = db::list_ingest_jobs(&state.pool).await?;
     let jobs: Vec<serde_json::Value> = rows

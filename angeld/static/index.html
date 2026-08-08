@@ -1667,7 +1667,7 @@
 
     async function fetchStatsOverview() {
       try {
-        const res = await fetch('/api/stats/overview', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/stats/overview', { headers: vaultAuthHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const filesEl = document.getElementById('kpiFilesCount');
@@ -1713,7 +1713,7 @@
 
     async function fetchStatsTraffic() {
       try {
-        const res = await fetch('/api/stats/traffic?hours=24', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/stats/traffic?hours=24', { headers: vaultAuthHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         renderTrafficChart(data.buckets || []);
@@ -1754,7 +1754,7 @@
 
     async function fetchStatsSystem() {
       try {
-        const res = await fetch('/api/stats/system', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/stats/system', { headers: vaultAuthHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
@@ -3097,7 +3097,7 @@
 
     async function loadUstawieniaShell() {
       try {
-        const res = await fetch('/api/diagnostics/shell', { headers: { Accept: 'application/json' } });
+        const res = await fetch('/api/diagnostics/shell', { headers: vaultAuthHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const snap = await res.json();
 
@@ -3813,7 +3813,7 @@
 
       // Cloud guard limits
       try {
-        const d = await fetch('/api/diagnostics').then(r => r.json());
+        const d = await fetch('/api/diagnostics', { headers: vaultAuthHeaders() }).then(r => r.json());
         setDiagBadge(document.getElementById('diagGuardBadge'), d.cloud_guard_status);
         const eb = d.daily_egress_bytes ?? 0;
         const el = d.daily_egress_bytes_limit ?? 0;

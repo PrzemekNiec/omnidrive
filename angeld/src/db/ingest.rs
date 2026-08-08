@@ -116,6 +116,16 @@ pub async fn reset_interrupted_ingest_jobs(pool: &SqlitePool) -> Result<u64, sql
     Ok(result.rows_affected())
 }
 
+pub async fn count_ingest_jobs_in_state(
+    pool: &SqlitePool,
+    state: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ingest_jobs WHERE state = ?")
+        .bind(state)
+        .fetch_one(pool)
+        .await
+}
+
 #[allow(dead_code)]
 pub async fn list_ingest_jobs(pool: &SqlitePool) -> Result<Vec<IngestJobRow>, sqlx::Error> {
     sqlx::query_as::<_, IngestJobRow>(
