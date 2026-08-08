@@ -4,6 +4,7 @@ mod auto_lock;
 mod diagnostics;
 pub mod error;
 mod files;
+mod gate;
 mod maintenance;
 mod oauth;
 mod onboarding;
