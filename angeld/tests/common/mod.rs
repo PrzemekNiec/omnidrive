@@ -211,6 +211,32 @@ impl DaemonHarness {
     pub async fn get_raw(&self, path: &str) -> Result<HttpResponse, Box<dyn std::error::Error>> {
         http_get_raw(&format!("{}{}", self.base_url, path), None).await
     }
+
+    #[allow(dead_code)]
+    pub async fn request_without_token(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+        http_request_raw(method, &format!("{}{}", self.base_url, path), body, None).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn request_with_token(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+        http_request_raw(
+            method,
+            &format!("{}{}", self.base_url, path),
+            body,
+            self.session_token.as_deref(),
+        )
+        .await
+    }
 }
 
 impl Drop for DaemonHarness {
@@ -277,39 +303,42 @@ pub async fn http_post_json(
 }
 
 #[allow(dead_code)]
-pub async fn http_post_raw(
+pub async fn http_request_raw(
+    method: &str,
     url: &str,
-    body: &serde_json::Value,
+    body: Option<&serde_json::Value>,
     token: Option<&str>,
 ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
     let (host_port, path) = parse_http_url(url)?;
-    let body_text = body.to_string();
     let auth = match token {
         Some(t) => format!("Authorization: Bearer {t}\r\n"),
         None => String::new(),
     };
+    let body_text = body.map(|b| b.to_string());
+    let framing = match &body_text {
+        Some(text) => format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            text.len()
+        ),
+        None => String::new(),
+    };
+
     let mut stream = TcpStream::connect(host_port.as_str()).await?;
     let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-        body_text.len(),
-        body_text
+        "{method} {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n{framing}\r\n{}",
+        body_text.unwrap_or_default()
     );
     stream.write_all(request.as_bytes()).await?;
 
     let mut response = Vec::new();
     stream.read_to_end(&mut response).await?;
     let response_str = String::from_utf8(response)?;
-
-    let status_line = response_str
+    let status: u16 = response_str
         .lines()
         .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "empty HTTP response"))?;
-    let status: u16 = status_line
-        .split_whitespace()
-        .nth(1)
+        .and_then(|line| line.split_whitespace().nth(1).map(str::to_string))
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no status code"))?
         .parse()?;
-
     let body = response_str
         .split_once("\r\n\r\n")
         .map(|(_, b)| b.to_string())
@@ -319,35 +348,20 @@ pub async fn http_post_raw(
 }
 
 #[allow(dead_code)]
+pub async fn http_post_raw(
+    url: &str,
+    body: &serde_json::Value,
+    token: Option<&str>,
+) -> Result<HttpResponse, Box<dyn std::error::Error>> {
+    http_request_raw("POST", url, Some(body), token).await
+}
+
+#[allow(dead_code)]
 pub async fn http_get_raw(
     url: &str,
     token: Option<&str>,
 ) -> Result<HttpResponse, Box<dyn std::error::Error>> {
-    let (host_port, path) = parse_http_url(url)?;
-    let auth = match token {
-        Some(t) => format!("Authorization: Bearer {t}\r\n"),
-        None => String::new(),
-    };
-    let mut stream = TcpStream::connect(host_port.as_str()).await?;
-    let request =
-        format!("GET {path} HTTP/1.1\r\nHost: {host_port}\r\n{auth}Connection: close\r\n\r\n");
-    stream.write_all(request.as_bytes()).await?;
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).await?;
-    let response_str = String::from_utf8(response)?;
-    let status_line = response_str.lines().next().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "empty HTTP response")
-    })?;
-    let status: u16 = status_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "no status code"))?
-        .parse()?;
-    let body = response_str
-        .split_once("\r\n\r\n")
-        .map(|(_, b)| b.to_string())
-        .unwrap_or_default();
-    Ok(HttpResponse { status, body })
+    http_request_raw("GET", url, None, token).await
 }
 
 #[allow(dead_code)]
