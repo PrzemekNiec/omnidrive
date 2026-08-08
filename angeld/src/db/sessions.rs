@@ -244,4 +244,29 @@ mod tests {
             .unwrap();
         assert_eq!(deleted, 3);
     }
+
+    #[tokio::test]
+    async fn cleanup_removes_only_expired_sessions() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let db_path = dir.path().join("sessions.db");
+        let pool = crate::db::init_db(&format!("sqlite://{}", db_path.display())).await?;
+
+        crate::db::create_user(&pool, "u-1", "U", None, "local", None).await?;
+        create_user_session(&pool, "live", "u-1", "dev-a", SESSION_TTL_SECONDS).await?;
+        create_user_session(&pool, "dead", "u-1", "dev-a", -60).await?;
+
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_sessions")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(before, 2, "obie sesje musza istniec przed sprzataniem");
+
+        let removed = cleanup_expired_sessions(&pool).await?;
+        assert_eq!(removed, 1);
+
+        let rows: Vec<String> = sqlx::query_scalar("SELECT token FROM user_sessions")
+            .fetch_all(&pool)
+            .await?;
+        assert_eq!(rows, vec!["live".to_string()], "wygasly wiersz ma zniknac z tabeli");
+        Ok(())
+    }
 }

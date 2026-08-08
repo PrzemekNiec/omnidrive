@@ -780,6 +780,15 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 _ => {}
             }
+            match db::cleanup_expired_sessions(&cleanup_pool).await {
+                Ok(count) if count > 0 => {
+                    tracing::debug!("cleaned up {count} expired user sessions");
+                }
+                Err(err) => {
+                    tracing::warn!("failed to clean up user sessions: {err}");
+                }
+                _ => {}
+            }
         }
     });
 
