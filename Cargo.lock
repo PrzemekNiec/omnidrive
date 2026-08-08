@@ -119,6 +119,7 @@ dependencies = [
  "sqlx",
  "subtle",
  "sysinfo",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tower-http",
