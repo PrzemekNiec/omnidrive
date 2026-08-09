@@ -2714,6 +2714,8 @@
       const rotateBtn = document.getElementById('vaultRotateKeyBtn');
       if (rotateBtn) {
         rotateBtn.addEventListener('click', async () => {
+          const oldPass = prompt('Obecne hasło główne:');
+          if (!oldPass) return;
           const newPass = prompt('Nowe hasło główne (min. 8 znaków):');
           if (!newPass) return;
           if (newPass.length < 8) { alert('Hasło musi mieć co najmniej 8 znaków.'); return; }
@@ -2724,7 +2726,7 @@
             const res = await fetch('/api/vault/rotate-key', {
               method: 'POST',
               headers: vaultAuthHeaders(),
-              body: JSON.stringify({ new_passphrase: newPass }),
+              body: JSON.stringify({ old_passphrase: oldPass, new_passphrase: newPass }),
             });
             if (!res.ok) {
               const d = await res.json().catch(() => ({}));

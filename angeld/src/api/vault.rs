@@ -15,6 +15,7 @@ use secrecy::{ExposeSecret, SecretString};
 
 use super::ApiState;
 use super::error::ApiError;
+use super::gate::AdminCaller;
 
 // ── Request / Response structs ──────────────────────────────────────
 
@@ -1026,20 +1027,33 @@ async fn post_vault_lock(
 
 #[derive(serde::Deserialize)]
 struct RotateKeyRequest {
+    old_passphrase: SecretString,
     new_passphrase: SecretString,
 }
 
 async fn post_rotate_key(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    AdminCaller(caller): AdminCaller,
     Json(req): Json<RotateKeyRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
-
     if req.new_passphrase.expose_secret().is_empty() {
         return Err(ApiError::BadRequest {
             code: "empty_passphrase",
             message: "new_passphrase must not be empty".into(),
+        });
+    }
+
+    let valid = state
+        .vault_keys
+        .verify_passphrase(&state.pool, req.old_passphrase.expose_secret())
+        .await
+        .map_err(|e| ApiError::Internal {
+            message: e.to_string(),
+        })?;
+    if !valid {
+        return Err(ApiError::BadRequest {
+            code: "wrong_passphrase",
+            message: "current passphrase is incorrect".to_string(),
         });
     }
 

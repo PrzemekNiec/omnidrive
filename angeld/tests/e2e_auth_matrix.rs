@@ -371,3 +371,27 @@ async fn setup_provider_is_open_during_onboarding_and_gated_after()
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rotate_key_rejects_wrong_old_passphrase()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+
+    let resp = h
+        .post_json(
+            "/api/vault/rotate-key",
+            serde_json::json!({
+                "old_passphrase": "nie-to-haslo",
+                "new_passphrase": "nowe-haslo-1234"
+            }),
+        )
+        .await?;
+
+    assert_eq!(
+        resp.status, 400,
+        "rotacja ze zlym starym haslem musi byc odrzucona; got {} body={}",
+        resp.status, resp.body
+    );
+    Ok(())
+}
