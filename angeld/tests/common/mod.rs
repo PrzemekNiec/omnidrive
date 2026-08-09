@@ -94,6 +94,7 @@ impl DaemonHarness {
             .env("OMNIDRIVE_ALLOW_EMPTY_UPLOADERS", "1")
             .env("OMNIDRIVE_UPLOAD_POLL_INTERVAL_MS", "100")
             .env("OMNIDRIVE_UPLOAD_TEST_PROCESS_DELAY_MS", "400")
+            .env("OMNIDRIVE_CRED_TARGET", format!("OmniDrive/Test/{api_port}"))
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()?;

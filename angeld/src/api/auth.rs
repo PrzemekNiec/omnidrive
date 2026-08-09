@@ -63,9 +63,14 @@ async fn post_unlock(
         .vault_keys
         .spawn_post_unlock_maintenance(&state.pool, request.passphrase.expose_secret());
 
-    // Silently store passphrase in Windows Credential Manager (DPAPI-encrypted) so
-    // that subsequent unlocks can use Windows Hello without retyping the passphrase.
-    if let Err(err) = windows_hello::store_passphrase(request.passphrase.expose_secret()) {
+    let hello_enabled = db::get_system_config_value(&state.pool, "windows_hello_enabled")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "1");
+    if hello_enabled
+        && let Err(err) = windows_hello::store_passphrase(request.passphrase.expose_secret())
+    {
         warn!("[UNLOCK] windows_hello store failed (non-fatal): {err}");
     }
 
@@ -328,8 +333,14 @@ async fn post_change_password(
             message: e.to_string(),
         })?;
 
-    // Update Windows Hello credential so subsequent Hello unlocks use the new passphrase.
-    if let Err(err) = windows_hello::store_passphrase(request.new_passphrase.expose_secret()) {
+    let hello_enabled = db::get_system_config_value(&state.pool, "windows_hello_enabled")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "1");
+    if hello_enabled
+        && let Err(err) = windows_hello::store_passphrase(request.new_passphrase.expose_secret())
+    {
         warn!("[CHANGE_PASSWORD] windows_hello update failed (non-fatal): {err}");
     }
 
@@ -400,9 +411,16 @@ pub(super) async fn spawn_post_rotation_backup(
 
 // -- Windows Hello endpoints --------------------------------------------------
 
-/// GET /api/unlock/hello-available — returns whether a DPAPI credential is stored.
-async fn get_hello_available() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "available": windows_hello::has_stored_credential() }))
+/// GET /api/unlock/hello-available — returns whether Windows Hello is enabled and
+/// a DPAPI credential is actually stored.
+async fn get_hello_available(State(state): State<ApiState>) -> Json<serde_json::Value> {
+    let hello_enabled = db::get_system_config_value(&state.pool, "windows_hello_enabled")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "1");
+    let available = hello_enabled && windows_hello::has_stored_credential();
+    Json(serde_json::json!({ "available": available }))
 }
 
 /// POST /api/unlock/windows-hello — unlock vault using stored DPAPI credential.

@@ -14,14 +14,18 @@ mod inner {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Security::Credentials::{
-        CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredFree, CredReadW, CredWriteW,
+        CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree,
+        CredReadW, CredWriteW,
     };
     use windows::Win32::Security::Cryptography::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
     };
     use windows::core::{PCWSTR, PWSTR};
 
-    const CRED_TARGET: &str = "OmniDrive/VaultPassphrase";
+    fn cred_target() -> String {
+        std::env::var("OMNIDRIVE_CRED_TARGET")
+            .unwrap_or_else(|_| "OmniDrive/VaultPassphrase".to_string())
+    }
 
     fn to_wide_null(s: &str) -> Vec<u16> {
         OsStr::new(s)
@@ -85,7 +89,7 @@ mod inner {
     }
 
     fn cred_write(blob: &[u8]) -> Result<(), String> {
-        let target = to_wide_null(CRED_TARGET);
+        let target = to_wide_null(&cred_target());
         let mut cred: CREDENTIALW = unsafe { std::mem::zeroed() };
         cred.Type = CRED_TYPE_GENERIC;
         cred.TargetName = PWSTR(target.as_ptr() as *mut u16);
@@ -95,8 +99,17 @@ mod inner {
         unsafe { CredWriteW(&cred, 0) }.map_err(|e| format!("CredWriteW: {e}"))
     }
 
+    fn cred_delete() -> Result<(), String> {
+        let target = to_wide_null(&cred_target());
+        match unsafe { CredDeleteW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, None) } {
+            Ok(_) => Ok(()),
+            Err(ref e) if e.code().0 as u32 == 0x80070490 => Ok(()),
+            Err(e) => Err(format!("CredDeleteW: {e}")),
+        }
+    }
+
     fn cred_read_raw() -> Result<Option<Vec<u8>>, String> {
-        let target = to_wide_null(CRED_TARGET);
+        let target = to_wide_null(&cred_target());
         let mut ptr: *mut CREDENTIALW = std::ptr::null_mut();
         match unsafe { CredReadW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, None, &mut ptr) } {
             Ok(_) => {
@@ -134,10 +147,16 @@ mod inner {
     pub fn has_stored_credential() -> bool {
         matches!(cred_read_raw(), Ok(Some(_)))
     }
+
+    pub fn clear_stored_credential() -> Result<(), String> {
+        cred_delete()
+    }
 }
 
 #[cfg(windows)]
-pub use inner::{has_stored_credential, retrieve_passphrase, store_passphrase};
+pub use inner::{
+    clear_stored_credential, has_stored_credential, retrieve_passphrase, store_passphrase,
+};
 
 #[cfg(not(windows))]
 pub fn store_passphrase(_passphrase: &str) -> Result<(), String> {
@@ -152,4 +171,9 @@ pub fn retrieve_passphrase() -> Result<Option<String>, String> {
 #[cfg(not(windows))]
 pub fn has_stored_credential() -> bool {
     false
+}
+
+#[cfg(not(windows))]
+pub fn clear_stored_credential() -> Result<(), String> {
+    Ok(())
 }

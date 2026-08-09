@@ -176,6 +176,7 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
     ("POST", "/api/recovery/revoke", "/api/recovery/revoke", Expect::Role),
     ("POST", "/api/settings/autostart", "/api/settings/autostart", Expect::Role),
     ("POST", "/api/settings/restart-daemon", "/api/settings/restart-daemon", Expect::Role),
+    ("POST", "/api/settings/windows-hello", "/api/settings/windows-hello", Expect::Role),
     (
         "POST",
         "/api/share/{share_id}/verify-password",
@@ -460,6 +461,20 @@ async fn windows_hello_unlock_requires_local_intent_header()
         resp.status, 403,
         "POST bez naglowka X-OmniDrive-Local musi byc odrzucony; got {} body={}",
         resp.status, resp.body
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unlock_does_not_store_passphrase_unless_opted_in()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+    let resp = h.get_json("/api/unlock/hello-available").await?;
+    assert_eq!(
+        resp["available"].as_bool(),
+        Some(false),
+        "bez wlaczenia opcji haslo nie moze trafic do Credential Managera; got {resp}"
     );
     Ok(())
 }

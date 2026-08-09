@@ -1,5 +1,7 @@
 use crate::autostart;
+use crate::db;
 use crate::runtime_paths::RuntimePaths;
+use crate::windows_hello;
 
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -12,6 +14,7 @@ use tracing::info;
 use super::ApiState;
 use super::auth::extract_session;
 use super::error::ApiError;
+use super::gate::AdminCaller;
 
 #[derive(Serialize)]
 struct SettingsPathsResponse {
@@ -29,11 +32,17 @@ struct AutostartRequest {
     enabled: bool,
 }
 
+#[derive(Deserialize)]
+struct WindowsHelloRequest {
+    enabled: bool,
+}
+
 pub fn routes() -> Router<ApiState> {
     Router::new()
         .route("/api/settings/paths", get(get_paths))
         .route("/api/settings/autostart", post(post_autostart))
         .route("/api/settings/restart-daemon", post(post_restart_daemon))
+        .route("/api/settings/windows-hello", post(post_windows_hello_setting))
 }
 
 async fn get_paths(
@@ -88,6 +97,23 @@ async fn post_restart_daemon(
     // runs the normal cleanup path (SyncRoot, virtual drive, pool close).
     let _ = state.daemon_shutdown_tx.send(true);
     Ok(Json(serde_json::json!({ "status": "restarting" })))
+}
+
+async fn post_windows_hello_setting(
+    State(state): State<ApiState>,
+    _: AdminCaller,
+    Json(req): Json<WindowsHelloRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    db::set_system_config_value(
+        &state.pool,
+        "windows_hello_enabled",
+        if req.enabled { "1" } else { "0" },
+    )
+    .await?;
+    if !req.enabled {
+        let _ = windows_hello::clear_stored_credential();
+    }
+    Ok(Json(serde_json::json!({ "enabled": req.enabled })))
 }
 
 #[cfg(test)]
