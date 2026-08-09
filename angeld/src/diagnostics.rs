@@ -22,6 +22,7 @@ pub enum WorkerStatus {
     Starting = 0,
     Idle = 1,
     Active = 2,
+    NotStarted = 3,
 }
 
 impl WorkerStatus {
@@ -30,6 +31,7 @@ impl WorkerStatus {
             Self::Starting => "starting",
             Self::Idle => "idle",
             Self::Active => "active",
+            Self::NotStarted => "not_started",
         }
     }
 }
@@ -138,6 +140,7 @@ fn load_status(slot: &AtomicU8) -> WorkerStatus {
     match slot.load(Ordering::Relaxed) {
         1 => WorkerStatus::Idle,
         2 => WorkerStatus::Active,
+        3 => WorkerStatus::NotStarted,
         _ => WorkerStatus::Starting,
     }
 }

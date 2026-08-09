@@ -78,11 +78,11 @@ async fn happy_path_upload_queue_clears_and_uploader_returns_idle()
             assert!(health.uptime_seconds <= 30);
             assert!(health.last_upload_error.is_none());
             assert_eq!(health.worker_statuses.api, "idle");
-            assert_eq!(health.worker_statuses.repair, "idle");
-            assert_eq!(health.worker_statuses.scrubber, "idle");
-            assert_eq!(health.worker_statuses.gc, "idle");
-            assert_eq!(health.worker_statuses.watcher, "idle");
-            assert_eq!(health.worker_statuses.metadata_backup, "idle");
+            assert_eq!(health.worker_statuses.repair, "not_started");
+            assert_eq!(health.worker_statuses.scrubber, "not_started");
+            assert_eq!(health.worker_statuses.gc, "not_started");
+            assert_eq!(health.worker_statuses.watcher, "not_started");
+            assert_eq!(health.worker_statuses.metadata_backup, "not_started");
             break;
         }
 

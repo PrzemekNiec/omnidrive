@@ -107,8 +107,14 @@ fn should_dry_run() -> bool {
     env::args().any(|arg| arg == "--dry-run")
 }
 
+#[cfg(feature = "test-helpers")]
 fn is_e2e_test_mode() -> bool {
     env_flag("OMNIDRIVE_E2E_TEST_MODE")
+}
+
+#[cfg(not(feature = "test-helpers"))]
+fn is_e2e_test_mode() -> bool {
+    false
 }
 
 fn env_flag(key: &str) -> bool {
@@ -323,27 +329,27 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Repair,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Scrubber,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Gc,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Watcher,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::MetadataBackup,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Peer,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         let api = ApiServer::from_env(pool, vault_keys, diagnostics.clone(), None, None)?;
 
@@ -384,31 +390,31 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     if e2e_test_mode {
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Uploader,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Repair,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Scrubber,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Gc,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Watcher,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::MetadataBackup,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Peer,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
 
         let mut smart_sync_ready = false;
@@ -633,26 +639,26 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Repair,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Scrubber,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Gc,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::MetadataBackup,
-            angeld::diagnostics::WorkerStatus::Idle,
+            angeld::diagnostics::WorkerStatus::NotStarted,
         );
         diagnostics::set_worker_status(
             angeld::diagnostics::WorkerKind::Peer,
             angeld::diagnostics::WorkerStatus::Idle,
         );
         info!(
-            "setup/local-only mode enabled: repair/scrub/gc/metadata workers are idle until remote providers are configured"
+            "setup/local-only mode enabled: repair/scrub/gc/metadata workers are not started until remote providers are configured"
         );
         info!("file watcher and api server started");
 
