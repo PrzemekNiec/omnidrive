@@ -9,6 +9,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
 
+mod common;
+
 #[derive(Debug, Deserialize)]
 struct DiagnosticsHealth {
     uptime_seconds: u64,
@@ -139,9 +141,20 @@ async fn full_stack_sync_root_registers_and_api_reaches_listening_state()
     assert_eq!(health.worker_statuses.api, "idle");
     assert!(health.uptime_seconds <= 30);
 
+    let unlocked = common::http_post_json(
+        &format!("{}/api/unlock", harness.base_url),
+        &serde_json::json!({ "passphrase": common::E2E_PASSPHRASE }),
+        None,
+    )
+    .await?;
+    let token = unlocked["session_token"]
+        .as_str()
+        .ok_or("unlock nie zwrocil tokenu sesji")?
+        .to_string();
+
     let sync_root_state = http_get_json::<serde_json::Value>(
         &format!("{}/api/diagnostics/sync-root", harness.base_url),
-        None,
+        Some(&token),
     )
     .await?;
     assert_eq!(sync_root_state["registered"], true);
