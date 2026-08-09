@@ -6,12 +6,13 @@ use crate::runtime_paths::RuntimePaths;
 use crate::smart_sync;
 use crate::windows_hello;
 
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use tracing::warn;
 
 #[derive(Deserialize)]
@@ -42,16 +43,45 @@ pub fn routes() -> Router<ApiState> {
 
 async fn post_unlock(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(request): Json<UnlockRequest>,
 ) -> Result<Json<UnlockResponse>, ApiError> {
-    let result = state
+    let ip = addr.ip();
+    if let Err(retry_after) = state.unlock_limiter.check(ip) {
+        return Err(ApiError::TooManyRequests {
+            retry_after_secs: retry_after,
+            message: format!("too many unlock attempts — retry after {retry_after}s"),
+        });
+    }
+
+    let result = match state
         .vault_keys
         .unlock(&state.pool, request.passphrase.expose_secret())
         .await
-        .map_err(|e| ApiError::BadRequest {
-            code: "unlock_failed",
-            message: e.to_string(),
-        })?;
+    {
+        Ok(result) => result,
+        Err(e) => {
+            state.unlock_limiter.record_failure(ip);
+            if let Ok(Some(vault)) = db::get_vault_params(&state.pool).await {
+                let _ = db::insert_audit_log(
+                    &state.pool,
+                    &vault.vault_id,
+                    "vault_unlock_failed",
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(&format!(r#"{{"ip":"{ip}"}}"#)),
+                )
+                .await;
+            }
+            return Err(ApiError::BadRequest {
+                code: "unlock_failed",
+                message: e.to_string(),
+            });
+        }
+    };
+    state.unlock_limiter.record_success(ip);
 
     // Odblokowanie MUSI odswiezyc licznik bezczynnosci. Licznik nie tyka tylko
     // przy zablokowanym skarbcu, wiec bez tego pierwszy tik po odblokowaniu

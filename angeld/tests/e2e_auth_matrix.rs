@@ -466,6 +466,36 @@ async fn windows_hello_unlock_requires_local_intent_header()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_wrong_passphrase_is_rate_limited() -> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+    let body = serde_json::json!({ "passphrase": "zle" });
+
+    let mut statuses = Vec::with_capacity(6);
+    for _ in 0..6 {
+        let resp = h
+            .request_without_token("POST", "/api/unlock", Some(&body))
+            .await?;
+        statuses.push(resp.status);
+    }
+
+    for (i, status) in statuses.iter().take(5).enumerate() {
+        assert_ne!(
+            *status,
+            429,
+            "proba {} powinna byc zwykla odmowa (zle haslo), nie rate-limit; got {status}",
+            i + 1
+        );
+    }
+    assert_eq!(
+        statuses[5], 429,
+        "po piatej nieudanej probie /api/unlock musi zwrocic 429; got {}",
+        statuses[5]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unlock_does_not_store_passphrase_unless_opted_in()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut h = DaemonHarness::spawn().await?;

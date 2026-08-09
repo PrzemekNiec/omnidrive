@@ -46,12 +46,18 @@ struct IpRecord {
 
 pub(super) struct RecoveryRateLimiter {
     map: DashMap<IpAddr, IpRecord>,
+    free_attempts: u32,
+    cooldown_secs: u64,
+    window_secs: u64,
 }
 
 impl RecoveryRateLimiter {
-    fn new() -> Self {
+    pub(super) fn with_policy(free_attempts: u32, cooldown_secs: u64, window_secs: u64) -> Self {
         Self {
             map: DashMap::new(),
+            free_attempts,
+            cooldown_secs,
+            window_secs,
         }
     }
 
@@ -60,17 +66,19 @@ impl RecoveryRateLimiter {
         let now = Instant::now();
         let mut rec = self.map.entry(ip).or_default();
         rec.failures
-            .retain(|t| now.duration_since(*t) < Duration::from_secs(300));
+            .retain(|t| now.duration_since(*t) < Duration::from_secs(self.window_secs));
 
         if let Some(last) = rec.last_failure_at {
             let elapsed = now.duration_since(last);
-            if elapsed < Duration::from_secs(30) {
-                return Err(30u64.saturating_sub(elapsed.as_secs()));
+            if elapsed < Duration::from_secs(self.cooldown_secs) {
+                return Err(self.cooldown_secs.saturating_sub(elapsed.as_secs()));
             }
         }
-        if rec.failures.len() >= 3 {
+        if rec.failures.len() as u32 >= self.free_attempts {
             let oldest = rec.failures.first().copied().unwrap();
-            let wait = 300u64.saturating_sub(now.duration_since(oldest).as_secs());
+            let wait = self
+                .window_secs
+                .saturating_sub(now.duration_since(oldest).as_secs());
             return Err(wait.max(1));
         }
         Ok(())
@@ -157,6 +165,8 @@ struct ApiState {
     daemon_shutdown_tx: Arc<watch::Sender<bool>>,
     recovery_limiter: Arc<RecoveryRateLimiter>,
     join_limiter: Arc<JoinRateLimiter>,
+    unlock_limiter: Arc<RecoveryRateLimiter>,
+    share_limiter: Arc<RecoveryRateLimiter>,
 }
 
 pub struct ApiServer {
@@ -245,8 +255,10 @@ impl ApiServer {
             downloader: self.downloader,
             runtime_reload_tx: self.runtime_reload_tx,
             daemon_shutdown_tx: Arc::new(daemon_shutdown_tx),
-            recovery_limiter: Arc::new(RecoveryRateLimiter::new()),
+            recovery_limiter: Arc::new(RecoveryRateLimiter::with_policy(3, 30, 300)),
             join_limiter: Arc::new(JoinRateLimiter::new()),
+            unlock_limiter: Arc::new(RecoveryRateLimiter::with_policy(5, 0, 300)),
+            share_limiter: Arc::new(RecoveryRateLimiter::with_policy(5, 30, 300)),
         };
         // ── α.A.b.1: init AutoLockMonitor (config layer) ─────────────────
         let monitor =

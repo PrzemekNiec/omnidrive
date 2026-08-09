@@ -1,7 +1,7 @@
 use crate::acl::{self, Role};
 use crate::db;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post};
@@ -11,6 +11,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info};
 
@@ -338,9 +339,18 @@ async fn get_sw_download_placeholder(Path(share_id): Path<String>) -> (StatusCod
 
 async fn verify_share_password(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(share_id): Path<String>,
     Json(request): Json<VerifyPasswordRequest>,
 ) -> Result<Json<VerifyPasswordResponse>, ApiError> {
+    let ip = addr.ip();
+    if let Err(retry_after) = state.share_limiter.check(ip) {
+        return Err(ApiError::TooManyRequests {
+            retry_after_secs: retry_after,
+            message: format!("too many share password attempts — retry after {retry_after}s"),
+        });
+    }
+
     let link = db::get_shared_link(&state.pool, &share_id)
         .await?
         .ok_or(ApiError::NotFound {
@@ -354,10 +364,25 @@ async fn verify_share_password(
     })?;
 
     if !crate::sharing::verify_share_password(&request.password, password_hash) {
+        state.share_limiter.record_failure(ip);
+        if let Ok(Some(vault)) = db::get_vault_params(&state.pool).await {
+            let _ = db::insert_audit_log(
+                &state.pool,
+                &vault.vault_id,
+                "share_verify_password_failed",
+                None,
+                None,
+                None,
+                None,
+                Some(&format!(r#"{{"ip":"{ip}"}}"#)),
+            )
+            .await;
+        }
         return Err(ApiError::Unauthorized {
             message: "invalid password".to_string(),
         });
     }
+    state.share_limiter.record_success(ip);
 
     let token = crate::sharing::generate_share_token();
     db::create_share_password_token(&state.pool, &token, &share_id, SHARE_TOKEN_TTL_SECONDS)
