@@ -422,3 +422,29 @@ async fn add_device_requires_admin_and_never_wraps_for_unenrolled()
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wrapped_key_endpoint_only_serves_the_calling_device()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+
+    let anonymous = h
+        .request_without_token("GET", "/api/vault/my-wrapped-key?device_id=cudze", None)
+        .await?;
+    assert_eq!(
+        anonymous.status, 401,
+        "bez tokenu to 401 (acl::extract_session_or_401); got {} body={}",
+        anonymous.status, anonymous.body
+    );
+
+    let authorized = h
+        .request_with_token("GET", "/api/vault/my-wrapped-key?device_id=cudze", None)
+        .await?;
+    assert_eq!(
+        authorized.status, 403,
+        "z waznym tokenem, ale o cudze urzadzenie: 403; got {} body={}",
+        authorized.status, authorized.body
+    );
+    Ok(())
+}

@@ -16,6 +16,7 @@ use secrecy::{ExposeSecret, SecretString};
 use super::ApiState;
 use super::error::ApiError;
 use super::gate::AdminCaller;
+use super::gate::ViewerCaller;
 
 // ── Request / Response structs ──────────────────────────────────────
 
@@ -458,15 +459,19 @@ async fn post_accept_device(
 
 async fn get_my_wrapped_key(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    ViewerCaller(caller): ViewerCaller,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<WrappedKeyResponse>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Viewer).await?;
-
     let device_id = params.get("device_id").ok_or(ApiError::BadRequest {
         code: "missing_device_id",
         message: "device_id query parameter is required".to_string(),
     })?;
+
+    if device_id != &caller.device_id {
+        return Err(ApiError::Forbidden {
+            message: "can only fetch the wrapped key of the calling device".to_string(),
+        });
+    }
 
     let device = db::get_device(&state.pool, device_id)
         .await
@@ -1149,11 +1154,9 @@ async fn get_safety_numbers(
 
 async fn post_verify_device(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    _: AdminCaller,
     Path(target_device_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let _caller = acl::require_role(&state.pool, &headers, Role::Viewer).await?;
-
     db::get_device(&state.pool, &target_device_id)
         .await
         .map_err(|e| ApiError::Internal {
