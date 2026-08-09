@@ -19,8 +19,8 @@ przy pierwszym przejściu zostały pominięte. Przegląd zamknął się na **147
 **43 × 🔴**, **100 × ⚠️**, **4 × ✅** (naprawione w trakcie: Z4-01, Z6-04, Z6-05, Z6-06).
 Sześć sesji, 121 plików `.rs`, ~48 000 linii kodu plus ~7600 linii statyków.
 
-**Stan rejestru po Fazie 0 i przeważeniu D5 (2026-08-09): 148 pozycji** — **37 × 🔴**,
-**87 × ⚠️**, **24 × ✅**. Doszła jedna pozycja (**Z10-16**, wykryta przy weryfikacji Fazy 0),
+**Stan rejestru po Fazie 0 i przeważeniu D5 (2026-08-09): 149 pozycji** — **37 × 🔴**,
+**88 × ⚠️**, **24 × ✅**. Doszły dwie pozycje (**Z10-16** i **Z10-17**, wykryte przy weryfikacji Fazy 0),
 naprawionych jest 20 nowych, a siedem zmieniło wagę po przyjęciu kryterium skutku.
 Spadek liczby 🔴 z 43 do 37 to wypadkowa trzech rzeczy naraz: napraw Fazy 0, przeważenia
 w dół (Z1-01, Z1-02, Z2-02) i przeważenia w górę (Z6-09, Z8-06, Z9-24, Z11-05).
@@ -345,6 +345,7 @@ i **Z11-05**.
 | Z10-14 | ✅ | 19 funkcji testowych na 3372 linie; testy negatywne uwierzytelnienia tylko dla auto-locka — **NAPRAWIONE** `d2064e0 + d5d345b`. Macierz zielona przy pełnej liście tras (skaner pilnuje w obie strony), nie przy liście nadanej hurtem. | inwentaryzacja |
 | Z10-15 | ⚠️ | `e2e_recovery` i `e2e_sync` hardkodują `Y:` i nie robią `subst /D` w `Drop` — stąd porzucone mapowania | czytanie |
 | Z10-16 | 🔴 | `e2e_sync` (`:43-48`) i `e2e_recovery` (`:47-51`) czytają **prawdziwe** `LOCALAPPDATA` **zanim** podmienią je dziecku i kierują daemona na realny sync root użytkownika (`AppData\Local\OmniDrive\OmniSync`) przez `OMNIDRIVE_SYNC_ROOT`. Suita testów pisze więc do produkcyjnej ścieżki — naruszenie Świętej Zasady Integralności Danych przez testy, nie przez kod produkcyjny. Wykryte przy weryfikacji Fazy 0; katalog sprawdzony i pusty, dane nietknięte. Musi zostać naprawione **przed** jakimkolwiek smoke'iem | czytanie obu harnessów + oględziny katalogu |
+| Z10-17 | ⚠️ | `reserve_port()` w harnessach e2e rezerwuje port przez `bind` + zwolnienie, więc między zwolnieniem a startem daemona inny test może go zająć (`os error 10048`). Przy dziesięciu testach w `e2e_auth_matrix` trafia się to na tyle często, że pełna suita bywa czerwona bez żadnej wady w kodzie — i uczy ignorowania czerwonych przebiegów | obserwacja: ta sama suita czerwona i zielona pod rząd |
 | Z11-01 | 🔴 | Linki share z hasłem są nie do otwarcia — klient czeka na pole `requires_password`, którego API nie wysyła | czytanie obu stron + grep |
 | Z11-02 | ✅ | `DELETE /api/onboarding/provider/{name}` bez auth kasuje konfigurację, a `ON DELETE CASCADE` zabiera poświadczenia DPAPI — **NAPRAWIONE** `7bae0cb`. | czytanie + schemat |
 | Z11-03 | 🔴 | `legacy.html` (2258, pod `/legacy`) nie wysyła `Authorization` — 9 z 21 endpointów zwraca 403. Czwarty taki klient | grep + audyt ról |
