@@ -159,6 +159,7 @@ async fn get_onboarding_status(
 
 async fn post_bootstrap_local(
     State(state): State<ApiState>,
+    _: AdminAfterOnboarding,
 ) -> Result<Json<MaintenanceStatus<OnboardingStatusResponse>>, ApiError> {
     shell_state::set_cloud_mode_hint(false);
 
@@ -195,6 +196,7 @@ async fn post_bootstrap_local(
 
 async fn post_setup_identity(
     State(state): State<ApiState>,
+    _: AdminAfterOnboarding,
     Json(request): Json<SetupIdentityRequest>,
 ) -> Result<Json<SetupIdentityResponse>, ApiError> {
     let device_name = request.device_name.trim();
@@ -505,6 +507,7 @@ async fn post_join_existing(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    _: AdminAfterOnboarding,
     Json(request): Json<JoinExistingRequest>,
 ) -> Result<Json<JoinExistingResponse>, ApiError> {
     let ip = addr.ip();

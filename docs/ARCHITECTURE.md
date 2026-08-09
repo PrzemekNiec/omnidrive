@@ -2665,6 +2665,57 @@ Z9-03 jest o tyle mniejsza. Ale są to dwie niezależne dziury i naprawa jednej 
 Trzy pozycje z listy są zaprojektowane jako publiczne i mają to uzasadnione (`join`, `recovery/restore`,
 `share`). Reszta wygląda na pominięcie, nie decyzję.
 
+**Aktualizacja (Zadanie 15a).** Powyższa tabela jest zapisem stanu sprzed naprawy: część wymienionych
+tam tras (`/api/diagnostics/*`, `/api/transfers`, `/api/stats/*`, `/api/onboarding/reset`,
+`/api/onboarding/complete`) została w Zadaniach 4-14b zabramkowana i już nie jest publiczna — zestawienie
+poniżej dotyczy wyłącznie tras faktycznie sklasyfikowanych jako `Expect::Public` w
+`angeld/tests/e2e_auth_matrix.rs::AUTH_MATRIX`, która jest teraz źródłem prawdy dla tej listy (testowana
+w obie strony przez `every_declared_route_has_an_entry_in_the_matrix`). Poniżej dwanaście tras dopisanych
+do `Public` w Zadaniu 15a — reszta powierzchni bez uwierzytelnienia to `join`, `recovery/restore` i
+`/api/share/*` udokumentowane wyżej, oraz `/api/vault/status`, `/api/unlock`,
+`/api/unlock/hello-available`, `/api/health`, `/api/diagnostics/health`,
+`/material-symbols-outlined.ttf` i `/api/share/{share_id}/verify-password`, niezmienione tym zadaniem.
+
+**Grupa A — statyczny shell i bootstrap UI.** `GET /`, `GET /legacy`, `GET /wizard`, `GET /wizard.js`,
+`GET /qrcode.min.js`. To zasoby statyczne serwowane z binarki, od których zaczyna się sesja. Bramka
+Bearer na `/` nie ma jak przepuścić żądania, które dopiero ma tę sesję utworzyć — dashboard nie miałby
+skąd wziąć tokenu, bo token powstaje w `/api/unlock`, wywoływanym przez JavaScript z tej właśnie strony.
+Żaden z tych zasobów nie zwraca danych Skarbca — to HTML powłoki, JavaScript kreatora i biblioteka do
+rysowania kodów QR. **Warunek czasowy:** `/legacy` znika w całości w F1/WP1.3 — do tego czasu zostaje
+publiczny jak dziś, bez zmiany zachowania.
+
+**Grupa B — powierzchnia odbiorcy linku share.** `GET /share/{share_id}`, `GET /share-sw.js`,
+`GET /sw-download/{share_id}`. §9.5 sankcjonuje już `/api/share/*` jako publiczną powierzchnię linków —
+to są te same dane, tylko bez prefiksu `/api/`: strona HTML odbiorcy, jej Service Worker (deszyfrowanie
+strumieniowe po stronie przeglądarki) i strumień pobrania, który ten Service Worker obsługuje. Odbiorca
+linku z definicji nie ma sesji w Skarbcu — bramka zamieniłaby funkcję „wyślij link" w funkcję
+nieistniejącą. Ochroną jest tu sekret w fragmencie URL i hasło linku, nie sesja.
+
+**Grupa C — wejścia OAuth.** `GET /api/auth/google/start`, `GET /api/auth/google/callback`. Obie to
+nawigacje najwyższego poziomu w przeglądarce (przekierowanie 307 i powrót z Google). Przeglądarka nie
+doklei nagłówka `Authorization` do nawigacji — bramka Bearer jest tu technicznie niewykonalna, nie tylko
+niewygodna. **To nie zamyka Z9-24**: fakt, że dowolne konto Google dostaje sesję honorowaną przez
+`settings` i `auto-lock`, jest osobną wadą. **Warunek czasowy:** naprawa (kontrola członkostwa w
+vaulcie) siedzi w F1/WP1.4 — do tego czasu „publiczne" nie znaczy „bezpieczne".
+
+**Grupa D — sondy stanu.** `GET /api/auth/session`, `GET /api/health/vault`. `/api/auth/session` jest z
+założenia pytaniem „czy mam sesję?" i przy jej braku odpowiada `{"valid": false}` z kodem 200 — bramka
+zamieniłaby odpowiedź na 401, czyli dokładnie tę samą informację, tylko trudniejszą do odczytania dla
+klienta. `/api/health/vault` ma ten sam kształt co `/api/health` i `/api/diagnostics/health` (oba
+publiczne od Zadania 6) i oddaje wyłącznie zbiorcze liczniki packów (`total_packs`, `healthy_packs`,
+`degraded_packs`, `unreadable_packs`), bez ścieżek ani identyfikatorów plików. **Warunek czasowy:** tę
+trasę woła `omnidrive-cli`, które nie ma żadnej tożsamości do F1/WP1.1 — zabramkowanie jej teraz zepsułoby
+działające narzędzie. Publiczna do WP1.1, potem `ViewerCaller`.
+
+Pięć tras onboardingu (`/api/onboarding/setup-provider`, `/complete`, `/bootstrap-local`,
+`/setup-identity`, `/join-existing`) oraz trzy pokrewne (`/api/onboarding/reset`,
+`DELETE /api/onboarding/provider/{provider_name}`, `POST /api/providers/{provider_name}/test`) **nie są
+publiczne** — mają `AdminAfterOnboarding` (Zadanie 7): otwarte tylko dopóki `onboarding_state !=
+COMPLETED`, bo w trakcie kreatora Skarbiec nie ma jeszcze czego chronić; po zakończeniu onboardingu
+wymagają sesji z rolą Admina. To jest ściśle mocniejsze niż `Public` i w `AUTH_MATRIX` nosi osobny wariant
+`Expect::OpenDuringOnboarding`. Dowód, że po `/api/onboarding/complete` każda z tych ośmiu tras zwraca 401
+bez tokenu, niesie `setup_provider_is_open_during_onboarding_and_gated_after` w `e2e_auth_matrix.rs`.
+
 ## 9.6 Linki share — dobra kryptografia, nieszczelna księgowość
 
 Konstrukcja jest przemyślana i warto ją odnotować w całości:

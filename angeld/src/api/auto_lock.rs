@@ -94,7 +94,10 @@ pub(crate) fn test_routes() -> Router<ApiState> {
 }
 
 #[cfg(feature = "test-helpers")]
-async fn post_test_simulate(State(state): State<ApiState>) -> Result<StatusCode, ApiError> {
+async fn post_test_simulate(
+    State(state): State<ApiState>,
+    _: SessionCaller,
+) -> Result<StatusCode, ApiError> {
     #[cfg(target_os = "windows")]
     let dispatched = crate::win_session::test_dispatcher_tx()
         .map(|tx| {

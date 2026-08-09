@@ -10,6 +10,10 @@ enum Expect {
     Session,
     /// Wymaga sesji z rolą w vaulcie.
     Role,
+    /// Otwarta wyłącznie dopóki `onboarding_state != COMPLETED`; po zakończeniu
+    /// kreatora wymaga Admina (`AdminAfterOnboarding`). Dowód dla tego wariantu
+    /// niesie `setup_provider_is_open_during_onboarding_and_gated_after`.
+    OpenDuringOnboarding,
 }
 
 const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
@@ -32,20 +36,35 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
     ("GET", "/api/multidevice/status", "/api/multidevice/status", Expect::Role),
     ("GET", "/api/stats/overview", "/api/stats/overview", Expect::Role),
     ("GET", "/api/ingest", "/api/ingest", Expect::Role),
-    ("POST", "/api/onboarding/setup-provider", "/api/onboarding/setup-provider", Expect::Role),
-    ("POST", "/api/onboarding/complete", "/api/onboarding/complete", Expect::Role),
-    ("POST", "/api/onboarding/reset", "/api/onboarding/reset", Expect::Role),
+    (
+        "POST",
+        "/api/onboarding/setup-provider",
+        "/api/onboarding/setup-provider",
+        Expect::OpenDuringOnboarding,
+    ),
+    (
+        "POST",
+        "/api/onboarding/complete",
+        "/api/onboarding/complete",
+        Expect::OpenDuringOnboarding,
+    ),
+    (
+        "POST",
+        "/api/onboarding/reset",
+        "/api/onboarding/reset",
+        Expect::OpenDuringOnboarding,
+    ),
     (
         "DELETE",
         "/api/onboarding/provider/{provider_name}",
         "/api/onboarding/provider/backblaze-b2",
-        Expect::Role,
+        Expect::OpenDuringOnboarding,
     ),
     (
         "POST",
         "/api/providers/{provider_name}/test",
         "/api/providers/backblaze-b2/test",
-        Expect::Role,
+        Expect::OpenDuringOnboarding,
     ),
     ("POST", "/api/vault/add-device", "/api/vault/add-device", Expect::Role),
     ("POST", "/api/vault/rotate-key", "/api/vault/rotate-key", Expect::Role),
@@ -53,11 +72,11 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
     ("POST", "/api/files/{inode_id}/pin", "/api/files/1/pin", Expect::Role),
     ("DELETE", "/api/files/{inode_id}", "/api/files/1", Expect::Role),
     ("DELETE", "/api/shares/{share_id}", "/api/shares/abc123", Expect::Role),
-    ("GET", "/", "/", Expect::Role),
+    ("GET", "/", "/", Expect::Public),
     ("GET", "/api/audit", "/api/audit", Expect::Role),
-    ("GET", "/api/auth/google/callback", "/api/auth/google/callback", Expect::Role),
-    ("GET", "/api/auth/google/start", "/api/auth/google/start", Expect::Role),
-    ("GET", "/api/auth/session", "/api/auth/session", Expect::Role),
+    ("GET", "/api/auth/google/callback", "/api/auth/google/callback", Expect::Public),
+    ("GET", "/api/auth/google/start", "/api/auth/google/start", Expect::Public),
+    ("GET", "/api/auth/session", "/api/auth/session", Expect::Public),
     ("GET", "/api/auto-lock/status", "/api/auto-lock/status", Expect::Session),
     ("GET", "/api/cache/status", "/api/cache/status", Expect::Role),
     ("GET", "/api/files", "/api/files", Expect::Role),
@@ -65,7 +84,7 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
     ("GET", "/api/files/{inode_id}/shares", "/api/files/1/shares", Expect::Role),
     ("GET", "/api/files/{inode_id}/sync_status", "/api/files/1/sync_status", Expect::Role),
     ("GET", "/api/filesystem/policies", "/api/filesystem/policies", Expect::Role),
-    ("GET", "/api/health/vault", "/api/health/vault", Expect::Role),
+    ("GET", "/api/health/vault", "/api/health/vault", Expect::Public),
     ("GET", "/api/maintenance/diagnostics", "/api/maintenance/diagnostics", Expect::Role),
     ("GET", "/api/maintenance/retry-storms", "/api/maintenance/retry-storms", Expect::Role),
     ("GET", "/api/maintenance/scrub-errors", "/api/maintenance/scrub-errors", Expect::Role),
@@ -90,19 +109,19 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
     ("GET", "/api/vault/pending-devices", "/api/vault/pending-devices", Expect::Role),
     ("GET", "/api/vault/rewrap-status", "/api/vault/rewrap-status", Expect::Role),
     ("GET", "/api/vault/safety-numbers", "/api/vault/safety-numbers", Expect::Role),
-    ("GET", "/legacy", "/legacy", Expect::Role),
+    ("GET", "/legacy", "/legacy", Expect::Public),
     (
         "GET",
         "/material-symbols-outlined.ttf",
         "/material-symbols-outlined.ttf",
         Expect::Public,
     ),
-    ("GET", "/qrcode.min.js", "/qrcode.min.js", Expect::Role),
-    ("GET", "/share-sw.js", "/share-sw.js", Expect::Role),
-    ("GET", "/share/{share_id}", "/share/abc123", Expect::Role),
-    ("GET", "/sw-download/{share_id}", "/sw-download/abc123", Expect::Role),
-    ("GET", "/wizard", "/wizard", Expect::Role),
-    ("GET", "/wizard.js", "/wizard.js", Expect::Role),
+    ("GET", "/qrcode.min.js", "/qrcode.min.js", Expect::Public),
+    ("GET", "/share-sw.js", "/share-sw.js", Expect::Public),
+    ("GET", "/share/{share_id}", "/share/abc123", Expect::Public),
+    ("GET", "/sw-download/{share_id}", "/sw-download/abc123", Expect::Public),
+    ("GET", "/wizard", "/wizard", Expect::Public),
+    ("GET", "/wizard.js", "/wizard.js", Expect::Public),
     ("POST", "/api/auth/logout", "/api/auth/logout", Expect::Session),
     ("POST", "/api/auth/renew", "/api/auth/renew", Expect::Session),
     (
@@ -168,10 +187,20 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
         "POST",
         "/api/onboarding/bootstrap-local",
         "/api/onboarding/bootstrap-local",
-        Expect::Role,
+        Expect::OpenDuringOnboarding,
     ),
-    ("POST", "/api/onboarding/join-existing", "/api/onboarding/join-existing", Expect::Role),
-    ("POST", "/api/onboarding/setup-identity", "/api/onboarding/setup-identity", Expect::Role),
+    (
+        "POST",
+        "/api/onboarding/join-existing",
+        "/api/onboarding/join-existing",
+        Expect::OpenDuringOnboarding,
+    ),
+    (
+        "POST",
+        "/api/onboarding/setup-identity",
+        "/api/onboarding/setup-identity",
+        Expect::OpenDuringOnboarding,
+    ),
     ("POST", "/api/recovery/generate", "/api/recovery/generate", Expect::Role),
     ("POST", "/api/recovery/revoke", "/api/recovery/revoke", Expect::Role),
     ("POST", "/api/settings/autostart", "/api/settings/autostart", Expect::Role),
@@ -297,6 +326,10 @@ async fn routes_behind_a_gate_reject_requests_without_a_token()
     for (method, _declared, sample, expect) in AUTH_MATRIX {
         let wanted = match expect {
             Expect::Public => continue,
+            // Otwarta tylko w trakcie kreatora; dowod ze po `complete` wymaga
+            // Admina niesie setup_provider_is_open_during_onboarding_and_gated_after
+            // (Zadanie 7 / 15a), nie ten test na swiezym, nieukonczonym daemonie.
+            Expect::OpenDuringOnboarding => continue,
             // Brak naglowka X-OmniDrive-Local => 403 (Zadanie 11).
             Expect::LocalIntent => 403,
             // acl::extract_session_or_401: brak naglowka Authorization => zawsze 401.
@@ -370,6 +403,69 @@ async fn setup_provider_is_open_during_onboarding_and_gated_after()
         "reset onboardingu po zakonczeniu tez musi wymagac Admina, inaczej otwiera droge ucieczki z powrotem do trybu otwartego kreatora; got {} body={}",
         reset_after.status, reset_after.body
     );
+
+    let delete_provider_after = h
+        .request_without_token(
+            "DELETE",
+            "/api/onboarding/provider/backblaze-b2",
+            None,
+        )
+        .await?;
+    assert_eq!(
+        delete_provider_after.status, 401,
+        "usuniecie dostawcy po zakonczeniu onboardingu musi wymagac Admina; got {} body={}",
+        delete_provider_after.status, delete_provider_after.body
+    );
+
+    let test_provider_after = h
+        .request_without_token("POST", "/api/providers/backblaze-b2/test", None)
+        .await?;
+    assert_eq!(
+        test_provider_after.status, 401,
+        "test dostawcy po zakonczeniu onboardingu musi wymagac Admina; got {} body={}",
+        test_provider_after.status, test_provider_after.body
+    );
+
+    let bootstrap_local_after = h
+        .request_without_token("POST", "/api/onboarding/bootstrap-local", None)
+        .await?;
+    assert_eq!(
+        bootstrap_local_after.status, 401,
+        "bootstrap-local po zakonczeniu onboardingu musi wymagac Admina; got {} body={}",
+        bootstrap_local_after.status, bootstrap_local_after.body
+    );
+
+    let setup_identity_body = serde_json::json!({ "device_name": "Obce urzadzenie" });
+    let setup_identity_after = h
+        .request_without_token(
+            "POST",
+            "/api/onboarding/setup-identity",
+            Some(&setup_identity_body),
+        )
+        .await?;
+    assert_eq!(
+        setup_identity_after.status, 401,
+        "setup-identity po zakonczeniu onboardingu musi wymagac Admina; got {} body={}",
+        setup_identity_after.status, setup_identity_after.body
+    );
+
+    let join_existing_body = serde_json::json!({
+        "passphrase": "dowolne-haslo",
+        "provider_id": "backblaze-b2"
+    });
+    let join_existing_after = h
+        .request_without_token(
+            "POST",
+            "/api/onboarding/join-existing",
+            Some(&join_existing_body),
+        )
+        .await?;
+    assert_eq!(
+        join_existing_after.status, 401,
+        "join-existing po zakonczeniu onboardingu musi wymagac Admina; got {} body={}",
+        join_existing_after.status, join_existing_after.body
+    );
+
     Ok(())
 }
 
