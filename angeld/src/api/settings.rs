@@ -14,7 +14,7 @@ use tracing::info;
 use super::ApiState;
 use super::auth::extract_session;
 use super::error::ApiError;
-use super::gate::AdminCaller;
+use super::gate::{AdminCaller, SessionCaller};
 
 #[derive(Serialize)]
 struct SettingsPathsResponse {
@@ -62,16 +62,10 @@ async fn get_paths(
 }
 
 async fn post_autostart(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
+    State(_state): State<ApiState>,
+    _: SessionCaller,
     Json(req): Json<AutostartRequest>,
 ) -> Result<Json<AutostartResponse>, ApiError> {
-    extract_session(&state.pool, &headers)
-        .await
-        .ok_or(ApiError::Unauthorized {
-            message: "session required".into(),
-        })?;
-
     if req.enabled {
         let cmd = autostart::default_current_user_autostart_command().map_err(ApiError::from)?;
         autostart::register_current_user_autostart(&cmd).map_err(ApiError::from)?;

@@ -1,5 +1,6 @@
 use super::ApiState;
 use super::error::ApiError;
+use super::gate::SessionCaller;
 use crate::acl;
 use crate::auto_lock::{AutoLockError, DEFAULT_IDLE_MIN, MONITOR, WARNING_THRESHOLD_SECS};
 use axum::Json;
@@ -29,11 +30,10 @@ pub fn routes() -> Router<ApiState> {
 }
 
 async fn post_timeout(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
+    State(_state): State<ApiState>,
+    _: SessionCaller,
     Json(body): Json<SetTimeoutRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let _ = acl::require_session(&state.pool, &headers).await?;
     let mon = MONITOR.get().ok_or(ApiError::Internal {
         message: "auto-lock monitor not initialized".into(),
     })?;

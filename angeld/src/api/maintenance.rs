@@ -141,6 +141,7 @@ pub(super) fn routes() -> Router<ApiState> {
 
 async fn get_maintenance_status(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Json<MaintenanceOverviewResponse> {
     let health = match super::diagnostics::build_diagnostics_health_response(&state).await {
         Ok(response) => maintenance_overview_item(&response),
@@ -168,7 +169,10 @@ async fn get_maintenance_status(
     })
 }
 
-async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> Json<serde_json::Value> {
+async fn get_maintenance_diagnostics(
+    State(state): State<ApiState>,
+    _: ViewerCaller,
+) -> Json<serde_json::Value> {
     let health = match super::diagnostics::build_diagnostics_health_response(&state).await {
         Ok(response) => serde_json::to_value(response).unwrap_or_default(),
         Err(err) => serde_json::json!({
@@ -286,6 +290,7 @@ async fn get_maintenance_diagnostics(State(state): State<ApiState>) -> Json<serd
 
 async fn get_cache_status(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<CacheStatusResponse>, ApiError> {
     let config = AppConfig::from_env();
     let summary = db::get_cache_status_summary(&state.pool).await?;
@@ -303,6 +308,7 @@ async fn get_cache_status(
 
 async fn get_recovery_status(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<MaintenanceStatus<RecoveryStatusResponse>>, ApiError> {
     let response = build_recovery_status_response(&state).await?;
     Ok(Json(response))
@@ -310,6 +316,7 @@ async fn get_recovery_status(
 
 async fn get_scrub_status(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<ScrubStatusResponse>, ApiError> {
     let summary = db::get_scrub_status_summary(&state.pool).await?;
     Ok(Json(ScrubStatusResponse {
@@ -605,11 +612,9 @@ async fn post_repair_sync_root(
 
 async fn post_snapshot_local(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    _: AdminCaller,
     Json(request): Json<SnapshotLocalRequest>,
 ) -> Result<Json<SnapshotLocalResponse>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Admin).await?;
-
     let output_path = std::path::PathBuf::from(&request.output_path);
     let master_key = state
         .vault_keys

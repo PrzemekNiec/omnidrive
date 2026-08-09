@@ -17,6 +17,7 @@ use tracing::{error, info};
 
 use super::ApiState;
 use super::error::ApiError;
+use super::gate::MemberCaller;
 
 // ── Request / Response structs ──────────────────────────────────────────
 
@@ -104,12 +105,11 @@ pub(super) fn routes() -> Router<ApiState> {
 
 async fn create_share_link(
     State(state): State<ApiState>,
+    MemberCaller(caller): MemberCaller,
     headers: HeaderMap,
     Path(inode_id): Path<i64>,
     Json(request): Json<CreateShareRequest>,
 ) -> Result<(StatusCode, Json<CreateShareResponse>), ApiError> {
-    let caller = acl::require_role(&state.pool, &headers, Role::Member).await?;
-
     let envelope_key =
         state
             .vault_keys

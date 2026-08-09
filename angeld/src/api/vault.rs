@@ -170,10 +170,9 @@ async fn get_vault_status(State(state): State<ApiState>) -> Json<serde_json::Val
 
 async fn post_vault_invite(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    AdminCaller(caller): AdminCaller,
     Json(req): Json<InviteRequest>,
 ) -> Result<Json<InviteResponse>, ApiError> {
-    let caller = acl::require_role(&state.pool, &headers, Role::Admin).await?;
     let vault_id = caller.vault_id;
     let caller_device_id = caller.device_id;
     let owner_user_id = caller.user_id;

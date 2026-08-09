@@ -14,6 +14,7 @@ use std::env;
 
 use super::ApiState;
 use super::error::ApiError;
+use super::gate::{MemberCaller, ViewerCaller};
 
 // ── Response / Request structs ──────────────────────────────────────────
 
@@ -364,11 +365,9 @@ async fn unpin_file(
 
 async fn set_filesystem_policy(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    _: MemberCaller,
     Json(request): Json<FilesystemPolicyRequest>,
 ) -> Result<Json<FilesystemPolicyResponse>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Member).await?;
-
     let policy_type = normalize_policy_type(&request.policy_type).ok_or(ApiError::BadRequest {
         code: "invalid_policy_type",
         message: format!("invalid policy type: {}", request.policy_type),
@@ -399,11 +398,9 @@ async fn set_filesystem_policy(
 
 async fn pin_filesystem_path(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    _: MemberCaller,
     Json(request): Json<FilesystemPathRequest>,
 ) -> Result<Json<SmartSyncActionResponse>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Member).await?;
-
     let (inode_id, _, inode) =
         resolve_filesystem_request_target(&state.pool, &request.path).await?;
     if inode.kind != "FILE" {
@@ -426,11 +423,9 @@ async fn pin_filesystem_path(
 
 async fn unpin_filesystem_path(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    _: MemberCaller,
     Json(request): Json<FilesystemPathRequest>,
 ) -> Result<Json<SmartSyncActionResponse>, ApiError> {
-    acl::require_role(&state.pool, &headers, Role::Member).await?;
-
     let (inode_id, _, inode) =
         resolve_filesystem_request_target(&state.pool, &request.path).await?;
     if inode.kind != "FILE" {
@@ -593,7 +588,10 @@ async fn materialize_conflict_copy(
     }))
 }
 
-async fn get_quota(State(state): State<ApiState>) -> Result<Json<QuotaResponse>, ApiError> {
+async fn get_quota(
+    State(state): State<ApiState>,
+    _: ViewerCaller,
+) -> Result<Json<QuotaResponse>, ApiError> {
     let app_config = AppConfig::from_env();
     let mut providers = Vec::with_capacity(KNOWN_PROVIDERS.len());
 

@@ -1,5 +1,6 @@
 use super::ApiState;
 use super::error::ApiError;
+use super::gate::SessionCaller;
 use crate::db;
 use crate::disaster_recovery;
 use crate::runtime_paths::RuntimePaths;
@@ -237,36 +238,17 @@ async fn get_auth_session(
 /// POST /api/auth/logout -- invalidate current session
 async fn post_auth_logout(
     State(state): State<ApiState>,
-    headers: axum::http::HeaderMap,
+    SessionCaller(session): SessionCaller,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let token = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .ok_or(ApiError::BadRequest {
-            code: "missing_authorization_header",
-            message: "missing Authorization header".to_string(),
-        })?;
+    crate::lock_flow::force_lock_and_dismount(
+        &state.pool,
+        &state.vault_keys,
+        crate::lock_flow::LockReason::Logout,
+        Some((session.user_id.as_str(), session.device_id.as_str())),
+    )
+    .await;
 
-    let session_before = db::validate_user_session(&state.pool, token)
-        .await
-        .ok()
-        .flatten();
-
-    if session_before.is_some() {
-        let actor = session_before
-            .as_ref()
-            .map(|s| (s.user_id.as_str(), s.device_id.as_str()));
-        crate::lock_flow::force_lock_and_dismount(
-            &state.pool,
-            &state.vault_keys,
-            crate::lock_flow::LockReason::Logout,
-            actor,
-        )
-        .await;
-    }
-
-    let deleted = db::delete_user_session(&state.pool, token).await?;
+    let deleted = db::delete_user_session(&state.pool, &session.token).await?;
     if deleted {
         Ok(Json(serde_json::json!({ "status": "logged_out" })))
     } else {
@@ -280,18 +262,10 @@ async fn post_auth_logout(
 /// POST /api/auth/renew -- extend session TTL by 24h
 async fn post_auth_renew(
     State(state): State<ApiState>,
-    headers: axum::http::HeaderMap,
+    SessionCaller(session): SessionCaller,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let token = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .ok_or(ApiError::BadRequest {
-            code: "missing_authorization_header",
-            message: "missing Authorization header".to_string(),
-        })?;
-
-    let renewed = db::renew_user_session(&state.pool, token, db::SESSION_TTL_SECONDS).await?;
+    let renewed =
+        db::renew_user_session(&state.pool, &session.token, db::SESSION_TTL_SECONDS).await?;
     if renewed {
         let new_expires = db::epoch_secs() + db::SESSION_TTL_SECONDS;
         Ok(Json(serde_json::json!({
@@ -325,15 +299,9 @@ struct ChangePasswordResponse {
 /// the current passphrase as confirmation.
 async fn post_change_password(
     State(state): State<ApiState>,
-    headers: axum::http::HeaderMap,
+    _: SessionCaller,
     Json(request): Json<ChangePasswordRequest>,
 ) -> Result<Json<ChangePasswordResponse>, ApiError> {
-    extract_session(&state.pool, &headers)
-        .await
-        .ok_or(ApiError::Unauthorized {
-            message: "valid session required to change password".to_string(),
-        })?;
-
     if request.new_passphrase.expose_secret().is_empty() {
         return Err(ApiError::BadRequest {
             code: "empty_passphrase",
