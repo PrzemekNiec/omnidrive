@@ -203,7 +203,7 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
     ),
     ("POST", "/api/recovery/generate", "/api/recovery/generate", Expect::Role),
     ("POST", "/api/recovery/revoke", "/api/recovery/revoke", Expect::Role),
-    ("POST", "/api/settings/autostart", "/api/settings/autostart", Expect::Role),
+    ("POST", "/api/settings/autostart", "/api/settings/autostart", Expect::Session),
     ("POST", "/api/settings/restart-daemon", "/api/settings/restart-daemon", Expect::Role),
     ("POST", "/api/settings/windows-hello", "/api/settings/windows-hello", Expect::Role),
     (

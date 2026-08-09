@@ -15,9 +15,15 @@
 ## ✅ PRZEGLĄD ZAMKNIĘTY — 2026-08-02
 
 Wszystkie dziesięć warstw przeczytane, plus rozdział 11 domykający fragmenty, które
-przy pierwszym przejściu zostały pominięte. **147 znalezisk**: **43 × 🔴**, **100 × ⚠️**,
-**4 × ✅** (naprawione w trakcie: Z4-01, Z6-04, Z6-05, Z6-06).
+przy pierwszym przejściu zostały pominięte. Przegląd zamknął się na **147 znaleziskach**:
+**43 × 🔴**, **100 × ⚠️**, **4 × ✅** (naprawione w trakcie: Z4-01, Z6-04, Z6-05, Z6-06).
 Sześć sesji, 121 plików `.rs`, ~48 000 linii kodu plus ~7600 linii statyków.
+
+**Stan rejestru po Fazie 0 i przeważeniu D5 (2026-08-09): 148 pozycji** — **37 × 🔴**,
+**87 × ⚠️**, **24 × ✅**. Doszła jedna pozycja (**Z10-16**, wykryta przy weryfikacji Fazy 0),
+naprawionych jest 20 nowych, a siedem zmieniło wagę po przyjęciu kryterium skutku.
+Spadek liczby 🔴 z 43 do 37 to wypadkowa trzech rzeczy naraz: napraw Fazy 0, przeważenia
+w dół (Z1-01, Z1-02, Z2-02) i przeważenia w górę (Z6-09, Z8-06, Z9-24, Z11-05).
 
 **Uczciwie o pokryciu.** Po warstwie 10 tabela statusu mówiła „pełne czytanie" tam, gdzie
 czytanie było wybiórcze — największą luką było `api/diagnostics.rs` (moduł bez żadnej
@@ -175,9 +181,15 @@ zielonych.
 
 | Znak | Znaczenie |
 | --- | --- |
-| ✅ | Solidny — czytelny, przetestowany, bez znanych pułapek. |
-| ⚠️ | Działa, ale ma dług: duplikacja, kruche założenie, brak testu w newralgicznym miejscu. |
-| 🔴 | Znaleziony konkretny problem — opisany w „Znaleziska" danego rozdziału. |
+| ✅ | Solidny — czytelny, przetestowany, bez znanych pułapek. W rejestrze znalezisk oznacza pozycję naprawioną, z numerem commita. |
+| ⚠️ | Wada bez bezpośredniego skutku dla danych i dostępu: dług, duplikacja, kruche założenie, brak testu, niedokładność interfejsu użytkownika. |
+| 🔴 | Wada, której skutkiem jest **utrata danych, kompromitacja klucza albo niedziałająca funkcja** — łącznie z wadami, które deterministycznie wyzwalają inną pozycję 🔴. |
+
+**Kryterium wagi to skutek, nie pewność ustalenia** (decyzja D5, 2026-08-08). Poprzednia legenda odróżniała
+🔴 („znaleziony konkretny problem") od ⚠️ („działa, ale ma dług") przez stopień pewności autora, przez co
+wagi rozjeżdżały się między rozdziałami pisanymi w różnych sesjach. Rejestr został przeważony według
+kryterium skutku: w dół poszły **Z1-01**, **Z1-02** i **Z2-02**, w górę **Z6-09**, **Z8-06**, **Z9-24**
+i **Z11-05**.
 
 ## Spis rozdziałów
 
@@ -200,16 +212,16 @@ zielonych.
 
 | ID | Waga | Rzecz | Potwierdzone jak |
 | --- | --- | --- | --- |
-| Z1-01 | 🔴 | `angeld.log` rośnie bez końca; prune po `mtime` nigdy nie tknie aktywnego pliku | grep: zero `RollingFileAppender` |
-| Z1-02 | 🔴 | 3 workery poza `tokio::select!` (m.in. `pipe_server`) — śmierć niezauważona | czytanie `main.rs` |
+| Z1-01 | ⚠️ | `angeld.log` rośnie bez końca; prune po `mtime` nigdy nie tknie aktywnego pliku | grep: zero `RollingFileAppender` |
+| Z1-02 | ⚠️ | 3 workery poza `tokio::select!` (m.in. `pipe_server`) — śmierć niezauważona | czytanie `main.rs` |
 | Z1-03 | ⚠️ | ~450 linii zduplikowanego shutdownu w 4 gałęziach trybów | czytanie |
 | Z1-04 | ⚠️ | `panic!` przy niespójności vaulta w procesie GUI-subsystem — niewidoczny | czytanie |
 | Z1-05 | ⚠️ | Komentarze z numerami zadań łamią CLAUDE.md §3 | czytanie |
 | Z1-06 | ⚠️ | Kod diagnostyczny w binarce produkcyjnej, poza `cloud_guard` | czytanie |
 | Z2-01 | 🔴 | Soft-delete blokuje odtworzenie pliku w **podkatalogu** | sonda SQLite |
-| Z2-02 | 🔴 | `/api/stats/overview` zawsze 0 plików (`kind = 'file'` małymi) | sonda SQLite |
+| Z2-02 | ⚠️ | `/api/stats/overview` zawsze 0 plików (`kind = 'file'` małymi) | sonda SQLite |
 | Z2-03 | 🔴 | `backfill_uuid_user_ids` może oddać do puli połączenie z `FK = OFF` | czytanie |
-| Z2-04 | ⚠️ | `cleanup_expired_sessions` nigdy nie wołane (**korekta §9b.9:** `delete_expired_oauth_states` **jest** wołane w `oauth.rs:39`) | grep |
+| Z2-04 | ✅ | `cleanup_expired_sessions` nigdy nie wołane (**korekta §9b.9:** `delete_expired_oauth_states` **jest** wołane w `oauth.rs:39`) — **NAPRAWIONE** `54dee43`. | grep |
 | Z2-05 | ⚠️ | Projekcja po pojedynczym inode ignoruje soft-delete | czytanie |
 | Z2-06 | ⚠️ | Brak FK na `shared_links` i `user_sessions` | czytanie schematu |
 | Z2-07 | ⚠️ | `PERMANENTLY_FAILED` niepoliczony w `summarize_pack_shards` | czytanie |
@@ -242,7 +254,7 @@ zielonych.
 | Z6-06 | ✅ | Repair nie sprawdzał `pack_shards.checksum` — odtwarzał z niezweryfikowanych shardów, a gc kasował oryginał | **NAPRAWIONE** `f667d4f` |
 | Z6-07 | 🔴 | Wyścig reconcile ↔ gc w gałęzi `LocalOnly` (brak osłony `!= 'UPLOADING'`, brak FK na `pack_locations`) | czytanie + schemat |
 | Z6-08 | ⚠️ | Dwie definicje sieroty; endpoint `/api/maintenance/gc` kasuje metadane bez obiektów w chmurze | czytanie + sonda SQLite |
-| Z6-09 | ⚠️ | DEEP verify zawsze na pierwszym shardzie partii (`batch_index == 0`) — ≥576 MiB/dobę przy limicie 500 MiB | czytanie + sonda SQLite |
+| Z6-09 | 🔴 | DEEP verify zawsze na pierwszym shardzie partii (`batch_index == 0`) — ≥576 MiB/dobę przy limicie 500 MiB | czytanie + sonda SQLite |
 | Z6-10 | ⚠️ | Klasyfikacja błędów przez `contains("404"/"500"/"tls")` na sklejce `display + debug + source` | czytanie |
 | Z6-11 | ⚠️ | Poprawka `request_checksum_calculation` tylko w `uploader.rs`; repair/scrubber/gc bez niej | grep |
 | Z6-12 | ⚠️ | `repair_pack` przy statusie Healthy nie zapisuje wyniku → gorąca pętla w workerze | czytanie |
@@ -273,7 +285,7 @@ zielonych.
 | Z8-03 | 🔴 | `PRAGMA foreign_keys = OFF` w transakcji to no-op → `DELETE FROM users` wywala graft o `user_sessions` | sonda SQLite (kopia + ROLLBACK) |
 | Z8-04 | 🔴 | Graft nie kopiuje `pack_deks`; fallback bierze zły DEK dla każdego packa poza ostatnim i utrwala błąd | grep + sonda obu zapytań |
 | Z8-05 | 🔴 | `CryptProtectData` bez entropii dla kluczy S3 — poświadczenia do bucketów bez hasła głównego | czytanie |
-| Z8-06 | ⚠️ | Fetch metadanych z `pool = None` — poza `cloud_guard` i poza licznikiem egressu, w pętli przy złym `vault_id` | czytanie |
+| Z8-06 | 🔴 | Fetch metadanych z `pool = None` — poza `cloud_guard` i poza licznikiem egressu, w pętli przy złym `vault_id` | czytanie |
 | Z8-07 | ⚠️ | `cleanup_stale_uploads` za flagą, której nikt nie ustawia — porzucone multiparty nigdy nie sprzątane | grep: 1 trafienie |
 | Z8-08 | ⚠️ | `cleanup_stale_restore_staging` bez zerowania, filtr `.db` pomija sidecary WAL | czytanie |
 | Z8-09 | ⚠️ | Plaintextowa migawka w `%TEMP%`, dwie z czterech ścieżek sprzątania bez zerowania | czytanie |
@@ -281,47 +293,47 @@ zielonych.
 | Z8-11 | ⚠️ | `probe_endpoint_reachability` próbuje tylko `addrs[0]` | czytanie |
 | Z8-12 | ⚠️ | Graft kasuje 18 tabel, w tym lokalne `inodes`; kreator nie ostrzega | czytanie + `wizard.js` |
 | Z8-13 | ⚠️ | Klasyfikacja błędów przez `contains()` decyduje o „złe hasło" vs „brak sieci" | czytanie |
-| Z8-14 | ⚠️ | `RuntimePaths::detect()` per komenda pipe'a, `AppConfig::from_env()` per `fetch_chunk` | czytanie |
+| Z8-14 | ⚠️ | `RuntimePaths::detect()` per komenda pipe'a, `AppConfig::from_env()` per `fetch_chunk` (**scalone z Z6-02** — ta sama wada opisana dwukrotnie) | czytanie |
 | Z8-15 | ⚠️ | Obiekt `.omnidrive_probe/…` zostaje przy błędzie delete; `let _ = secrets;` | czytanie |
 | Z8-16 | ⚠️ | Trzy nieszyfrowane `omnidrive.db.bak.<stamp>` obok bazy, nigdzie nie policzone | czytanie |
 | Z8-17 | ⚠️ | `#![allow(dead_code)]` na `onboarding.rs` + komentarz „Epic 30" (CLAUDE.md §3) | grep |
 | Z8-18 | ⚠️ | `run_pipe_server` kończy się bez retry przy zajętej nazwie pipe'a | czytanie |
-| Z9-01 | 🔴 | `GET /api/vault/status` bez auth **wystawia token sesji** przy odblokowanym Skarbcu — `require_role` przestaje cokolwiek znaczyć | czytanie + sonda `user_sessions` |
-| Z9-02 | 🔴 | `POST /api/unlock/windows-hello` bez auth i bez ciała odblokowuje Skarbiec (CSRF); hasło ląduje w DPAPI przy każdym unlocku, bez zgody | czytanie `auth.rs:68`, `:411` |
-| Z9-03 | 🔴 | `POST /api/vault/add-device` bez auth owija Vault Key na klucz publiczny z żądania i zwraca go | czytanie `vault.rs:585` |
-| Z9-04 | 🔴 | `POST /api/unlock` bez limitera i bez audytu nieudanych prób | czytanie |
+| Z9-01 | ✅ | `GET /api/vault/status` bez auth **wystawia token sesji** przy odblokowanym Skarbcu — `require_role` przestaje cokolwiek znaczyć — **NAPRAWIONE** `16a2fa2`. | czytanie + sonda `user_sessions` |
+| Z9-02 | ✅ | `POST /api/unlock/windows-hello` bez auth i bez ciała odblokowuje Skarbiec (CSRF); hasło ląduje w DPAPI przy każdym unlocku, bez zgody — **NAPRAWIONE** `a0f2a29 + 5b2b247`. CSRF: nagłówek local-intent; zapis hasła: opcja domyślnie wyłączona. | czytanie `auth.rs:68`, `:411` |
+| Z9-03 | ✅ | `POST /api/vault/add-device` bez auth owija Vault Key na klucz publiczny z żądania i zwraca go — **NAPRAWIONE** `048057b`. | czytanie `vault.rs:585` |
+| Z9-04 | ✅ | `POST /api/unlock` bez limitera i bez audytu nieudanych prób — **NAPRAWIONE** `3e97bb4`. | czytanie |
 | Z9-05 | 🔴 | Web UI ładuje Tailwind i jdenticon z publicznych CDN; identikon liczb bezpieczeństwa rysuje kod z sieci; CSP tylko na `/wizard` | grep `<script src>` |
-| Z9-06 | ⚠️ | `api/diagnostics.rs` — 12 handlerów, zero kontroli dostępu; `/api/multidevice/status` oddaje `vault_id` + `device_id` | audyt pokrycia |
-| Z9-07 | ⚠️ | `api/stats.rs` — 3 handlery, zero kontroli dostępu | audyt pokrycia |
-| Z9-08 | ⚠️ | `/api/onboarding/reset` i `/complete` bez auth i bez ciała → CSRF | czytanie sygnatur |
+| Z9-06 | ✅ | `api/diagnostics.rs` — 9 handlerów, zero kontroli dostępu; `/api/multidevice/status` oddaje `vault_id` + `device_id` — **NAPRAWIONE** `5e398a6`. | audyt pokrycia |
+| Z9-07 | ✅ | `api/stats.rs` — 3 handlery, zero kontroli dostępu — **NAPRAWIONE** `5e398a6`. | audyt pokrycia |
+| Z9-08 | ✅ | `/api/onboarding/reset` i `/complete` bez auth i bez ciała → CSRF — **NAPRAWIONE** `7bae0cb`. | czytanie sygnatur |
 | Z9-09 | ⚠️ | `max_downloads` zlicza tylko pobrania ostatniego chunka — retry zjada limit | czytanie `sharing.rs:502` |
-| Z9-10 | ⚠️ | `verify-password` linku share bez limitera przy lekkim Argon2id (8 MiB, t=2) | czytanie |
+| Z9-10 | ✅ | `verify-password` linku share bez limitera przy lekkim Argon2id (8 MiB, t=2) — **NAPRAWIONE** `3e97bb4`. | czytanie |
 | Z9-11 | ⚠️ | Token share w query stringu, choć CORS dopuszcza nagłówek `x-share-token` | czytanie |
 | Z9-12 | ⚠️ | `post_vault_join`: `user_id` sterowane przez klienta, błędy tylko `warn!`, zaproszenie skonsumowane | czytanie |
-| Z9-13 | ⚠️ | Oznaczenie liczb bezpieczeństwa jako zweryfikowanych wymaga tylko roli `Viewer` | czytanie |
+| Z9-13 | ✅ | Oznaczenie liczb bezpieczeństwa jako zweryfikowanych wymaga tylko roli `Viewer` — **NAPRAWIONE** `c4e5c40`. | czytanie |
 | Z9-14 | ⚠️ | `ApiError::Internal` odsyła surowy komunikat błędu do klienta | czytanie |
-| Z9-15 | ⚠️ | `/legacy` bez nagłówków bezpieczeństwa, które ma `/` | czytanie |
+| Z9-15 | ⚠️ | `/legacy` bez nagłówków bezpieczeństwa, które ma `/` (**scalone z Z11-03** — ta sama wada opisana dwukrotnie) | czytanie |
 | Z9-16 | ⚠️ | Limitery nie czyszczą wpisów per IP; `JoinRateLimiter` karze maks. 30 s | czytanie |
 | Z9-17 | ⚠️ | Recovery restore nie unieważnia sesji ani nie aktualizuje poświadczenia DPAPI | czytanie |
 | Z9-18 | ⚠️ | `share_base_url` buduje link z nagłówka `Host` | czytanie |
-| Z9-19 | ⚠️ | `POST /api/maintenance/repair-shell` — jedyna zmiana stanu w `maintenance.rs` bez kontroli roli | audyt pokrycia |
-| Z9-20 | 🔴 | `POST /api/onboarding/setup-provider` bez auth nadpisuje endpoint/bucket/klucze dostawcy także po onboardingu — packi lecą do cudzego bucketa | czytanie |
-| Z9-21 | 🔴 | `POST /api/vault/rotate-key` zmienia hasło Skarbca **bez weryfikacji starego** (inaczej niż `/api/change-password`) | czytanie obu |
+| Z9-19 | ✅ | `POST /api/maintenance/repair-shell` — jedyna zmiana stanu w `maintenance.rs` bez kontroli roli — **NAPRAWIONE** `7bae0cb`. | audyt pokrycia |
+| Z9-20 | ✅ | `POST /api/onboarding/setup-provider` bez auth nadpisuje endpoint/bucket/klucze dostawcy także po onboardingu — packi lecą do cudzego bucketa — **NAPRAWIONE** `7bae0cb`. | czytanie |
+| Z9-21 | ✅ | `POST /api/vault/rotate-key` zmienia hasło Skarbca **bez weryfikacji starego** (inaczej niż `/api/change-password`) — **NAPRAWIONE** `45a2e25`. | czytanie obu |
 | Z9-22 | 🔴 | Odwołanie urządzenia melduje `"revoked"` mimo nieudanej rotacji VK — odwołane urządzenie zachowuje działający klucz | czytanie |
 | Z9-23 | 🔴 | Tryb A (LAN Share) nie może działać — `crypto.subtle` i Service Worker wymagają bezpiecznego kontekstu, link LAN to `http://` po IP | czytanie `share.html` + `sharing.rs` |
-| Z9-24 | ⚠️ | Callback Google mintuje sesję dowolnemu kontu; endpointy na `extract_session` (autostart, restart-daemon, auto-lock) ją honorują | czytanie + `acl.rs:78` |
+| Z9-24 | 🔴 | Callback Google mintuje sesję dowolnemu kontu; endpointy na `extract_session` (autostart, restart-daemon, auto-lock) ją honorują | czytanie + `acl.rs:78` |
 | Z9-25 | ⚠️ | `snapshot-local` przyjmuje dowolną ścieżkę wyjściową; plaintextowy `*.tmp.db` powstaje w katalogu wskazanym przez wywołującego | czytanie |
-| Z9-26 | ⚠️ | `GET /api/ingest` bez auth zwraca pełne ścieżki plików użytkownika | czytanie |
+| Z9-26 | ✅ | `GET /api/ingest` bez auth zwraca pełne ścieżki plików użytkownika — **NAPRAWIONE** `5e398a6`. | czytanie |
 | Z9-27 | ⚠️ | `google_refresh_token` w plaintekście w `users`, dopóki ktoś nie odblokuje Skarbca | czytanie |
-| Z9-28 | ⚠️ | `try_auto_wrap_vault_key` pomija kontrole `enrolled_at`/`revoked_at` z `post_accept_device` | czytanie obu |
+| Z9-28 | ✅ | `try_auto_wrap_vault_key` pomija kontrole `enrolled_at`/`revoked_at` z `post_accept_device` — **NAPRAWIONE** `048057b`. | czytanie obu |
 | Z9-29 | ⚠️ | `normalize_filesystem_api_path` zduplikowane w `pipe_server::normalize_path` | czytanie + komentarz |
-| Z9-30 | ⚠️ | `get_my_wrapped_key` (Viewer) oddaje owinięty VK dowolnego urządzenia | czytanie |
+| Z9-30 | ✅ | `get_my_wrapped_key` (Viewer) oddaje owinięty VK dowolnego urządzenia — **NAPRAWIONE** `c4e5c40`. | czytanie |
 | Z9-31 | ⚠️ | `restart-daemon` tylko sygnalizuje shutdown; nic w daemonie go nie podnosi | czytanie |
 | Z10-01 | 🔴 | CLI nie wysyła `Authorization` — 6 z 12 komend kończy się 403 (`ls`, `history`, `restore`, `pin`, `unpin`, `backup-now`) | grep + audyt ACL |
 | Z10-02 | 🔴 | `omnidrive recovery restore` nadpisuje żywą `omnidrive.db` migawką z chmury — bez grafta, kopii i potwierdzenia | czytanie |
 | Z10-03 | 🔴 | Tray i deinstalator zabijają daemona `taskkill /F` zamiast graceful shutdown → teardown z Z7-05 przepada, plaintext zostaje | czytanie + `.iss` |
 | Z10-04 | ⚠️ | `recovery restore` wymaga kompletu 3 dostawców w env — na maszynie z instalatora nie ruszy | czytanie |
-| Z10-05 | ⚠️ | Tray odpytuje `/api/vault/status` co 3 s, każde wywołanie mintuje sesję (Z9-01) | czytanie + sonda |
+| Z10-05 | ✅ | Tray odpytuje `/api/vault/status` co 3 s, każde wywołanie mintuje sesję (Z9-01) — **NAPRAWIONE** `16a2fa2`. Skutek Z9-01, nie osobna wada — token znika u źródła. | czytanie + sonda |
 | Z10-06 | ⚠️ | `omnidrive_shell_ext.dll` budowany i kopiowany do payloadu, ale instalator go nie instaluje ani nie rejestruje | grep po `.iss` |
 | Z10-07 | ⚠️ | `angelctl` to `println!("Hello, world!")`, a buduje się, ląduje w payloadzie i wymaga bumpu wersji | czytanie |
 | Z10-08 | ⚠️ | `cfapi_repro.exe` budowany domyślnie obok binarek produkcyjnych (klasa Z1-06) | `ls target/release` |
@@ -330,21 +342,22 @@ zielonych.
 | Z10-11 | ⚠️ | `load_icon` panikuje przy braku PNG, a release nie ma konsoli → tray znika bez śladu | czytanie |
 | Z10-12 | ⚠️ | `restart_daemon` = kill + `sleep(500 ms)` + spawn, bez weryfikacji | czytanie |
 | Z10-13 | ⚠️ | `taskkill /F /IM angeld.exe` ubija też instancję dev-ową z `target/release` | czytanie |
-| Z10-14 | ⚠️ | 19 funkcji testowych na 3372 linie; testy negatywne uwierzytelnienia tylko dla auto-locka | inwentaryzacja |
+| Z10-14 | ✅ | 19 funkcji testowych na 3372 linie; testy negatywne uwierzytelnienia tylko dla auto-locka — **NAPRAWIONE** `d2064e0 + d5d345b`. Macierz zielona przy pełnej liście tras (skaner pilnuje w obie strony), nie przy liście nadanej hurtem. | inwentaryzacja |
 | Z10-15 | ⚠️ | `e2e_recovery` i `e2e_sync` hardkodują `Y:` i nie robią `subst /D` w `Drop` — stąd porzucone mapowania | czytanie |
+| Z10-16 | 🔴 | `e2e_recovery` nie przekierowuje `LOCALAPPDATA` jak reszta harnessu i pisze do **prawdziwego** sync roota użytkownika (`AppData\Local\OmniDrive\OmniSync`); wykryte przy weryfikacji Zadania 14 Fazy 0, katalog posprzątany, dane nietknięte. Musi zostać naprawione **przed** jakimkolwiek smoke'iem | obserwacja przebiegu + oględziny katalogu |
 | Z11-01 | 🔴 | Linki share z hasłem są nie do otwarcia — klient czeka na pole `requires_password`, którego API nie wysyła | czytanie obu stron + grep |
-| Z11-02 | 🔴 | `DELETE /api/onboarding/provider/{name}` bez auth kasuje konfigurację, a `ON DELETE CASCADE` zabiera poświadczenia DPAPI | czytanie + schemat |
+| Z11-02 | ✅ | `DELETE /api/onboarding/provider/{name}` bez auth kasuje konfigurację, a `ON DELETE CASCADE` zabiera poświadczenia DPAPI — **NAPRAWIONE** `7bae0cb`. | czytanie + schemat |
 | Z11-03 | 🔴 | `legacy.html` (2258, pod `/legacy`) nie wysyła `Authorization` — 9 z 21 endpointów zwraca 403. Czwarty taki klient | grep + audyt ról |
-| Z11-04 | 🔴 | `OMNIDRIVE_E2E_TEST_MODE` w binarce produkcyjnej wyłącza workery integralności i **ustawia im status `Idle`**; `e2e_basic` asertuje te sfabrykowane statusy | czytanie `main.rs` + testu |
-| Z11-05 | ⚠️ | `purge_trash` kasuje metadane, nie obiekty w chmurze — „usuń trwale" nie usuwa danych z bucketów | czytanie |
-| Z11-06 | ⚠️ | `/api/storage/cost` bez bramki robi N+1 zapytań przy każdym odświeżeniu dashboardu | czytanie |
+| Z11-04 | ✅ | `OMNIDRIVE_E2E_TEST_MODE` w binarce produkcyjnej wyłącza workery integralności i **ustawia im status `Idle`**; `e2e_basic` asertuje te sfabrykowane statusy — **NAPRAWIONE** `04e55ed`. | czytanie `main.rs` + testu |
+| Z11-05 | 🔴 | `purge_trash` kasuje metadane, nie obiekty w chmurze — „usuń trwale" nie usuwa danych z bucketów | czytanie |
+| Z11-06 | ⚠️ | `/api/storage/cost` bez bramki robi N+1 zapytań przy każdym odświeżeniu dashboardu — **połowa NAPRAWIONA** `5e398a6` (bramka `ViewerCaller`); N+1 zapytań zostaje otwarte do F4/WP4.3. | czytanie |
 | Z11-07 | ⚠️ | `provider_connection_status` nigdy nie zwróci `FAILED` przy błędzie → ikona błędu w trayu jest martwa | czytanie obu stron |
 | Z11-08 | ⚠️ | `post_vault_lock` duplikuje teardown zamiast `lock_flow::force_lock_and_dismount`; lock nie czyści DPAPI, więc Z9-02 go odwraca | czytanie + CLAUDE.md |
 | Z11-09 | ⚠️ | Token OAuth trwale w `localStorage` (czytelny dla skryptów z CDN), token z `/api/unlock` tylko w pamięci | czytanie |
 | Z11-10 | ⚠️ | Trzeci zewnętrzny origin: `fonts.googleapis.com` | czytanie |
 | Z11-11 | ⚠️ | Service Worker rejestrowany z zasięgiem całego origin zamiast `/sw-download/` | czytanie |
 | Z11-12 | ⚠️ | `POST /api/providers/{name}/test` bez auth wykonuje `put_object` i `delete_object` w buckecie | czytanie |
-| Z11-13 | ⚠️ | `cfapi_repro` z zaszytą ścieżką `C:\Users\Przemek\...`, rejestruje prawdziwy sync root | czytanie |
+| Z11-13 | ⚠️ | `cfapi_repro` z zaszytą ścieżką `C:\Users\Przemek\...`, rejestruje prawdziwy sync root (**scalone z Z10-08** — ta sama wada opisana dwukrotnie) | czytanie |
 | Z11-14 | ⚠️ | Bez Service Workera `share.html` buforuje cały plik w RAM — na LAN to jedyna ścieżka | czytanie |
 | Z11-15 | ⚠️ | Test regresyjny Z4-01 (8 KiB przy chunku 4 MiB) z konstrukcji nie może wykryć Z8-04 | czytanie + `packer.rs:24` |
 
@@ -2220,7 +2233,7 @@ z 10** (Z6-08).
 | Z6-06 | ✅ | Repair nie sprawdzał `pack_shards.checksum` — tylko długość; uszkodzony shard → RS odtwarzał śmieci → `COMPLETED_HEALTHY`, a przy rekoncyliacji gc kasował oryginał **wraz z obiektami w chmurze** | **NAPRAWIONE** `f667d4f` |
 | Z6-07 | 🔴 | Wyścig reconcile ↔ gc w gałęzi `LocalOnly`: pack powstaje jako `Healthy`, więc osłona `status != 'UPLOADING'` go nie obejmuje; gc kasuje wiersz **i manifest `.odpk` ze spoola**, a `pack_locations` nie ma FK do `packs` → chunk wskazuje nieistniejący pack | czytanie + `schema.rs:345` (brak FK) + sprawdzony fallback dla ścieżki chmurowej |
 | Z6-08 | ⚠️ | Dwie definicje sieroty; endpoint `/api/maintenance/gc` kasuje metadane **bez** kasowania obiektów w chmurze — klucze przepadają razem z `pack_shards` | czytanie obu funkcji + sonda (2 z 10 packów spełniają tylko kryterium endpointu) |
-| Z6-09 | ⚠️ | `batch_index.is_multiple_of(modulus)` — indeks 0 zawsze trafia, więc pierwszy shard każdej partii idzie DEEP; „spokojny tryb" małego vaulta nic nie zmienia. Dla vaulta >100 packów daje ≥576 MiB/dobę przy limicie 500 MiB → zatrzask z Z6-01 | czytanie + sonda (jedyna weryfikacja DEEP: `id=36`, `36 % 100 ≠ 0`) |
+| Z6-09 | 🔴 | `batch_index.is_multiple_of(modulus)` — indeks 0 zawsze trafia, więc pierwszy shard każdej partii idzie DEEP; „spokojny tryb" małego vaulta nic nie zmienia. Dla vaulta >100 packów daje ≥576 MiB/dobę przy limicie 500 MiB → zatrzask z Z6-01 | czytanie + sonda (jedyna weryfikacja DEEP: `id=36`, `36 % 100 ≠ 0`) |
 | Z6-10 | ⚠️ | Klasyfikacja błędów przez `contains("404"/"500"/"tls"/"dns")` na sklejce `display + debug + source`; `MISSING` sprawdzane przed `transient`. Ten sam wzorzec decyduje w `gc.rs` o uznaniu skasowania za udane | czytanie |
 | Z6-11 | ⚠️ | Poprawka `request_checksum_calculation(WhenRequired)` istnieje wyłącznie w `uploader.rs`; repair/scrubber/gc budują klienta S3 bez niej, a test regresyjny pilnuje tylko uploadera | grep: 1 trafienie w kodzie produkcyjnym |
 | Z6-12 | ⚠️ | `repair_pack` przy `PackStatus::Healthy` nie zapisuje statusu; wiersz zostaje `COMPLETED_DEGRADED`, a gałąź sukcesu w `run()` nie ma `sleep` → gorąca pętla z logiem „restored pack X to healthy" do czasu, aż status zapisze uploader | czytanie + tabela osiągalności wyjść |
@@ -2510,7 +2523,7 @@ co miały robić, a nie że po całej operacji urządzenie potrafi odczytać pli
 | Z8-03 | 🔴 | `PRAGMA foreign_keys = OFF` wewnątrz `BEGIN IMMEDIATE` to no-op → `DELETE FROM users` wywala się o FK z `user_sessions` → cały graft `ROLLBACK`, join-existing niemożliwy na urządzeniu, które kiedykolwiek się odblokowało | sonda SQLite (fk=1 po OFF; DELETE FAIL na kopii bazy roboczej, 131 sesji) |
 | Z8-04 | 🔴 | Graft nie kopiuje `pack_deks`; fallback `dek_for_pack` bierze DEK o najwyższym `key_version` dla inode'a, a packer mintuje DEK na chunk → po dołączeniu wszystkie packi poza ostatnim dostają zły klucz, a `set_pack_dek` utrwala błąd | grep (0 trafień w `graft.rs`) + sonda odwzorowująca oba zapytania |
 | Z8-05 | 🔴 | `CryptProtectData` bez `pOptionalEntropy` dla kluczy S3 — poświadczenia do wszystkich bucketów odzyskiwalne przez dowolny proces użytkownika, bez hasła głównego | czytanie `onboarding.rs:1265-1288` |
-| Z8-06 | ⚠️ | `run_metadata_fetch_now` przekazuje `pool = None` → godzinne LIST-y i pobranie migawki poza `cloud_guard` i poza licznikiem egressu; przy niepasującym `vault_id` marker nie przesuwa się i pobieranie powtarza się w kółko | czytanie (l. 1153, 1177 vs sygnatura `Option<&SqlitePool>`) |
+| Z8-06 | 🔴 | `run_metadata_fetch_now` przekazuje `pool = None` → godzinne LIST-y i pobranie migawki poza `cloud_guard` i poza licznikiem egressu; przy niepasującym `vault_id` marker nie przesuwa się i pobieranie powtarza się w kółko | czytanie (l. 1153, 1177 vs sygnatura `Option<&SqlitePool>`) |
 | Z8-07 | ⚠️ | `cleanup_stale_uploads` schowane za `OMNIDRIVE_ENABLE_MULTIPART_CLEANUP`, której nikt nie ustawia → porzucone multiparty nigdy nie sprzątane (kontekst [[project-b2-bleeding-root-cause]]) | grep: 1 trafienie w całym repo = sama definicja |
 | Z8-08 | ⚠️ | `cleanup_stale_restore_staging` używa `remove_file` zamiast `secure_delete` wbrew obietnicy w komentarzu; filtr `.db` pomija sidecary WAL zostawione przez `init_db` na migawce | czytanie + `secure_fs.rs:95` |
 | Z8-09 | ⚠️ | `run_metadata_fetch_now` pisze plaintextową migawkę do `%TEMP%`; dwie z czterech ścieżek sprzątania nie zerują zawartości | czytanie (l. 1090-1126) |
@@ -2518,7 +2531,7 @@ co miały robić, a nie że po całej operacji urządzenie potrafi odczytać pli
 | Z8-11 | ⚠️ | `probe_endpoint_reachability` łączy się wyłącznie z `addrs[0]` — pierwszy rekord AAAA w sieci bez IPv6 daje fałszywe „endpoint nieosiągalny" w kreatorze | czytanie |
 | Z8-12 | ⚠️ | `graft_restored_metadata_snapshot` kasuje 18 tabel, w tym lokalne `inodes` — kreator nigdzie nie ostrzega, że dołączenie do Skarbca kasuje lokalne metadane | czytanie + brak ostrzeżenia w `wizard.js` |
 | Z8-13 | ⚠️ | Klasyfikacja błędów przez `contains()` na tekście komunikatu (`classify_provider_error`, `map_restore_download_error`) — ten sam wzorzec co Z6-10, tu decyduje o komunikacie „złe hasło" vs „brak sieci" | czytanie |
-| Z8-14 | ⚠️ | `RuntimePaths::detect()` przy każdej komendzie pipe'a i `AppConfig::from_env()` przy każdym `fetch_chunk` — ta sama klasa co Z6-02 | czytanie |
+| Z8-14 | ⚠️ | `RuntimePaths::detect()` przy każdej komendzie pipe'a i `AppConfig::from_env()` przy każdym `fetch_chunk` — ta sama klasa co Z6-02 (**scalone z Z6-02** — ta sama wada opisana dwukrotnie) | czytanie |
 | Z8-15 | ⚠️ | Test połączenia zostawia obiekt `.omnidrive_probe/<provider>_<ms>`, jeśli `delete_object` padnie; `validate_provider_connection` przyjmuje `secrets` i wykonuje na nich `let _ = secrets;` | czytanie |
 | Z8-16 | ⚠️ | Trzy nieszyfrowane kopie `omnidrive.db.bak.<stamp>` obok bazy, tworzone przez worker kopii metadanych; przeżywają „bezpieczne skasowanie bazy" i nie są nigdzie policzone | czytanie `run_local_db_backup_if_due` |
 | Z8-17 | ⚠️ | `#![allow(dead_code)]` na całym `onboarding.rs` z komentarzem „reserved for Epic 30" (CLAUDE.md §3) + 6 × `#[allow(dead_code)]` w `disaster_recovery.rs` na typach, które są używane | grep |
@@ -2799,25 +2812,25 @@ wysyłany zamiast biblioteki. Plik ma 19 927 bajtów — jest zminifikowany, bez
 
 | ID | Waga | Rzecz | Potwierdzone jak |
 | --- | --- | --- | --- |
-| Z9-01 | 🔴 | `GET /api/vault/status` bez uwierzytelnienia **wystawia token sesji** przy odblokowanym Skarbcu — każdy lokalny proces dostaje uprawnienia właściciela, wszystkie `require_role` przestają cokolwiek znaczyć | czytanie `vault.rs:159-169` + sonda (131 sesji, 22 w jednej minucie, 100 % wygasłych) + komentarz w `index.html:4021` |
-| Z9-02 | 🔴 | `POST /api/unlock/windows-hello` bez auth i bez ciała odblokowuje Skarbiec i montuje `O:`; osiągalne przez CSRF z dowolnej strony (simple request, brak preflightu). Hasło trafia do DPAPI **przy każdym** udanym odblokowaniu, bez zgody i bez ustawienia | czytanie `auth.rs:68` i `:411-419` |
-| Z9-03 | 🔴 | `POST /api/vault/add-device` bez auth owija Vault Key na klucz publiczny z żądania i zwraca go; `user_id` jest odgadywalne (`user-<device_id>`), a `device_id` oddaje nieautoryzowane `/api/multidevice/status` | czytanie `vault.rs:585-683`, `:280` |
-| Z9-04 | 🔴 | `POST /api/unlock` bez limitera i bez audytu nieudanych prób — jedyne zabezpieczenie to koszt Argon2; recovery i join-existing limitery mają | czytanie + `mod.rs:45-144` |
+| Z9-01 | ✅ | `GET /api/vault/status` bez uwierzytelnienia **wystawia token sesji** przy odblokowanym Skarbcu — każdy lokalny proces dostaje uprawnienia właściciela, wszystkie `require_role` przestają cokolwiek znaczyć — **NAPRAWIONE** `16a2fa2`. | czytanie `vault.rs:159-169` + sonda (131 sesji, 22 w jednej minucie, 100 % wygasłych) + komentarz w `index.html:4021` |
+| Z9-02 | ✅ | `POST /api/unlock/windows-hello` bez auth i bez ciała odblokowuje Skarbiec i montuje `O:`; osiągalne przez CSRF z dowolnej strony (simple request, brak preflightu). Hasło trafia do DPAPI **przy każdym** udanym odblokowaniu, bez zgody i bez ustawienia — **NAPRAWIONE** `a0f2a29 + 5b2b247`. CSRF: nagłówek local-intent; zapis hasła: opcja domyślnie wyłączona. | czytanie `auth.rs:68` i `:411-419` |
+| Z9-03 | ✅ | `POST /api/vault/add-device` bez auth owija Vault Key na klucz publiczny z żądania i zwraca go; `user_id` jest odgadywalne (`user-<device_id>`), a `device_id` oddaje nieautoryzowane `/api/multidevice/status` — **NAPRAWIONE** `048057b`. | czytanie `vault.rs:585-683`, `:280` |
+| Z9-04 | ✅ | `POST /api/unlock` bez limitera i bez audytu nieudanych prób — jedyne zabezpieczenie to koszt Argon2; recovery i join-existing limitery mają — **NAPRAWIONE** `3e97bb4`. | czytanie + `mod.rs:45-144` |
 | Z9-05 | 🔴 | Cały Web UI ładuje Tailwind i jdenticon z publicznych CDN — bez internetu UI nie działa, a skrypt z CDN ma pełne prawa origin z tokenem sesji; identikon liczb bezpieczeństwa rysuje kod pobrany z sieci. CSP tylko na `/wizard`, i tak z `'unsafe-inline'` | grep `<script src>` + `index.html:3249` + `CLAUDE.md` |
-| Z9-06 | ⚠️ | `api/diagnostics.rs` — 12 handlerów, zero kontroli dostępu; `/api/multidevice/status` oddaje `vault_id`, `device_id` i listę peerów (komplet materiału do Z8-02), `/api/transfers` nazwy bucketów | audyt pokrycia + czytanie |
-| Z9-07 | ⚠️ | `api/stats.rs` — 3 handlery, zero kontroli dostępu | audyt pokrycia |
-| Z9-08 | ⚠️ | `POST /api/onboarding/reset` i `/api/onboarding/complete` bez auth i bez ciała → wykonalne przez CSRF; reset cofa kreator i wyłącza tryb chmurowy | czytanie sygnatur |
+| Z9-06 | ✅ | `api/diagnostics.rs` — 9 handlerów, zero kontroli dostępu; `/api/multidevice/status` oddaje `vault_id`, `device_id` i listę peerów (komplet materiału do Z8-02), `/api/transfers` nazwy bucketów — **NAPRAWIONE** `5e398a6`. | audyt pokrycia + czytanie |
+| Z9-07 | ✅ | `api/stats.rs` — 3 handlery, zero kontroli dostępu — **NAPRAWIONE** `5e398a6`. | audyt pokrycia |
+| Z9-08 | ✅ | `POST /api/onboarding/reset` i `/api/onboarding/complete` bez auth i bez ciała → wykonalne przez CSRF; reset cofa kreator i wyłącza tryb chmurowy — **NAPRAWIONE** `7bae0cb`. | czytanie sygnatur |
 | Z9-09 | ⚠️ | `max_downloads` zlicza wyłącznie pobrania **ostatniego** chunka: retry sieciowy zjada limit, a pobranie reszty pliku go nie rusza | czytanie `sharing.rs:502-506` |
-| Z9-10 | ⚠️ | `verify-password` dla linków share bez limitera, przy celowo lekkim Argon2id (8 MiB, t=2) | czytanie + `sharing.rs:85` |
+| Z9-10 | ✅ | `verify-password` dla linków share bez limitera, przy celowo lekkim Argon2id (8 MiB, t=2) — **NAPRAWIONE** `3e97bb4`. | czytanie + `sharing.rs:85` |
 | Z9-11 | ⚠️ | Token dostępu do share przekazywany w query stringu, choć CORS dopuszcza nagłówek `x-share-token`, którego handler nie czyta | czytanie |
 | Z9-12 | ⚠️ | `post_vault_join`: `user_id` = `user-<device_id>` sterowane przez klienta, a błędy `create_user`/`create_device`/`add_vault_member` tylko `warn!` — kod zaproszenia zostaje skonsumowany i zwracany jest sukces | czytanie `vault.rs:274-331` |
-| Z9-13 | ⚠️ | `POST /api/devices/{id}/verify` — oznaczenie liczb bezpieczeństwa jako zweryfikowanych wymaga tylko roli `Viewer` | czytanie `vault.rs:1148` |
+| Z9-13 | ✅ | `POST /api/devices/{id}/verify` — oznaczenie liczb bezpieczeństwa jako zweryfikowanych wymaga tylko roli `Viewer` — **NAPRAWIONE** `c4e5c40`. | czytanie `vault.rs:1148` |
 | Z9-14 | ⚠️ | `ApiError::Internal` odsyła surowy komunikat (pełny tekst błędu SQLite, ścieżki) w ciele odpowiedzi | czytanie `api_error.rs:103-110` |
-| Z9-15 | ⚠️ | `/legacy` serwowane bez `no-store`, `X-Frame-Options` i `Referrer-Policy`, które `/` ustawia | czytanie `mod.rs:348-361` |
+| Z9-15 | ⚠️ | `/legacy` serwowane bez `no-store`, `X-Frame-Options` i `Referrer-Policy`, które `/` ustawia (**scalone z Z11-03** — ta sama wada opisana dwukrotnie) | czytanie `mod.rs:348-361` |
 | Z9-16 | ⚠️ | Oba limitery trzymają wpis per IP w `DashMap` i czyszczą go tylko przy sukcesie; `JoinRateLimiter` karze maksymalnie 30 s | czytanie `mod.rs:39-144` |
 | Z9-17 | ⚠️ | `POST /api/recovery/restore` nie unieważnia istniejących sesji ani nie aktualizuje poświadczenia DPAPI — po odzyskaniu „Windows Hello" próbuje odblokować starym hasłem i cicho pada | czytanie `recovery.rs:358-395` |
 | Z9-18 | ⚠️ | `share_base_url` buduje link z nagłówka `Host` żądania | czytanie `sharing.rs:537-543` |
-| Z9-19 | ⚠️ | `POST /api/maintenance/repair-shell` — jedyna operacja zmieniająca stan w `maintenance.rs` bez kontroli roli; bez ciała, więc też przez CSRF. Robi `subst O:` i zapisy do `HKCU` | audyt pokrycia + czytanie `maintenance.rs:532` |
+| Z9-19 | ✅ | `POST /api/maintenance/repair-shell` — jedyna operacja zmieniająca stan w `maintenance.rs` bez kontroli roli; bez ciała, więc też przez CSRF. Robi `subst O:` i zapisy do `HKCU` — **NAPRAWIONE** `7bae0cb`. | audyt pokrycia + czytanie `maintenance.rs:532` |
 
 ## 9.10 Zakres części pierwszej (domknięte w rozdziale 9b)
 
@@ -3026,17 +3039,17 @@ oraz za `Z8-03`.
 
 | ID | Waga | Rzecz | Potwierdzone jak |
 | --- | --- | --- | --- |
-| Z9-20 | 🔴 | `POST /api/onboarding/setup-provider` bez uwierzytelnienia nadpisuje endpoint, bucket i klucze dostawcy **także po zakończeniu onboardingu** (komentarz w handlerze to potwierdza) → kolejne packi lecą do cudzego bucketa, a daemon łączy się z endpointem podanym w żądaniu | czytanie `onboarding.rs:230-359` |
-| Z9-21 | 🔴 | `POST /api/vault/rotate-key` zmienia hasło Skarbca **bez weryfikacji starego**, w przeciwieństwie do `/api/change-password`; z tokenem z Z9-01 to pełne przejęcie Skarbca | czytanie `vault.rs:1045-1065` vs `auth.rs:309-321` |
+| Z9-20 | ✅ | `POST /api/onboarding/setup-provider` bez uwierzytelnienia nadpisuje endpoint, bucket i klucze dostawcy **także po zakończeniu onboardingu** (komentarz w handlerze to potwierdza) → kolejne packi lecą do cudzego bucketa, a daemon łączy się z endpointem podanym w żądaniu — **NAPRAWIONE** `7bae0cb`. | czytanie `onboarding.rs:230-359` |
+| Z9-21 | ✅ | `POST /api/vault/rotate-key` zmienia hasło Skarbca **bez weryfikacji starego**, w przeciwieństwie do `/api/change-password`; z tokenem z Z9-01 to pełne przejęcie Skarbca — **NAPRAWIONE** `45a2e25`. | czytanie `vault.rs:1045-1065` vs `auth.rs:309-321` |
 | Z9-22 | 🔴 | Odwołanie urządzenia i usunięcie członka tolerują nieudaną rotację Vault Key (`warn!`), a odpowiedź nadal mówi `"revoked"` — odwołane urządzenie zachowuje działający `wrapped_vault_key` | czytanie `vault.rs:805-823`, `:897-914` |
 | Z9-23 | 🔴 | Tryb A (LAN Share) nie może działać: `crypto.subtle` i Service Worker wymagają bezpiecznego kontekstu, a link LAN to `http://` na adresie IP; komunikat błędu obwinia przeglądarkę zamiast wskazać przyczynę | czytanie `share.html:274-277`, `:181`, `:438` + `sharing.rs:518-543` |
-| Z9-24 | ⚠️ | Callback Google tworzy `users` + `user_sessions` dla **dowolnego** konta bez sprawdzenia członkostwa; `require_role` odmówi, ale endpointy na `extract_session`/`require_session` (autostart, restart-daemon, auto-lock, settings/paths) przepuszczą obcą sesję | czytanie `oauth.rs:228-236` + `acl.rs:78-82` + `settings.rs` |
+| Z9-24 | 🔴 | Callback Google tworzy `users` + `user_sessions` dla **dowolnego** konta bez sprawdzenia członkostwa; `require_role` odmówi, ale endpointy na `extract_session`/`require_session` (autostart, restart-daemon, auto-lock, settings/paths) przepuszczą obcą sesję | czytanie `oauth.rs:228-236` + `acl.rs:78-82` + `settings.rs` |
 | Z9-25 | ⚠️ | `POST /api/metadata-backup/snapshot-local` przyjmuje dowolną ścieżkę wyjściową; rozszerzenie wymuszone na `.enc`, ale plaintextowy `*.tmp.db` powstaje po drodze w katalogu wskazanym przez wywołującego | czytanie `maintenance.rs:603-630` + `disaster_recovery.rs:537` |
-| Z9-26 | ⚠️ | `GET /api/ingest` bez kontroli dostępu zwraca `file_path` każdego zadania — pełne ścieżki plików użytkownika | czytanie `maintenance.rs:764-785` |
+| Z9-26 | ✅ | `GET /api/ingest` bez kontroli dostępu zwraca `file_path` każdego zadania — pełne ścieżki plików użytkownika — **NAPRAWIONE** `5e398a6`. | czytanie `maintenance.rs:764-785` |
 | Z9-27 | ⚠️ | Przy zablokowanym Skarbcu `google_refresh_token` zostaje w `users` w plaintekście do najbliższego odblokowania — świadome, ale wbrew regule Zero-Knowledge z `CLAUDE.md` | czytanie `oauth.rs:212-226` |
-| Z9-28 | ⚠️ | `try_auto_wrap_vault_key` (z nieuwierzytelnionego `add-device`) pomija komplet kontroli, które robi `post_accept_device`: `enrolled_at`, `revoked_at`, jawne odrzucenie klucza zerowego | czytanie `vault.rs:376-412` vs `:685-704` |
+| Z9-28 | ✅ | `try_auto_wrap_vault_key` (z nieuwierzytelnionego `add-device`) pomija komplet kontroli, które robi `post_accept_device`: `enrolled_at`, `revoked_at`, jawne odrzucenie klucza zerowego — **NAPRAWIONE** `048057b`. | czytanie `vault.rs:376-412` vs `:685-704` |
 | Z9-29 | ⚠️ | `normalize_filesystem_api_path` zduplikowane jako `pipe_server::normalize_path`; jedna z kopii obsługuje nieuwierzytelniony pipe (Z8-01) | czytanie obu + komentarz `pipe_server.rs:319` |
-| Z9-30 | ⚠️ | `get_my_wrapped_key` z rolą `Viewer` oddaje owinięty Vault Key dowolnego urządzenia, nie tylko własnego | czytanie `vault.rs:471-524` |
+| Z9-30 | ✅ | `get_my_wrapped_key` z rolą `Viewer` oddaje owinięty Vault Key dowolnego urządzenia, nie tylko własnego — **NAPRAWIONE** `c4e5c40`. | czytanie `vault.rs:471-524` |
 | Z9-31 | ⚠️ | `POST /api/settings/restart-daemon` mimo nazwy tylko sygnalizuje graceful shutdown; nic w daemonie nie podnosi go z powrotem | czytanie `settings.rs:77-90` |
 | Z2-04 | ✅ | **Korekta:** `delete_expired_oauth_states` **jest** wołane (`oauth.rs:39`). Bez wywołań pozostaje wyłącznie `cleanup_expired_sessions` | grep |
 
@@ -3273,7 +3286,7 @@ testów: `subst /D` w `Drop`, nie w `shutdown()`.
 | Z10-02 | 🔴 | `omnidrive recovery restore` nadpisuje **żywą `omnidrive.db`** migawką z chmury: surowe `fs::write`, bez grafta, bez kopii, bez potwierdzenia i bez sprawdzenia, czy daemon trzyma plik | czytanie `main.rs:592-620` + `disaster_recovery.rs:755-764` |
 | Z10-03 | 🔴 | Tray zabija daemona `taskkill /F` zamiast wołać `POST /api/settings/restart-daemon`; to samo robi `[UninstallRun]` instalatora → sekwencja z Z7-05 nie ma szans się wykonać, plaintext zostaje na dysku | czytanie `main.rs:204-248` + `omnidrive.iss` |
 | Z10-04 | ⚠️ | `recovery restore` używa `MetadataBackupProviderManager::from_env()`, które wymaga kompletu trzech dostawców w env (Z4-10) — na maszynie z instalatora sekrety są w bazie, więc komenda nie ruszy | czytanie + `onboarding.rs` |
-| Z10-05 | ⚠️ | Tray odpytuje `/api/vault/status` co 3 s, a ten mintuje sesję przy każdym wywołaniu (Z9-01) — 20 nieusuwalnych wierszy `user_sessions` na minutę | czytanie `POLL_INTERVAL` + sonda rozkładu odstępów |
+| Z10-05 | ✅ | Tray odpytuje `/api/vault/status` co 3 s, a ten mintuje sesję przy każdym wywołaniu (Z9-01) — 20 nieusuwalnych wierszy `user_sessions` na minutę — **NAPRAWIONE** `16a2fa2`. Skutek Z9-01, nie osobna wada — token znika u źródła. | czytanie `POLL_INTERVAL` + sonda rozkładu odstępów |
 | Z10-06 | ⚠️ | `omnidrive_shell_ext.dll` jest budowany i kopiowany do payloadu, ale `[Files]` go nie instaluje, a nic go nie rejestruje — pipeline sugeruje dostarczenie komponentu, którego nie ma | `ls payload` + grep po `.iss` (0 trafień) |
 | Z10-07 | ⚠️ | `angelctl` to `println!("Hello, world!")`, a mimo to jest w workspace, buduje `angelctl.exe`, leży w payloadzie i podlega bumpowi wersji wg `CLAUDE.md` §3 | czytanie + `ls target/release` |
 | Z10-08 | ⚠️ | `cfapi_repro` nie ma `required-features` — `cargo build --release --workspace` produkuje diagnostyczne `cfapi_repro.exe` obok binarek produkcyjnych (klasa Z1-06) | `ls target/release/*.exe` |
@@ -3282,7 +3295,7 @@ testów: `subst /D` w `Drop`, nie w `shutdown()`.
 | Z10-11 | ⚠️ | `load_icon` panikuje przy braku PNG, a release ma `windows_subsystem = "windows"` → tray znika bez komunikatu; ostatni fallback `resolve_icons_dir` zwraca ścieżkę bez sprawdzenia istnienia (same ikony **są** w payloadzie — sprawdzone) | czytanie `main.rs:52-59`, `:371-409` + `ls payload/icons` |
 | Z10-12 | ⚠️ | `restart_daemon` = `kill` + `sleep(500 ms)` + `spawn`, bez sprawdzenia, czy port się zwolnił i czy proces wstał | czytanie `main.rs:242-248` |
 | Z10-13 | ⚠️ | `taskkill /F /IM angeld.exe` ubija wszystkie instancje, w tym uruchomioną z `target/release` na dev-boxie ([[feedback-lenovo-no-install]]) | czytanie |
-| Z10-14 | ⚠️ | 19 funkcji testowych na 3372 linie; są testy negatywne uwierzytelnienia, ale wyłącznie dla auto-locka — brak testu przechodzącego listę endpointów zmieniających stan. Tą szczeliną przeszły Z9-01/02/03/20/21 | inwentaryzacja testów + grep |
+| Z10-14 | ✅ | 19 funkcji testowych na 3372 linie; są testy negatywne uwierzytelnienia, ale wyłącznie dla auto-locka — brak testu przechodzącego listę endpointów zmieniających stan. Tą szczeliną przeszły Z9-01/02/03/20/21 — **NAPRAWIONE** `d2064e0 + d5d345b`. Macierz zielona przy pełnej liście tras (skaner pilnuje w obie strony), nie przy liście nadanej hurtem. | inwentaryzacja testów + grep |
 | Z10-15 | ⚠️ | `e2e_recovery` i `e2e_sync` hardkodują `OMNIDRIVE_DRIVE_LETTER=Y:` i nie wołają `subst /D` w `Drop`; daemon przy zajętym `Y:` bierze pierwszą wolną literę od `D` w górę — stąd porzucone mapowania z [[feedback-e2e-subst-cleanup]] | czytanie testów + `select_mount_drive_letter` |
 
 ---
@@ -3501,17 +3514,17 @@ a nie wykonanie kroków.
 | ID | Waga | Rzecz | Potwierdzone jak |
 | --- | --- | --- | --- |
 | Z11-01 | 🔴 | Linki share chronione hasłem są nie do otwarcia — klient czeka na pole `requires_password`, którego API nigdy nie wysyła; formularz hasła nie pokazuje się nigdy. Analogicznie martwe są trzy komunikaty dla 410 (`data.reason`) | czytanie `share.html:309-317` + `api_error.rs:72-80` + grep (0 trafień `requires_password`) |
-| Z11-02 | 🔴 | `DELETE /api/onboarding/provider/{name}` bez uwierzytelnienia kasuje konfigurację dostawcy, a `ON DELETE CASCADE` usuwa razem z nią zapieczętowane DPAPI poświadczenia | czytanie `onboarding.rs:896` + `schema.rs:90` |
+| Z11-02 | ✅ | `DELETE /api/onboarding/provider/{name}` bez uwierzytelnienia kasuje konfigurację dostawcy, a `ON DELETE CASCADE` usuwa razem z nią zapieczętowane DPAPI poświadczenia — **NAPRAWIONE** `7bae0cb`. | czytanie `onboarding.rs:896` + `schema.rs:90` |
 | Z11-03 | 🔴 | `static/legacy.html` (2258 linii, serwowane pod `/legacy`) nie wysyła `Authorization` — 9 z 21 wołanych endpointów zwraca 403. Czwarty klient z tym samym defektem co Z7-01 i Z10-01 | grep (0 trafień `Bearer`) + zestawienie z audytem ról |
-| Z11-04 | 🔴 | `OMNIDRIVE_E2E_TEST_MODE` czytane przez binarkę produkcyjną: startuje daemona bez workerów integralności i **ustawia im status `Idle`**. `e2e_basic` asertuje właśnie te sfabrykowane statusy, więc test zdrowia workerów niczego nie sprawdza | czytanie `main.rs:110,320,382` + `e2e_basic.rs:81-85` |
-| Z11-05 | ⚠️ | `purge_trash` kasuje `chunk_refs` i wiersz inode'a, ale **nie obiekty w chmurze** — „usuń trwale" zostawia zaszyfrowane dane w trzech bucketach i zrywa ostatnie powiązanie, po którym gc mógłby je znaleźć | czytanie `files.rs:257-280` |
-| Z11-06 | ⚠️ | `/api/storage/cost` bez bramki: `list_active_packs(100_000)` + jedno zapytanie na pack w `count_reconcile_backlog` (N+1), wołane przy każdym odświeżeniu dashboardu | czytanie `diagnostics.rs:518-525, 682-694` |
+| Z11-04 | ✅ | `OMNIDRIVE_E2E_TEST_MODE` czytane przez binarkę produkcyjną: startuje daemona bez workerów integralności i **ustawia im status `Idle`**. `e2e_basic` asertuje właśnie te sfabrykowane statusy, więc test zdrowia workerów niczego nie sprawdza — **NAPRAWIONE** `04e55ed`. | czytanie `main.rs:110,320,382` + `e2e_basic.rs:81-85` |
+| Z11-05 | 🔴 | `purge_trash` kasuje `chunk_refs` i wiersz inode'a, ale **nie obiekty w chmurze** — „usuń trwale" zostawia zaszyfrowane dane w trzech bucketach i zrywa ostatnie powiązanie, po którym gc mógłby je znaleźć | czytanie `files.rs:257-280` |
+| Z11-06 | ⚠️ | `/api/storage/cost` bez bramki: `list_active_packs(100_000)` + jedno zapytanie na pack w `count_reconcile_backlog` (N+1), wołane przy każdym odświeżeniu dashboardu — **połowa NAPRAWIONA** `5e398a6` (bramka `ViewerCaller`); N+1 zapytań zostaje otwarte do F4/WP4.3. | czytanie `diagnostics.rs:518-525, 682-694` |
 | Z11-07 | ⚠️ | `provider_connection_status` zwraca `DEGRADED` dla `FAILED` z błędem, a tray sprawdza dokładnie `== "FAILED"` — ikona błędu dostawcy nigdy się nie zapali | czytanie `diagnostics.rs:729-738` + `omnidrive-tray/main.rs:145` |
 | Z11-08 | ⚠️ | `post_vault_lock` inline'uje teardown zamiast wołać `lock_flow::force_lock_and_dismount` (wskazany w `CLAUDE.md` jako jedyne źródło prawdy); żadna ścieżka blokady nie czyści poświadczenia DPAPI, więc Z9-02 natychmiast ją odwraca | czytanie `vault.rs:1008-1021` + `CLAUDE.md` |
 | Z11-09 | ⚠️ | Token OAuth trafia do `localStorage` i przeżywa restart przeglądarki, czytelny dla każdego skryptu w origin (w tym dwóch z CDN); token z `/api/unlock` żyje tylko w pamięci — dwa różne czasy życia dla tego samego typu sekretu | czytanie `index.html:3624, 2206` |
 | Z11-10 | ⚠️ | Trzeci zewnętrzny origin w dashboardzie: `fonts.googleapis.com` (Z9-05 wymieniał dwa), mimo że font ikon jest już serwowany lokalnie | czytanie `index.html:8,15` |
 | Z11-11 | ⚠️ | `share.html` rejestruje Service Workera bez `scope`, więc obejmuje całe origin zamiast `/sw-download/` | czytanie `share.html:182` |
 | Z11-12 | ⚠️ | `POST /api/providers/{name}/test` bez uwierzytelnienia wykonuje `put_object` i `delete_object` w buckecie (ograniczone tylko przez `cloud_guard`) | czytanie `onboarding.rs:859` |
-| Z11-13 | ⚠️ | `cfapi_repro` ma zaszytą ścieżkę `C:\Users\Przemek\...` i rejestruje prawdziwy sync root Cloud Files pod własnym GUID-em | czytanie `cfapi_repro.rs:61,111` |
+| Z11-13 | ⚠️ | `cfapi_repro` ma zaszytą ścieżkę `C:\Users\Przemek\...` i rejestruje prawdziwy sync root Cloud Files pod własnym GUID-em (**scalone z Z10-08** — ta sama wada opisana dwukrotnie) | czytanie `cfapi_repro.rs:61,111` |
 | Z11-14 | ⚠️ | Bez Service Workera `share.html` buforuje cały odszyfrowany plik w pamięci karty; przez Z9-23 na LAN to jedyna dostępna ścieżka | czytanie `share.html:449-483, 438` |
 | Z11-15 | ⚠️ | Test regresyjny Z4-01 używa 8 KiB przy chunku 4 MiB — nigdy nie tworzy inode'a z wieloma DEK-ami, więc z konstrukcji nie może wykryć Z8-04 | czytanie `e2e_pack_key_readback.rs:47` + `packer.rs:24` |
