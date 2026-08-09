@@ -410,7 +410,10 @@ async fn get_hello_available() -> Json<serde_json::Value> {
 /// DPAPI decryption succeeds transparently within the active session.
 async fn post_windows_hello_unlock(
     State(state): State<ApiState>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<UnlockResponse>, ApiError> {
+    super::local_guard::require_local_intent(&headers)?;
+
     let passphrase = windows_hello::retrieve_passphrase()
         .map_err(|e| ApiError::Internal { message: e })?
         .ok_or(ApiError::NotFound {

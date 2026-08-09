@@ -448,3 +448,18 @@ async fn wrapped_key_endpoint_only_serves_the_calling_device()
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn windows_hello_unlock_requires_local_intent_header()
+-> Result<(), Box<dyn std::error::Error>> {
+    let h = DaemonHarness::spawn().await?;
+    let resp = h
+        .request_without_token("POST", "/api/unlock/windows-hello", None)
+        .await?;
+    assert_eq!(
+        resp.status, 403,
+        "POST bez naglowka X-OmniDrive-Local musi byc odrzucony; got {} body={}",
+        resp.status, resp.body
+    );
+    Ok(())
+}

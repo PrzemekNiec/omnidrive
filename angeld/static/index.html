@@ -3714,7 +3714,7 @@
       try {
         const res = await fetch('/api/unlock/windows-hello', {
           method: 'POST',
-          headers: { 'Accept': 'application/json' },
+          headers: { 'Accept': 'application/json', 'X-OmniDrive-Local': '1' },
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error?.message || data?.message || `Błąd HTTP ${res.status}`);

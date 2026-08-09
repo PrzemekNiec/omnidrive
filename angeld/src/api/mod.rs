@@ -5,6 +5,7 @@ mod diagnostics;
 pub mod error;
 mod files;
 mod gate;
+mod local_guard;
 mod maintenance;
 mod oauth;
 mod onboarding;
