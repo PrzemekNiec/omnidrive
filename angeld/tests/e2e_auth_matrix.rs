@@ -395,3 +395,30 @@ async fn rotate_key_rejects_wrong_old_passphrase()
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_device_requires_admin_and_never_wraps_for_unenrolled()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+
+    let body = serde_json::json!({
+        "user_id": "u-obcy",
+        "device_id": "dev-obcy",
+        "device_name": "Obce",
+        "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    });
+
+    let anon = h
+        .request_without_token("POST", "/api/vault/add-device", Some(&body))
+        .await?;
+    assert_eq!(anon.status, 401, "add-device bez tokenu musi byc odrzucone");
+
+    let authed = h.post_json("/api/vault/add-device", body).await?;
+    assert!(
+        !authed.body.contains("wrapped_vault_key\":\""),
+        "nieznane urzadzenie nie moze dostac owinietego klucza: {}",
+        authed.body
+    );
+    Ok(())
+}

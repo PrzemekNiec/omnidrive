@@ -572,6 +572,7 @@ async fn find_owner_public_key(pool: &SqlitePool) -> Option<String> {
 
 async fn post_add_device(
     State(state): State<ApiState>,
+    _: AdminCaller,
     Json(req): Json<AddDeviceRequest>,
 ) -> Result<Json<AddDeviceResponse>, ApiError> {
     let vault_id = db::get_vault_params(&state.pool)
@@ -681,6 +682,11 @@ async fn try_auto_wrap_vault_key(
     let owner_private = identity::get_device_private_key(&state.pool, &master_key)
         .await
         .ok()?;
+
+    let target = db::get_device(&state.pool, target_device_id).await.ok()??;
+    if target.revoked_at.is_some() || target.enrolled_at.is_none() {
+        return None;
+    }
 
     let mut target_pub = [0u8; 32];
     if target_public_key.len() != 32 {
