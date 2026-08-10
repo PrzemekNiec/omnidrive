@@ -19,10 +19,10 @@ przy pierwszym przejściu zostały pominięte. Przegląd zamknął się na **147
 **43 × 🔴**, **100 × ⚠️**, **4 × ✅** (naprawione w trakcie: Z4-01, Z6-04, Z6-05, Z6-06).
 Sześć sesji, 121 plików `.rs`, ~48 000 linii kodu plus ~7600 linii statyków.
 
-**Stan rejestru po Fazie 0 i starcie Fazy 1 (2026-08-10): 150 pozycji** — **36 × 🔴**,
-**87 × ⚠️**, **27 × ✅**. Doszły trzy pozycje (**Z10-16**, **Z10-17** i **Z10-18** — wykryte przy weryfikacji Fazy 0
+**Stan rejestru po Fazie 0 i starcie Fazy 1 (2026-08-10): 150 pozycji** — **35 × 🔴**,
+**86 × ⚠️**, **29 × ✅**. Doszły trzy pozycje (**Z10-16**, **Z10-17** i **Z10-18** — wykryte przy weryfikacji Fazy 0
 i przy pierwszym zielonym przejściu hooka pre-push), z czego Z10-16, Z10-17 i Z10-15 są już naprawione,
-naprawionych jest 20 nowych, a siedem zmieniło wagę po przyjęciu kryterium skutku.
+naprawionych jest 22 nowych (WP1.3 zamknęło Z11-03 i Z9-15), a siedem zmieniło wagę po przyjęciu kryterium skutku.
 Spadek liczby 🔴 z 43 do 37 to wypadkowa trzech rzeczy naraz: napraw Fazy 0, przeważenia
 w dół (Z1-01, Z1-02, Z2-02) i przeważenia w górę (Z6-09, Z8-06, Z9-24, Z11-05).
 
@@ -141,8 +141,8 @@ po udanym przeszczepie. To jest ta sama klasa co Z4-01, tylko na styku dwóch ma
 ### Co zostało do przeczytania
 
 **Nic — przegląd całego kodu jest zamknięty.** Jedyne, czego nie czytano linia po linii, to
-`static/legacy.html` (2258, ekran zastępczy pod `/legacy`) i część `index.html` poza obiegiem
-tokenu, escapowaniem i ładowaniem skryptów.
+`static/legacy.html` (2258, ekran zastępczy pod `/legacy`, **usunięty `b69c23d`** — patrz Z11-03)
+i część `index.html` poza obiegiem tokenu, escapowaniem i ładowaniem skryptów.
 
 Uwaga do planowania: liczby w tym spisie pochodzily z outline'u bez testow. Warstwa 8 miala
 w nim 6200 linii, a realnie 7191. Warstwa 10 (same testy) urosnie najbardziej.
@@ -313,7 +313,7 @@ i **Z11-05**.
 | Z9-12 | ⚠️ | `post_vault_join`: `user_id` sterowane przez klienta, błędy tylko `warn!`, zaproszenie skonsumowane | czytanie |
 | Z9-13 | ✅ | Oznaczenie liczb bezpieczeństwa jako zweryfikowanych wymaga tylko roli `Viewer` — **NAPRAWIONE** `c4e5c40`. | czytanie |
 | Z9-14 | ⚠️ | `ApiError::Internal` odsyła surowy komunikat błędu do klienta | czytanie |
-| Z9-15 | ⚠️ | `/legacy` bez nagłówków bezpieczeństwa, które ma `/` (**scalone z Z11-03** — ta sama wada opisana dwukrotnie) | czytanie |
+| Z9-15 | ✅ | `/legacy` bez nagłówków bezpieczeństwa, które ma `/` (**scalone z Z11-03** — ta sama wada opisana dwukrotnie) — **NAPRAWIONE** `b69c23d`: trasa usunięta razem z Z11-03, więc brak nagłówków przestał mieć znaczenie. | czytanie |
 | Z9-16 | ⚠️ | Limitery nie czyszczą wpisów per IP; `JoinRateLimiter` karze maks. 30 s | czytanie |
 | Z9-17 | ⚠️ | Recovery restore nie unieważnia sesji ani nie aktualizuje poświadczenia DPAPI | czytanie |
 | Z9-18 | ⚠️ | `share_base_url` buduje link z nagłówka `Host` | czytanie |
@@ -350,7 +350,7 @@ i **Z11-05**.
 | Z10-18 | ⚠️ | **Regresja z Fazy 0.** Zadanie 6 zabrało trayowi wywołanie `/api/ingest` i przeniosło sygnał do publicznego `/api/health`, ale przeniosło wyłącznie `ingest_failed`. `TrayState::Syncing` nie jest już przez nic konstruowany, więc ikona **nigdy nie pokazuje synchronizacji** — przechodzi wprost `Locked → Synced`, także gdy trwa upload. Plumbing (`IconSet::syncing`, `STATE_SYNCING.png`) zostaje, bo przywrócenie stanu należy do F1/WP1.5; wariant ma `#[allow(dead_code)]`, żeby `clippy --workspace -D warnings` (hook pre-push) przechodził. Naprawa = licznik aktywnych zadań w `/api/health` + gałąź w `poll_daemon_state` | `cargo clippy --workspace` + czytanie `omnidrive-tray/src/main.rs:29-40,105-151` |
 | Z11-01 | 🔴 | Linki share z hasłem są nie do otwarcia — klient czeka na pole `requires_password`, którego API nie wysyła | czytanie obu stron + grep |
 | Z11-02 | ✅ | `DELETE /api/onboarding/provider/{name}` bez auth kasuje konfigurację, a `ON DELETE CASCADE` zabiera poświadczenia DPAPI — **NAPRAWIONE** `7bae0cb`. | czytanie + schemat |
-| Z11-03 | 🔴 | `legacy.html` (2258, pod `/legacy`) nie wysyła `Authorization` — 9 z 21 endpointów zwraca 403. Czwarty taki klient | grep + audyt ról |
+| Z11-03 | ✅ | `legacy.html` (2258, pod `/legacy`) nie wysyła `Authorization` — 9 z 21 endpointów zwraca 403. Czwarty taki klient — **NAPRAWIONE** `b69c23d`: trasa `/legacy`, `get_legacy()` i `static/legacy.html` (2258 linii) usunięte w całości; `GET /legacy` → 404. | grep + audyt ról |
 | Z11-04 | ✅ | `OMNIDRIVE_E2E_TEST_MODE` w binarce produkcyjnej wyłącza workery integralności i **ustawia im status `Idle`**; `e2e_basic` asertuje te sfabrykowane statusy — **NAPRAWIONE** `04e55ed`. | czytanie `main.rs` + testu |
 | Z11-05 | 🔴 | `purge_trash` kasuje metadane, nie obiekty w chmurze — „usuń trwale" nie usuwa danych z bucketów | czytanie |
 | Z11-06 | ⚠️ | `/api/storage/cost` bez bramki robi N+1 zapytań przy każdym odświeżeniu dashboardu — **połowa NAPRAWIONA** `5e398a6` (bramka `ViewerCaller`); N+1 zapytań zostaje otwarte do F4/WP4.3. | czytanie |
@@ -2576,7 +2576,7 @@ Modelu zagrożeń są tu dwa i trzeba je rozróżniać, bo dają różne wnioski
 | `api/settings.rs` | 135 | Autostart, restart daemona | 3 / 4 |
 | `api/auto_lock.rs` | 117 | Konfiguracja licznika bezczynności | 4 / 3 |
 | `api/audit.rs` | 78 | Dziennik audytu | 1 / 1 |
-| `static/*` | ~7600 | `index.html` (4044), `legacy.html` (2258), `wizard.js` (698), `share.html` (510), `share-sw.js` (144) | — |
+| `static/*` | ~5400 | `index.html` (4044), `wizard.js` (698), `share.html` (510), `share-sw.js` (144); `legacy.html` (2258) usunięte `b69c23d` | — |
 
 Kolumna „kontrole auth" to liczba wystąpień `require_role` / `require_session` / `extract_session`
 w pliku — przybliżenie, ale wystarczające, żeby zobaczyć, gdzie ich nie ma wcale.
@@ -2692,13 +2692,13 @@ do `Public` w Zadaniu 15a — reszta powierzchni bez uwierzytelnienia to `join`,
 `/api/unlock/hello-available`, `/api/health`, `/api/diagnostics/health`,
 `/material-symbols-outlined.ttf` i `/api/share/{share_id}/verify-password`, niezmienione tym zadaniem.
 
-**Grupa A — statyczny shell i bootstrap UI.** `GET /`, `GET /legacy`, `GET /wizard`, `GET /wizard.js`,
+**Grupa A — statyczny shell i bootstrap UI.** `GET /`, `GET /wizard`, `GET /wizard.js`,
 `GET /qrcode.min.js`. To zasoby statyczne serwowane z binarki, od których zaczyna się sesja. Bramka
 Bearer na `/` nie ma jak przepuścić żądania, które dopiero ma tę sesję utworzyć — dashboard nie miałby
 skąd wziąć tokenu, bo token powstaje w `/api/unlock`, wywoływanym przez JavaScript z tej właśnie strony.
 Żaden z tych zasobów nie zwraca danych Skarbca — to HTML powłoki, JavaScript kreatora i biblioteka do
-rysowania kodów QR. **Warunek czasowy:** `/legacy` znika w całości w F1/WP1.3 — do tego czasu zostaje
-publiczny jak dziś, bez zmiany zachowania.
+rysowania kodów QR. `GET /legacy` usunięte w F1/WP1.3 (`b69c23d`) — nie jest już częścią powierzchni
+publicznej, bo w ogóle nie istnieje.
 
 **Grupa B — powierzchnia odbiorcy linku share.** `GET /share/{share_id}`, `GET /share-sw.js`,
 `GET /sw-download/{share_id}`. §9.5 sankcjonuje już `/api/share/*` jako publiczną powierzchnię linków —
@@ -2829,7 +2829,7 @@ wysyłany zamiast biblioteki. Plik ma 19 927 bajtów — jest zminifikowany, bez
 | Z9-12 | ⚠️ | `post_vault_join`: `user_id` = `user-<device_id>` sterowane przez klienta, a błędy `create_user`/`create_device`/`add_vault_member` tylko `warn!` — kod zaproszenia zostaje skonsumowany i zwracany jest sukces | czytanie `vault.rs:274-331` |
 | Z9-13 | ✅ | `POST /api/devices/{id}/verify` — oznaczenie liczb bezpieczeństwa jako zweryfikowanych wymaga tylko roli `Viewer` — **NAPRAWIONE** `c4e5c40`. | czytanie `vault.rs:1148` |
 | Z9-14 | ⚠️ | `ApiError::Internal` odsyła surowy komunikat (pełny tekst błędu SQLite, ścieżki) w ciele odpowiedzi | czytanie `api_error.rs:103-110` |
-| Z9-15 | ⚠️ | `/legacy` serwowane bez `no-store`, `X-Frame-Options` i `Referrer-Policy`, które `/` ustawia (**scalone z Z11-03** — ta sama wada opisana dwukrotnie) | czytanie `mod.rs:348-361` |
+| Z9-15 | ✅ | `/legacy` serwowane bez `no-store`, `X-Frame-Options` i `Referrer-Policy`, które `/` ustawia (**scalone z Z11-03** — ta sama wada opisana dwukrotnie) — **NAPRAWIONE** `b69c23d`: trasa usunięta razem z Z11-03. | czytanie `mod.rs:348-361` |
 | Z9-16 | ⚠️ | Oba limitery trzymają wpis per IP w `DashMap` i czyszczą go tylko przy sukcesie; `JoinRateLimiter` karze maksymalnie 30 s | czytanie `mod.rs:39-144` |
 | Z9-17 | ⚠️ | `POST /api/recovery/restore` nie unieważnia istniejących sesji ani nie aktualizuje poświadczenia DPAPI — po odzyskaniu „Windows Hello" próbuje odblokować starym hasłem i cicho pada | czytanie `recovery.rs:358-395` |
 | Z9-18 | ⚠️ | `share_base_url` buduje link z nagłówka `Host` żądania | czytanie `sharing.rs:537-543` |
@@ -3518,7 +3518,7 @@ a nie wykonanie kroków.
 | --- | --- | --- | --- |
 | Z11-01 | 🔴 | Linki share chronione hasłem są nie do otwarcia — klient czeka na pole `requires_password`, którego API nigdy nie wysyła; formularz hasła nie pokazuje się nigdy. Analogicznie martwe są trzy komunikaty dla 410 (`data.reason`) | czytanie `share.html:309-317` + `api_error.rs:72-80` + grep (0 trafień `requires_password`) |
 | Z11-02 | ✅ | `DELETE /api/onboarding/provider/{name}` bez uwierzytelnienia kasuje konfigurację dostawcy, a `ON DELETE CASCADE` usuwa razem z nią zapieczętowane DPAPI poświadczenia — **NAPRAWIONE** `7bae0cb`. | czytanie `onboarding.rs:896` + `schema.rs:90` |
-| Z11-03 | 🔴 | `static/legacy.html` (2258 linii, serwowane pod `/legacy`) nie wysyła `Authorization` — 9 z 21 wołanych endpointów zwraca 403. Czwarty klient z tym samym defektem co Z7-01 i Z10-01 | grep (0 trafień `Bearer`) + zestawienie z audytem ról |
+| Z11-03 | ✅ | `static/legacy.html` (2258 linii, serwowane pod `/legacy`) nie wysyła `Authorization` — 9 z 21 wołanych endpointów zwraca 403. Czwarty klient z tym samym defektem co Z7-01 i Z10-01 — **NAPRAWIONE** `b69c23d`: trasa, handler i plik usunięte w całości; `GET /legacy` → 404. | grep (0 trafień `Bearer`) + zestawienie z audytem ról |
 | Z11-04 | ✅ | `OMNIDRIVE_E2E_TEST_MODE` czytane przez binarkę produkcyjną: startuje daemona bez workerów integralności i **ustawia im status `Idle`**. `e2e_basic` asertuje właśnie te sfabrykowane statusy, więc test zdrowia workerów niczego nie sprawdza — **NAPRAWIONE** `04e55ed`. | czytanie `main.rs:110,320,382` + `e2e_basic.rs:81-85` |
 | Z11-05 | 🔴 | `purge_trash` kasuje `chunk_refs` i wiersz inode'a, ale **nie obiekty w chmurze** — „usuń trwale" zostawia zaszyfrowane dane w trzech bucketach i zrywa ostatnie powiązanie, po którym gc mógłby je znaleźć | czytanie `files.rs:257-280` |
 | Z11-06 | ⚠️ | `/api/storage/cost` bez bramki: `list_active_packs(100_000)` + jedno zapytanie na pack w `count_reconcile_backlog` (N+1), wołane przy każdym odświeżeniu dashboardu — **połowa NAPRAWIONA** `5e398a6` (bramka `ViewerCaller`); N+1 zapytań zostaje otwarte do F4/WP4.3. | czytanie `diagnostics.rs:518-525, 682-694` |
