@@ -655,6 +655,32 @@ pub async fn get_next_pack_requiring_reconciliation(
     Ok(None)
 }
 
+#[allow(dead_code)]
+pub async fn pack_requires_healthy(pool: &SqlitePool, pack_id: &str) -> Result<bool, sqlx::Error> {
+    let inode_ids = get_referencing_inode_ids_for_pack(pool, pack_id).await?;
+    if inode_ids.is_empty() {
+        return Ok(false);
+    }
+
+    let mut saw_policy = false;
+    for inode_id in inode_ids {
+        let Some(path) = get_inode_path(pool, inode_id).await? else {
+            continue;
+        };
+        match find_sync_policy_for_path(pool, &path).await? {
+            Some(policy) => {
+                saw_policy = true;
+                if policy.require_healthy != 0 {
+                    return Ok(true);
+                }
+            }
+            None => return Ok(true),
+        }
+    }
+
+    Ok(!saw_policy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -763,30 +789,4 @@ mod tests {
             "odroczona rekoncyliacja musi wypuscic kolejke"
         );
     }
-}
-
-#[allow(dead_code)]
-pub async fn pack_requires_healthy(pool: &SqlitePool, pack_id: &str) -> Result<bool, sqlx::Error> {
-    let inode_ids = get_referencing_inode_ids_for_pack(pool, pack_id).await?;
-    if inode_ids.is_empty() {
-        return Ok(false);
-    }
-
-    let mut saw_policy = false;
-    for inode_id in inode_ids {
-        let Some(path) = get_inode_path(pool, inode_id).await? else {
-            continue;
-        };
-        match find_sync_policy_for_path(pool, &path).await? {
-            Some(policy) => {
-                saw_policy = true;
-                if policy.require_healthy != 0 {
-                    return Ok(true);
-                }
-            }
-            None => return Ok(true),
-        }
-    }
-
-    Ok(!saw_policy)
 }
