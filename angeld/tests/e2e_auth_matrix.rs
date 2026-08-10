@@ -329,7 +329,6 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
         "/api/vault/safety-numbers",
         Expect::Role,
     ),
-    ("GET", "/legacy", "/legacy", Expect::Public),
     (
         "GET",
         "/material-symbols-outlined.ttf",
@@ -963,6 +962,18 @@ async fn unlock_does_not_store_passphrase_unless_opted_in() -> Result<(), Box<dy
         resp["available"].as_bool(),
         Some(false),
         "bez wlaczenia opcji haslo nie moze trafic do Credential Managera; got {resp}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_route_is_removed() -> Result<(), Box<dyn std::error::Error>> {
+    let h = DaemonHarness::spawn().await?;
+    let resp = h.request_without_token("GET", "/legacy", None).await?;
+    assert_eq!(
+        resp.status, 404,
+        "/legacy zostalo usuniete (Z11-03/Z9-15), musi zwracac 404; got {} body={}",
+        resp.status, resp.body
     );
     Ok(())
 }

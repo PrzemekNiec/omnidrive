@@ -297,7 +297,6 @@ impl ApiServer {
 
         let app = Router::new()
             .route("/", get(get_index))
-            .route("/legacy", get(get_legacy))
             .route("/wizard", get(get_wizard))
             .route("/wizard.js", get(get_wizard_js))
             .route("/qrcode.min.js", get(get_qrcode_js))
@@ -368,10 +367,6 @@ async fn get_index() -> impl IntoResponse {
         ],
         Html(include_str!("../../static/index.html")),
     )
-}
-
-async fn get_legacy() -> Html<&'static str> {
-    Html(include_str!("../../static/legacy.html"))
 }
 
 async fn get_wizard() -> impl IntoResponse {
