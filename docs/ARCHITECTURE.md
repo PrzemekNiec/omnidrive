@@ -19,8 +19,9 @@ przy pierwszym przejściu zostały pominięte. Przegląd zamknął się na **147
 **43 × 🔴**, **100 × ⚠️**, **4 × ✅** (naprawione w trakcie: Z4-01, Z6-04, Z6-05, Z6-06).
 Sześć sesji, 121 plików `.rs`, ~48 000 linii kodu plus ~7600 linii statyków.
 
-**Stan rejestru po Fazie 0, przeważeniu D5 i naprawie Z10-16 (2026-08-10): 149 pozycji** — **36 × 🔴**,
-**88 × ⚠️**, **25 × ✅**. Doszły dwie pozycje (**Z10-16** i **Z10-17**, wykryte przy weryfikacji Fazy 0),
+**Stan rejestru po Fazie 0, przeważeniu D5 i naprawie Z10-16 (2026-08-10): 150 pozycji** — **36 × 🔴**,
+**89 × ⚠️**, **25 × ✅**. Doszły trzy pozycje (**Z10-16**, **Z10-17** i **Z10-18** — wykryte przy weryfikacji Fazy 0
+i przy pierwszym zielonym przejściu hooka pre-push),
 naprawionych jest 20 nowych, a siedem zmieniło wagę po przyjęciu kryterium skutku.
 Spadek liczby 🔴 z 43 do 37 to wypadkowa trzech rzeczy naraz: napraw Fazy 0, przeważenia
 w dół (Z1-01, Z1-02, Z2-02) i przeważenia w górę (Z6-09, Z8-06, Z9-24, Z11-05).
@@ -346,6 +347,7 @@ i **Z11-05**.
 | Z10-15 | ⚠️ | `e2e_recovery` i `e2e_sync` hardkodują `Y:` i nie robią `subst /D` w `Drop` — stąd porzucone mapowania | czytanie |
 | Z10-16 | ✅ | `e2e_sync` (`:43-48`) i `e2e_recovery` (`:47-51`) czytały **prawdziwe** `LOCALAPPDATA` **zanim** podmieniły je dziecku i kierowały daemona na realny sync root użytkownika (`AppData\Local\OmniDrive\OmniSync`) przez `OMNIDRIVE_SYNC_ROOT`; `e2e_recovery` kasował ten katalog rekurencyjnie przy każdym spawnie. Naruszenie Świętej Zasady Integralności Danych przez testy, nie przez kod produkcyjny — **NAPRAWIONE** `3071208`. Sync root idzie z katalogu tymczasowego testu (`ensure_path_inside_user_profile` spełnione, bo `TEMP` leży w `USERPROFILE`), rejestracja cfapi ma własne `provider_id` i tożsamość, `e2e_sync` odrejestrowuje swój sync root w teardownie. Izolacja jest sprawdzana asercją na ścieżce raportowanej przez daemona i osobnym testem na kasowany katalog | czytanie obu harnessów + oględziny katalogu |
 | Z10-17 | ⚠️ | `reserve_port()` w harnessach e2e rezerwuje port przez `bind` + zwolnienie, więc między zwolnieniem a startem daemona inny test może go zająć (`os error 10048`). Przy dziesięciu testach w `e2e_auth_matrix` trafia się to na tyle często, że pełna suita bywa czerwona bez żadnej wady w kodzie — i uczy ignorowania czerwonych przebiegów | obserwacja: ta sama suita czerwona i zielona pod rząd |
+| Z10-18 | ⚠️ | **Regresja z Fazy 0.** Zadanie 6 zabrało trayowi wywołanie `/api/ingest` i przeniosło sygnał do publicznego `/api/health`, ale przeniosło wyłącznie `ingest_failed`. `TrayState::Syncing` nie jest już przez nic konstruowany, więc ikona **nigdy nie pokazuje synchronizacji** — przechodzi wprost `Locked → Synced`, także gdy trwa upload. Plumbing (`IconSet::syncing`, `STATE_SYNCING.png`) zostaje, bo przywrócenie stanu należy do F1/WP1.5; wariant ma `#[allow(dead_code)]`, żeby `clippy --workspace -D warnings` (hook pre-push) przechodził. Naprawa = licznik aktywnych zadań w `/api/health` + gałąź w `poll_daemon_state` | `cargo clippy --workspace` + czytanie `omnidrive-tray/src/main.rs:29-40,105-151` |
 | Z11-01 | 🔴 | Linki share z hasłem są nie do otwarcia — klient czeka na pole `requires_password`, którego API nie wysyła | czytanie obu stron + grep |
 | Z11-02 | ✅ | `DELETE /api/onboarding/provider/{name}` bez auth kasuje konfigurację, a `ON DELETE CASCADE` zabiera poświadczenia DPAPI — **NAPRAWIONE** `7bae0cb`. | czytanie + schemat |
 | Z11-03 | 🔴 | `legacy.html` (2258, pod `/legacy`) nie wysyła `Authorization` — 9 z 21 endpointów zwraca 403. Czwarty taki klient | grep + audyt ról |

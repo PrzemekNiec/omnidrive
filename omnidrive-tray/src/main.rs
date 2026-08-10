@@ -31,7 +31,10 @@ enum TrayState {
     Idle,
     /// Vault is locked, waiting for passphrase
     Locked,
-    /// Active ingest jobs (PENDING / CHUNKING / UPLOADING)
+    /// Active ingest jobs (PENDING / CHUNKING / UPLOADING).
+    /// Unreachable while `/api/health` exposes only `ingest_failed` and no
+    /// activity counter — the tray has no signal left to derive it from.
+    #[allow(dead_code)]
     Syncing,
     /// Everything healthy, queue empty
     Synced,
