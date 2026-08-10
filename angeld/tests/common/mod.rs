@@ -4,11 +4,14 @@ use angeld::vault::bootstrap_local_vault;
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::SqlitePool;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -59,6 +62,13 @@ pub struct DaemonHarness {
 #[allow(dead_code)]
 impl DaemonHarness {
     pub async fn spawn() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::spawn_with_first_port_choice(None).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn spawn_with_first_port_choice(
+        first_choice: Option<u16>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let temp_root = create_temp_root()?;
         let localapp = temp_root.join("localapp");
         let base = localapp.join("OmniDrive");
@@ -69,8 +79,6 @@ impl DaemonHarness {
 
         let db_path = base.join("e2e-basic.db");
         let db_url = format!("sqlite:///{}", normalize_for_sqlite_url(&db_path));
-        let api_port = reserve_port().await?;
-        let base_url = format!("http://127.0.0.1:{api_port}");
         let stdout_path = temp_root.join("angeld.stdout.log");
         let stderr_path = temp_root.join("angeld.stderr.log");
 
@@ -78,29 +86,30 @@ impl DaemonHarness {
             .parent()
             .expect("repo root");
 
-        let stdout = File::create(&stdout_path)?;
-        let stderr = File::create(&stderr_path)?;
-
-        let child = Command::new(env!("CARGO_BIN_EXE_angeld"))
-            .current_dir(repo_root)
-            .arg("--no-sync")
-            .env("LOCALAPPDATA", &localapp)
-            .env("OMNIDRIVE_DB_URL", &db_url)
-            .env("OMNIDRIVE_SPOOL_DIR", base.join("Spool"))
-            .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", base.join("download-spool"))
-            .env("OMNIDRIVE_CACHE_DIR", base.join("Cache"))
-            .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
-            .env("OMNIDRIVE_E2E_TEST_MODE", "1")
-            .env("OMNIDRIVE_ALLOW_EMPTY_UPLOADERS", "1")
-            .env("OMNIDRIVE_UPLOAD_POLL_INTERVAL_MS", "100")
-            .env("OMNIDRIVE_UPLOAD_TEST_PROCESS_DELAY_MS", "400")
-            .env(
-                "OMNIDRIVE_CRED_TARGET",
-                format!("OmniDrive/Test/{api_port}"),
-            )
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .spawn()?;
+        let (api_port, child) =
+            spawn_with_port_retry(3, Duration::from_secs(15), first_choice, |port| {
+                let stdout = File::create(&stdout_path)?;
+                let stderr = File::create(&stderr_path)?;
+                Command::new(env!("CARGO_BIN_EXE_angeld"))
+                    .current_dir(repo_root)
+                    .arg("--no-sync")
+                    .env("LOCALAPPDATA", &localapp)
+                    .env("OMNIDRIVE_DB_URL", &db_url)
+                    .env("OMNIDRIVE_SPOOL_DIR", base.join("Spool"))
+                    .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", base.join("download-spool"))
+                    .env("OMNIDRIVE_CACHE_DIR", base.join("Cache"))
+                    .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{port}"))
+                    .env("OMNIDRIVE_E2E_TEST_MODE", "1")
+                    .env("OMNIDRIVE_ALLOW_EMPTY_UPLOADERS", "1")
+                    .env("OMNIDRIVE_UPLOAD_POLL_INTERVAL_MS", "100")
+                    .env("OMNIDRIVE_UPLOAD_TEST_PROCESS_DELAY_MS", "400")
+                    .env("OMNIDRIVE_CRED_TARGET", format!("OmniDrive/Test/{port}"))
+                    .stdout(Stdio::from(stdout))
+                    .stderr(Stdio::from(stderr))
+                    .spawn()
+            })
+            .await?;
+        let base_url = format!("http://127.0.0.1:{api_port}");
 
         let harness = Self {
             temp_root,
@@ -252,10 +261,89 @@ impl Drop for DaemonHarness {
 
 #[allow(dead_code)]
 pub async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+        if mark_port_issued(port) {
+            return Ok(port);
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn mark_port_issued(port: u16) -> bool {
+    static ISSUED: OnceLock<StdMutex<HashSet<u16>>> = OnceLock::new();
+    ISSUED
+        .get_or_init(|| StdMutex::new(HashSet::new()))
+        .lock()
+        .unwrap()
+        .insert(port)
+}
+
+#[allow(dead_code)]
+enum PortAttemptOutcome {
+    Ready,
+    DiedEarly,
+}
+
+#[allow(dead_code)]
+async fn wait_for_listening_or_death(
+    child: &mut Child,
+    base_url: &str,
+    timeout: Duration,
+) -> Result<PortAttemptOutcome, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let health = tokio::time::timeout(
+            Duration::from_millis(500),
+            http_get_json::<Value>(&format!("{base_url}/api/diagnostics/health"), None),
+        )
+        .await;
+        if matches!(health, Ok(Ok(_))) {
+            return Ok(PortAttemptOutcome::Ready);
+        }
+        if child.try_wait()?.is_some() {
+            return Ok(PortAttemptOutcome::DiedEarly);
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                format!("daemon at {base_url} did not become ready within {timeout:?}").into(),
+            );
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[allow(dead_code)]
+pub async fn spawn_with_port_retry<F>(
+    attempts: u8,
+    timeout: Duration,
+    first_choice: Option<u16>,
+    mut try_spawn: F,
+) -> Result<(u16, Child), Box<dyn std::error::Error>>
+where
+    F: FnMut(u16) -> io::Result<Child>,
+{
+    let mut next_port = first_choice;
+    let mut last_err: Option<Box<dyn std::error::Error>> = None;
+    for _ in 0..attempts {
+        let port = match next_port.take() {
+            Some(p) => p,
+            None => reserve_port().await?,
+        };
+        let mut child = try_spawn(port)?;
+        let base_url = format!("http://127.0.0.1:{port}");
+        match wait_for_listening_or_death(&mut child, &base_url, timeout).await {
+            Ok(PortAttemptOutcome::Ready) => return Ok((port, child)),
+            Ok(PortAttemptOutcome::DiedEarly) => {
+                let _ = child.wait().await;
+                last_err = Some(format!("daemon exited before binding port {port}").into());
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "port reservation retries exhausted".into()))
 }
 
 #[allow(dead_code)]
@@ -368,15 +456,19 @@ pub async fn http_get_raw(
     http_request_raw("GET", url, None, token).await
 }
 
+/// The counter is what makes this collision-proof: two harnesses starting in the same
+/// clock tick would otherwise share a temp root, and therefore the same SQLite file.
 #[allow(dead_code)]
 pub fn create_temp_root() -> io::Result<PathBuf> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let unique = format!(
-        "angeld-e2e-{}-{}",
+        "angeld-e2e-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_nanos()
+            .as_nanos(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
     );
     let path = std::env::temp_dir().join(unique);
     std::fs::create_dir_all(&path)?;

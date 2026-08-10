@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
 
@@ -50,8 +50,6 @@ impl SyncHarness {
             .map(|name| name.to_string_lossy().to_string())
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "temp root has no name"))?;
 
-        let api_port = reserve_port().await?;
-        let base_url = format!("http://127.0.0.1:{api_port}");
         let stdout_path = temp_root.join("angeld.stdout.log");
         let stderr_path = temp_root.join("angeld.stderr.log");
 
@@ -59,26 +57,30 @@ impl SyncHarness {
             .parent()
             .expect("repo root");
 
-        let stdout = File::create(&stdout_path)?;
-        let stderr = File::create(&stderr_path)?;
-
-        let child = Command::new(env!("CARGO_BIN_EXE_angeld"))
-            .current_dir(repo_root)
-            .env("LOCALAPPDATA", &localapp)
-            .env("OMNIDRIVE_DB_URL", &db_url)
-            .env("OMNIDRIVE_SYNC_ROOT", &sync_root)
-            .env("OMNIDRIVE_SPOOL_DIR", base.join("Spool"))
-            .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", base.join("download-spool"))
-            .env("OMNIDRIVE_CACHE_DIR", base.join("Cache"))
-            .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
-            .env("OMNIDRIVE_DRIVE_LETTER", "Y:")
-            .env("OMNIDRIVE_E2E_TEST_MODE", "1")
-            .env("OMNIDRIVE_SYNC_PROVIDER_ID_SEED", &provider_isolation_seed)
-            .env("OMNIDRIVE_SYNC_ROOT_IDENTITY", &provider_isolation_seed)
-            .env("RUST_LOG", "trace")
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .spawn()?;
+        let (api_port, child) =
+            common::spawn_with_port_retry(3, Duration::from_secs(15), None, |port| {
+                let stdout = File::create(&stdout_path)?;
+                let stderr = File::create(&stderr_path)?;
+                Command::new(env!("CARGO_BIN_EXE_angeld"))
+                    .current_dir(repo_root)
+                    .env("LOCALAPPDATA", &localapp)
+                    .env("OMNIDRIVE_DB_URL", &db_url)
+                    .env("OMNIDRIVE_SYNC_ROOT", &sync_root)
+                    .env("OMNIDRIVE_SPOOL_DIR", base.join("Spool"))
+                    .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", base.join("download-spool"))
+                    .env("OMNIDRIVE_CACHE_DIR", base.join("Cache"))
+                    .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{port}"))
+                    .env("OMNIDRIVE_DRIVE_LETTER", "Y:")
+                    .env("OMNIDRIVE_E2E_TEST_MODE", "1")
+                    .env("OMNIDRIVE_SYNC_PROVIDER_ID_SEED", &provider_isolation_seed)
+                    .env("OMNIDRIVE_SYNC_ROOT_IDENTITY", &provider_isolation_seed)
+                    .env("RUST_LOG", "trace")
+                    .stdout(Stdio::from(stdout))
+                    .stderr(Stdio::from(stderr))
+                    .spawn()
+            })
+            .await?;
+        let base_url = format!("http://127.0.0.1:{api_port}");
 
         let harness = Self {
             temp_root,
@@ -189,13 +191,6 @@ async fn full_stack_sync_root_registers_and_api_reaches_listening_state()
 
     harness.shutdown().await;
     Ok(())
-}
-
-async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
 }
 
 async fn http_get_json<T: for<'de> Deserialize<'de>>(

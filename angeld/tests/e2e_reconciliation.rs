@@ -119,46 +119,47 @@ impl ReconciliationEnv {
         common::seed_mock_providers(&pool, mock_addr, &self.watch_root).await?;
         pool.close().await;
 
-        let api_port = reserve_port().await?;
-        let base_url = format!("http://127.0.0.1:{api_port}");
         let repo_root = FsPath::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("repo root");
 
-        let mut command = Command::new(env!("CARGO_BIN_EXE_angeld"));
-        command
-            .current_dir(repo_root)
-            .arg("--no-sync")
-            .env("LOCALAPPDATA", &self.localapp)
-            .env("OMNIDRIVE_DB_URL", &self.db_url)
-            .env("OMNIDRIVE_WATCH_DIR", &self.watch_root)
-            .env("OMNIDRIVE_SPOOL_DIR", self.base.join("Spool"))
-            .env(
-                "OMNIDRIVE_DOWNLOAD_SPOOL_DIR",
-                self.base.join("download-spool"),
-            )
-            .env("OMNIDRIVE_CACHE_DIR", self.base.join("Cache"))
-            .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
-            .env("OMNIDRIVE_WATCH_DEBOUNCE_MS", "100")
-            .env("OMNIDRIVE_WATCH_RESCAN_MS", "3600000")
-            .env("OMNIDRIVE_UPLOAD_POLL_INTERVAL_MS", "100")
-            .env("OMNIDRIVE_UPLOAD_TIMEOUT_MS", "5000")
-            .env("OMNIDRIVE_UPLOAD_CONNECT_TIMEOUT_MS", "1000")
-            .env("OMNIDRIVE_UPLOAD_READ_TIMEOUT_MS", "1000")
-            .env("OMNIDRIVE_UPLOAD_RETRY_BASE_MS", "500")
-            .env("OMNIDRIVE_UPLOAD_RETRY_MAX_MS", "2000")
-            .env("OMNIDRIVE_UPLOAD_BUFFERED", "1")
-            .env("OMNIDRIVE_REPAIR_POLL_INTERVAL_MS", "100")
-            .env("OMNIDRIVE_REPAIR_TIMEOUT_MS", "5000")
-            .env("OMNIDRIVE_REPAIR_CONNECT_TIMEOUT_MS", "1000")
-            .env("OMNIDRIVE_REPAIR_READ_TIMEOUT_MS", "1000")
-            .env("OMNIDRIVE_GC_POLL_INTERVAL_MS", "60000")
-            .env("OMNIDRIVE_METADATA_BACKUP_INTERVAL_MS", "60000")
-            .env("RUST_LOG", "info")
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-
-        let child = command.spawn()?;
+        let (api_port, child) =
+            common::spawn_with_port_retry(3, Duration::from_secs(20), None, |port| {
+                Command::new(env!("CARGO_BIN_EXE_angeld"))
+                    .current_dir(repo_root)
+                    .arg("--no-sync")
+                    .env("LOCALAPPDATA", &self.localapp)
+                    .env("OMNIDRIVE_DB_URL", &self.db_url)
+                    .env("OMNIDRIVE_WATCH_DIR", &self.watch_root)
+                    .env("OMNIDRIVE_SPOOL_DIR", self.base.join("Spool"))
+                    .env(
+                        "OMNIDRIVE_DOWNLOAD_SPOOL_DIR",
+                        self.base.join("download-spool"),
+                    )
+                    .env("OMNIDRIVE_CACHE_DIR", self.base.join("Cache"))
+                    .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{port}"))
+                    .env("OMNIDRIVE_WATCH_DEBOUNCE_MS", "100")
+                    .env("OMNIDRIVE_WATCH_RESCAN_MS", "3600000")
+                    .env("OMNIDRIVE_UPLOAD_POLL_INTERVAL_MS", "100")
+                    .env("OMNIDRIVE_UPLOAD_TIMEOUT_MS", "5000")
+                    .env("OMNIDRIVE_UPLOAD_CONNECT_TIMEOUT_MS", "1000")
+                    .env("OMNIDRIVE_UPLOAD_READ_TIMEOUT_MS", "1000")
+                    .env("OMNIDRIVE_UPLOAD_RETRY_BASE_MS", "500")
+                    .env("OMNIDRIVE_UPLOAD_RETRY_MAX_MS", "2000")
+                    .env("OMNIDRIVE_UPLOAD_BUFFERED", "1")
+                    .env("OMNIDRIVE_REPAIR_POLL_INTERVAL_MS", "100")
+                    .env("OMNIDRIVE_REPAIR_TIMEOUT_MS", "5000")
+                    .env("OMNIDRIVE_REPAIR_CONNECT_TIMEOUT_MS", "1000")
+                    .env("OMNIDRIVE_REPAIR_READ_TIMEOUT_MS", "1000")
+                    .env("OMNIDRIVE_GC_POLL_INTERVAL_MS", "60000")
+                    .env("OMNIDRIVE_METADATA_BACKUP_INTERVAL_MS", "60000")
+                    .env("RUST_LOG", "info")
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+            })
+            .await?;
+        let base_url = format!("http://127.0.0.1:{api_port}");
         let handle = DaemonHandle {
             child,
             base_url,
@@ -674,13 +675,6 @@ fn create_temp_root() -> io::Result<PathBuf> {
 
 fn normalize_for_sqlite_url(path: &FsPath) -> String {
     path.to_string_lossy().replace('\\', "/")
-}
-
-async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
 }
 
 async fn http_get_json<T: for<'de> Deserialize<'de>>(

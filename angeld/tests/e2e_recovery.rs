@@ -8,9 +8,11 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
+
+mod common;
 
 const PASSPHRASE: &str = "dr-e2e-passphrase";
 
@@ -34,7 +36,7 @@ struct DaemonHandle {
 
 impl RecoveryEnv {
     async fn create() -> Result<Self, Box<dyn std::error::Error>> {
-        let temp_root = create_temp_root()?;
+        let temp_root = common::create_temp_root()?;
         let localapp = temp_root.join("localapp");
         let base = localapp.join("OmniDrive");
         let backup_dir = temp_root.join("metadata-backup-store");
@@ -96,39 +98,42 @@ impl RecoveryEnv {
     ) -> Result<DaemonHandle, Box<dyn std::error::Error>> {
         let _ = angeld::smart_sync::unregister_sync_root(&self.sync_root);
         clear_sync_root_contents(&self.sync_root).await?;
-        let api_port = reserve_port().await?;
-        let base_url = format!("http://127.0.0.1:{api_port}");
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("repo root");
 
-        let mut command = Command::new(env!("CARGO_BIN_EXE_angeld"));
-        command
-            .current_dir(repo_root)
-            .env("LOCALAPPDATA", &self.localapp)
-            .env("OMNIDRIVE_DB_URL", &self.db_url)
-            .env("OMNIDRIVE_SYNC_ROOT", &self.sync_root)
-            .env("OMNIDRIVE_SPOOL_DIR", self.base.join("Spool"))
-            .env(
-                "OMNIDRIVE_DOWNLOAD_SPOOL_DIR",
-                self.base.join("download-spool"),
-            )
-            .env("OMNIDRIVE_CACHE_DIR", self.base.join("Cache"))
-            .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
-            .env("OMNIDRIVE_DRIVE_LETTER", "Y:")
-            .env("OMNIDRIVE_E2E_TEST_MODE", "1")
-            .env("OMNIDRIVE_SYNC_PROVIDER_ID_SEED", &self.test_prefix)
-            .env("OMNIDRIVE_SYNC_ROOT_IDENTITY", &self.test_prefix)
-            .env("OMNIDRIVE_METADATA_BACKUP_DIR", &self.backup_dir)
-            .env("RUST_LOG", "info")
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+        let (api_port, child) =
+            common::spawn_with_port_retry(3, Duration::from_secs(20), None, |port| {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_angeld"));
+                command
+                    .current_dir(repo_root)
+                    .env("LOCALAPPDATA", &self.localapp)
+                    .env("OMNIDRIVE_DB_URL", &self.db_url)
+                    .env("OMNIDRIVE_SYNC_ROOT", &self.sync_root)
+                    .env("OMNIDRIVE_SPOOL_DIR", self.base.join("Spool"))
+                    .env(
+                        "OMNIDRIVE_DOWNLOAD_SPOOL_DIR",
+                        self.base.join("download-spool"),
+                    )
+                    .env("OMNIDRIVE_CACHE_DIR", self.base.join("Cache"))
+                    .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{port}"))
+                    .env("OMNIDRIVE_DRIVE_LETTER", "Y:")
+                    .env("OMNIDRIVE_E2E_TEST_MODE", "1")
+                    .env("OMNIDRIVE_SYNC_PROVIDER_ID_SEED", &self.test_prefix)
+                    .env("OMNIDRIVE_SYNC_ROOT_IDENTITY", &self.test_prefix)
+                    .env("OMNIDRIVE_METADATA_BACKUP_DIR", &self.backup_dir)
+                    .env("RUST_LOG", "info")
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit());
 
-        if auto_restore {
-            command.env("OMNIDRIVE_AUTO_RESTORE_PASSPHRASE", PASSPHRASE);
-        }
+                if auto_restore {
+                    command.env("OMNIDRIVE_AUTO_RESTORE_PASSPHRASE", PASSPHRASE);
+                }
 
-        let child = command.spawn()?;
+                command.spawn()
+            })
+            .await?;
+        let base_url = format!("http://127.0.0.1:{api_port}");
         let handle = DaemonHandle {
             child,
             base_url,
@@ -476,13 +481,6 @@ fn assert_placeholder_attributes(
     Ok(())
 }
 
-async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
-}
-
 async fn http_get_json(
     url: &str,
     token: Option<&str>,
@@ -543,20 +541,6 @@ fn split_http_url(url: &str) -> Result<(String, String), Box<dyn std::error::Err
         .split_once('/')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing request path"))?;
     Ok((host_port.to_string(), format!("/{}", path)))
-}
-
-fn create_temp_root() -> io::Result<PathBuf> {
-    let unique = format!(
-        "angeld-e2e-recovery-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
-    let path = std::env::temp_dir().join(unique);
-    std::fs::create_dir_all(&path)?;
-    Ok(path)
 }
 
 fn normalize_for_sqlite_url(path: &Path) -> String {

@@ -5,9 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
+
+mod common;
 
 struct ShellHarness {
     temp_root: PathBuf,
@@ -31,49 +33,51 @@ impl ShellHarness {
         let db_path = base.join("e2e-shell.db");
         let db_url = format!("sqlite:///{}", normalize_for_sqlite_url(&db_path));
         let watch_dir = temp_root.join("vault");
-        let api_port = reserve_port().await?;
-        let base_url = format!("http://127.0.0.1:{api_port}");
         let drive_letter = "W:".to_string();
         let stdout_path = temp_root.join("angeld.stdout.log");
         let stderr_path = temp_root.join("angeld.stderr.log");
 
-        let stdout = File::create(&stdout_path)?;
-        let stderr = File::create(&stderr_path)?;
-
-        let child = Command::new(env!("CARGO_BIN_EXE_angeld"))
-            .current_dir(&temp_root)
-            .env("LOCALAPPDATA", &localapp)
-            .env("OMNIDRIVE_RUNTIME_MODE", "installed")
-            .env("OMNIDRIVE_DB_URL", &db_url)
-            .env("OMNIDRIVE_WATCH_DIR", &watch_dir)
-            .env("OMNIDRIVE_SPOOL_DIR", base.join("Spool"))
-            .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", base.join("download-spool"))
-            .env("OMNIDRIVE_CACHE_DIR", base.join("Cache"))
-            .env("OMNIDRIVE_LOG_DIR", base.join("logs"))
-            .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
-            .env("OMNIDRIVE_DRIVE_LETTER", &drive_letter)
-            .env_remove("OMNIDRIVE_R2_ENDPOINT")
-            .env_remove("OMNIDRIVE_R2_REGION")
-            .env_remove("OMNIDRIVE_R2_BUCKET")
-            .env_remove("OMNIDRIVE_R2_ACCESS_KEY_ID")
-            .env_remove("OMNIDRIVE_R2_SECRET_ACCESS_KEY")
-            .env_remove("OMNIDRIVE_R2_FORCE_PATH_STYLE")
-            .env_remove("OMNIDRIVE_SCALEWAY_ENDPOINT")
-            .env_remove("OMNIDRIVE_SCALEWAY_REGION")
-            .env_remove("OMNIDRIVE_SCALEWAY_BUCKET")
-            .env_remove("OMNIDRIVE_SCALEWAY_ACCESS_KEY_ID")
-            .env_remove("OMNIDRIVE_SCALEWAY_SECRET_ACCESS_KEY")
-            .env_remove("OMNIDRIVE_SCALEWAY_FORCE_PATH_STYLE")
-            .env_remove("OMNIDRIVE_B2_ENDPOINT")
-            .env_remove("OMNIDRIVE_B2_REGION")
-            .env_remove("OMNIDRIVE_B2_BUCKET")
-            .env_remove("OMNIDRIVE_B2_ACCESS_KEY_ID")
-            .env_remove("OMNIDRIVE_B2_SECRET_ACCESS_KEY")
-            .env_remove("OMNIDRIVE_B2_FORCE_PATH_STYLE")
-            .env("RUST_LOG", "info")
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .spawn()?;
+        let (api_port, child) =
+            common::spawn_with_port_retry(3, Duration::from_secs(15), None, |port| {
+                let stdout = File::create(&stdout_path)?;
+                let stderr = File::create(&stderr_path)?;
+                Command::new(env!("CARGO_BIN_EXE_angeld"))
+                    .current_dir(&temp_root)
+                    .env("LOCALAPPDATA", &localapp)
+                    .env("OMNIDRIVE_RUNTIME_MODE", "installed")
+                    .env("OMNIDRIVE_DB_URL", &db_url)
+                    .env("OMNIDRIVE_WATCH_DIR", &watch_dir)
+                    .env("OMNIDRIVE_SPOOL_DIR", base.join("Spool"))
+                    .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", base.join("download-spool"))
+                    .env("OMNIDRIVE_CACHE_DIR", base.join("Cache"))
+                    .env("OMNIDRIVE_LOG_DIR", base.join("logs"))
+                    .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{port}"))
+                    .env("OMNIDRIVE_DRIVE_LETTER", &drive_letter)
+                    .env_remove("OMNIDRIVE_R2_ENDPOINT")
+                    .env_remove("OMNIDRIVE_R2_REGION")
+                    .env_remove("OMNIDRIVE_R2_BUCKET")
+                    .env_remove("OMNIDRIVE_R2_ACCESS_KEY_ID")
+                    .env_remove("OMNIDRIVE_R2_SECRET_ACCESS_KEY")
+                    .env_remove("OMNIDRIVE_R2_FORCE_PATH_STYLE")
+                    .env_remove("OMNIDRIVE_SCALEWAY_ENDPOINT")
+                    .env_remove("OMNIDRIVE_SCALEWAY_REGION")
+                    .env_remove("OMNIDRIVE_SCALEWAY_BUCKET")
+                    .env_remove("OMNIDRIVE_SCALEWAY_ACCESS_KEY_ID")
+                    .env_remove("OMNIDRIVE_SCALEWAY_SECRET_ACCESS_KEY")
+                    .env_remove("OMNIDRIVE_SCALEWAY_FORCE_PATH_STYLE")
+                    .env_remove("OMNIDRIVE_B2_ENDPOINT")
+                    .env_remove("OMNIDRIVE_B2_REGION")
+                    .env_remove("OMNIDRIVE_B2_BUCKET")
+                    .env_remove("OMNIDRIVE_B2_ACCESS_KEY_ID")
+                    .env_remove("OMNIDRIVE_B2_SECRET_ACCESS_KEY")
+                    .env_remove("OMNIDRIVE_B2_FORCE_PATH_STYLE")
+                    .env("RUST_LOG", "info")
+                    .stdout(Stdio::from(stdout))
+                    .stderr(Stdio::from(stderr))
+                    .spawn()
+            })
+            .await?;
+        let base_url = format!("http://127.0.0.1:{api_port}");
 
         let harness = Self {
             temp_root,
@@ -185,13 +189,6 @@ async fn shell_repair_restores_drive_and_context_menu_after_local_drift()
 
     harness.shutdown().await;
     Ok(())
-}
-
-async fn reserve_port() -> Result<u16, Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
 }
 
 async fn http_get_json(
