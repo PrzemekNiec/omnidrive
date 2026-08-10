@@ -24,6 +24,7 @@ struct WorkerStatuses {
 
 struct SyncHarness {
     temp_root: PathBuf,
+    sync_root: PathBuf,
     child: Child,
     base_url: String,
     stdout_path: PathBuf,
@@ -42,12 +43,12 @@ impl SyncHarness {
 
         let db_path = base.join("e2e-sync.db");
         let db_url = format!("sqlite:///{}", normalize_for_sqlite_url(&db_path));
-        let real_localapp = std::env::var_os("LOCALAPPDATA")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
-        let sync_root = PathBuf::from(real_localapp)
-            .join("OmniDrive")
-            .join("OmniSync");
+        let sync_root = base.join("OmniSync");
         std::fs::create_dir_all(&sync_root)?;
+        let provider_isolation_seed = temp_root
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "temp root has no name"))?;
 
         let api_port = reserve_port().await?;
         let base_url = format!("http://127.0.0.1:{api_port}");
@@ -72,6 +73,8 @@ impl SyncHarness {
             .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
             .env("OMNIDRIVE_DRIVE_LETTER", "Y:")
             .env("OMNIDRIVE_E2E_TEST_MODE", "1")
+            .env("OMNIDRIVE_SYNC_PROVIDER_ID_SEED", &provider_isolation_seed)
+            .env("OMNIDRIVE_SYNC_ROOT_IDENTITY", &provider_isolation_seed)
             .env("RUST_LOG", "trace")
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
@@ -79,6 +82,7 @@ impl SyncHarness {
 
         let harness = Self {
             temp_root,
+            sync_root,
             child,
             base_url,
             stdout_path,
@@ -122,6 +126,7 @@ impl SyncHarness {
     async fn shutdown(&mut self) {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+        let _ = angeld::smart_sync::unregister_sync_root(&self.sync_root);
         let _ = std::fs::remove_dir_all(&self.temp_root);
     }
 }
@@ -129,6 +134,7 @@ impl SyncHarness {
 impl Drop for SyncHarness {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+        let _ = angeld::smart_sync::unregister_sync_root(&self.sync_root);
         let _ = std::fs::remove_dir_all(&self.temp_root);
     }
 }
@@ -158,6 +164,17 @@ async fn full_stack_sync_root_registers_and_api_reaches_listening_state()
     )
     .await?;
     assert_eq!(sync_root_state["registered"], true);
+
+    let reported_sync_root = sync_root_state["path"]
+        .as_str()
+        .ok_or("diagnostyka nie zwrocila sciezki sync-roota")?;
+    assert!(
+        reported_sync_root
+            .to_lowercase()
+            .starts_with(&harness.temp_root.to_string_lossy().to_lowercase()),
+        "sync-root demona musi lezec w katalogu tymczasowym testu ({}), a jest: {reported_sync_root}",
+        harness.temp_root.display()
+    );
 
     let stdout = std::fs::read_to_string(&harness.stdout_path).unwrap_or_default();
     let stderr = std::fs::read_to_string(&harness.stderr_path).unwrap_or_default();

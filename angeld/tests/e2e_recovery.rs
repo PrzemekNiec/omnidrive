@@ -44,11 +44,7 @@ impl RecoveryEnv {
             "dr-e2e-{}",
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
         );
-        let real_localapp = std::env::var_os("LOCALAPPDATA")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
-        let sync_root = PathBuf::from(real_localapp)
-            .join("OmniDrive")
-            .join("OmniSync");
+        let sync_root = base.join("OmniSync");
 
         tokio::fs::create_dir_all(base.join("logs")).await?;
         tokio::fs::create_dir_all(base.join("Cache")).await?;
@@ -121,6 +117,8 @@ impl RecoveryEnv {
             .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{api_port}"))
             .env("OMNIDRIVE_DRIVE_LETTER", "Y:")
             .env("OMNIDRIVE_E2E_TEST_MODE", "1")
+            .env("OMNIDRIVE_SYNC_PROVIDER_ID_SEED", &self.test_prefix)
+            .env("OMNIDRIVE_SYNC_ROOT_IDENTITY", &self.test_prefix)
             .env("OMNIDRIVE_METADATA_BACKUP_DIR", &self.backup_dir)
             .env("RUST_LOG", "info")
             .stdout(Stdio::inherit())
@@ -255,6 +253,20 @@ async fn disaster_recovery_rebuilds_local_db_inventory_after_total_db_loss()
     assert_placeholder_attributes(&env.sync_root, &restored_placeholders)?;
 
     second.shutdown().await;
+    let _ = tokio::fs::remove_dir_all(&env.temp_root).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_harness_sync_root_stays_inside_its_temp_dir()
+-> Result<(), Box<dyn std::error::Error>> {
+    let env = RecoveryEnv::create().await?;
+    assert!(
+        env.sync_root.starts_with(&env.temp_root),
+        "spawn_daemon kasuje ten katalog rekurencyjnie, wiec musi lezec w katalogu tymczasowym testu ({}), a jest: {}",
+        env.temp_root.display(),
+        env.sync_root.display()
+    );
     let _ = tokio::fs::remove_dir_all(&env.temp_root).await;
     Ok(())
 }
