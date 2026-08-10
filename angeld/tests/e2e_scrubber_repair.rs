@@ -43,6 +43,7 @@ struct DaemonHandle {
     child: Child,
     base_url: String,
     session_token: Option<String>,
+    drive_letter: String,
 }
 
 struct ScopedEnv {
@@ -136,6 +137,7 @@ impl ChaosEnv {
         let repo_root = FsPath::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("repo root");
+        let drive_letter = common::reserve_drive_letter();
 
         let (api_port, child) =
             common::spawn_with_port_retry(3, Duration::from_secs(20), None, |port| {
@@ -145,6 +147,7 @@ impl ChaosEnv {
                     .env("LOCALAPPDATA", &self.localapp)
                     .env("OMNIDRIVE_DB_URL", &self.db_url)
                     .env("OMNIDRIVE_WATCH_DIR", &self.watch_root)
+                    .env("OMNIDRIVE_DRIVE_LETTER", &drive_letter)
                     .env("OMNIDRIVE_SPOOL_DIR", self.base.join("Spool"))
                     .env(
                         "OMNIDRIVE_DOWNLOAD_SPOOL_DIR",
@@ -184,6 +187,7 @@ impl ChaosEnv {
             child,
             base_url,
             session_token: None,
+            drive_letter,
         };
         handle.wait_for_api_ready().await?;
         Ok(handle)
@@ -259,12 +263,14 @@ impl DaemonHandle {
     async fn shutdown(&mut self) {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+        common::unmount_reserved_drive_letter(&self.drive_letter);
     }
 }
 
 impl Drop for DaemonHandle {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+        common::unmount_reserved_drive_letter(&self.drive_letter);
     }
 }
 

@@ -29,6 +29,7 @@ struct SyncHarness {
     base_url: String,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
+    drive_letter: String,
 }
 
 impl SyncHarness {
@@ -52,6 +53,7 @@ impl SyncHarness {
 
         let stdout_path = temp_root.join("angeld.stdout.log");
         let stderr_path = temp_root.join("angeld.stderr.log");
+        let drive_letter = common::reserve_drive_letter();
 
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -70,7 +72,7 @@ impl SyncHarness {
                     .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", base.join("download-spool"))
                     .env("OMNIDRIVE_CACHE_DIR", base.join("Cache"))
                     .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{port}"))
-                    .env("OMNIDRIVE_DRIVE_LETTER", "Y:")
+                    .env("OMNIDRIVE_DRIVE_LETTER", &drive_letter)
                     .env("OMNIDRIVE_E2E_TEST_MODE", "1")
                     .env("OMNIDRIVE_SYNC_PROVIDER_ID_SEED", &provider_isolation_seed)
                     .env("OMNIDRIVE_SYNC_ROOT_IDENTITY", &provider_isolation_seed)
@@ -89,6 +91,7 @@ impl SyncHarness {
             base_url,
             stdout_path,
             stderr_path,
+            drive_letter,
         };
         harness.wait_for_api_ready().await?;
         Ok(harness)
@@ -128,6 +131,7 @@ impl SyncHarness {
     async fn shutdown(&mut self) {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+        common::unmount_reserved_drive_letter(&self.drive_letter);
         let _ = angeld::smart_sync::unregister_sync_root(&self.sync_root);
         let _ = std::fs::remove_dir_all(&self.temp_root);
     }
@@ -136,6 +140,7 @@ impl SyncHarness {
 impl Drop for SyncHarness {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+        common::unmount_reserved_drive_letter(&self.drive_letter);
         let _ = angeld::smart_sync::unregister_sync_root(&self.sync_root);
         let _ = std::fs::remove_dir_all(&self.temp_root);
     }

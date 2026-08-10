@@ -57,6 +57,7 @@ pub struct DaemonHarness {
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
     pub session_token: Option<String>,
+    pub drive_letter: String,
 }
 
 #[allow(dead_code)]
@@ -81,6 +82,7 @@ impl DaemonHarness {
         let db_url = format!("sqlite:///{}", normalize_for_sqlite_url(&db_path));
         let stdout_path = temp_root.join("angeld.stdout.log");
         let stderr_path = temp_root.join("angeld.stderr.log");
+        let drive_letter = reserve_drive_letter();
 
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -99,6 +101,7 @@ impl DaemonHarness {
                     .env("OMNIDRIVE_DOWNLOAD_SPOOL_DIR", base.join("download-spool"))
                     .env("OMNIDRIVE_CACHE_DIR", base.join("Cache"))
                     .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{port}"))
+                    .env("OMNIDRIVE_DRIVE_LETTER", &drive_letter)
                     .env("OMNIDRIVE_E2E_TEST_MODE", "1")
                     .env("OMNIDRIVE_ALLOW_EMPTY_UPLOADERS", "1")
                     .env("OMNIDRIVE_UPLOAD_POLL_INTERVAL_MS", "100")
@@ -119,6 +122,7 @@ impl DaemonHarness {
             stdout_path,
             stderr_path,
             session_token: None,
+            drive_letter,
         };
 
         harness.wait_for_api_ready().await?;
@@ -195,6 +199,7 @@ impl DaemonHarness {
     pub async fn shutdown(&mut self) {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+        unmount_reserved_drive_letter(&self.drive_letter);
         let _ = std::fs::remove_dir_all(&self.temp_root);
     }
 
@@ -255,6 +260,7 @@ impl DaemonHarness {
 impl Drop for DaemonHarness {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+        unmount_reserved_drive_letter(&self.drive_letter);
         let _ = std::fs::remove_dir_all(&self.temp_root);
     }
 }
@@ -279,6 +285,33 @@ fn mark_port_issued(port: u16) -> bool {
         .lock()
         .unwrap()
         .insert(port)
+}
+
+const DRIVE_LETTER_POOL: [char; 22] = [
+    'Z', 'Y', 'X', 'W', 'V', 'U', 'T', 'S', 'R', 'Q', 'P', 'N', 'M', 'L', 'K', 'J', 'I', 'H', 'G',
+    'F', 'E', 'D',
+];
+
+/// Skipping letters that already exist is what keeps the unmount honest: the daemon falls back
+/// to a different letter when the preferred one is taken, and the harness would then unmount a
+/// letter nobody mounted, leaving the real mapping behind.
+#[allow(dead_code)]
+pub fn reserve_drive_letter() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let index = NEXT.fetch_add(1, Ordering::Relaxed) as usize;
+        let letter = DRIVE_LETTER_POOL.get(index).expect(
+            "drive letter pool exhausted: more concurrent harnesses than reservable letters",
+        );
+        if !Path::new(&format!("{letter}:\\")).exists() {
+            return format!("{letter}:");
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn unmount_reserved_drive_letter(drive_letter: &str) {
+    let _ = angeld::virtual_drive::unmount_virtual_drive(drive_letter);
 }
 
 #[allow(dead_code)]

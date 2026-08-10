@@ -32,6 +32,7 @@ struct DaemonHandle {
     base_url: String,
     sync_root: PathBuf,
     session_token: Option<String>,
+    drive_letter: String,
 }
 
 impl RecoveryEnv {
@@ -101,6 +102,7 @@ impl RecoveryEnv {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("repo root");
+        let drive_letter = common::reserve_drive_letter();
 
         let (api_port, child) =
             common::spawn_with_port_retry(3, Duration::from_secs(20), None, |port| {
@@ -117,7 +119,7 @@ impl RecoveryEnv {
                     )
                     .env("OMNIDRIVE_CACHE_DIR", self.base.join("Cache"))
                     .env("OMNIDRIVE_API_BIND", format!("127.0.0.1:{port}"))
-                    .env("OMNIDRIVE_DRIVE_LETTER", "Y:")
+                    .env("OMNIDRIVE_DRIVE_LETTER", &drive_letter)
                     .env("OMNIDRIVE_E2E_TEST_MODE", "1")
                     .env("OMNIDRIVE_SYNC_PROVIDER_ID_SEED", &self.test_prefix)
                     .env("OMNIDRIVE_SYNC_ROOT_IDENTITY", &self.test_prefix)
@@ -139,6 +141,7 @@ impl RecoveryEnv {
             base_url,
             sync_root: self.sync_root.clone(),
             session_token: None,
+            drive_letter,
         };
         handle.wait_for_api_ready().await?;
         Ok(handle)
@@ -197,6 +200,7 @@ impl DaemonHandle {
     async fn shutdown(&mut self) {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+        common::unmount_reserved_drive_letter(&self.drive_letter);
         let _ = angeld::smart_sync::unregister_sync_root(&self.sync_root);
     }
 }
@@ -204,6 +208,7 @@ impl DaemonHandle {
 impl Drop for DaemonHandle {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
+        common::unmount_reserved_drive_letter(&self.drive_letter);
         let _ = angeld::smart_sync::unregister_sync_root(&self.sync_root);
     }
 }

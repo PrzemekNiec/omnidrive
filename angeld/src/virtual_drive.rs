@@ -203,12 +203,19 @@ mod imp {
     pub fn select_mount_drive_letter(
         preferred_drive_letter: &str,
     ) -> Result<String, VirtualDriveError> {
+        let used_mask = unsafe { GetLogicalDrives() };
+        select_mount_drive_letter_from_mask(preferred_drive_letter, used_mask)
+    }
+
+    fn select_mount_drive_letter_from_mask(
+        preferred_drive_letter: &str,
+        used_mask: u32,
+    ) -> Result<String, VirtualDriveError> {
         let preferred = normalize_drive_letter(preferred_drive_letter)?;
         let preferred_letter = preferred
             .chars()
             .next()
             .ok_or(VirtualDriveError::InvalidDriveLetter)?;
-        let used_mask = unsafe { GetLogicalDrives() };
 
         if used_mask == 0 {
             return Ok(preferred);
@@ -218,7 +225,10 @@ mod imp {
             return Ok(preferred);
         }
 
-        for letter in ('D'..='Z').filter(|letter| *letter != preferred_letter) {
+        for letter in ('D'..='Z')
+            .rev()
+            .filter(|letter| *letter != preferred_letter && *letter != 'O')
+        {
             if drive_letter_available(letter, used_mask) {
                 return Ok(format!("{letter}:"));
             }
@@ -399,5 +409,50 @@ mod imp {
             .encode_wide()
             .chain(iter::once(0))
             .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn bit(letter: char) -> u32 {
+            1u32 << (letter as u8 - b'A')
+        }
+
+        fn mask_with_free(free: &[char]) -> u32 {
+            let mut mask = u32::MAX;
+            for &letter in free {
+                mask &= !bit(letter);
+            }
+            mask
+        }
+
+        #[test]
+        fn preferred_letter_wins_when_available() {
+            let used_mask = mask_with_free(&['O']);
+            let result = select_mount_drive_letter_from_mask("O:", used_mask).unwrap();
+            assert_eq!(result, "O:");
+        }
+
+        #[test]
+        fn fallback_scans_from_top_of_alphabet() {
+            let used_mask = mask_with_free(&['Z']);
+            let result = select_mount_drive_letter_from_mask("Y:", used_mask).unwrap();
+            assert_eq!(result, "Z:");
+        }
+
+        #[test]
+        fn fallback_skips_o_in_favor_of_lower_free_letter() {
+            let used_mask = mask_with_free(&['O', 'N']);
+            let result = select_mount_drive_letter_from_mask("Y:", used_mask).unwrap();
+            assert_eq!(result, "N:");
+        }
+
+        #[test]
+        fn fallback_errors_when_only_o_is_free() {
+            let used_mask = mask_with_free(&['O']);
+            let result = select_mount_drive_letter_from_mask("Y:", used_mask);
+            assert!(matches!(result, Err(VirtualDriveError::InvalidDriveLetter)));
+        }
     }
 }

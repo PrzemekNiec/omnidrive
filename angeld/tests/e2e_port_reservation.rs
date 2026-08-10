@@ -2,6 +2,7 @@ mod common;
 
 use common::DaemonHarness;
 use std::collections::HashSet;
+use std::thread;
 use tokio::net::TcpListener;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -44,4 +45,25 @@ async fn daemon_harness_retries_when_first_port_choice_is_occupied()
     drop(occupied);
     harness.shutdown().await;
     Ok(())
+}
+
+#[test]
+fn reserve_drive_letter_returns_distinct_letters_under_concurrency() {
+    let handles: Vec<_> = (0..16)
+        .map(|_| thread::spawn(common::reserve_drive_letter))
+        .collect();
+
+    let mut letters = HashSet::new();
+    for handle in handles {
+        let letter = handle.join().expect("reservation thread panicked");
+        assert_ne!(
+            letter, "O:",
+            "drive letter reservation must never hand out O:"
+        );
+        assert!(
+            letters.insert(letter.clone()),
+            "reserve_drive_letter returned duplicate letter {letter}"
+        );
+    }
+    assert_eq!(letters.len(), 16);
 }
