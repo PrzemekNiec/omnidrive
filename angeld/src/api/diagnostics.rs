@@ -232,9 +232,7 @@ async fn get_transfers(
     Ok(Json(transfers))
 }
 
-async fn get_health(
-    State(state): State<ApiState>,
-) -> Result<Json<HealthResponse>, ApiError> {
+async fn get_health(State(state): State<ApiState>) -> Result<Json<HealthResponse>, ApiError> {
     let mut providers = Vec::with_capacity(KNOWN_PROVIDERS.len());
     let mut latest_by_provider = HashMap::with_capacity(KNOWN_PROVIDERS.len());
 

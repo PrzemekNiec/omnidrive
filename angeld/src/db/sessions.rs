@@ -266,7 +266,11 @@ mod tests {
         let rows: Vec<String> = sqlx::query_scalar("SELECT token FROM user_sessions")
             .fetch_all(&pool)
             .await?;
-        assert_eq!(rows, vec!["live".to_string()], "wygasly wiersz ma zniknac z tabeli");
+        assert_eq!(
+            rows,
+            vec!["live".to_string()],
+            "wygasly wiersz ma zniknac z tabeli"
+        );
         Ok(())
     }
 }

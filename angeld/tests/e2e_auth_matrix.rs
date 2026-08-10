@@ -17,24 +17,89 @@ enum Expect {
 }
 
 const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
-    ("GET", "/api/vault/status", "/api/vault/status", Expect::Public),
+    (
+        "GET",
+        "/api/vault/status",
+        "/api/vault/status",
+        Expect::Public,
+    ),
     ("POST", "/api/unlock", "/api/unlock", Expect::Public),
-    ("GET", "/api/unlock/hello-available", "/api/unlock/hello-available", Expect::Public),
+    (
+        "GET",
+        "/api/unlock/hello-available",
+        "/api/unlock/hello-available",
+        Expect::Public,
+    ),
     ("POST", "/api/vault/join", "/api/vault/join", Expect::Public),
-    ("POST", "/api/recovery/restore", "/api/recovery/restore", Expect::Public),
-    ("GET", "/api/recovery/status", "/api/recovery/status", Expect::Public),
-    ("GET", "/api/onboarding/status", "/api/onboarding/status", Expect::Public),
+    (
+        "POST",
+        "/api/recovery/restore",
+        "/api/recovery/restore",
+        Expect::Public,
+    ),
+    (
+        "GET",
+        "/api/recovery/status",
+        "/api/recovery/status",
+        Expect::Public,
+    ),
+    (
+        "GET",
+        "/api/onboarding/status",
+        "/api/onboarding/status",
+        Expect::Public,
+    ),
     ("GET", "/api/health", "/api/health", Expect::Public),
-    ("GET", "/api/diagnostics/health", "/api/diagnostics/health", Expect::Public),
-    ("POST", "/api/unlock/windows-hello", "/api/unlock/windows-hello", Expect::LocalIntent),
+    (
+        "GET",
+        "/api/diagnostics/health",
+        "/api/diagnostics/health",
+        Expect::Public,
+    ),
+    (
+        "POST",
+        "/api/unlock/windows-hello",
+        "/api/unlock/windows-hello",
+        Expect::LocalIntent,
+    ),
     ("GET", "/api/transfers", "/api/transfers", Expect::Role),
     ("GET", "/api/diagnostics", "/api/diagnostics", Expect::Role),
-    ("GET", "/api/diagnostics/shell", "/api/diagnostics/shell", Expect::Role),
-    ("GET", "/api/diagnostics/sync-root", "/api/diagnostics/sync-root", Expect::Role),
-    ("GET", "/api/diagnostics/restore", "/api/diagnostics/restore", Expect::Role),
-    ("GET", "/api/storage/cost", "/api/storage/cost", Expect::Role),
-    ("GET", "/api/multidevice/status", "/api/multidevice/status", Expect::Role),
-    ("GET", "/api/stats/overview", "/api/stats/overview", Expect::Role),
+    (
+        "GET",
+        "/api/diagnostics/shell",
+        "/api/diagnostics/shell",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/diagnostics/sync-root",
+        "/api/diagnostics/sync-root",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/diagnostics/restore",
+        "/api/diagnostics/restore",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/storage/cost",
+        "/api/storage/cost",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/multidevice/status",
+        "/api/multidevice/status",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/stats/overview",
+        "/api/stats/overview",
+        Expect::Role,
+    ),
     ("GET", "/api/ingest", "/api/ingest", Expect::Role),
     (
         "POST",
@@ -66,49 +131,204 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
         "/api/providers/backblaze-b2/test",
         Expect::OpenDuringOnboarding,
     ),
-    ("POST", "/api/vault/add-device", "/api/vault/add-device", Expect::Role),
-    ("POST", "/api/vault/rotate-key", "/api/vault/rotate-key", Expect::Role),
-    ("POST", "/api/maintenance/repair-shell", "/api/maintenance/repair-shell", Expect::Role),
-    ("POST", "/api/files/{inode_id}/pin", "/api/files/1/pin", Expect::Role),
-    ("DELETE", "/api/files/{inode_id}", "/api/files/1", Expect::Role),
-    ("DELETE", "/api/shares/{share_id}", "/api/shares/abc123", Expect::Role),
+    (
+        "POST",
+        "/api/vault/add-device",
+        "/api/vault/add-device",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/vault/rotate-key",
+        "/api/vault/rotate-key",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/maintenance/repair-shell",
+        "/api/maintenance/repair-shell",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/files/{inode_id}/pin",
+        "/api/files/1/pin",
+        Expect::Role,
+    ),
+    (
+        "DELETE",
+        "/api/files/{inode_id}",
+        "/api/files/1",
+        Expect::Role,
+    ),
+    (
+        "DELETE",
+        "/api/shares/{share_id}",
+        "/api/shares/abc123",
+        Expect::Role,
+    ),
     ("GET", "/", "/", Expect::Public),
     ("GET", "/api/audit", "/api/audit", Expect::Role),
-    ("GET", "/api/auth/google/callback", "/api/auth/google/callback", Expect::Public),
-    ("GET", "/api/auth/google/start", "/api/auth/google/start", Expect::Public),
-    ("GET", "/api/auth/session", "/api/auth/session", Expect::Public),
-    ("GET", "/api/auto-lock/status", "/api/auto-lock/status", Expect::Session),
-    ("GET", "/api/cache/status", "/api/cache/status", Expect::Role),
+    (
+        "GET",
+        "/api/auth/google/callback",
+        "/api/auth/google/callback",
+        Expect::Public,
+    ),
+    (
+        "GET",
+        "/api/auth/google/start",
+        "/api/auth/google/start",
+        Expect::Public,
+    ),
+    (
+        "GET",
+        "/api/auth/session",
+        "/api/auth/session",
+        Expect::Public,
+    ),
+    (
+        "GET",
+        "/api/auto-lock/status",
+        "/api/auto-lock/status",
+        Expect::Session,
+    ),
+    (
+        "GET",
+        "/api/cache/status",
+        "/api/cache/status",
+        Expect::Role,
+    ),
     ("GET", "/api/files", "/api/files", Expect::Role),
-    ("GET", "/api/files/{inode_id}/revisions", "/api/files/1/revisions", Expect::Role),
-    ("GET", "/api/files/{inode_id}/shares", "/api/files/1/shares", Expect::Role),
-    ("GET", "/api/files/{inode_id}/sync_status", "/api/files/1/sync_status", Expect::Role),
-    ("GET", "/api/filesystem/policies", "/api/filesystem/policies", Expect::Role),
-    ("GET", "/api/health/vault", "/api/health/vault", Expect::Public),
-    ("GET", "/api/maintenance/diagnostics", "/api/maintenance/diagnostics", Expect::Role),
-    ("GET", "/api/maintenance/retry-storms", "/api/maintenance/retry-storms", Expect::Role),
-    ("GET", "/api/maintenance/scrub-errors", "/api/maintenance/scrub-errors", Expect::Role),
-    ("GET", "/api/maintenance/scrub-status", "/api/maintenance/scrub-status", Expect::Role),
-    ("GET", "/api/maintenance/status", "/api/maintenance/status", Expect::Role),
-    ("GET", "/api/metadata-backup/status", "/api/metadata-backup/status", Expect::Role),
+    (
+        "GET",
+        "/api/files/{inode_id}/revisions",
+        "/api/files/1/revisions",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/files/{inode_id}/shares",
+        "/api/files/1/shares",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/files/{inode_id}/sync_status",
+        "/api/files/1/sync_status",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/filesystem/policies",
+        "/api/filesystem/policies",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/health/vault",
+        "/api/health/vault",
+        Expect::Public,
+    ),
+    (
+        "GET",
+        "/api/maintenance/diagnostics",
+        "/api/maintenance/diagnostics",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/maintenance/retry-storms",
+        "/api/maintenance/retry-storms",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/maintenance/scrub-errors",
+        "/api/maintenance/scrub-errors",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/maintenance/scrub-status",
+        "/api/maintenance/scrub-status",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/maintenance/status",
+        "/api/maintenance/status",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/metadata-backup/status",
+        "/api/metadata-backup/status",
+        Expect::Role,
+    ),
     ("GET", "/api/quota", "/api/quota", Expect::Role),
-    ("GET", "/api/settings/paths", "/api/settings/paths", Expect::Role),
+    (
+        "GET",
+        "/api/settings/paths",
+        "/api/settings/paths",
+        Expect::Role,
+    ),
     (
         "GET",
         "/api/share/{share_id}/chunks/{chunk_index}",
         "/api/share/abc123/chunks/0",
         Expect::Public,
     ),
-    ("GET", "/api/share/{share_id}/meta", "/api/share/abc123/meta", Expect::Public),
+    (
+        "GET",
+        "/api/share/{share_id}/meta",
+        "/api/share/abc123/meta",
+        Expect::Public,
+    ),
     ("GET", "/api/shares", "/api/shares", Expect::Role),
-    ("GET", "/api/stats/system", "/api/stats/system", Expect::Role),
-    ("GET", "/api/stats/traffic", "/api/stats/traffic", Expect::Role),
+    (
+        "GET",
+        "/api/stats/system",
+        "/api/stats/system",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/stats/traffic",
+        "/api/stats/traffic",
+        Expect::Role,
+    ),
     ("GET", "/api/trash", "/api/trash", Expect::Role),
-    ("GET", "/api/vault/devices", "/api/vault/devices", Expect::Role),
-    ("GET", "/api/vault/my-wrapped-key", "/api/vault/my-wrapped-key", Expect::Role),
-    ("GET", "/api/vault/pending-devices", "/api/vault/pending-devices", Expect::Role),
-    ("GET", "/api/vault/rewrap-status", "/api/vault/rewrap-status", Expect::Role),
-    ("GET", "/api/vault/safety-numbers", "/api/vault/safety-numbers", Expect::Role),
+    (
+        "GET",
+        "/api/vault/devices",
+        "/api/vault/devices",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/vault/my-wrapped-key",
+        "/api/vault/my-wrapped-key",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/vault/pending-devices",
+        "/api/vault/pending-devices",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/vault/rewrap-status",
+        "/api/vault/rewrap-status",
+        Expect::Role,
+    ),
+    (
+        "GET",
+        "/api/vault/safety-numbers",
+        "/api/vault/safety-numbers",
+        Expect::Role,
+    ),
     ("GET", "/legacy", "/legacy", Expect::Public),
     (
         "GET",
@@ -119,22 +339,62 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
     ("GET", "/qrcode.min.js", "/qrcode.min.js", Expect::Public),
     ("GET", "/share-sw.js", "/share-sw.js", Expect::Public),
     ("GET", "/share/{share_id}", "/share/abc123", Expect::Public),
-    ("GET", "/sw-download/{share_id}", "/sw-download/abc123", Expect::Public),
+    (
+        "GET",
+        "/sw-download/{share_id}",
+        "/sw-download/abc123",
+        Expect::Public,
+    ),
     ("GET", "/wizard", "/wizard", Expect::Public),
     ("GET", "/wizard.js", "/wizard.js", Expect::Public),
-    ("POST", "/api/auth/logout", "/api/auth/logout", Expect::Session),
-    ("POST", "/api/auth/renew", "/api/auth/renew", Expect::Session),
+    (
+        "POST",
+        "/api/auth/logout",
+        "/api/auth/logout",
+        Expect::Session,
+    ),
+    (
+        "POST",
+        "/api/auth/renew",
+        "/api/auth/renew",
+        Expect::Session,
+    ),
     (
         "POST",
         "/api/auto-lock/_test/simulate-session-lock",
         "/api/auto-lock/_test/simulate-session-lock",
         Expect::Session,
     ),
-    ("POST", "/api/auto-lock/timeout", "/api/auto-lock/timeout", Expect::Session),
-    ("POST", "/api/auto-lock/touch", "/api/auto-lock/touch", Expect::Session),
-    ("POST", "/api/change-password", "/api/change-password", Expect::Session),
-    ("POST", "/api/devices/{device_id}/revoke", "/api/devices/dev1/revoke", Expect::Role),
-    ("POST", "/api/devices/{device_id}/verify", "/api/devices/dev1/verify", Expect::Role),
+    (
+        "POST",
+        "/api/auto-lock/timeout",
+        "/api/auto-lock/timeout",
+        Expect::Session,
+    ),
+    (
+        "POST",
+        "/api/auto-lock/touch",
+        "/api/auto-lock/touch",
+        Expect::Session,
+    ),
+    (
+        "POST",
+        "/api/change-password",
+        "/api/change-password",
+        Expect::Session,
+    ),
+    (
+        "POST",
+        "/api/devices/{device_id}/revoke",
+        "/api/devices/dev1/revoke",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/devices/{device_id}/verify",
+        "/api/devices/dev1/verify",
+        Expect::Role,
+    ),
     (
         "POST",
         "/api/files/{inode_id}/revisions/{revision_id}/materialize-conflict-copy",
@@ -147,23 +407,78 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
         "/api/files/1/revisions/1/restore",
         Expect::Role,
     ),
-    ("POST", "/api/files/{inode_id}/share", "/api/files/1/share", Expect::Role),
-    ("POST", "/api/files/{inode_id}/unpin", "/api/files/1/unpin", Expect::Role),
-    ("POST", "/api/filesystem/pin", "/api/filesystem/pin", Expect::Role),
-    ("POST", "/api/filesystem/set-policy", "/api/filesystem/set-policy", Expect::Role),
-    ("POST", "/api/filesystem/unpin", "/api/filesystem/unpin", Expect::Role),
-    ("POST", "/api/ingest/{job_id}/cleanup", "/api/ingest/1/cleanup", Expect::Role),
-    ("POST", "/api/ingest/{job_id}/retry", "/api/ingest/1/retry", Expect::Role),
-    ("POST", "/api/maintenance/gc-orphans", "/api/maintenance/gc-orphans", Expect::Role),
-    ("POST", "/api/maintenance/reconcile-now", "/api/maintenance/reconcile-now", Expect::Role),
-    ("POST", "/api/maintenance/repair-now", "/api/maintenance/repair-now", Expect::Role),
+    (
+        "POST",
+        "/api/files/{inode_id}/share",
+        "/api/files/1/share",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/files/{inode_id}/unpin",
+        "/api/files/1/unpin",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/filesystem/pin",
+        "/api/filesystem/pin",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/filesystem/set-policy",
+        "/api/filesystem/set-policy",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/filesystem/unpin",
+        "/api/filesystem/unpin",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/ingest/{job_id}/cleanup",
+        "/api/ingest/1/cleanup",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/ingest/{job_id}/retry",
+        "/api/ingest/1/retry",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/maintenance/gc-orphans",
+        "/api/maintenance/gc-orphans",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/maintenance/reconcile-now",
+        "/api/maintenance/reconcile-now",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/maintenance/repair-now",
+        "/api/maintenance/repair-now",
+        Expect::Role,
+    ),
     (
         "POST",
         "/api/maintenance/repair-sync-root",
         "/api/maintenance/repair-sync-root",
         Expect::Role,
     ),
-    ("POST", "/api/maintenance/scrub-now", "/api/maintenance/scrub-now", Expect::Role),
+    (
+        "POST",
+        "/api/maintenance/scrub-now",
+        "/api/maintenance/scrub-now",
+        Expect::Role,
+    ),
     (
         "POST",
         "/api/maintenance/sync-upload-targets",
@@ -176,7 +491,12 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
         "/api/metadata-backup/backup-now",
         Expect::Role,
     ),
-    ("POST", "/api/metadata-backup/fetch-now", "/api/metadata-backup/fetch-now", Expect::Role),
+    (
+        "POST",
+        "/api/metadata-backup/fetch-now",
+        "/api/metadata-backup/fetch-now",
+        Expect::Role,
+    ),
     (
         "POST",
         "/api/metadata-backup/snapshot-local",
@@ -201,27 +521,72 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
         "/api/onboarding/setup-identity",
         Expect::OpenDuringOnboarding,
     ),
-    ("POST", "/api/recovery/generate", "/api/recovery/generate", Expect::Role),
-    ("POST", "/api/recovery/revoke", "/api/recovery/revoke", Expect::Role),
-    ("POST", "/api/settings/autostart", "/api/settings/autostart", Expect::Session),
-    ("POST", "/api/settings/restart-daemon", "/api/settings/restart-daemon", Expect::Role),
-    ("POST", "/api/settings/windows-hello", "/api/settings/windows-hello", Expect::Role),
+    (
+        "POST",
+        "/api/recovery/generate",
+        "/api/recovery/generate",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/recovery/revoke",
+        "/api/recovery/revoke",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/settings/autostart",
+        "/api/settings/autostart",
+        Expect::Session,
+    ),
+    (
+        "POST",
+        "/api/settings/restart-daemon",
+        "/api/settings/restart-daemon",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/settings/windows-hello",
+        "/api/settings/windows-hello",
+        Expect::Role,
+    ),
     (
         "POST",
         "/api/share/{share_id}/verify-password",
         "/api/share/abc123/verify-password",
         Expect::Public,
     ),
-    ("POST", "/api/shares/{share_id}/revoke", "/api/shares/abc123/revoke", Expect::Role),
-    ("POST", "/api/trash/{inode_id}/purge", "/api/trash/1/purge", Expect::Role),
-    ("POST", "/api/trash/{inode_id}/restore", "/api/trash/1/restore", Expect::Role),
+    (
+        "POST",
+        "/api/shares/{share_id}/revoke",
+        "/api/shares/abc123/revoke",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/trash/{inode_id}/purge",
+        "/api/trash/1/purge",
+        Expect::Role,
+    ),
+    (
+        "POST",
+        "/api/trash/{inode_id}/restore",
+        "/api/trash/1/restore",
+        Expect::Role,
+    ),
     (
         "POST",
         "/api/vault/accept-device/{device_id}",
         "/api/vault/accept-device/dev1",
         Expect::Role,
     ),
-    ("POST", "/api/vault/invite", "/api/vault/invite", Expect::Role),
+    (
+        "POST",
+        "/api/vault/invite",
+        "/api/vault/invite",
+        Expect::Role,
+    ),
     ("POST", "/api/vault/lock", "/api/vault/lock", Expect::Role),
     (
         "POST",
@@ -354,8 +719,7 @@ async fn routes_behind_a_gate_reject_requests_without_a_token()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn vault_status_never_returns_a_session_token()
--> Result<(), Box<dyn std::error::Error>> {
+async fn vault_status_never_returns_a_session_token() -> Result<(), Box<dyn std::error::Error>> {
     let mut h = DaemonHarness::spawn().await?;
     h.unlock().await?;
     let body = h.get_json("/api/vault/status").await?;
@@ -381,7 +745,10 @@ async fn setup_provider_is_open_during_onboarding_and_gated_after()
     let during = h
         .request_without_token("POST", "/api/onboarding/setup-provider", Some(&body))
         .await?;
-    assert_ne!(during.status, 401, "w trakcie kreatora endpoint musi byc otwarty");
+    assert_ne!(
+        during.status, 401,
+        "w trakcie kreatora endpoint musi byc otwarty"
+    );
 
     h.unlock().await?;
     h.post("/api/onboarding/complete").await?;
@@ -405,11 +772,7 @@ async fn setup_provider_is_open_during_onboarding_and_gated_after()
     );
 
     let delete_provider_after = h
-        .request_without_token(
-            "DELETE",
-            "/api/onboarding/provider/backblaze-b2",
-            None,
-        )
+        .request_without_token("DELETE", "/api/onboarding/provider/backblaze-b2", None)
         .await?;
     assert_eq!(
         delete_provider_after.status, 401,
@@ -470,8 +833,7 @@ async fn setup_provider_is_open_during_onboarding_and_gated_after()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rotate_key_rejects_wrong_old_passphrase()
--> Result<(), Box<dyn std::error::Error>> {
+async fn rotate_key_rejects_wrong_old_passphrase() -> Result<(), Box<dyn std::error::Error>> {
     let mut h = DaemonHarness::spawn().await?;
     h.unlock().await?;
 
@@ -592,8 +954,8 @@ async fn repeated_wrong_passphrase_is_rate_limited() -> Result<(), Box<dyn std::
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unlock_does_not_store_passphrase_unless_opted_in()
--> Result<(), Box<dyn std::error::Error>> {
+async fn unlock_does_not_store_passphrase_unless_opted_in() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut h = DaemonHarness::spawn().await?;
     h.unlock().await?;
     let resp = h.get_json("/api/unlock/hello-available").await?;

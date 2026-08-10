@@ -42,7 +42,10 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/settings/paths", get(get_paths))
         .route("/api/settings/autostart", post(post_autostart))
         .route("/api/settings/restart-daemon", post(post_restart_daemon))
-        .route("/api/settings/windows-hello", post(post_windows_hello_setting))
+        .route(
+            "/api/settings/windows-hello",
+            post(post_windows_hello_setting),
+        )
 }
 
 async fn get_paths(
