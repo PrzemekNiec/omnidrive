@@ -19,8 +19,9 @@ przy pierwszym przejściu zostały pominięte. Przegląd zamknął się na **147
 **43 × 🔴**, **100 × ⚠️**, **4 × ✅** (naprawione w trakcie: Z4-01, Z6-04, Z6-05, Z6-06).
 Sześć sesji, 121 plików `.rs`, ~48 000 linii kodu plus ~7600 linii statyków.
 
-**Stan rejestru po Fazie 0 i starcie Fazy 1 (2026-08-10): 151 pozycji** — **35 × 🔴**,
-**87 × ⚠️**, **29 × ✅**. Doszły trzy pozycje (**Z10-16**, **Z10-17** i **Z10-18** — wykryte przy weryfikacji Fazy 0
+**Stan rejestru po Fazie 0 i w trakcie Fazy 1 (2026-08-27): 152 pozycje** — **34 × 🔴**,
+**88 × ⚠️**, **30 × ✅** (Z9-24 naprawione w WP1.4 `93fdea1`; **Z10-20** dołożone przy
+weryfikacji kontrolera tego samego pakietu). Doszły trzy pozycje (**Z10-16**, **Z10-17** i **Z10-18** — wykryte przy weryfikacji Fazy 0
 i przy pierwszym zielonym przejściu hooka pre-push), z czego Z10-16, Z10-17 i Z10-15 są już naprawione,
 naprawionych jest 22 nowych (WP1.3 zamknęło Z11-03 i Z9-15), a siedem zmieniło wagę po przyjęciu kryterium skutku.
 Spadek liczby 🔴 z 43 do 37 to wypadkowa trzech rzeczy naraz: napraw Fazy 0, przeważenia
@@ -322,7 +323,7 @@ i **Z11-05**.
 | Z9-21 | ✅ | `POST /api/vault/rotate-key` zmienia hasło Skarbca **bez weryfikacji starego** (inaczej niż `/api/change-password`) — **NAPRAWIONE** `45a2e25`. | czytanie obu |
 | Z9-22 | 🔴 | Odwołanie urządzenia melduje `"revoked"` mimo nieudanej rotacji VK — odwołane urządzenie zachowuje działający klucz | czytanie |
 | Z9-23 | 🔴 | Tryb A (LAN Share) nie może działać — `crypto.subtle` i Service Worker wymagają bezpiecznego kontekstu, link LAN to `http://` po IP | czytanie `share.html` + `sharing.rs` |
-| Z9-24 | 🔴 | Callback Google mintuje sesję dowolnemu kontu; endpointy na `extract_session` (autostart, restart-daemon, auto-lock) ją honorują | czytanie + `acl.rs:78` |
+| Z9-24 | ✅ | Callback Google mintuje sesję dowolnemu kontu; endpointy na `extract_session` (autostart, restart-daemon, auto-lock) ją honorują — **NAPRAWIONE** `93fdea1`: bramka sesji sprawdza teraz członkostwo w vaulcie, callback Google odrzuca konta spoza vaulta z już przyjętym właścicielem. | czytanie + `acl.rs:78` |
 | Z9-25 | ⚠️ | `snapshot-local` przyjmuje dowolną ścieżkę wyjściową; plaintextowy `*.tmp.db` powstaje w katalogu wskazanym przez wywołującego | czytanie |
 | Z9-26 | ✅ | `GET /api/ingest` bez auth zwraca pełne ścieżki plików użytkownika — **NAPRAWIONE** `5e398a6`. | czytanie |
 | Z9-27 | ⚠️ | `google_refresh_token` w plaintekście w `users`, dopóki ktoś nie odblokuje Skarbca | czytanie |
@@ -349,6 +350,7 @@ i **Z11-05**.
 | Z10-17 | ✅ | `reserve_port()` (skopiowane **sześć razy**) rezerwowało port przez `bind` + zwolnienie, więc między zwolnieniem a startem daemona inny proces mógł go zająć (`os error 10048`) — pełna suita bywała czerwona bez wady w kodzie i uczyła ignorowania czerwonych przebiegów. **NAPRAWIONE** `137663d`: jedna implementacja w `tests/common/mod.rs` dedupuje wydane porty, a `spawn_with_port_retry` ponawia z nowym portem, gdy `try_wait()` pokazuje śmierć daemona przed odpowiedzią na `/api/diagnostics/health`; mechanizm pokrywa `e2e_port_reservation.rs`. Przy okazji wyszedł **drugi, niezależny wyścig**: `create_temp_root` z rozdzielczością milisekundową dawał dwóm testom ten sam katalog i ten sam plik SQLite (ujawnione dopiero, gdy `3071208` dodał drugi test do `e2e_recovery`) — wspólna wersja ma teraz licznik atomowy. Suita: 252 passed / 0 failed | obserwacja: ta sama suita czerwona i zielona pod rząd |
 | Z10-19 | ⚠️ | `disaster_recovery::tests::degraded_database_uploads_snapshot_without_advancing_latest` pada niedeterministycznie w równoległym przebiegu z `output file already exists`. Zgłoszone przy WP1.3 jako „zastane", ale **dowód był słaby** — przebieg na bazie `5dd726d` po prostu przeszedł, co nie jest dowodem braku wyścigu. Podejrzenie: ta sama klasa co kolizja z Z10-17 (współdzielona nazwa pliku tymczasowego między testami w jednej binarce), tylko w `disaster_recovery.rs`, nie w harnessie. Do zdiagnozowania osobno — dopóki żyje, jest kolejnym powodem, by czerwony przebieg uznawać za szum | obserwacja przy WP1.3 + brak dowodu bazowego |
 | Z10-18 | ⚠️ | **Regresja z Fazy 0.** Zadanie 6 zabrało trayowi wywołanie `/api/ingest` i przeniosło sygnał do publicznego `/api/health`, ale przeniosło wyłącznie `ingest_failed`. `TrayState::Syncing` nie jest już przez nic konstruowany, więc ikona **nigdy nie pokazuje synchronizacji** — przechodzi wprost `Locked → Synced`, także gdy trwa upload. Plumbing (`IconSet::syncing`, `STATE_SYNCING.png`) zostaje, bo przywrócenie stanu należy do F1/WP1.5; wariant ma `#[allow(dead_code)]`, żeby `clippy --workspace -D warnings` (hook pre-push) przechodził. Naprawa = licznik aktywnych zadań w `/api/health` + gałąź w `poll_daemon_state` | `cargo clippy --workspace` + czytanie `omnidrive-tray/src/main.rs:29-40,105-151` |
+| Z10-20 | ⚠️ | `POST /api/auth/logout` woła `force_lock_and_dismount`, czyli **globalny** zamek na `VaultKeyStore` całego procesu plus odmontowanie `O:` — nie wygaszenie jednej sesji. Bramka jest tam celowo czysto uwierzytelniająca (WP1.4, pułapka 2: pod kontrolą członkostwa obcy token nie dałby się skasować i przeżyłby do końca TTL), więc po `93fdea1` posiadacz sesji spoza `vault_members` dostaje 403 na wszystkich pozostałych trasach, ale wciąż może w pętli zamykać Skarbiec właściciela. Stan zastany, nie regresja — przed WP1.4 `SessionCaller` też nie sprawdzał członkostwa. Naprawa: logout **zawsze** kasuje wiersz sesji, ale `force_lock_and_dismount` odpala tylko dla członka | weryfikacja kontrolera WP1.4 + czytanie `lock_flow.rs:34-40` |
 | Z11-01 | 🔴 | Linki share z hasłem są nie do otwarcia — klient czeka na pole `requires_password`, którego API nie wysyła | czytanie obu stron + grep |
 | Z11-02 | ✅ | `DELETE /api/onboarding/provider/{name}` bez auth kasuje konfigurację, a `ON DELETE CASCADE` zabiera poświadczenia DPAPI — **NAPRAWIONE** `7bae0cb`. | czytanie + schemat |
 | Z11-03 | ✅ | `legacy.html` (2258, pod `/legacy`) nie wysyła `Authorization` — 9 z 21 endpointów zwraca 403. Czwarty taki klient — **NAPRAWIONE** `b69c23d`: trasa `/legacy`, `get_legacy()` i `static/legacy.html` (2258 linii) usunięte w całości; `GET /legacy` → 404. | grep + audyt ról |
@@ -2711,9 +2713,10 @@ nieistniejącą. Ochroną jest tu sekret w fragmencie URL i hasło linku, nie se
 **Grupa C — wejścia OAuth.** `GET /api/auth/google/start`, `GET /api/auth/google/callback`. Obie to
 nawigacje najwyższego poziomu w przeglądarce (przekierowanie 307 i powrót z Google). Przeglądarka nie
 doklei nagłówka `Authorization` do nawigacji — bramka Bearer jest tu technicznie niewykonalna, nie tylko
-niewygodna. **To nie zamyka Z9-24**: fakt, że dowolne konto Google dostaje sesję honorowaną przez
-`settings` i `auto-lock`, jest osobną wadą. **Warunek czasowy:** naprawa (kontrola członkostwa w
-vaulcie) siedzi w F1/WP1.4 — do tego czasu „publiczne" nie znaczy „bezpieczne".
+niewygodna. **Z9-24 zamknięte w F1/WP1.4**: `require_session`/`require_session_no_touch` sprawdzają
+teraz członkostwo w vaulcie (pomijane tylko dopóki vault nie ma jeszcze żadnego członka), a callback
+Google odrzuca `ApiError::Forbidden` zamiast wystawić sesję kontu spoza vaulta z już przyjętym
+właścicielem.
 
 **Grupa D — sondy stanu.** `GET /api/auth/session`, `GET /api/health/vault`. `/api/auth/session` jest z
 założenia pytaniem „czy mam sesję?" i przy jej braku odpowiada `{"valid": false}` z kodem 200 — bramka
@@ -3047,7 +3050,7 @@ oraz za `Z8-03`.
 | Z9-21 | ✅ | `POST /api/vault/rotate-key` zmienia hasło Skarbca **bez weryfikacji starego**, w przeciwieństwie do `/api/change-password`; z tokenem z Z9-01 to pełne przejęcie Skarbca — **NAPRAWIONE** `45a2e25`. | czytanie `vault.rs:1045-1065` vs `auth.rs:309-321` |
 | Z9-22 | 🔴 | Odwołanie urządzenia i usunięcie członka tolerują nieudaną rotację Vault Key (`warn!`), a odpowiedź nadal mówi `"revoked"` — odwołane urządzenie zachowuje działający `wrapped_vault_key` | czytanie `vault.rs:805-823`, `:897-914` |
 | Z9-23 | 🔴 | Tryb A (LAN Share) nie może działać: `crypto.subtle` i Service Worker wymagają bezpiecznego kontekstu, a link LAN to `http://` na adresie IP; komunikat błędu obwinia przeglądarkę zamiast wskazać przyczynę | czytanie `share.html:274-277`, `:181`, `:438` + `sharing.rs:518-543` |
-| Z9-24 | 🔴 | Callback Google tworzy `users` + `user_sessions` dla **dowolnego** konta bez sprawdzenia członkostwa; `require_role` odmówi, ale endpointy na `extract_session`/`require_session` (autostart, restart-daemon, auto-lock, settings/paths) przepuszczą obcą sesję | czytanie `oauth.rs:228-236` + `acl.rs:78-82` + `settings.rs` |
+| Z9-24 | ✅ | Callback Google tworzy `users` + `user_sessions` dla **dowolnego** konta bez sprawdzenia członkostwa; `require_role` odmówi, ale endpointy na `extract_session`/`require_session` (autostart, restart-daemon, auto-lock, settings/paths) przepuszczą obcą sesję — **NAPRAWIONE** `93fdea1`: `require_session`/`require_session_no_touch` sprawdzają teraz członkostwo (pomijane tylko gdy vault jest jeszcze nieinicjalizowany), `settings::get_paths`/`post_restart_daemon` przeszły z `extract_session` na `SessionCaller`, callback Google odrzuca konto spoza vaulta z już przyjętym właścicielem. | czytanie `oauth.rs:228-236` + `acl.rs:78-82` + `settings.rs` |
 | Z9-25 | ⚠️ | `POST /api/metadata-backup/snapshot-local` przyjmuje dowolną ścieżkę wyjściową; rozszerzenie wymuszone na `.enc`, ale plaintextowy `*.tmp.db` powstaje po drodze w katalogu wskazanym przez wywołującego | czytanie `maintenance.rs:603-630` + `disaster_recovery.rs:537` |
 | Z9-26 | ✅ | `GET /api/ingest` bez kontroli dostępu zwraca `file_path` każdego zadania — pełne ścieżki plików użytkownika — **NAPRAWIONE** `5e398a6`. | czytanie `maintenance.rs:764-785` |
 | Z9-27 | ⚠️ | Przy zablokowanym Skarbcu `google_refresh_token` zostaje w `users` w plaintekście do najbliższego odblokowania — świadome, ale wbrew regule Zero-Knowledge z `CLAUDE.md` | czytanie `oauth.rs:212-226` |
