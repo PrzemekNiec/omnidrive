@@ -1,6 +1,7 @@
 use super::ApiState;
 use super::error::ApiError;
 use super::gate::SessionCaller;
+use crate::acl;
 use crate::db;
 use crate::disaster_recovery;
 use crate::runtime_paths::RuntimePaths;
@@ -238,8 +239,10 @@ async fn get_auth_session(
 /// POST /api/auth/logout -- invalidate current session
 async fn post_auth_logout(
     State(state): State<ApiState>,
-    SessionCaller(session): SessionCaller,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = acl::authenticate_session(&state.pool, &headers).await?;
+
     crate::lock_flow::force_lock_and_dismount(
         &state.pool,
         &state.vault_keys,

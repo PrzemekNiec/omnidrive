@@ -206,6 +206,18 @@ async fn get_google_callback(
         message: "user_lookup_failed".to_string(),
     })?;
 
+    if let Some(vault) = db::get_vault_params(&state.pool).await? {
+        let has_members = db::count_vault_members(&state.pool, &vault.vault_id).await? > 0;
+        let is_member = db::get_vault_member(&state.pool, &user_id, &vault.vault_id)
+            .await?
+            .is_some();
+        if has_members && !is_member {
+            return Err(ApiError::Forbidden {
+                message: "user is not a vault member".to_string(),
+            });
+        }
+    }
+
     // C.1: if a refresh token arrived, seal it with the Vault Key if the vault is
     // unlocked; otherwise keep the plaintext temporarily — the migration in
     // VaultKeyStore::unlock() will seal it on the next successful unlock.

@@ -4,7 +4,6 @@ use crate::runtime_paths::RuntimePaths;
 use crate::windows_hello;
 
 use axum::extract::State;
-use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -12,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use super::ApiState;
-use super::auth::extract_session;
 use super::error::ApiError;
 use super::gate::{AdminCaller, SessionCaller};
 
@@ -48,15 +46,7 @@ pub fn routes() -> Router<ApiState> {
         )
 }
 
-async fn get_paths(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-) -> Result<Json<SettingsPathsResponse>, ApiError> {
-    extract_session(&state.pool, &headers)
-        .await
-        .ok_or(ApiError::Unauthorized {
-            message: "session required".into(),
-        })?;
+async fn get_paths(_: SessionCaller) -> Result<Json<SettingsPathsResponse>, ApiError> {
     let paths = RuntimePaths::detect();
     Ok(Json(SettingsPathsResponse {
         log_dir: paths.log_dir.to_string_lossy().into_owned(),
@@ -82,14 +72,8 @@ async fn post_autostart(
 
 async fn post_restart_daemon(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    _: SessionCaller,
 ) -> Result<impl IntoResponse, ApiError> {
-    extract_session(&state.pool, &headers)
-        .await
-        .ok_or(ApiError::Unauthorized {
-            message: "session required".into(),
-        })?;
-
     // Signal the API server's graceful-shutdown future; main.rs select! then
     // runs the normal cleanup path (SyncRoot, virtual drive, pool close).
     let _ = state.daemon_shutdown_tx.send(true);

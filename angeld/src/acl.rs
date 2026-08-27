@@ -61,7 +61,7 @@ pub async fn require_role(
     min_role: Role,
 ) -> Result<AuthorizedCaller, ApiError> {
     // 1. Extract & validate session token
-    let session = extract_session_or_401(pool, headers).await?;
+    let session = authenticate_session(pool, headers).await?;
 
     // 2. Resolve vault_id
     let vault_id = match db::get_vault_params(pool).await? {
@@ -100,14 +100,14 @@ pub async fn require_role(
     })
 }
 
-/// Like `require_role` but only authenticates (any valid session, no
-/// vault membership required).  Used for endpoints that don't need
-/// role-based authorization (e.g. health checks with auth).
+/// Authenticate the session token and additionally require vault membership
+/// (skipped when the vault isn't initialized yet — mirrors `AdminAfterOnboarding`).
 pub async fn require_session(
     pool: &SqlitePool,
     headers: &HeaderMap,
 ) -> Result<db::UserSession, ApiError> {
-    let s = extract_session_or_401(pool, headers).await?;
+    let s = authenticate_session(pool, headers).await?;
+    ensure_vault_member(pool, &s.user_id).await?;
     Ok(s)
 }
 
@@ -116,12 +116,16 @@ pub async fn require_session_no_touch(
     pool: &SqlitePool,
     headers: &HeaderMap,
 ) -> Result<db::UserSession, ApiError> {
-    extract_session_or_401(pool, headers).await
+    let s = authenticate_session(pool, headers).await?;
+    ensure_vault_member(pool, &s.user_id).await?;
+    Ok(s)
 }
 
 // ── Internal helpers ────────────────────────────────────────────────
 
-async fn extract_session_or_401(
+/// Extract and validate a session token from the `Authorization: Bearer <token>`
+/// header. Pure authentication — no vault membership check.
+pub async fn authenticate_session(
     pool: &SqlitePool,
     headers: &HeaderMap,
 ) -> Result<db::UserSession, ApiError> {
@@ -138,6 +142,20 @@ async fn extract_session_or_401(
         .ok_or_else(|| ApiError::Unauthorized {
             message: "invalid or expired session token".to_string(),
         })
+}
+
+async fn ensure_vault_member(pool: &SqlitePool, user_id: &str) -> Result<(), ApiError> {
+    let vault_id = match db::get_vault_params(pool).await? {
+        Some(v) => v.vault_id,
+        None => return Ok(()),
+    };
+
+    db::get_vault_member(pool, user_id, &vault_id)
+        .await?
+        .ok_or_else(|| ApiError::Forbidden {
+            message: "user is not a vault member".to_string(),
+        })?;
+    Ok(())
 }
 
 // ── Tests ───────────────────────────────────────────────────────────

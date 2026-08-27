@@ -271,7 +271,7 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
         "GET",
         "/api/settings/paths",
         "/api/settings/paths",
-        Expect::Role,
+        Expect::Session,
     ),
     (
         "GET",
@@ -542,7 +542,7 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
         "POST",
         "/api/settings/restart-daemon",
         "/api/settings/restart-daemon",
-        Expect::Role,
+        Expect::Session,
     ),
     (
         "POST",
@@ -714,6 +714,71 @@ async fn routes_behind_a_gate_reject_requests_without_a_token()
         "endpointy bez poprawnej bramki:\n{}",
         offenders.join("\n")
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_gate_rejects_non_member_but_allows_owner_and_logout()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+    let owner_token = h.session_token.clone();
+
+    let pool = h.connect_db().await?;
+    let stranger_id = angeld::db::new_user_id();
+    let device_id = angeld::db::new_user_id();
+    angeld::db::create_user(&pool, &stranger_id, "Stranger", None, "local", None).await?;
+    angeld::db::create_device(&pool, &device_id, &stranger_id, "StrangerPC", &[0u8; 32]).await?;
+    let stranger_token = angeld::db::generate_session_token();
+    angeld::db::create_user_session(
+        &pool,
+        &stranger_token,
+        &stranger_id,
+        &device_id,
+        angeld::db::SESSION_TTL_SECONDS,
+    )
+    .await?;
+    pool.close().await;
+
+    h.session_token = Some(stranger_token.clone());
+
+    let resp = h
+        .request_with_token("POST", "/api/settings/restart-daemon", None)
+        .await?;
+    assert_eq!(
+        resp.status, 403,
+        "obcy token bez czlonkostwa nie moze zresetowac daemona: {}",
+        resp.body
+    );
+
+    let resp = h
+        .request_with_token("POST", "/api/auto-lock/touch", None)
+        .await?;
+    assert_eq!(
+        resp.status, 403,
+        "obcy token bez czlonkostwa nie moze dotknac timera auto-locka: {}",
+        resp.body
+    );
+
+    let resp = h
+        .request_with_token("POST", "/api/auth/logout", None)
+        .await?;
+    assert_ne!(
+        resp.status, 403,
+        "logout musi dzialac nawet dla nie-czlonka, inaczej obcy token przezyje do konca TTL: {}",
+        resp.body
+    );
+
+    h.session_token = owner_token;
+    let resp = h
+        .request_with_token("POST", "/api/settings/restart-daemon", None)
+        .await?;
+    assert_ne!(
+        resp.status, 403,
+        "wlasciciel skarbca nie moze dostac 403 na wlasnej trasie: {}",
+        resp.body
+    );
+
     Ok(())
 }
 
