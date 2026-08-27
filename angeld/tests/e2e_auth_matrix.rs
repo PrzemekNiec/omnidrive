@@ -783,6 +783,59 @@ async fn session_gate_rejects_non_member_but_allows_owner_and_logout()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn logout_by_non_member_does_not_lock_the_owners_vault()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut h = DaemonHarness::spawn().await?;
+    h.unlock().await?;
+    let owner_token = h.session_token.clone();
+
+    let pool = h.connect_db().await?;
+    let stranger_id = angeld::db::new_user_id();
+    let device_id = angeld::db::new_user_id();
+    angeld::db::create_user(&pool, &stranger_id, "Stranger", None, "local", None).await?;
+    angeld::db::create_device(&pool, &device_id, &stranger_id, "StrangerPC", &[0u8; 32]).await?;
+    let stranger_token = angeld::db::generate_session_token();
+    angeld::db::create_user_session(
+        &pool,
+        &stranger_token,
+        &stranger_id,
+        &device_id,
+        angeld::db::SESSION_TTL_SECONDS,
+    )
+    .await?;
+    pool.close().await;
+
+    h.session_token = Some(stranger_token);
+    let resp = h
+        .request_with_token("POST", "/api/auth/logout", None)
+        .await?;
+    assert_ne!(
+        resp.status, 403,
+        "logout musi skasowac wlasny wiersz sesji nawet dla nie-czlonka: {}",
+        resp.body
+    );
+
+    let repeat = h
+        .request_with_token("POST", "/api/auth/logout", None)
+        .await?;
+    assert_eq!(
+        repeat.status, 401,
+        "po logoucie token obcego musi byc martwy, inaczej wiersz sesji przezyl: {}",
+        repeat.body
+    );
+
+    h.session_token = owner_token;
+    let status = h.get_json("/api/auto-lock/status").await?;
+    assert_ne!(
+        status["state"].as_str(),
+        Some("locked"),
+        "logout nie-czlonka zamknal Skarbiec wlasciciela i odmontowal dysk: {status}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn vault_status_never_returns_a_session_token() -> Result<(), Box<dyn std::error::Error>> {
     let mut h = DaemonHarness::spawn().await?;
     h.unlock().await?;

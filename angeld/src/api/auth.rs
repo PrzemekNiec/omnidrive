@@ -243,13 +243,15 @@ async fn post_auth_logout(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let session = acl::authenticate_session(&state.pool, &headers).await?;
 
-    crate::lock_flow::force_lock_and_dismount(
-        &state.pool,
-        &state.vault_keys,
-        crate::lock_flow::LockReason::Logout,
-        Some((session.user_id.as_str(), session.device_id.as_str())),
-    )
-    .await;
+    if acl::is_vault_member(&state.pool, &session.user_id).await? {
+        crate::lock_flow::force_lock_and_dismount(
+            &state.pool,
+            &state.vault_keys,
+            crate::lock_flow::LockReason::Logout,
+            Some((session.user_id.as_str(), session.device_id.as_str())),
+        )
+        .await;
+    }
 
     let deleted = db::delete_user_session(&state.pool, &session.token).await?;
     if deleted {

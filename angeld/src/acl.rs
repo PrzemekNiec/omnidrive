@@ -144,18 +144,27 @@ pub async fn authenticate_session(
         })
 }
 
-async fn ensure_vault_member(pool: &SqlitePool, user_id: &str) -> Result<(), ApiError> {
+/// Reports `true` while the vault has no parameters yet — before initialization there is
+/// nobody to be a member of, so callers must not treat that state as an outsider.
+pub async fn is_vault_member(pool: &SqlitePool, user_id: &str) -> Result<bool, ApiError> {
     let vault_id = match db::get_vault_params(pool).await? {
         Some(v) => v.vault_id,
-        None => return Ok(()),
+        None => return Ok(true),
     };
 
-    db::get_vault_member(pool, user_id, &vault_id)
+    Ok(db::get_vault_member(pool, user_id, &vault_id)
         .await?
-        .ok_or_else(|| ApiError::Forbidden {
+        .is_some())
+}
+
+async fn ensure_vault_member(pool: &SqlitePool, user_id: &str) -> Result<(), ApiError> {
+    if is_vault_member(pool, user_id).await? {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden {
             message: "user is not a vault member".to_string(),
-        })?;
-    Ok(())
+        })
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
