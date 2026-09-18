@@ -19,8 +19,8 @@ przy pierwszym przejściu zostały pominięte. Przegląd zamknął się na **147
 **43 × 🔴**, **100 × ⚠️**, **4 × ✅** (naprawione w trakcie: Z4-01, Z6-04, Z6-05, Z6-06).
 Sześć sesji, 121 plików `.rs`, ~48 000 linii kodu plus ~7600 linii statyków.
 
-**Stan rejestru po Fazie 0 i w trakcie Fazy 1 (2026-09-18): 152 pozycje** — **33 × 🔴**,
-**87 × ⚠️**, **32 × ✅** (Z9-24 naprawione w WP1.4 `93fdea1`; Z8-01 naprawione w WP6.1 `5d59278`; **Z10-20** dołożone przy
+**Stan rejestru po Fazie 0 i w trakcie Fazy 1 (2026-09-18): 152 pozycje** — **32 × 🔴**,
+**86 × ⚠️**, **34 × ✅** (Z10-01 i Z10-04 naprawione w WP1.1 `a5aabc6`; Z9-24 naprawione w WP1.4 `93fdea1`; Z8-01 naprawione w WP6.1 `5d59278`; **Z10-20** dołożone przy
 weryfikacji kontrolera tego samego pakietu i naprawione `3c8d61d`). Doszły trzy pozycje (**Z10-16**, **Z10-17** i **Z10-18** — wykryte przy weryfikacji Fazy 0
 i przy pierwszym zielonym przejściu hooka pre-push), z czego Z10-16, Z10-17 i Z10-15 są już naprawione,
 naprawionych jest 22 nowych (WP1.3 zamknęło Z11-03 i Z9-15), a siedem zmieniło wagę po przyjęciu kryterium skutku.
@@ -331,10 +331,10 @@ i **Z11-05**.
 | Z9-29 | ⚠️ | `normalize_filesystem_api_path` zduplikowane w `pipe_server::normalize_path` | czytanie + komentarz |
 | Z9-30 | ✅ | `get_my_wrapped_key` (Viewer) oddaje owinięty VK dowolnego urządzenia — **NAPRAWIONE** `c4e5c40`. | czytanie |
 | Z9-31 | ⚠️ | `restart-daemon` tylko sygnalizuje shutdown; nic w daemonie go nie podnosi | czytanie |
-| Z10-01 | 🔴 | CLI nie wysyła `Authorization` — 6 z 12 komend kończy się 403 (`ls`, `history`, `restore`, `pin`, `unpin`, `backup-now`) | grep + audyt ACL |
+| Z10-01 | ✅ | CLI nie wysyła `Authorization` — 6 z 12 komend kończy się 403 (`ls`, `history`, `restore`, `pin`, `unpin`, `backup-now`). **NAPRAWIONE** `a5aabc6` (WP1.1): `omnidrive login` (`POST /api/unlock` → plik sesji z ACL) + nagłówek `Authorization` dokładany raz przez `Client::builder().default_headers`. | grep + audyt ACL |
 | Z10-02 | 🔴 | `omnidrive recovery restore` nadpisuje żywą `omnidrive.db` migawką z chmury — bez grafta, kopii i potwierdzenia | czytanie |
 | Z10-03 | 🔴 | Tray i deinstalator zabijają daemona `taskkill /F` zamiast graceful shutdown → teardown z Z7-05 przepada, plaintext zostaje | czytanie + `.iss` |
-| Z10-04 | ⚠️ | `recovery restore` wymaga kompletu 3 dostawców w env — na maszynie z instalatora nie ruszy | czytanie |
+| Z10-04 | ✅ | `recovery restore` wymaga kompletu 3 dostawców w env — na maszynie z instalatora nie ruszy. **NAPRAWIONE** `a5aabc6` (WP1.1): gdy `omnidrive.db` istnieje, CLI czyta konfigurację dostawców z bazy (`connect_existing_db` + `from_onboarding_db_all`) zamiast z env. | czytanie |
 | Z10-05 | ✅ | Tray odpytuje `/api/vault/status` co 3 s, każde wywołanie mintuje sesję (Z9-01) — **NAPRAWIONE** `16a2fa2`. Skutek Z9-01, nie osobna wada — token znika u źródła. | czytanie + sonda |
 | Z10-06 | ⚠️ | `omnidrive_shell_ext.dll` budowany i kopiowany do payloadu, ale instalator go nie instaluje ani nie rejestruje | grep po `.iss` |
 | Z10-07 | ⚠️ | `angelctl` to `println!("Hello, world!")`, a buduje się, ląduje w payloadzie i wymaga bumpu wersji | czytanie |
@@ -2727,14 +2727,15 @@ teraz członkostwo w vaulcie (pomijane tylko dopóki vault nie ma jeszcze żadne
 Google odrzuca `ApiError::Forbidden` zamiast wystawić sesję kontu spoza vaulta z już przyjętym
 właścicielem.
 
-**Grupa D — sondy stanu.** `GET /api/auth/session`, `GET /api/health/vault`. `/api/auth/session` jest z
-założenia pytaniem „czy mam sesję?" i przy jej braku odpowiada `{"valid": false}` z kodem 200 — bramka
-zamieniłaby odpowiedź na 401, czyli dokładnie tę samą informację, tylko trudniejszą do odczytania dla
-klienta. `/api/health/vault` ma ten sam kształt co `/api/health` i `/api/diagnostics/health` (oba
-publiczne od Zadania 6) i oddaje wyłącznie zbiorcze liczniki packów (`total_packs`, `healthy_packs`,
-`degraded_packs`, `unreadable_packs`), bez ścieżek ani identyfikatorów plików. **Warunek czasowy:** tę
-trasę woła `omnidrive-cli`, które nie ma żadnej tożsamości do F1/WP1.1 — zabramkowanie jej teraz zepsułoby
-działające narzędzie. Publiczna do WP1.1, potem `ViewerCaller`.
+**Grupa D — sondy stanu.** `GET /api/auth/session`. Jest z założenia pytaniem „czy mam sesję?" i przy
+jej braku odpowiada `{"valid": false}` z kodem 200 — bramka zamieniłaby odpowiedź na 401, czyli
+dokładnie tę samą informację, tylko trudniejszą do odczytania dla klienta. **Stan po WP1.1:**
+`GET /api/health/vault` opuściła tę grupę. Miała ten sam kształt co `/api/health` i
+`/api/diagnostics/health` (oba publiczne od Zadania 6) i oddawała wyłącznie zbiorcze liczniki packów
+(`total_packs`, `healthy_packs`, `degraded_packs`, `unreadable_packs`), bez ścieżek ani identyfikatorów
+plików — ale była publiczna tylko dlatego, że `omnidrive-cli` nie miał żadnej tożsamości (warunek
+czasowy „publiczna do WP1.1, potem `ViewerCaller`"). CLI ma teraz `omnidrive login` i wysyła
+`Authorization`, więc warunek wygasł: trasa jest za `ViewerCaller` (Z10-01).
 
 Pięć tras onboardingu (`/api/onboarding/setup-provider`, `/complete`, `/bootstrap-local`,
 `/setup-identity`, `/join-existing`) oraz trzy pokrewne (`/api/onboarding/reset`,
@@ -3090,6 +3091,13 @@ z dwóch poprzednich warstw, ale to tutaj widać, **czy reszta systemu jest w og
 
 ## 10.2 CLI, który nie potrafi się uwierzytelnić
 
+> **Stan po WP1.1 (`a5aabc6`, 2026-09-18):** CLI ma teraz `omnidrive login` — woła `POST /api/unlock`
+> i zapisuje `session_token` w `%LOCALAPPDATA%\OmniDrive\cli-session` z ACL tylko dla użytkownika
+> (`win_acl::write_user_only_file`). Każda komenda dokłada nagłówek `Authorization: Bearer` zbudowany
+> raz w `main`, z tokenu w kolejności `--api-token` → `OMNIDRIVE_API_TOKEN` → plik sesji. Tabela
+> niżej i grep na `Authorization` (zero trafień) opisują stan sprzed tej poprawki (Z10-01); trasa
+> `/api/health/vault` przeszła w tym samym pakiecie za `ViewerCaller` (§9.5 Grupa D).
+
 W całym `omnidrive-cli` nie ma ani jednego wystąpienia słów `Authorization`, `Bearer`, `token`
 czy `session` — grep daje zero trafień. Każde żądanie leci bez nagłówka. Zestawienie komend
 z bramkami ustalonymi w warstwie 9:
@@ -3298,10 +3306,10 @@ testów: `subst /D` w `Drop`, nie w `shutdown()`.
 
 | ID | Waga | Rzecz | Potwierdzone jak |
 | --- | --- | --- | --- |
-| Z10-01 | 🔴 | `omnidrive-cli` nie wysyła `Authorization` — grep: 0 trafień. 6 z 12 komend (`ls`, `history`, `restore`, `pin`, `unpin`, `recovery backup-now`) kończy się 403; działają tylko te trafiające w endpointy bez bramki | grep + zestawienie z audytem ACL warstwy 9 |
+| Z10-01 | ✅ | `omnidrive-cli` nie wysyła `Authorization` — grep: 0 trafień. 6 z 12 komend (`ls`, `history`, `restore`, `pin`, `unpin`, `recovery backup-now`) kończy się 403; działają tylko te trafiające w endpointy bez bramki. **NAPRAWIONE** `a5aabc6` (WP1.1): `omnidrive login` zapisuje `session_token` w `%LOCALAPPDATA%\OmniDrive\cli-session` (ACL tylko dla użytkownika), a `--api-token` / `OMNIDRIVE_API_TOKEN` / plik sesji zasilają jeden nagłówek `Authorization` dokładany dla każdej komendy. | grep + zestawienie z audytem ACL warstwy 9 |
 | Z10-02 | 🔴 | `omnidrive recovery restore` nadpisuje **żywą `omnidrive.db`** migawką z chmury: surowe `fs::write`, bez grafta, bez kopii, bez potwierdzenia i bez sprawdzenia, czy daemon trzyma plik | czytanie `main.rs:592-620` + `disaster_recovery.rs:755-764` |
 | Z10-03 | 🔴 | Tray zabija daemona `taskkill /F` zamiast wołać `POST /api/settings/restart-daemon`; to samo robi `[UninstallRun]` instalatora → sekwencja z Z7-05 nie ma szans się wykonać, plaintext zostaje na dysku | czytanie `main.rs:204-248` + `omnidrive.iss` |
-| Z10-04 | ⚠️ | `recovery restore` używa `MetadataBackupProviderManager::from_env()`, które wymaga kompletu trzech dostawców w env (Z4-10) — na maszynie z instalatora sekrety są w bazie, więc komenda nie ruszy | czytanie + `onboarding.rs` |
+| Z10-04 | ✅ | `recovery restore` używa `MetadataBackupProviderManager::from_env()`, które wymaga kompletu trzech dostawców w env (Z4-10) — na maszynie z instalatora sekrety są w bazie, więc komenda nie ruszy. **NAPRAWIONE** `a5aabc6` (WP1.1): gdy `omnidrive.db` istnieje, CLI otwiera ją przez `connect_existing_db` (read-only, bez migracji) i woła `from_onboarding_db_all`, zamykając połączenie przed samym `restore`; bez bazy — dawne `from_env()`. | czytanie + `onboarding.rs` |
 | Z10-05 | ✅ | Tray odpytuje `/api/vault/status` co 3 s, a ten mintuje sesję przy każdym wywołaniu (Z9-01) — 20 nieusuwalnych wierszy `user_sessions` na minutę — **NAPRAWIONE** `16a2fa2`. Skutek Z9-01, nie osobna wada — token znika u źródła. | czytanie `POLL_INTERVAL` + sonda rozkładu odstępów |
 | Z10-06 | ⚠️ | `omnidrive_shell_ext.dll` jest budowany i kopiowany do payloadu, ale `[Files]` go nie instaluje, a nic go nie rejestruje — pipeline sugeruje dostarczenie komponentu, którego nie ma | `ls payload` + grep po `.iss` (0 trafień) |
 | Z10-07 | ⚠️ | `angelctl` to `println!("Hello, world!")`, a mimo to jest w workspace, buduje `angelctl.exe`, leży w payloadzie i podlega bumpowi wersji wg `CLAUDE.md` §3 | czytanie + `ls target/release` |
