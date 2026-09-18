@@ -4,6 +4,17 @@ use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::str::FromStr;
 
+pub async fn connect_existing_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
+    let options = SqliteConnectOptions::from_str(db_url)
+        .map_err(|err| sqlx::Error::Configuration(Box::new(err)))?
+        .create_if_missing(false)
+        .read_only(true);
+    SqlitePoolOptions::new()
+        .min_connections(1)
+        .connect_with(options)
+        .await
+}
+
 #[allow(dead_code)]
 pub async fn init_db(db_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let options = SqliteConnectOptions::from_str(db_url)

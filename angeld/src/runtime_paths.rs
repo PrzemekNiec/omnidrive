@@ -231,7 +231,7 @@ fn normalize_sqlite_path(raw: &str) -> &str {
     }
 }
 
-fn sqlite_url_from_path(path: &Path) -> String {
+pub fn sqlite_url_from_path(path: &Path) -> String {
     format!("sqlite:///{}", path.to_string_lossy().replace('\\', "/"))
 }
 
@@ -282,6 +282,10 @@ fn is_in_installed_location(path: &Path) -> bool {
     }
 
     false
+}
+
+pub fn cli_session_file_path() -> PathBuf {
+    local_app_omnidrive_root().join("cli-session")
 }
 
 fn local_app_omnidrive_root() -> PathBuf {

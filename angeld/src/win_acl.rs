@@ -236,6 +236,19 @@ fn apply_sddl_to_directory(path: &Path, sddl: &str, protected: bool) -> Result<(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+pub fn write_user_only_file(path: &Path, contents: &[u8]) -> Result<(), AclError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::File::create(path)?;
+    let current_user_sid = current_user_sid_string()?;
+    let sddl = format!("D:PAI(A;;FA;;;SY)(A;;FA;;;{current_user_sid})");
+    apply_sddl_to_directory(path, &sddl, true)?;
+    std::fs::write(path, contents)?;
+    Ok(())
+}
+
 #[cfg(unix)]
 fn secure_directory_inner(path: &Path) -> Result<(), AclError> {
     use std::os::unix::fs::PermissionsExt;
@@ -302,4 +315,82 @@ pub(crate) unsafe fn pwstr_to_string(value: windows::core::PWSTR) -> Result<Stri
 #[cfg(target_os = "windows")]
 fn platform_error(err: windows::core::Error) -> AclError {
     AclError::Platform(err.to_string())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_test_file() -> std::path::PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!(
+            "omnidrive_win_acl_test_{}_{}",
+            std::process::id(),
+            n
+        ))
+    }
+
+    #[test]
+    fn user_only_file_dacl_has_only_system_and_current_user() {
+        use std::ffi::OsStr;
+        use std::iter::once;
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Foundation::{HLOCAL, LocalFree};
+        use windows::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+            SDDL_REVISION_1, SE_FILE_OBJECT,
+        };
+        use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+        use windows::core::{PCWSTR, PWSTR};
+
+        let path = unique_test_file();
+        let contents = b"session-token-bytes";
+        write_user_only_file(&path, contents).expect("write_user_only_file");
+
+        let path_w: Vec<u16> = OsStr::new(&path).encode_wide().chain(once(0)).collect();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        let sddl = unsafe {
+            let err = GetNamedSecurityInfoW(
+                PCWSTR(path_w.as_ptr()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                None,
+                None,
+                &mut sd,
+            );
+            assert_eq!(err.0, 0, "GetNamedSecurityInfoW failed: {}", err.0);
+
+            let mut sddl_ptr = PWSTR::null();
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                sd,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut sddl_ptr,
+                None,
+            )
+            .expect("stringify security descriptor");
+            let sddl = pwstr_to_string(sddl_ptr).unwrap();
+            let _ = LocalFree(Some(HLOCAL(sddl_ptr.0 as *mut _)));
+            let _ = LocalFree(Some(HLOCAL(sd.0 as *mut _)));
+            sddl
+        };
+
+        let current_user_sid = current_user_sid_string().unwrap();
+        assert_eq!(sddl.matches("(A;").count(), 2, "sddl={sddl}");
+        assert!(sddl.contains(";;;SY)"), "sddl={sddl}");
+        assert!(sddl.contains(&current_user_sid), "sddl={sddl}");
+        assert!(!sddl.contains(";;;AU)"), "sddl={sddl}");
+        assert!(!sddl.contains(";;;BU)"), "sddl={sddl}");
+        assert!(!sddl.contains(";;;WD)"), "sddl={sddl}");
+        assert!(!sddl.contains(";;;BA)"), "sddl={sddl}");
+
+        let read_back = std::fs::read(&path).expect("read back file contents");
+        assert_eq!(read_back, contents);
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

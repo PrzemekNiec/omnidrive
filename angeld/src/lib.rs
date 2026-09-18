@@ -35,7 +35,7 @@ pub mod uploader;
 pub mod vault;
 pub mod virtual_drive;
 pub mod watcher;
-mod win_acl;
+pub mod win_acl;
 #[cfg(target_os = "windows")]
 pub mod win_session;
 pub mod windows_hello;

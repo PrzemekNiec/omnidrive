@@ -1,11 +1,17 @@
 use angeld::autostart;
+use angeld::db;
 use angeld::disaster_recovery::{MetadataBackupProviderManager, restore_metadata_from_cloud};
-use angeld::runtime_paths::{RuntimePaths, sqlite_db_file_path};
+use angeld::runtime_paths::{
+    RuntimePaths, cli_session_file_path, sqlite_db_file_path, sqlite_url_from_path,
+};
+use angeld::win_acl::write_user_only_file;
 use clap::{Parser, Subcommand};
 use reqwest::Client;
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Deserialize;
 use std::env;
 use std::fmt;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -15,12 +21,16 @@ struct Cli {
     #[arg(long, global = true)]
     api_base: Option<String>,
 
+    #[arg(long, global = true)]
+    api_token: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    Login,
     Status,
     Ls,
     History {
@@ -100,6 +110,11 @@ impl From<reqwest::Error> for CliError {
     fn from(value: reqwest::Error) -> Self {
         Self::Http(value)
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct UnlockResponse {
+    session_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -217,9 +232,28 @@ async fn main() {
         .api_base
         .or_else(|| env::var("OMNIDRIVE_API_BASE").ok())
         .unwrap_or_else(|| "http://127.0.0.1:8787".to_string());
-    let client = Client::new();
+    let token = cli
+        .api_token
+        .or_else(|| env::var("OMNIDRIVE_API_TOKEN").ok())
+        .or_else(|| {
+            std::fs::read_to_string(cli_session_file_path())
+                .ok()
+                .map(|contents| contents.trim().to_string())
+                .filter(|token| !token.is_empty())
+        });
+    let mut default_headers = HeaderMap::new();
+    if let Some(token) = &token {
+        let value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .expect("session token must be a valid header value");
+        default_headers.insert("Authorization", value);
+    }
+    let client = Client::builder()
+        .default_headers(default_headers)
+        .build()
+        .expect("failed to build http client");
 
     let result = match cli.command {
+        Command::Login => login(&client, &api_base).await,
         Command::Status => status(&client, &api_base).await,
         Command::Ls => list_files(&client, &api_base).await,
         Command::History { inode_id } => history(&client, &api_base, inode_id).await,
@@ -250,6 +284,40 @@ async fn main() {
     if let Err(err) = result {
         eprintln!("omnidrive: {err}");
         std::process::exit(1);
+    }
+}
+
+async fn login(client: &Client, api_base: &str) -> Result<(), CliError> {
+    eprint!("Master Password: ");
+    let passphrase = read_password_stdin()
+        .map_err(|err| CliError::Api(format!("failed to read password: {err}")))?;
+
+    let response = client
+        .post(format!("{api_base}/api/unlock"))
+        .json(&serde_json::json!({ "passphrase": passphrase }))
+        .send()
+        .await?;
+    let response = ensure_success(response, "login")?;
+    let unlock: UnlockResponse = response.json().await?;
+    let session_token = unlock.session_token.ok_or_else(|| {
+        CliError::Api("login succeeded but no session_token returned".to_string())
+    })?;
+
+    let path = cli_session_file_path();
+    write_user_only_file(&path, format!("{session_token}\n").as_bytes())
+        .map_err(|err| CliError::Api(format!("failed to save session: {err}")))?;
+
+    println!("Logged in; session saved to {}", path.display());
+    Ok(())
+}
+
+fn read_password_stdin() -> std::io::Result<String> {
+    if std::io::stdin().is_terminal() {
+        rpassword::read_password()
+    } else {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        Ok(line.trim_end_matches(['\r', '\n']).to_string())
     }
 }
 
@@ -346,13 +414,7 @@ async fn pin(client: &Client, api_base: &str, inode_id: i64) -> Result<(), CliEr
         .post(format!("{api_base}/api/files/{inode_id}/pin"))
         .send()
         .await?;
-
-    if !response.status().is_success() {
-        return Err(CliError::Api(format!(
-            "pin failed with status {}",
-            response.status()
-        )));
-    }
+    let response = ensure_success(response, "pin")?;
 
     let result: SmartSyncActionResponse = response.json().await?;
     println!(
@@ -367,13 +429,7 @@ async fn unpin(client: &Client, api_base: &str, inode_id: i64) -> Result<(), Cli
         .post(format!("{api_base}/api/files/{inode_id}/unpin"))
         .send()
         .await?;
-
-    if !response.status().is_success() {
-        return Err(CliError::Api(format!(
-            "unpin failed with status {}",
-            response.status()
-        )));
-    }
+    let response = ensure_success(response, "unpin")?;
 
     let result: SmartSyncActionResponse = response.json().await?;
     println!(
@@ -429,13 +485,7 @@ async fn restore(
         ))
         .send()
         .await?;
-
-    if !response.status().is_success() {
-        return Err(CliError::Api(format!(
-            "restore failed with status {}",
-            response.status()
-        )));
-    }
+    let response = ensure_success(response, "restore")?;
 
     let restored: RestoreRevisionResponse = response.json().await?;
     println!(
@@ -451,13 +501,7 @@ async fn backup_now(client: &Client, api_base: &str) -> Result<(), CliError> {
         .post(format!("{api_base}/api/metadata-backup/backup-now"))
         .send()
         .await?;
-
-    if !response.status().is_success() {
-        return Err(CliError::Api(format!(
-            "backup-now failed with status {}",
-            response.status()
-        )));
-    }
+    let response = ensure_success(response, "backup-now")?;
 
     let backup: BackupNowResponse = response.json().await?;
     println!(
@@ -607,9 +651,24 @@ async fn restore_from_cloud() -> Result<(), CliError> {
     let passphrase = rpassword::read_password()
         .map_err(|err| CliError::Api(format!("failed to read password: {err}")))?;
 
-    let provider_manager = MetadataBackupProviderManager::from_env()
-        .await
-        .map_err(|err| CliError::Api(format!("failed to initialize recovery providers: {err}")))?;
+    let provider_manager = if output_db_path.exists() {
+        let pool = db::connect_existing_db(&sqlite_url_from_path(&output_db_path))
+            .await
+            .map_err(|err| CliError::Api(format!("failed to open existing database: {err}")))?;
+        let manager = MetadataBackupProviderManager::from_onboarding_db_all(&pool)
+            .await
+            .map_err(|err| {
+                CliError::Api(format!("failed to initialize recovery providers: {err}"))
+            })?;
+        pool.close().await;
+        manager
+    } else {
+        MetadataBackupProviderManager::from_env()
+            .await
+            .map_err(|err| {
+                CliError::Api(format!("failed to initialize recovery providers: {err}"))
+            })?
+    };
 
     restore_metadata_from_cloud(&provider_manager, &passphrase, &output_db_path, None)
         .await
@@ -638,13 +697,29 @@ fn unregister_service_autostart() -> Result<(), CliError> {
 
 async fn get_json<T: for<'de> Deserialize<'de>>(client: &Client, url: &str) -> Result<T, CliError> {
     let response = client.get(url).send().await?;
-    if !response.status().is_success() {
-        return Err(CliError::Api(format!(
-            "request to {url} failed with status {}",
-            response.status()
-        )));
-    }
+    let response = ensure_success(response, &format!("request to {url}"))?;
     Ok(response.json::<T>().await?)
+}
+
+fn ensure_success(
+    response: reqwest::Response,
+    context: &str,
+) -> Result<reqwest::Response, CliError> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+
+    let status = response.status();
+    let hint = if status == reqwest::StatusCode::UNAUTHORIZED
+        || status == reqwest::StatusCode::FORBIDDEN
+    {
+        " (run `omnidrive login`)"
+    } else {
+        ""
+    };
+    Err(CliError::Api(format!(
+        "{context} failed with status {status}{hint}"
+    )))
 }
 
 fn human_bytes(bytes: u64) -> String {

@@ -228,7 +228,7 @@ const AUTH_MATRIX: &[(&str, &str, &str, Expect)] = &[
         "GET",
         "/api/health/vault",
         "/api/health/vault",
-        Expect::Public,
+        Expect::Role,
     ),
     (
         "GET",

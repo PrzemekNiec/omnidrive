@@ -1564,6 +1564,7 @@
       degraded: { dot: 'bg-tertiary',   label: 'text-tertiary',   border: 'border-tertiary/20',   bg: 'bg-tertiary/10',   pulse: '' },
       error:    { dot: 'bg-error',      label: 'text-error',      border: 'border-error/20',      bg: 'bg-error/10',      pulse: '' },
       loading:  { dot: 'bg-slate-400',  label: 'text-slate-400',  border: 'border-slate-500/20',  bg: 'bg-slate-500/10',  pulse: 'pulse-secondary' },
+      locked:   { dot: 'bg-slate-400',  label: 'text-slate-400',  border: 'border-slate-500/20',  bg: 'bg-slate-500/10',  pulse: '' },
     };
     let currentPillState = 'loading';
 
@@ -1577,6 +1578,7 @@
       if (state === 'ok') return 'Skarbiec: OK';
       if (state === 'degraded') return `Skarbiec: ${vault.degraded_packs} zdegradowanych`;
       if (state === 'error') return `Skarbiec: ${vault.unreadable_packs} nieosiągalnych`;
+      if (state === 'locked') return 'Skarbiec: zablokowany';
       return 'Skarbiec: ładowanie';
     }
 
@@ -1604,8 +1606,12 @@
     }
 
     async function fetchSystemStatus() {
+      if (!VAULT_STATE.sessionToken) {
+        applyPillState('locked', {});
+        return;
+      }
       try {
-        const res = await fetch('/api/health/vault', { headers: { 'Accept': 'application/json' } });
+        const res = await fetch('/api/health/vault', { headers: vaultAuthHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const vault = await res.json();
         const state = deriveVaultState(vault);

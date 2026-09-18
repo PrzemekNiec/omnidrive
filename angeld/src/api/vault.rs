@@ -130,6 +130,7 @@ pub(crate) fn routes() -> Router<ApiState> {
 
 async fn get_vault_health(
     State(state): State<ApiState>,
+    _: ViewerCaller,
 ) -> Result<Json<VaultHealthResponse>, ApiError> {
     let summary = db::get_vault_health_summary(&state.pool).await?;
     Ok(Json(VaultHealthResponse {
