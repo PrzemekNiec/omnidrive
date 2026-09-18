@@ -19,8 +19,8 @@ przy pierwszym przejściu zostały pominięte. Przegląd zamknął się na **147
 **43 × 🔴**, **100 × ⚠️**, **4 × ✅** (naprawione w trakcie: Z4-01, Z6-04, Z6-05, Z6-06).
 Sześć sesji, 121 plików `.rs`, ~48 000 linii kodu plus ~7600 linii statyków.
 
-**Stan rejestru po Fazie 0 i w trakcie Fazy 1 (2026-08-27): 152 pozycje** — **34 × 🔴**,
-**87 × ⚠️**, **31 × ✅** (Z9-24 naprawione w WP1.4 `93fdea1`; **Z10-20** dołożone przy
+**Stan rejestru po Fazie 0 i w trakcie Fazy 1 (2026-09-18): 152 pozycje** — **33 × 🔴**,
+**87 × ⚠️**, **32 × ✅** (Z9-24 naprawione w WP1.4 `93fdea1`; Z8-01 naprawione w WP6.1 `5d59278`; **Z10-20** dołożone przy
 weryfikacji kontrolera tego samego pakietu i naprawione `3c8d61d`). Doszły trzy pozycje (**Z10-16**, **Z10-17** i **Z10-18** — wykryte przy weryfikacji Fazy 0
 i przy pierwszym zielonym przejściu hooka pre-push), z czego Z10-16, Z10-17 i Z10-15 są już naprawione,
 naprawionych jest 22 nowych (WP1.3 zamknęło Z11-03 i Z9-15), a siedem zmieniło wagę po przyjęciu kryterium skutku.
@@ -44,8 +44,8 @@ takim przedsięwzięciu.
 1. **Uwierzytelnienie API jest pozorne.** `Z9-01` (`GET /api/vault/status` bez auth wystawia
    token sesji) znosi działanie każdego `require_role` w projekcie, a `Z9-21` (`rotate-key`
    bez znajomości starego hasła) zamienia ten token w przejęcie Skarbca. Do tego trzy
-   niezależne kanały omijające API w całości: `Z8-01` (Named Pipe dla `Everyone`),
-   `Z8-02` (`trusted = 1` z broadcastu UDP), `Z9-02` („Windows Hello" bez auth, przez CSRF).
+   niezależne kanały omijające API w całości: `Z8-01` (Named Pipe dla `Everyone`, naprawione
+   w WP6.1), `Z8-02` (`trusted = 1` z broadcastu UDP), `Z9-02` („Windows Hello" bez auth, przez CSRF).
 2. **Cross-device nie działa end-to-end.** `Z8-03` blokuje przeszczep na urządzeniu, które
    kiedykolwiek się odblokowało, a `Z8-04` psuje odczyt plików po przeszczepie, który się uda.
    To jest ta sama klasa co naprawione `Z4-01`, tylko na styku dwóch maszyn.
@@ -282,7 +282,7 @@ i **Z11-05**.
 | Z7-16 | ⚠️ | `.omnidrive_acl_probe` zostaje w sync roocie przy ubiciu procesu | czytanie |
 | Z7-17 | ⚠️ | Hartowanie ACL wyłączone w buildach debug | czytanie |
 | Z7-18 | ⚠️ | `evict_unpinned_hydrated_files` bez wywołujących — brak eksmisji cache'u | grep: 0 wywołujących |
-| Z8-01 | 🔴 | Named Pipe z DACL `Everyone GR/GW`, zero weryfikacji wywołującego — 6 komend omija `acl.rs` | czytanie SDDL + `[Files]` w `.iss` |
+| Z8-01 | ✅ | Named Pipe z DACL `Everyone GR/GW`, zero weryfikacji wywołującego — 6 komend omija `acl.rs`. **NAPRAWIONE** `5d59278` (WP6.1): DACL na SID użytkownika + weryfikacja `explorer.exe` | czytanie SDDL + `[Files]` w `.iss` |
 | Z8-02 | 🔴 | `trusted = 1` na podstawie samego broadcastu UDP → plaintext chunków dla dowolnego hosta w LAN | czytanie + `db/device_identity.rs:237` |
 | Z8-03 | 🔴 | `PRAGMA foreign_keys = OFF` w transakcji to no-op → `DELETE FROM users` wywala graft o `user_sessions` | sonda SQLite (kopia + ROLLBACK) |
 | Z8-04 | 🔴 | Graft nie kopiuje `pack_deks`; fallback bierze zły DEK dla każdego packa poza ostatnim i utrwala błąd | grep + sonda obu zapytań |
@@ -2437,6 +2437,15 @@ ma `last_error = excluded.last_error`, czyli czyści błąd. Backoff gryzie tylk
 
 ## 8.8 Named Pipe — kanał sterowania bez uwierzytelnienia
 
+> **Stan po WP6.1 (`5d59278`, 2026-09-18):** DACL zawężony do SID użytkownika procesu `angeld`
+> (demon startuje z HKCU `Run`, nie jako usługa — komentarz o „elevowanym daemonie" opisywał
+> konfigurację, która nie istnieje), klient weryfikowany po pełnej ścieżce obrazu
+> `%SystemRoot%\explorer.exe` przed odczytem pierwszej linii, błąd utworzenia instancji ponawiany
+> co 5 s zamiast kończyć serwer. Pozostałe otwarte: `GENERIC_WRITE` zawiera
+> `FILE_CREATE_PIPE_INSTANCE`, więc proces **tego samego** użytkownika może dostawić instancję
+> i przechwycić klienta — zawężenie do `CC`/`DC` wymaga zmiany praw żądanych przez DLL (WP1.2).
+> Poniższy opis to stan z przeglądu, zachowany jako zapis historyczny.
+
 ```rust
 const SDDL_EVERYONE_RW: &str = "D:(A;;GRGW;;;WD)\0";
 ```
@@ -2524,7 +2533,7 @@ co miały robić, a nie że po całej operacji urządzenie potrafi odczytać pli
 
 | ID | Waga | Rzecz | Potwierdzone jak |
 | --- | --- | --- | --- |
-| Z8-01 | 🔴 | Named Pipe z DACL `Everyone GR/GW` i zerową weryfikacją wywołującego — dowolny lokalny proces wymusza hydratację i zmienia politykę ochrony pliku, omijając `acl.rs`. Instalator nie wgrywa DLL-a rozszerzenia, więc pipe stoi otwarty bez legalnego klienta | czytanie SDDL + `[Files]` w `installer/omnidrive.iss` |
+| Z8-01 | ✅ | Named Pipe z DACL `Everyone GR/GW` i zerową weryfikacją wywołującego — dowolny lokalny proces wymusza hydratację i zmienia politykę ochrony pliku, omijając `acl.rs`. Instalator nie wgrywa DLL-a rozszerzenia, więc pipe stoi otwarty bez legalnego klienta. **NAPRAWIONE** `5d59278` (WP6.1): DACL zawężone do SID użytkownika procesu `angeld`, klient weryfikowany po pełnej ścieżce obrazu (`explorer.exe`), retry co 5 s przy błędzie tworzenia instancji | czytanie SDDL + `[Files]` w `installer/omnidrive.iss` |
 | Z8-02 | 🔴 | `note_peer_seen` ustawia `trusted = 1` na podstawie samego ogłoszenia UDP; `/peer/chunks/{hex}` autoryzuje po dwóch nagłówkach, które sami rozgłaszamy co 5 s → plaintext plików dla dowolnego hosta w LAN (przy odblokowanym Skarbcu) | czytanie + `db/device_identity.rs:237` (`trusted` = 1 na sztywno) |
 | Z8-03 | 🔴 | `PRAGMA foreign_keys = OFF` wewnątrz `BEGIN IMMEDIATE` to no-op → `DELETE FROM users` wywala się o FK z `user_sessions` → cały graft `ROLLBACK`, join-existing niemożliwy na urządzeniu, które kiedykolwiek się odblokowało | sonda SQLite (fk=1 po OFF; DELETE FAIL na kopii bazy roboczej, 131 sesji) |
 | Z8-04 | 🔴 | Graft nie kopiuje `pack_deks`; fallback `dek_for_pack` bierze DEK o najwyższym `key_version` dla inode'a, a packer mintuje DEK na chunk → po dołączeniu wszystkie packi poza ostatnim dostają zły klucz, a `set_pack_dek` utrwala błąd | grep (0 trafień w `graft.rs`) + sonda odwzorowująca oba zapytania |
@@ -3055,7 +3064,7 @@ oraz za `Z8-03`.
 | Z9-26 | ✅ | `GET /api/ingest` bez kontroli dostępu zwraca `file_path` każdego zadania — pełne ścieżki plików użytkownika — **NAPRAWIONE** `5e398a6`. | czytanie `maintenance.rs:764-785` |
 | Z9-27 | ⚠️ | Przy zablokowanym Skarbcu `google_refresh_token` zostaje w `users` w plaintekście do najbliższego odblokowania — świadome, ale wbrew regule Zero-Knowledge z `CLAUDE.md` | czytanie `oauth.rs:212-226` |
 | Z9-28 | ✅ | `try_auto_wrap_vault_key` (z nieuwierzytelnionego `add-device`) pomija komplet kontroli, które robi `post_accept_device`: `enrolled_at`, `revoked_at`, jawne odrzucenie klucza zerowego — **NAPRAWIONE** `048057b`. | czytanie `vault.rs:376-412` vs `:685-704` |
-| Z9-29 | ⚠️ | `normalize_filesystem_api_path` zduplikowane jako `pipe_server::normalize_path`; jedna z kopii obsługuje nieuwierzytelniony pipe (Z8-01) | czytanie obu + komentarz `pipe_server.rs:319` |
+| Z9-29 | ⚠️ | `normalize_filesystem_api_path` zduplikowane jako `pipe_server::normalize_path`; jedna z kopii obsługuje pipe, który od WP6.1 jest już uwierzytelniony (Z8-01 naprawione) | czytanie obu + komentarz `pipe_server.rs:319` |
 | Z9-30 | ✅ | `get_my_wrapped_key` z rolą `Viewer` oddaje owinięty Vault Key dowolnego urządzenia, nie tylko własnego — **NAPRAWIONE** `c4e5c40`. | czytanie `vault.rs:471-524` |
 | Z9-31 | ⚠️ | `POST /api/settings/restart-daemon` mimo nazwy tylko sygnalizuje graceful shutdown; nic w daemonie nie podnosi go z powrotem | czytanie `settings.rs:77-90` |
 | Z2-04 | ✅ | **Korekta:** `delete_expired_oauth_states` **jest** wołane (`oauth.rs:39`). Bez wywołań pozostaje wyłącznie `cleanup_expired_sessions` | grep |
@@ -3303,7 +3312,7 @@ testów: `subst /D` w `Drop`, nie w `shutdown()`.
 | Z10-12 | ⚠️ | `restart_daemon` = `kill` + `sleep(500 ms)` + `spawn`, bez sprawdzenia, czy port się zwolnił i czy proces wstał | czytanie `main.rs:242-248` |
 | Z10-13 | ⚠️ | `taskkill /F /IM angeld.exe` ubija wszystkie instancje, w tym uruchomioną z `target/release` na dev-boxie ([[feedback-lenovo-no-install]]) | czytanie |
 | Z10-14 | ✅ | 19 funkcji testowych na 3372 linie; są testy negatywne uwierzytelnienia, ale wyłącznie dla auto-locka — brak testu przechodzącego listę endpointów zmieniających stan. Tą szczeliną przeszły Z9-01/02/03/20/21 — **NAPRAWIONE** `d2064e0 + d5d345b`. Macierz zielona przy pełnej liście tras (skaner pilnuje w obie strony), nie przy liście nadanej hurtem. | inwentaryzacja testów + grep |
-| Z10-15 | ⚠️ | `e2e_recovery` i `e2e_sync` hardkodują `OMNIDRIVE_DRIVE_LETTER=Y:` i nie wołają `subst /D` w `Drop`; daemon przy zajętym `Y:` bierze pierwszą wolną literę od `D` w górę — stąd porzucone mapowania z [[feedback-e2e-subst-cleanup]] | czytanie testów + `select_mount_drive_letter` |
+| Z10-15 | ✅ | `e2e_recovery` i `e2e_sync` hardkodują `OMNIDRIVE_DRIVE_LETTER=Y:` i nie wołają `subst /D` w `Drop`; daemon przy zajętym `Y:` bierze pierwszą wolną literę od `D` w górę — stąd porzucone mapowania z [[feedback-e2e-subst-cleanup]]. **NAPRAWIONE** `5bba1cc` (szczegóły w rejestrze skróconym) | czytanie testów + `select_mount_drive_letter` |
 
 ---
 
