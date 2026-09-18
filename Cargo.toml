@@ -2,6 +2,9 @@
 members = ["angeld", "angelctl", "omnidrive-cli", "omnidrive-core", "omnidrive-tray", "omnidrive-shell-ext"]
 resolver = "3"
 
+[profile.dev]
+debug = "line-tables-only"
+
 [workspace.dependencies]
 secrecy = { version = "0.10", features = ["serde"] }
 zeroize = { version = "1", features = ["derive"] }
