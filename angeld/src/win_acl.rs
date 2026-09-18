@@ -130,7 +130,7 @@ fn build_sync_root_sddl() -> Result<String, AclError> {
 }
 
 #[cfg(target_os = "windows")]
-fn current_user_sid_string() -> Result<String, AclError> {
+pub(crate) fn current_user_sid_string() -> Result<String, AclError> {
     use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
     use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows::Win32::Security::{TOKEN_QUERY, TOKEN_USER, TokenUser};
@@ -284,7 +284,7 @@ fn apply_sync_root_acl_with_icacls(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-unsafe fn pwstr_to_string(value: windows::core::PWSTR) -> Result<String, AclError> {
+pub(crate) unsafe fn pwstr_to_string(value: windows::core::PWSTR) -> Result<String, AclError> {
     if value.is_null() {
         return Err(AclError::Platform("null PWSTR".to_string()));
     }

@@ -4,6 +4,9 @@
 //!
 //! Request:  `{"action":"free_space","path":"O:\\Documents\\file.pdf"}\n`
 //! Response: `{"ok":true}\n`  or  `{"ok":false,"error":"..."}\n`
+//!
+//! The server accepts connections only from `explorer.exe` running under the same user
+//! account as the `angeld` process.
 
 use crate::db;
 use crate::smart_sync;
@@ -25,8 +28,6 @@ use windows::Win32::System::Pipes::{
 use windows::core::PCWSTR;
 
 const PIPE_NAME: &str = r"\\.\pipe\omnidrive_shellcmd";
-const PIPE_NAME_W: &str = "\\\\.\\pipe\\omnidrive_shellcmd\0";
-const SDDL_EVERYONE_RW: &str = "D:(A;;GRGW;;;WD)\0";
 
 #[derive(Deserialize)]
 struct ShellCommand {
@@ -56,18 +57,67 @@ impl ShellResponse {
     }
 }
 
-/// Create a named pipe instance with a permissive ACL so that shell extension DLLs
-/// running under different security contexts (e.g. non-elevated Explorer) can connect
-/// to an elevated angeld process.
-fn create_pipe_instance(first: bool) -> Result<NamedPipeServer, String> {
+fn current_user_sddl() -> Result<String, String> {
+    let sid = crate::win_acl::current_user_sid_string().map_err(|e| e.to_string())?;
+    Ok(format!("D:(A;;GRGW;;;{sid})"))
+}
+
+fn client_image_path(pipe: &NamedPipeServer) -> Result<String, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    use windows::core::PWSTR;
+
+    unsafe {
+        let handle = HANDLE(pipe.as_raw_handle());
+        let mut pid = 0u32;
+        GetNamedPipeClientProcessId(handle, &mut pid).map_err(|e| format!("client pid: {e}"))?;
+
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+            .map_err(|e| format!("open client process: {e}"))?;
+
+        let mut buf = vec![0u16; 4096];
+        let mut len = buf.len() as u32;
+        let query_result = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
+        let _ = CloseHandle(process);
+        query_result.map_err(|e| format!("query image name: {e}"))?;
+
+        Ok(String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
+/// Compares the full image path, not just the file name, so `C:\Users\x\explorer.exe`
+/// is rejected.
+fn is_trusted_client(image_path: &str, system_root: &str) -> bool {
+    let root = system_root.trim_end_matches(['\\', '/']);
+    let expected = format!("{root}\\explorer.exe");
+    image_path.eq_ignore_ascii_case(&expected)
+}
+
+fn system_root() -> String {
+    std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string())
+}
+
+/// The DACL admits only the current user: the shell extension DLL runs in-process inside
+/// `explorer.exe`, under the same account as `angeld`.
+fn create_pipe_instance(pipe_name: &str, first: bool) -> Result<NamedPipeServer, String> {
     use windows::Win32::Security::Authorization::SDDL_REVISION_1;
 
     unsafe {
-        // Build a security descriptor from SDDL granting Everyone read+write.
-        let sddl: Vec<u16> = SDDL_EVERYONE_RW.encode_utf16().collect();
+        let sddl = current_user_sddl()?;
+        let sddl_w: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
         let mut sd = windows::Win32::Security::PSECURITY_DESCRIPTOR::default();
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            PCWSTR(sddl.as_ptr()),
+            PCWSTR(sddl_w.as_ptr()),
             SDDL_REVISION_1,
             &mut sd,
             None,
@@ -88,9 +138,9 @@ fn create_pipe_instance(first: bool) -> Result<NamedPipeServer, String> {
                 windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0)
             };
 
-        let pipe_name: Vec<u16> = PIPE_NAME_W.encode_utf16().collect();
+        let pipe_name_w: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
         let handle = CreateNamedPipeW(
-            PCWSTR(pipe_name.as_ptr()),
+            PCWSTR(pipe_name_w.as_ptr()),
             open_mode,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES,
@@ -118,15 +168,26 @@ fn create_pipe_instance(first: bool) -> Result<NamedPipeServer, String> {
 /// Starts the Named Pipe server loop.  Spawns one task per incoming connection.
 /// Call from `run_daemon()` via `tokio::spawn`.
 pub async fn run_pipe_server(pool: SqlitePool) {
-    info!("pipe server starting on {PIPE_NAME}");
+    serve(pool, PIPE_NAME).await;
+}
 
-    let mut server = match create_pipe_instance(true) {
-        Ok(s) => s,
-        Err(e) => {
-            error!("failed to create named pipe {PIPE_NAME}: {e}");
-            return;
+async fn next_pipe_instance(pipe_name: &str, first: bool) -> NamedPipeServer {
+    loop {
+        match create_pipe_instance(pipe_name, first) {
+            Ok(s) => return s,
+            Err(e) => {
+                warn!("failed to create named pipe {pipe_name}: {e}, retrying in 5s");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
         }
-    };
+    }
+}
+
+async fn serve(pool: SqlitePool, pipe_name: &str) {
+    info!("pipe server starting on {pipe_name}");
+    let system_root = system_root();
+
+    let mut server = next_pipe_instance(pipe_name, true).await;
 
     loop {
         // Wait for a client (shell extension DLL) to connect.
@@ -140,17 +201,12 @@ pub async fn run_pipe_server(pool: SqlitePool) {
         let connected = server;
 
         // Immediately create a new pipe instance for the next client.
-        server = match create_pipe_instance(false) {
-            Ok(s) => s,
-            Err(e) => {
-                error!("failed to recreate named pipe: {e}");
-                return;
-            }
-        };
+        server = next_pipe_instance(pipe_name, false).await;
 
         let pool = pool.clone();
+        let system_root = system_root.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(connected, &pool).await {
+            if let Err(e) = handle_connection(connected, &pool, &system_root).await {
                 warn!("pipe client error: {e}");
             }
         });
@@ -160,8 +216,30 @@ pub async fn run_pipe_server(pool: SqlitePool) {
 async fn handle_connection(
     pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     pool: &SqlitePool,
+    system_root: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let trusted = match client_image_path(&pipe) {
+        Ok(path) if is_trusted_client(&path, system_root) => true,
+        Ok(path) => {
+            warn!("rejected pipe client: untrusted image path \"{path}\"");
+            false
+        }
+        Err(e) => {
+            warn!("rejected pipe client: could not verify identity: {e}");
+            false
+        }
+    };
+
     let (reader, mut writer) = tokio::io::split(pipe);
+
+    if !trusted {
+        let mut resp_bytes = serde_json::to_vec(&ShellResponse::fail("untrusted client"))?;
+        resp_bytes.push(b'\n');
+        writer.write_all(&resp_bytes).await?;
+        writer.shutdown().await?;
+        return Ok(());
+    }
+
     let mut buf_reader = BufReader::new(reader);
 
     let mut line = String::new();
@@ -356,5 +434,139 @@ fn normalize_path(raw_path: &str) -> Option<String> {
         None
     } else {
         Some(normalized)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn test_pipe_name() -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        format!(
+            "\\\\.\\pipe\\omnidrive_shellcmd_test_{}_{}",
+            std::process::id(),
+            n
+        )
+    }
+
+    #[test]
+    fn sddl_grants_only_current_user() {
+        let sddl = current_user_sddl().expect("current_user_sddl");
+        assert!(sddl.starts_with("D:(A;;GRGW;;;S-1-"), "sddl={sddl}");
+        assert!(!sddl.contains(";WD)"), "sddl={sddl}");
+    }
+
+    #[tokio::test]
+    async fn pipe_dacl_has_single_ace_for_current_user() {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+            SE_KERNEL_OBJECT,
+        };
+        use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+        use windows::core::PWSTR;
+
+        let name = test_pipe_name();
+        let server = create_pipe_instance(&name, true).expect("create test pipe instance");
+        let expected_sid = current_user_sddl()
+            .unwrap()
+            .trim_start_matches("D:(A;;GRGW;;;")
+            .trim_end_matches(')')
+            .to_string();
+
+        unsafe {
+            let handle = HANDLE(server.as_raw_handle());
+            let mut sd = PSECURITY_DESCRIPTOR::default();
+            let err = GetSecurityInfo(
+                handle,
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                None,
+                None,
+                Some(&mut sd),
+            );
+            assert_eq!(err.0, 0, "GetSecurityInfo failed: {}", err.0);
+
+            let mut sddl_ptr = PWSTR::null();
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                sd,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut sddl_ptr,
+                None,
+            )
+            .expect("stringify security descriptor");
+            let sddl = crate::win_acl::pwstr_to_string(sddl_ptr).unwrap();
+            let _ = LocalFree(Some(HLOCAL(sddl_ptr.0 as *mut _)));
+            let _ = LocalFree(Some(HLOCAL(sd.0 as *mut _)));
+
+            assert_eq!(sddl.matches("(A;").count(), 1, "sddl={sddl}");
+            assert!(sddl.contains(&expected_sid), "sddl={sddl}");
+            assert!(!sddl.contains(";;;WD)"), "sddl={sddl}");
+        }
+    }
+
+    #[test]
+    fn is_trusted_client_table() {
+        let root = "C:\\Windows";
+        assert!(is_trusted_client("C:\\Windows\\explorer.exe", root));
+        assert!(is_trusted_client("c:\\windows\\EXPLORER.EXE", root));
+        assert!(!is_trusted_client(
+            "C:\\Windows\\System32\\notepad.exe",
+            root
+        ));
+        assert!(!is_trusted_client("C:\\Users\\x\\explorer.exe", root));
+        assert!(!is_trusted_client("C:\\Windows\\explorer.exe.bak", root));
+        assert!(is_trusted_client(
+            "C:\\Windows\\explorer.exe",
+            "C:\\Windows\\"
+        ));
+    }
+
+    #[tokio::test]
+    async fn server_rejects_non_explorer_client() {
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        let pipe_name = test_pipe_name();
+        let server_name = pipe_name.clone();
+        tokio::spawn(async move {
+            serve(pool, &server_name).await;
+        });
+
+        let client_path = pipe_name.clone();
+        let response = tokio::task::spawn_blocking(move || -> String {
+            use std::io::{BufRead, BufReader, Write};
+
+            let mut file = None;
+            for _ in 0..50 {
+                match std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&client_path)
+                {
+                    Ok(f) => {
+                        file = Some(f);
+                        break;
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                }
+            }
+            let mut file = file.expect("failed to open test pipe as client");
+            let _ = file.write_all(b"{\"action\":\"free_space\",\"path\":\"O:\\\\x\"}\n");
+            let mut reader = BufReader::new(file);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read response");
+            line
+        })
+        .await
+        .unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+        assert_eq!(parsed["ok"], false, "response={response}");
+        assert_eq!(parsed["error"], "untrusted client", "response={response}");
     }
 }
