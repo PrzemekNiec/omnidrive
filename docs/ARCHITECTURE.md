@@ -19,8 +19,8 @@ przy pierwszym przejściu zostały pominięte. Przegląd zamknął się na **147
 **43 × 🔴**, **100 × ⚠️**, **4 × ✅** (naprawione w trakcie: Z4-01, Z6-04, Z6-05, Z6-06).
 Sześć sesji, 121 plików `.rs`, ~48 000 linii kodu plus ~7600 linii statyków.
 
-**Stan rejestru po Fazie 0 i w trakcie Fazy 1 (2026-09-24): 152 pozycje** — **32 × 🔴**,
-**85 × ⚠️**, **35 × ✅** (Z10-18 naprawione w WP1.5 `dd50a35`; Z10-01 i Z10-04 naprawione w WP1.1 `a5aabc6`; Z9-24 naprawione w WP1.4 `93fdea1`; Z8-01 naprawione w WP6.1 `5d59278`; **Z10-20** dołożone przy
+**Stan rejestru po Fazie 0 i w trakcie Fazy 1 (2026-09-24): 153 pozycje** — **31 × 🔴**,
+**84 × ⚠️**, **38 × ✅** (Z7-01, Z10-06 i Z10-09 naprawione w WP1.2 `c8cb7d2`, **Z10-21** dołożone przy pisaniu jego briefu; Z10-18 naprawione w WP1.5 `dd50a35`; Z10-01 i Z10-04 naprawione w WP1.1 `a5aabc6`; Z9-24 naprawione w WP1.4 `93fdea1`; Z8-01 naprawione w WP6.1 `5d59278`; **Z10-20** dołożone przy
 weryfikacji kontrolera tego samego pakietu i naprawione `3c8d61d`). Doszły trzy pozycje (**Z10-16**, **Z10-17** i **Z10-18** — wykryte przy weryfikacji Fazy 0
 i przy pierwszym zielonym przejściu hooka pre-push), z czego Z10-16, Z10-17, Z10-18 i Z10-15 są już naprawione,
 naprawionych jest 22 nowych (WP1.3 zamknęło Z11-03 i Z9-15), a siedem zmieniło wagę po przyjęciu kryterium skutku.
@@ -264,7 +264,7 @@ i **Z11-05**.
 | Z6-14 | ⚠️ | Spool rośnie ~4 MiB na każdą naprawę — nikt nie kasuje pobranych shardów | czytanie + spool |
 | Z6-15 | ⚠️ | Pętle scrubbera i repaira giną na pierwszym błędzie SQLite, poza `tokio::select!` | czytanie |
 | Z6-16 | ⚠️ | `#![allow(dead_code)]` na obu produkcyjnych modułach integralności | grep |
-| Z7-01 | 🔴 | Rejestrowe menu kontekstowe (`shell_integration.rs`) nie wysyła `Authorization` — 5/5 pozycji zwraca 401. **Uściślenie w §8.8:** DLL rozszerzenia to osobna implementacja, chodzi przez Named Pipe (Z8-01), nie przez HTTP | czytanie + grep endpointów |
+| Z7-01 | ✅ | Rejestrowe menu kontekstowe (`shell_integration.rs`) nie wysyła `Authorization` — 5/5 pozycji zwraca 401. **Uściślenie w §8.8:** DLL rozszerzenia to osobna implementacja, chodzi przez Named Pipe (Z8-01), nie przez HTTP — **NAPRAWIONE** `c8cb7d2` (WP1.2, decyzja D1): `shell_integration.rs` usunięty w całości, jedynym menu jest DLL; `audit_shell_state` sprawdza rejestrację DLL (`HKCU\Software\Classes\CLSID\{…}\InprocServer32`), a naprawa powłoki nie rejestruje już menu | czytanie + grep endpointów |
 | Z7-02 | 🔴 | „Windows Hello" to samo DPAPI — brak biometrii, hasło odzyskiwalne przez dowolny proces użytkownika | grep: 0 trafień API Hello |
 | Z7-03 | 🔴 | Bufor po `CryptUnprotectData` niezwolniony i niewyzerowany; hasło jako zwykły `String` | czytanie |
 | Z7-04 | 🔴 | DACL sync roota daje `Authenticated Users` GR/GW/GX, dziedziczenie włączone; wszedł ubocznie w `04a58e7` (commit o testach e2e), brak uzasadnienia | czytanie SDDL + `git log -S` |
@@ -336,10 +336,10 @@ i **Z11-05**.
 | Z10-03 | 🔴 | Tray i deinstalator zabijają daemona `taskkill /F` zamiast graceful shutdown → teardown z Z7-05 przepada, plaintext zostaje | czytanie + `.iss` |
 | Z10-04 | ✅ | `recovery restore` wymaga kompletu 3 dostawców w env — na maszynie z instalatora nie ruszy. **NAPRAWIONE** `a5aabc6` (WP1.1): gdy `omnidrive.db` istnieje, CLI czyta konfigurację dostawców z bazy (`connect_existing_db` + `from_onboarding_db_all`) zamiast z env. | czytanie |
 | Z10-05 | ✅ | Tray odpytuje `/api/vault/status` co 3 s, każde wywołanie mintuje sesję (Z9-01) — **NAPRAWIONE** `16a2fa2`. Skutek Z9-01, nie osobna wada — token znika u źródła. | czytanie + sonda |
-| Z10-06 | ⚠️ | `omnidrive_shell_ext.dll` budowany i kopiowany do payloadu, ale instalator go nie instaluje ani nie rejestruje | grep po `.iss` |
+| Z10-06 | ✅ | `omnidrive_shell_ext.dll` budowany i kopiowany do payloadu, ale instalator go nie instaluje ani nie rejestruje — **NAPRAWIONE** `c8cb7d2`: `[Files]` wgrywa DLL, `[Registry]` rejestruje go **per-user** w `HKCU\Software\Classes` (bez admina, `PrivilegesRequired=lowest` zostaje — HKLM `Approved` działa tylko przy polityce `EnforceShellExtensionSecurity`) i kasuje stare klucze `*\shell\OmniDrive` / `Directory\shell\OmniDrive`; załadowany DLL przed kopiowaniem zmienia nazwę na `*.old`, sprzątane best-effort | grep po `.iss` |
 | Z10-07 | ⚠️ | `angelctl` to `println!("Hello, world!")`, a buduje się, ląduje w payloadzie i wymaga bumpu wersji | czytanie |
 | Z10-08 | ⚠️ | `cfapi_repro.exe` budowany domyślnie obok binarek produkcyjnych (klasa Z1-06) | `ls target/release` |
-| Z10-09 | ⚠️ | Rozszerzenie powłoki hardkoduje `O:\`, a daemon montuje pod pierwszą wolną literą `D..Z` | czytanie obu |
+| Z10-09 | ✅ | Rozszerzenie powłoki hardkoduje `O:\`, a daemon montuje pod pierwszą wolną literą `D..Z` — **NAPRAWIONE** `c8cb7d2`: `mount_virtual_drive` zapisuje faktyczną literę do `%LOCALAPPDATA%\OmniDrive\drive-letter`, `unmount_virtual_drive` kasuje plik tylko przy zgodnej literze; `Initialize` w DLL i `pipe_server::normalize_path` czytają ten plik. Plik zamiast HKCU, bo harnessy e2e przekierowują `LOCALAPPDATA` — wpis w HKCU z testu nadpisałby literę prawdziwego demona | czytanie obu |
 | Z10-10 | ⚠️ | Log rozszerzenia w `%TEMP%` bez rotacji, ze ścieżkami plików Skarbca | czytanie |
 | Z10-11 | ⚠️ | `load_icon` panikuje przy braku PNG, a release nie ma konsoli → tray znika bez śladu | czytanie |
 | Z10-12 | ⚠️ | `restart_daemon` = kill + `sleep(500 ms)` + spawn, bez weryfikacji | czytanie |
@@ -351,6 +351,7 @@ i **Z11-05**.
 | Z10-19 | ⚠️ | `disaster_recovery::tests::degraded_database_uploads_snapshot_without_advancing_latest` pada niedeterministycznie w równoległym przebiegu z `output file already exists`. Zgłoszone przy WP1.3 jako „zastane", ale **dowód był słaby** — przebieg na bazie `5dd726d` po prostu przeszedł, co nie jest dowodem braku wyścigu. Podejrzenie: ta sama klasa co kolizja z Z10-17 (współdzielona nazwa pliku tymczasowego między testami w jednej binarce), tylko w `disaster_recovery.rs`, nie w harnessie. Do zdiagnozowania osobno — dopóki żyje, jest kolejnym powodem, by czerwony przebieg uznawać za szum | obserwacja przy WP1.3 + brak dowodu bazowego |
 | Z10-18 | ✅ | **Regresja z Fazy 0.** Zadanie 6 zabrało trayowi wywołanie `/api/ingest` i przeniosło sygnał do publicznego `/api/health`, ale przeniosło wyłącznie `ingest_failed`. `TrayState::Syncing` nie był już przez nic konstruowany, więc ikona **nigdy nie pokazywała synchronizacji** — przechodziła wprost `Locked → Synced`, także gdy trwał upload. **NAPRAWIONE** `dd50a35` (WP1.5): tray ma tożsamość (token z `tray-session`), więc wraca do bramkowanego `GET /api/ingest` i liczy zadania w stanach `PENDING`/`CHUNKING`/`UPLOADING` — **inaczej niż zapowiadał ten wpis**, bez dokładania licznika do publicznego `/api/health`. Logika w czystych `classify()` i `count_active_ingest_jobs()`, 6 testów jednostkowych; brak tokenu albo 401 daje zero zadań, nie stan błędu. | `cargo clippy --workspace` + czytanie `omnidrive-tray/src/main.rs:29-40,105-151` |
 | Z10-20 | ✅ | `POST /api/auth/logout` woła `force_lock_and_dismount`, czyli **globalny** zamek na `VaultKeyStore` całego procesu plus odmontowanie `O:` — nie wygaszenie jednej sesji. Bramka jest tam celowo czysto uwierzytelniająca (WP1.4, pułapka 2: pod kontrolą członkostwa obcy token nie dałby się skasować i przeżyłby do końca TTL), więc po `93fdea1` posiadacz sesji spoza `vault_members` dostaje 403 na wszystkich pozostałych trasach, ale wciąż może w pętli zamykać Skarbiec właściciela. Stan zastany, nie regresja — przed WP1.4 `SessionCaller` też nie sprawdzał członkostwa — **NAPRAWIONE** `3c8d61d`: kasowanie wiersza sesji zostaje bezwarunkowe, `force_lock_and_dismount` odpala tylko dla członka (predykat `acl::is_vault_member` wydzielony z `ensure_vault_member`). Test `logout_by_non_member_does_not_lock_the_owners_vault` padał przed poprawką na `{"state":"locked"}`. | weryfikacja kontrolera WP1.4 + czytanie `lock_flow.rs:34-40` |
+| Z10-21 | ⚠️ | `shell_state::read_registry_string` otwiera podany klucz **względem** `HKEY_CURRENT_USER`, a `audit_shell_state` podaje trzy ścieżki z prefiksem `HKCU\…` → `RegOpenKeyExW(HKCU, "HKCU\\Software…")` nie znajduje klucza, więc `autostart_registered`, `drive_icon_registered` i `drive_label_registered` są **zawsze `false`**. `is_healthy()` nigdy nie zwraca `true`, diagnostyka powłoki w UI pokazuje trzy fałszywe błędy, a w trybie local-only `startup_recover_shell` przy każdym starcie odpala naprawę wyglądu dysku. Wykryte przy pisaniu briefu WP1.2; nowe sprawdzenie `context_menu_registered` podaje ścieżkę bez prefiksu, trzy stare nietknięte. | czytanie `shell_state.rs:112-135` + `:405-430` |
 | Z11-01 | 🔴 | Linki share z hasłem są nie do otwarcia — klient czeka na pole `requires_password`, którego API nie wysyła | czytanie obu stron + grep |
 | Z11-02 | ✅ | `DELETE /api/onboarding/provider/{name}` bez auth kasuje konfigurację, a `ON DELETE CASCADE` zabiera poświadczenia DPAPI — **NAPRAWIONE** `7bae0cb`. | czytanie + schemat |
 | Z11-03 | ✅ | `legacy.html` (2258, pod `/legacy`) nie wysyła `Authorization` — 9 z 21 endpointów zwraca 403. Czwarty taki klient — **NAPRAWIONE** `b69c23d`: trasa `/legacy`, `get_legacy()` i `static/legacy.html` (2258 linii) usunięte w całości; `GET /legacy` → 404. | grep + audyt ról |
@@ -1747,7 +1748,7 @@ istnieje, zhydratowane pliki rosną na dysku bez ograniczenia aż do blokady ska
 
 | ID | Waga | Rzecz | Potwierdzone jak |
 | --- | --- | --- | --- |
-| Z7-01 | 🔴 | Menu kontekstowe Eksploratora nie wysyła `Authorization` — wszystkie 5 pozycji zwraca 401, po cichu | czytanie + grep endpointów |
+| Z7-01 | ✅ | Menu kontekstowe Eksploratora nie wysyła `Authorization` — wszystkie 5 pozycji zwraca 401, po cichu — **NAPRAWIONE** `c8cb7d2`: wariant rejestrowy usunięty, zostaje DLL przez Named Pipe | czytanie + grep endpointów |
 | Z7-02 | 🔴 | „Windows Hello" to samo DPAPI — brak biometrii, hasło odzyskiwalne przez dowolny proces użytkownika | grep: 0 trafień API Hello |
 | Z7-03 | 🔴 | Bufor po `CryptUnprotectData` niezwolniony i niewyzerowany; hasło jako zwykły `String` | czytanie |
 | Z7-04 | 🔴 | DACL sync roota daje `Authenticated Users` GR/GW/GX, dziedziczenie włączone | czytanie SDDL + fallbacku icacls |
@@ -2444,6 +2445,16 @@ ma `last_error = excluded.last_error`, czyli czyści błąd. Backoff gryzie tylk
 > co 5 s zamiast kończyć serwer. Pozostałe otwarte: `GENERIC_WRITE` zawiera
 > `FILE_CREATE_PIPE_INSTANCE`, więc proces **tego samego** użytkownika może dostawić instancję
 > i przechwycić klienta — zawężenie do `CC`/`DC` wymaga zmiany praw żądanych przez DLL (WP1.2).
+>
+> **Stan po WP1.2 (`c8cb7d2`, 2026-09-24):** dostawianie instancji zamknięte **stałą pulą**, nie
+> zawężeniem DACL. Samo zawężenie było niewykonalne: `CreateNamedPipeW` dla kolejnej instancji
+> wymaga `FILE_CREATE_PIPE_INSTANCE` na istniejącym obiekcie, a serwer ma ten sam token co
+> atakujący. Teraz `nMaxInstances = 4`, wszystkie cztery tworzone na starcie i używane w pętli
+> `connect → obsługa → czekanie na EOF klienta → disconnect`; kolejne `CreateNamedPipeW` na tej
+> nazwie dostaje `ERROR_PIPE_BUSY` (test `second_instance_from_same_user_is_refused`). DACL i prawa
+> żądane przez DLL bez zmian. Zostaje: przejęcie nazwy **przed** startem demona (squatting) —
+> `FILE_FLAG_FIRST_PIPE_INSTANCE` powoduje wtedy ponawianie co 5 s, a DLL łączy się z intruzem;
+> DLL nie weryfikuje procesu serwera.
 > Poniższy opis to stan z przeglądu, zachowany jako zapis historyczny.
 
 ```rust
@@ -3323,10 +3334,10 @@ testów: `subst /D` w `Drop`, nie w `shutdown()`.
 | Z10-03 | 🔴 | Tray zabija daemona `taskkill /F` zamiast wołać `POST /api/settings/restart-daemon`; to samo robi `[UninstallRun]` instalatora → sekwencja z Z7-05 nie ma szans się wykonać, plaintext zostaje na dysku | czytanie `main.rs:204-248` + `omnidrive.iss` |
 | Z10-04 | ✅ | `recovery restore` używa `MetadataBackupProviderManager::from_env()`, które wymaga kompletu trzech dostawców w env (Z4-10) — na maszynie z instalatora sekrety są w bazie, więc komenda nie ruszy. **NAPRAWIONE** `a5aabc6` (WP1.1): gdy `omnidrive.db` istnieje, CLI otwiera ją przez `connect_existing_db` (read-only, bez migracji) i woła `from_onboarding_db_all`, zamykając połączenie przed samym `restore`; bez bazy — dawne `from_env()`. | czytanie + `onboarding.rs` |
 | Z10-05 | ✅ | Tray odpytuje `/api/vault/status` co 3 s, a ten mintuje sesję przy każdym wywołaniu (Z9-01) — 20 nieusuwalnych wierszy `user_sessions` na minutę — **NAPRAWIONE** `16a2fa2`. Skutek Z9-01, nie osobna wada — token znika u źródła. | czytanie `POLL_INTERVAL` + sonda rozkładu odstępów |
-| Z10-06 | ⚠️ | `omnidrive_shell_ext.dll` jest budowany i kopiowany do payloadu, ale `[Files]` go nie instaluje, a nic go nie rejestruje — pipeline sugeruje dostarczenie komponentu, którego nie ma | `ls payload` + grep po `.iss` (0 trafień) |
+| Z10-06 | ✅ | `omnidrive_shell_ext.dll` jest budowany i kopiowany do payloadu, ale `[Files]` go nie instaluje, a nic go nie rejestruje — pipeline sugeruje dostarczenie komponentu, którego nie ma — **NAPRAWIONE** `c8cb7d2`: instalator wgrywa DLL i rejestruje go per-user w HKCU | `ls payload` + grep po `.iss` (0 trafień) |
 | Z10-07 | ⚠️ | `angelctl` to `println!("Hello, world!")`, a mimo to jest w workspace, buduje `angelctl.exe`, leży w payloadzie i podlega bumpowi wersji wg `CLAUDE.md` §3 | czytanie + `ls target/release` |
 | Z10-08 | ⚠️ | `cfapi_repro` nie ma `required-features` — `cargo build --release --workspace` produkuje diagnostyczne `cfapi_repro.exe` obok binarek produkcyjnych (klasa Z1-06) | `ls target/release/*.exe` |
-| Z10-09 | ⚠️ | Rozszerzenie powłoki twardo sprawdza prefiks `O:\`, a daemon przy zajętej literze montuje pod pierwszą wolną z `D..Z` → menu nie pojawia się w ogóle | czytanie `lib.rs:397` + `virtual_drive.rs:221` |
+| Z10-09 | ✅ | Rozszerzenie powłoki twardo sprawdza prefiks `O:\`, a daemon przy zajętej literze montuje pod pierwszą wolną z `D..Z` → menu nie pojawia się w ogóle — **NAPRAWIONE** `c8cb7d2`: litera z pliku `%LOCALAPPDATA%\OmniDrive\drive-letter` zapisywanego przy montowaniu | czytanie `lib.rs:397` + `virtual_drive.rs:221` |
 | Z10-10 | ⚠️ | `log_to_file` dopisuje bez rotacji do `%TEMP%\omnidrive_shell_ext.log` ścieżki plików Skarbca przy każdym kliknięciu prawym przyciskiem | czytanie `lib.rs:42-57`, `:401` |
 | Z10-11 | ⚠️ | `load_icon` panikuje przy braku PNG, a release ma `windows_subsystem = "windows"` → tray znika bez komunikatu; ostatni fallback `resolve_icons_dir` zwraca ścieżkę bez sprawdzenia istnienia (same ikony **są** w payloadzie — sprawdzone) | czytanie `main.rs:52-59`, `:371-409` + `ls payload/icons` |
 | Z10-12 | ⚠️ | `restart_daemon` = `kill` + `sleep(500 ms)` + `spawn`, bez sprawdzenia, czy port się zwolnił i czy proces wstał | czytanie `main.rs:242-248` |
