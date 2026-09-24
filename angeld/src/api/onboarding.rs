@@ -808,7 +808,10 @@ async fn post_join_existing(
     // immediately on first load.
     let (session_token, expires_at) = if multi_user_ready {
         match super::auth::create_session_for_local_device(&state.pool).await {
-            Ok(session) => (Some(session.token), Some(session.expires_at)),
+            Ok(session) => {
+                crate::tray_session::refresh(&session.token);
+                (Some(session.token), Some(session.expires_at))
+            }
             Err(err) => {
                 warn!("[join-existing] session token creation failed: {err}");
                 (None, None)

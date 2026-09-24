@@ -31,6 +31,7 @@ pub mod sharing;
 pub mod shell_integration;
 pub mod shell_state;
 pub mod smart_sync;
+pub mod tray_session;
 pub mod uploader;
 pub mod vault;
 pub mod virtual_drive;

@@ -32,7 +32,7 @@ struct UnlockResponse {
     expires_at: Option<i64>,
 }
 
-pub fn routes() -> Router<ApiState> {
+pub(super) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/api/unlock", post(post_unlock))
         .route("/api/unlock/windows-hello", post(post_windows_hello_unlock))
@@ -135,7 +135,10 @@ async fn post_unlock(
 
     // Epic 34.3a: Issue a session token for the local device/user
     let (session_token, expires_at) = match create_session_for_local_device(&state.pool).await {
-        Ok(session) => (Some(session.token), Some(session.expires_at)),
+        Ok(session) => {
+            crate::tray_session::refresh(&session.token);
+            (Some(session.token), Some(session.expires_at))
+        }
         Err(err) => {
             warn!("[UNLOCK] session token creation failed: {err}");
             (None, None)
@@ -170,7 +173,7 @@ async fn post_unlock(
 }
 
 /// Look up local device identity -> find user_id -> create session.
-pub(super) async fn create_session_for_local_device(
+pub(crate) async fn create_session_for_local_device(
     pool: &sqlx::SqlitePool,
 ) -> Result<db::UserSession, String> {
     let device = db::get_local_device_identity(pool)
@@ -484,7 +487,10 @@ async fn post_windows_hello_unlock(
     });
 
     let (session_token, expires_at) = match create_session_for_local_device(&state.pool).await {
-        Ok(session) => (Some(session.token), Some(session.expires_at)),
+        Ok(session) => {
+            crate::tray_session::refresh(&session.token);
+            (Some(session.token), Some(session.expires_at))
+        }
         Err(err) => {
             warn!("[WH_UNLOCK] session token creation failed: {err}");
             (None, None)

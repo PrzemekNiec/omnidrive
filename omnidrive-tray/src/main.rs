@@ -31,10 +31,7 @@ enum TrayState {
     Idle,
     /// Vault is locked, waiting for passphrase
     Locked,
-    /// Active ingest jobs (PENDING / CHUNKING / UPLOADING).
-    /// Unreachable while `/api/health` exposes only `ingest_failed` and no
-    /// activity counter — the tray has no signal left to derive it from.
-    #[allow(dead_code)]
+    /// Active ingest jobs (PENDING / CHUNKING / UPLOADING)
     Syncing,
     /// Everything healthy, queue empty
     Synced,
@@ -111,6 +108,51 @@ struct HealthResponse {
 
 // ── Daemon poller ──────────────────────────────────────────────────────────
 
+fn classify(
+    unlocked: bool,
+    provider_failed: bool,
+    ingest_failed: bool,
+    active_ingest: usize,
+) -> TrayState {
+    if !unlocked {
+        TrayState::Locked
+    } else if provider_failed || ingest_failed {
+        TrayState::Error
+    } else if active_ingest > 0 {
+        TrayState::Syncing
+    } else {
+        TrayState::Synced
+    }
+}
+
+fn count_active_ingest_jobs(payload: &serde_json::Value) -> usize {
+    payload["jobs"]
+        .as_array()
+        .map(|jobs| {
+            jobs.iter()
+                .filter(|job| {
+                    matches!(
+                        job["state"].as_str(),
+                        Some("PENDING") | Some("CHUNKING") | Some("UPLOADING")
+                    )
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn read_tray_session_token() -> Option<String> {
+    let dir = std::env::var_os("LOCALAPPDATA")?;
+    let path = PathBuf::from(dir).join("OmniDrive").join("tray-session");
+    let contents = std::fs::read_to_string(path).ok()?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 async fn poll_daemon_state(client: &reqwest::Client) -> TrayState {
     // 1. Check if daemon is reachable + vault lock status
     let vault_status = match client
@@ -134,6 +176,8 @@ async fn poll_daemon_state(client: &reqwest::Client) -> TrayState {
     }
 
     // 2. Check provider health + ingest failure signal
+    let mut provider_failed = false;
+    let mut ingest_failed = false;
     if let Ok(resp) = client
         .get(format!("{DAEMON_BASE}/api/health"))
         .timeout(Duration::from_secs(2))
@@ -141,16 +185,84 @@ async fn poll_daemon_state(client: &reqwest::Client) -> TrayState {
         .await
         && let Ok(health) = resp.json::<HealthResponse>().await
     {
-        let any_failed = health
+        provider_failed = health
             .providers
             .iter()
             .any(|p| p.connection_status == "FAILED");
-        if any_failed || health.ingest_failed {
-            return TrayState::Error;
-        }
+        ingest_failed = health.ingest_failed;
     }
 
-    TrayState::Synced
+    // 3. Active ingest jobs, gated behind the tray session token
+    let active_ingest = if provider_failed || ingest_failed {
+        0
+    } else {
+        match read_tray_session_token() {
+            Some(token) => match client
+                .get(format!("{DAEMON_BASE}/api/ingest"))
+                .bearer_auth(token)
+                .timeout(Duration::from_secs(2))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.json::<serde_json::Value>().await {
+                        Ok(payload) => count_active_ingest_jobs(&payload),
+                        Err(_) => 0,
+                    }
+                }
+                _ => 0,
+            },
+            None => 0,
+        }
+    };
+
+    classify(true, provider_failed, ingest_failed, active_ingest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_locked_when_not_unlocked() {
+        assert_eq!(classify(false, false, false, 0), TrayState::Locked);
+        assert_eq!(classify(false, true, true, 5), TrayState::Locked);
+    }
+
+    #[test]
+    fn classify_error_when_provider_or_ingest_failed() {
+        assert_eq!(classify(true, true, false, 0), TrayState::Error);
+        assert_eq!(classify(true, false, true, 0), TrayState::Error);
+    }
+
+    #[test]
+    fn classify_syncing_when_active_ingest_jobs() {
+        assert_eq!(classify(true, false, false, 1), TrayState::Syncing);
+    }
+
+    #[test]
+    fn classify_synced_otherwise() {
+        assert_eq!(classify(true, false, false, 0), TrayState::Synced);
+    }
+
+    #[test]
+    fn count_active_ingest_jobs_counts_pending_chunking_uploading() {
+        let payload = serde_json::json!({
+            "jobs": [
+                { "state": "PENDING" },
+                { "state": "CHUNKING" },
+                { "state": "UPLOADING" },
+                { "state": "COMPLETED" },
+                { "state": "FAILED" },
+            ]
+        });
+        assert_eq!(count_active_ingest_jobs(&payload), 3);
+    }
+
+    #[test]
+    fn count_active_ingest_jobs_handles_missing_or_malformed_payload() {
+        assert_eq!(count_active_ingest_jobs(&serde_json::json!({})), 0);
+    }
 }
 
 // ── Shell actions ──────────────────────────────────────────────────────────

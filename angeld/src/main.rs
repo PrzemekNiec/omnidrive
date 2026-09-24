@@ -26,7 +26,8 @@ use angeld::uploader::{UploadWorker, Uploader};
 use angeld::vault::{VaultKeyStore, bootstrap_local_vault};
 use angeld::watcher::FileWatcher;
 use angeld::{
-    cloud_guard, db, diagnostics, ingest, pipe_server, shell_state, smart_sync, virtual_drive,
+    cloud_guard, db, diagnostics, ingest, pipe_server, shell_state, smart_sync, tray_session,
+    virtual_drive,
 };
 use std::env;
 use std::io;
@@ -319,6 +320,11 @@ async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         db::verify_vault_device_binding(&pool, &local_vault_id, &local_device.device_id).await
     {
         panic!("[STARTUP] vault_id consistency check failed: {msg}");
+    }
+
+    match tray_session::publish(&pool).await {
+        Ok(path) => info!("[STARTUP] tray session published to {}", path.display()),
+        Err(err) => warn!("[STARTUP] tray session not published: {err}"),
     }
 
     let vault_keys = VaultKeyStore::new();

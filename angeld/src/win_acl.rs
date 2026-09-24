@@ -317,6 +317,60 @@ fn platform_error(err: windows::core::Error) -> AclError {
     AclError::Platform(err.to_string())
 }
 
+#[cfg(all(target_os = "windows", any(test, feature = "test-helpers")))]
+pub fn dacl_sddl(path: &Path) -> Result<String, AclError> {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+    use windows::core::{PCWSTR, PWSTR};
+
+    let path_w: Vec<u16> = OsStr::new(path).encode_wide().chain(once(0)).collect();
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        let err = GetNamedSecurityInfoW(
+            PCWSTR(path_w.as_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            None,
+            None,
+            &mut sd,
+        );
+        if err.0 != 0 {
+            return Err(AclError::Platform(format!(
+                "GetNamedSecurityInfoW failed: {}",
+                err.0
+            )));
+        }
+
+        let mut sddl_ptr = PWSTR::null();
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &mut sddl_ptr,
+            None,
+        )
+        .map_err(platform_error)?;
+        let sddl = pwstr_to_string(sddl_ptr)?;
+        let _ = LocalFree(Some(HLOCAL(sddl_ptr.0 as *mut _)));
+        let _ = LocalFree(Some(HLOCAL(sd.0 as *mut _)));
+        Ok(sddl)
+    }
+}
+
+#[cfg(all(target_os = "windows", any(test, feature = "test-helpers")))]
+pub fn current_user_sid_string_for_tests() -> Result<String, AclError> {
+    current_user_sid_string()
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
@@ -334,50 +388,11 @@ mod tests {
 
     #[test]
     fn user_only_file_dacl_has_only_system_and_current_user() {
-        use std::ffi::OsStr;
-        use std::iter::once;
-        use std::os::windows::ffi::OsStrExt;
-        use windows::Win32::Foundation::{HLOCAL, LocalFree};
-        use windows::Win32::Security::Authorization::{
-            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
-            SDDL_REVISION_1, SE_FILE_OBJECT,
-        };
-        use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
-        use windows::core::{PCWSTR, PWSTR};
-
         let path = unique_test_file();
         let contents = b"session-token-bytes";
         write_user_only_file(&path, contents).expect("write_user_only_file");
 
-        let path_w: Vec<u16> = OsStr::new(&path).encode_wide().chain(once(0)).collect();
-        let mut sd = PSECURITY_DESCRIPTOR::default();
-        let sddl = unsafe {
-            let err = GetNamedSecurityInfoW(
-                PCWSTR(path_w.as_ptr()),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                None,
-                None,
-                None,
-                None,
-                &mut sd,
-            );
-            assert_eq!(err.0, 0, "GetNamedSecurityInfoW failed: {}", err.0);
-
-            let mut sddl_ptr = PWSTR::null();
-            ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                sd,
-                SDDL_REVISION_1,
-                DACL_SECURITY_INFORMATION,
-                &mut sddl_ptr,
-                None,
-            )
-            .expect("stringify security descriptor");
-            let sddl = pwstr_to_string(sddl_ptr).unwrap();
-            let _ = LocalFree(Some(HLOCAL(sddl_ptr.0 as *mut _)));
-            let _ = LocalFree(Some(HLOCAL(sd.0 as *mut _)));
-            sddl
-        };
+        let sddl = dacl_sddl(&path).expect("dacl_sddl");
 
         let current_user_sid = current_user_sid_string().unwrap();
         assert_eq!(sddl.matches("(A;").count(), 2, "sddl={sddl}");

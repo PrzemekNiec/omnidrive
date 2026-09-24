@@ -1,5 +1,5 @@
 mod audit;
-mod auth;
+pub(crate) mod auth;
 mod auto_lock;
 mod diagnostics;
 pub mod error;
