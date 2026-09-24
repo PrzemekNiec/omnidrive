@@ -19,10 +19,10 @@ przy pierwszym przejściu zostały pominięte. Przegląd zamknął się na **147
 **43 × 🔴**, **100 × ⚠️**, **4 × ✅** (naprawione w trakcie: Z4-01, Z6-04, Z6-05, Z6-06).
 Sześć sesji, 121 plików `.rs`, ~48 000 linii kodu plus ~7600 linii statyków.
 
-**Stan rejestru po Fazie 0 i w trakcie Fazy 1 (2026-09-18): 152 pozycje** — **32 × 🔴**,
-**86 × ⚠️**, **34 × ✅** (Z10-01 i Z10-04 naprawione w WP1.1 `a5aabc6`; Z9-24 naprawione w WP1.4 `93fdea1`; Z8-01 naprawione w WP6.1 `5d59278`; **Z10-20** dołożone przy
+**Stan rejestru po Fazie 0 i w trakcie Fazy 1 (2026-09-24): 152 pozycje** — **32 × 🔴**,
+**85 × ⚠️**, **35 × ✅** (Z10-18 naprawione w WP1.5 `dd50a35`; Z10-01 i Z10-04 naprawione w WP1.1 `a5aabc6`; Z9-24 naprawione w WP1.4 `93fdea1`; Z8-01 naprawione w WP6.1 `5d59278`; **Z10-20** dołożone przy
 weryfikacji kontrolera tego samego pakietu i naprawione `3c8d61d`). Doszły trzy pozycje (**Z10-16**, **Z10-17** i **Z10-18** — wykryte przy weryfikacji Fazy 0
-i przy pierwszym zielonym przejściu hooka pre-push), z czego Z10-16, Z10-17 i Z10-15 są już naprawione,
+i przy pierwszym zielonym przejściu hooka pre-push), z czego Z10-16, Z10-17, Z10-18 i Z10-15 są już naprawione,
 naprawionych jest 22 nowych (WP1.3 zamknęło Z11-03 i Z9-15), a siedem zmieniło wagę po przyjęciu kryterium skutku.
 Spadek liczby 🔴 z 43 do 37 to wypadkowa trzech rzeczy naraz: napraw Fazy 0, przeważenia
 w dół (Z1-01, Z1-02, Z2-02) i przeważenia w górę (Z6-09, Z8-06, Z9-24, Z11-05).
@@ -349,7 +349,7 @@ i **Z11-05**.
 | Z10-16 | ✅ | `e2e_sync` (`:43-48`) i `e2e_recovery` (`:47-51`) czytały **prawdziwe** `LOCALAPPDATA` **zanim** podmieniły je dziecku i kierowały daemona na realny sync root użytkownika (`AppData\Local\OmniDrive\OmniSync`) przez `OMNIDRIVE_SYNC_ROOT`; `e2e_recovery` kasował ten katalog rekurencyjnie przy każdym spawnie. Naruszenie Świętej Zasady Integralności Danych przez testy, nie przez kod produkcyjny — **NAPRAWIONE** `3071208`. Sync root idzie z katalogu tymczasowego testu (`ensure_path_inside_user_profile` spełnione, bo `TEMP` leży w `USERPROFILE`), rejestracja cfapi ma własne `provider_id` i tożsamość, `e2e_sync` odrejestrowuje swój sync root w teardownie. Izolacja jest sprawdzana asercją na ścieżce raportowanej przez daemona i osobnym testem na kasowany katalog | czytanie obu harnessów + oględziny katalogu |
 | Z10-17 | ✅ | `reserve_port()` (skopiowane **sześć razy**) rezerwowało port przez `bind` + zwolnienie, więc między zwolnieniem a startem daemona inny proces mógł go zająć (`os error 10048`) — pełna suita bywała czerwona bez wady w kodzie i uczyła ignorowania czerwonych przebiegów. **NAPRAWIONE** `137663d`: jedna implementacja w `tests/common/mod.rs` dedupuje wydane porty, a `spawn_with_port_retry` ponawia z nowym portem, gdy `try_wait()` pokazuje śmierć daemona przed odpowiedzią na `/api/diagnostics/health`; mechanizm pokrywa `e2e_port_reservation.rs`. Przy okazji wyszedł **drugi, niezależny wyścig**: `create_temp_root` z rozdzielczością milisekundową dawał dwóm testom ten sam katalog i ten sam plik SQLite (ujawnione dopiero, gdy `3071208` dodał drugi test do `e2e_recovery`) — wspólna wersja ma teraz licznik atomowy. Suita: 252 passed / 0 failed | obserwacja: ta sama suita czerwona i zielona pod rząd |
 | Z10-19 | ⚠️ | `disaster_recovery::tests::degraded_database_uploads_snapshot_without_advancing_latest` pada niedeterministycznie w równoległym przebiegu z `output file already exists`. Zgłoszone przy WP1.3 jako „zastane", ale **dowód był słaby** — przebieg na bazie `5dd726d` po prostu przeszedł, co nie jest dowodem braku wyścigu. Podejrzenie: ta sama klasa co kolizja z Z10-17 (współdzielona nazwa pliku tymczasowego między testami w jednej binarce), tylko w `disaster_recovery.rs`, nie w harnessie. Do zdiagnozowania osobno — dopóki żyje, jest kolejnym powodem, by czerwony przebieg uznawać za szum | obserwacja przy WP1.3 + brak dowodu bazowego |
-| Z10-18 | ⚠️ | **Regresja z Fazy 0.** Zadanie 6 zabrało trayowi wywołanie `/api/ingest` i przeniosło sygnał do publicznego `/api/health`, ale przeniosło wyłącznie `ingest_failed`. `TrayState::Syncing` nie jest już przez nic konstruowany, więc ikona **nigdy nie pokazuje synchronizacji** — przechodzi wprost `Locked → Synced`, także gdy trwa upload. Plumbing (`IconSet::syncing`, `STATE_SYNCING.png`) zostaje, bo przywrócenie stanu należy do F1/WP1.5; wariant ma `#[allow(dead_code)]`, żeby `clippy --workspace -D warnings` (hook pre-push) przechodził. Naprawa = licznik aktywnych zadań w `/api/health` + gałąź w `poll_daemon_state` | `cargo clippy --workspace` + czytanie `omnidrive-tray/src/main.rs:29-40,105-151` |
+| Z10-18 | ✅ | **Regresja z Fazy 0.** Zadanie 6 zabrało trayowi wywołanie `/api/ingest` i przeniosło sygnał do publicznego `/api/health`, ale przeniosło wyłącznie `ingest_failed`. `TrayState::Syncing` nie był już przez nic konstruowany, więc ikona **nigdy nie pokazywała synchronizacji** — przechodziła wprost `Locked → Synced`, także gdy trwał upload. **NAPRAWIONE** `dd50a35` (WP1.5): tray ma tożsamość (token z `tray-session`), więc wraca do bramkowanego `GET /api/ingest` i liczy zadania w stanach `PENDING`/`CHUNKING`/`UPLOADING` — **inaczej niż zapowiadał ten wpis**, bez dokładania licznika do publicznego `/api/health`. Logika w czystych `classify()` i `count_active_ingest_jobs()`, 6 testów jednostkowych; brak tokenu albo 401 daje zero zadań, nie stan błędu. | `cargo clippy --workspace` + czytanie `omnidrive-tray/src/main.rs:29-40,105-151` |
 | Z10-20 | ✅ | `POST /api/auth/logout` woła `force_lock_and_dismount`, czyli **globalny** zamek na `VaultKeyStore` całego procesu plus odmontowanie `O:` — nie wygaszenie jednej sesji. Bramka jest tam celowo czysto uwierzytelniająca (WP1.4, pułapka 2: pod kontrolą członkostwa obcy token nie dałby się skasować i przeżyłby do końca TTL), więc po `93fdea1` posiadacz sesji spoza `vault_members` dostaje 403 na wszystkich pozostałych trasach, ale wciąż może w pętli zamykać Skarbiec właściciela. Stan zastany, nie regresja — przed WP1.4 `SessionCaller` też nie sprawdzał członkostwa — **NAPRAWIONE** `3c8d61d`: kasowanie wiersza sesji zostaje bezwarunkowe, `force_lock_and_dismount` odpala tylko dla członka (predykat `acl::is_vault_member` wydzielony z `ensure_vault_member`). Test `logout_by_non_member_does_not_lock_the_owners_vault` padał przed poprawką na `{"state":"locked"}`. | weryfikacja kontrolera WP1.4 + czytanie `lock_flow.rs:34-40` |
 | Z11-01 | 🔴 | Linki share z hasłem są nie do otwarcia — klient czeka na pole `requires_password`, którego API nie wysyła | czytanie obu stron + grep |
 | Z11-02 | ✅ | `DELETE /api/onboarding/provider/{name}` bez auth kasuje konfigurację, a `ON DELETE CASCADE` zabiera poświadczenia DPAPI — **NAPRAWIONE** `7bae0cb`. | czytanie + schemat |
@@ -3188,6 +3188,18 @@ to `kill` → `sleep(500 ms)` → `spawn`, bez sprawdzenia, czy port 8787 zdąż
 i czy nowy proces w ogóle wstał (Z10-12).
 
 ## 10.5 Tray jako generator sesji
+
+> **Stan po WP1.5 (`dd50a35`, 2026-09-24):** tray ma własną tożsamość. Daemon przy starcie
+> mintuje sesję lokalnego urządzenia (`api::auth::create_session_for_local_device`) i zapisuje
+> token do `%LOCALAPPDATA%\OmniDrive\tray-session` przez `win_acl::write_user_only_file`
+> (DACL: tylko `SY` + SID użytkownika, dowód w teście `e2e_tray_session`); plik jest odświeżany
+> przy każdym kolejnym mintowaniu — unlock hasłem, unlock Windows Hello, `join-existing` —
+> bo `SESSION_TTL_SECONDS` to 24 h, a `validate_user_session` nie przedłuża ważności.
+> Tray czyta plik w każdej iteracji pollingu i dokłada `Authorization: Bearer` do bramkowanego
+> `GET /api/ingest` (stan `Syncing`, Z10-18). **Świadomy koszt:** ważna sesja istnieje na dysku,
+> zanim ktokolwiek poda hasło, i odnawia się przy każdym starcie demona — bramka sesji jest więc
+> trwale spełnialna dla procesu tego samego użytkownika. Wariant wybrany w planie (§3, WP1.5),
+> bo deinstalator i „Zatrzymaj demona" z WP5.3 potrzebują tożsamości przy zablokowanym Skarbcu.
 
 `poll_daemon_state` odpytuje `/api/vault/status` co `POLL_INTERVAL = 3 s`. Ten endpoint
 przy odblokowanym Skarbcu **wystawia nowy token sesji przy każdym wywołaniu** (Z9-01),
