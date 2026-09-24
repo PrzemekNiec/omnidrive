@@ -80,11 +80,11 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "angelctl"
-version = "0.3.30"
+version = "0.3.31"
 
 [[package]]
 name = "angeld"
-version = "0.3.30"
+version = "0.3.31"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3463,7 +3463,7 @@ dependencies = [
 
 [[package]]
 name = "omnidrive-cli"
-version = "0.3.30"
+version = "0.3.31"
 dependencies = [
  "angeld",
  "clap",
@@ -3476,7 +3476,7 @@ dependencies = [
 
 [[package]]
 name = "omnidrive-core"
-version = "0.3.30"
+version = "0.3.31"
 dependencies = [
  "aes-gcm",
  "aes-kw",
@@ -3495,7 +3495,7 @@ dependencies = [
 
 [[package]]
 name = "omnidrive-shell-ext"
-version = "0.3.30"
+version = "0.3.31"
 dependencies = [
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -3503,7 +3503,7 @@ dependencies = [
 
 [[package]]
 name = "omnidrive-tray"
-version = "0.3.30"
+version = "0.3.31"
 dependencies = [
  "image",
  "reqwest",
