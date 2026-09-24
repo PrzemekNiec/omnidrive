@@ -292,6 +292,10 @@ pub fn tray_session_file_path() -> PathBuf {
     local_app_omnidrive_root().join("tray-session")
 }
 
+pub fn drive_letter_file_path() -> PathBuf {
+    local_app_omnidrive_root().join("drive-letter")
+}
+
 fn local_app_omnidrive_root() -> PathBuf {
     env_path("LOCALAPPDATA")
         .or_else(|| env_path("USERPROFILE").map(|path| path.join("AppData").join("Local")))

@@ -55,12 +55,20 @@ Name: "{localappdata}\OmniDrive"; Flags: uninsneveruninstall
 Source: "{#PayloadDir}\angeld.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\{#TrayExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\omnidrive.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PayloadDir}\omnidrive_shell_ext.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\static\*"; DestDir: "{app}\static"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PayloadDir}\icons\*"; DestDir: "{app}\icons"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourcePath}\{#AutostartLauncherName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Registry]
 Root: HKCU; Subkey: "{#RunKeyPath}"; ValueType: string; ValueName: "{#RunValueName}"; ValueData: """{sys}\wscript.exe"" //B ""{app}\{#AutostartLauncherName}"""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{8D437341-B89B-4D14-9983-5A50529A88B4}"; ValueType: string; ValueName: ""; ValueData: "OmniDrive"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{8D437341-B89B-4D14-9983-5A50529A88B4}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\omnidrive_shell_ext.dll"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{8D437341-B89B-4D14-9983-5A50529A88B4}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
+Root: HKCU; Subkey: "Software\Classes\*\shellex\ContextMenuHandlers\OmniDrive"; ValueType: string; ValueName: ""; ValueData: "{{8D437341-B89B-4D14-9983-5A50529A88B4}"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\shellex\ContextMenuHandlers\OmniDrive"; ValueType: string; ValueName: ""; ValueData: "{{8D437341-B89B-4D14-9983-5A50529A88B4}"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\*\shell\OmniDrive"; ValueType: none; Flags: deletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\OmniDrive"; ValueType: none; Flags: deletekey
 
 [Icons]
 Name: "{group}\OmniDrive Daemon"; Filename: "{app}\{#AppExeName}"
@@ -75,6 +83,9 @@ Filename: "{sys}\wscript.exe"; Parameters: "//B ""{app}\{#AutostartLauncherName}
 [UninstallRun]
 Filename: "taskkill"; Parameters: "/F /IM {#TrayExeName}"; Flags: runhidden waituntilterminated; RunOnceId: "KillTray"
 Filename: "taskkill"; Parameters: "/F /IM {#AppExeName}"; Flags: runhidden waituntilterminated; RunOnceId: "KillDaemon"
+
+[UninstallDelete]
+Type: files; Name: "{app}\omnidrive_shell_ext.dll*.old"
 
 [Code]
 const
@@ -185,10 +196,47 @@ begin
   RegWriteExpandStringValue(HKCU, UserEnvironmentKey, 'Path', UpdatedPath);
 end;
 
+procedure RenameLockedShellExtDll();
+var
+  DllPath, BackupPath: string;
+begin
+  { Explorer keeps the shell extension DLL loaded, so overwriting it in place would fail;
+    Windows allows renaming a loaded DLL, so move it aside and let [Files] write a fresh one. }
+  DllPath := ExpandConstant('{app}\omnidrive_shell_ext.dll');
+  if FileExists(DllPath) then
+  begin
+    BackupPath := DllPath + '.' + GetDateTimeString('yyyymmddhhnnsszzz', '', '') + '.old';
+    RenameFile(DllPath, BackupPath);
+  end;
+end;
+
+procedure CleanupOldShellExtDlls();
+var
+  FindRec: TFindRec;
+  Dir: string;
+begin
+  Dir := ExpandConstant('{app}');
+  if FindFirst(Dir + '\omnidrive_shell_ext.dll.*.old', FindRec) then
+  begin
+    try
+      repeat
+        DeleteFile(Dir + '\' + FindRec.Name);
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssInstall then
+    RenameLockedShellExtDll();
   if CurStep = ssPostInstall then
+  begin
     AddInstallDirToUserPath();
+    CleanupOldShellExtDlls();
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

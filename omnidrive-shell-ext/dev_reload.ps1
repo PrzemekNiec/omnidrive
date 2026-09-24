@@ -1,10 +1,9 @@
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Build, unregister, register, and reload the OmniDrive shell extension DLL.
 .DESCRIPTION
     Developer workflow script for the omnidrive-shell-ext COM DLL.
-    Must be run as Administrator (regsvr32 writes to HKCR/HKLM).
+    regsvr32 writes to HKCU (per-user, no elevation needed).
 
     Steps:
     1. Kill explorer.exe (releases DLL lock!)

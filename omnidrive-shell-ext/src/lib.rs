@@ -60,6 +60,67 @@ fn wide_null(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+fn parse_drive_letter(contents: &str) -> Option<char> {
+    let trimmed = contents.trim();
+    let mut chars = trimmed.chars();
+    let letter = chars.next()?;
+    if !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    if chars.next() != Some(':') {
+        return None;
+    }
+    if chars.next().is_some() {
+        return None;
+    }
+    Some(letter.to_ascii_uppercase())
+}
+
+fn path_on_drive(path: &str, letter: char) -> bool {
+    let mut chars = path.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        (Some(drive), Some(':'), Some(sep)) if sep == '\\' || sep == '/' => {
+            drive.eq_ignore_ascii_case(&letter)
+        }
+        _ => false,
+    }
+}
+
+fn mounted_drive_letter() -> Option<char> {
+    let local_appdata = std::env::var_os("LOCALAPPDATA")?;
+    let path = std::path::Path::new(&local_appdata)
+        .join("OmniDrive")
+        .join("drive-letter");
+    let contents = std::fs::read_to_string(path).ok()?;
+    parse_drive_letter(&contents)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_drive_letter_cases() {
+        assert_eq!(parse_drive_letter("O:"), Some('O'));
+        assert_eq!(parse_drive_letter("o:"), Some('O'));
+        assert_eq!(parse_drive_letter(" P: \n"), Some('P'));
+        assert_eq!(parse_drive_letter(""), None);
+        assert_eq!(parse_drive_letter("PP:"), None);
+        assert_eq!(parse_drive_letter("P"), None);
+        assert_eq!(parse_drive_letter("1:"), None);
+        assert_eq!(parse_drive_letter("P:\\"), None);
+    }
+
+    #[test]
+    fn path_on_drive_cases() {
+        assert!(path_on_drive("P:\\a", 'P'));
+        assert!(path_on_drive("p:\\a", 'P'));
+        assert!(!path_on_drive("O:\\a", 'P'));
+        assert!(!path_on_drive("P:", 'P'));
+        assert!(!path_on_drive("PP:\\", 'P'));
+    }
+}
+
 // ── DLL entry point ────────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
@@ -189,17 +250,20 @@ fn reg_delete_tree(parent: HKEY, subkey: &str) {
 fn register_server() -> std::result::Result<(), String> {
     let dll_path = get_dll_path()?;
 
-    // HKCR\CLSID\{...}
-    let clsid_key = reg_create_key(HKEY_CLASSES_ROOT, &format!("CLSID\\{CLSID_STR}"))?;
+    // HKCU\Software\Classes\CLSID\{...}
+    let clsid_key = reg_create_key(
+        HKEY_CURRENT_USER,
+        &format!("Software\\Classes\\CLSID\\{CLSID_STR}"),
+    )?;
     reg_set_string(clsid_key, None, EXTENSION_NAME)?;
     unsafe {
         let _ = RegCloseKey(clsid_key);
     }
 
-    // HKCR\CLSID\{...}\InprocServer32 with ThreadingModel = Apartment
+    // HKCU\Software\Classes\CLSID\{...}\InprocServer32 with ThreadingModel = Apartment
     let inproc_key = reg_create_key(
-        HKEY_CLASSES_ROOT,
-        &format!("CLSID\\{CLSID_STR}\\InprocServer32"),
+        HKEY_CURRENT_USER,
+        &format!("Software\\Classes\\CLSID\\{CLSID_STR}\\InprocServer32"),
     )?;
     reg_set_string(inproc_key, None, &dll_path)?;
     reg_set_string(inproc_key, Some("ThreadingModel"), "Apartment")?;
@@ -207,34 +271,24 @@ fn register_server() -> std::result::Result<(), String> {
         let _ = RegCloseKey(inproc_key);
     }
 
-    // HKCR\*\shellex\ContextMenuHandlers\OmniDrive
+    // HKCU\Software\Classes\*\shellex\ContextMenuHandlers\OmniDrive
     let files_key = reg_create_key(
-        HKEY_CLASSES_ROOT,
-        &format!("*\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
+        HKEY_CURRENT_USER,
+        &format!("Software\\Classes\\*\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
     )?;
     reg_set_string(files_key, None, CLSID_STR)?;
     unsafe {
         let _ = RegCloseKey(files_key);
     }
 
-    // HKCR\Directory\shellex\ContextMenuHandlers\OmniDrive
+    // HKCU\Software\Classes\Directory\shellex\ContextMenuHandlers\OmniDrive
     let dir_key = reg_create_key(
-        HKEY_CLASSES_ROOT,
-        &format!("Directory\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
+        HKEY_CURRENT_USER,
+        &format!("Software\\Classes\\Directory\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
     )?;
     reg_set_string(dir_key, None, CLSID_STR)?;
     unsafe {
         let _ = RegCloseKey(dir_key);
-    }
-
-    // Approved list
-    let approved_key = reg_create_key(
-        HKEY_LOCAL_MACHINE,
-        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
-    )?;
-    reg_set_string(approved_key, Some(CLSID_STR), EXTENSION_NAME)?;
-    unsafe {
-        let _ = RegCloseKey(approved_key);
     }
 
     // Clean up any leftover overlay handler keys from previous versions
@@ -246,14 +300,17 @@ fn register_server() -> std::result::Result<(), String> {
 fn unregister_server() -> std::result::Result<(), String> {
     // Context menu handlers
     reg_delete_tree(
-        HKEY_CLASSES_ROOT,
-        &format!("*\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
+        HKEY_CURRENT_USER,
+        &format!("Software\\Classes\\*\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
     );
     reg_delete_tree(
-        HKEY_CLASSES_ROOT,
-        &format!("Directory\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
+        HKEY_CURRENT_USER,
+        &format!("Software\\Classes\\Directory\\shellex\\ContextMenuHandlers\\{EXTENSION_NAME}"),
     );
-    reg_delete_tree(HKEY_CLASSES_ROOT, &format!("CLSID\\{CLSID_STR}"));
+    reg_delete_tree(
+        HKEY_CURRENT_USER,
+        &format!("Software\\Classes\\CLSID\\{CLSID_STR}"),
+    );
 
     // Clean up legacy overlay keys
     cleanup_legacy_overlay_keys();
@@ -393,8 +450,8 @@ impl IShellExtInit_Impl for OmniDriveContextMenu_Impl {
             let dataobj: &IDataObject = pdtobj.ok()?;
             let path = extract_first_path(dataobj)?;
 
-            // Early bail: only O:\ (our virtual drive)
-            if !path.starts_with("O:\\") && !path.starts_with("o:\\") {
+            let letter = mounted_drive_letter().ok_or(Error::from(E_FAIL))?;
+            if !path_on_drive(&path, letter) {
                 return Err(Error::from(E_FAIL));
             }
 

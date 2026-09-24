@@ -148,9 +148,114 @@ pub fn configure_virtual_drive_appearance(
     }
 }
 
+fn normalize_drive_letter(drive_letter: &str) -> Result<String, VirtualDriveError> {
+    let trimmed = drive_letter
+        .trim()
+        .trim_end_matches('\\')
+        .trim_end_matches('/');
+    let core = trimmed.strip_suffix(':').unwrap_or(trimmed);
+
+    if core.len() != 1 {
+        return Err(VirtualDriveError::InvalidDriveLetter);
+    }
+
+    let letter = core
+        .chars()
+        .next()
+        .ok_or(VirtualDriveError::InvalidDriveLetter)?;
+    if !letter.is_ascii_alphabetic() {
+        return Err(VirtualDriveError::InvalidDriveLetter);
+    }
+
+    Ok(format!("{}:", letter.to_ascii_uppercase()))
+}
+
+pub fn write_drive_letter_file(path: &Path, drive_letter: &str) -> Result<(), VirtualDriveError> {
+    let normalized = normalize_drive_letter(drive_letter)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, normalized)?;
+    Ok(())
+}
+
+pub fn read_drive_letter_file(path: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    normalize_drive_letter(&contents).ok()
+}
+
+pub fn remove_drive_letter_file_if_matches(path: &Path, drive_letter: &str) {
+    let Ok(expected) = normalize_drive_letter(drive_letter) else {
+        return;
+    };
+    if read_drive_letter_file(path).as_deref() == Some(expected.as_str()) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+pub fn mounted_drive_letter() -> Option<String> {
+    read_drive_letter_file(&crate::runtime_paths::drive_letter_file_path())
+}
+
+#[cfg(test)]
+mod drive_letter_file_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_temp_path(label: &str) -> std::path::PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!(
+            "omnidrive-drive-letter-test-{}-{}-{}",
+            std::process::id(),
+            label,
+            n
+        ))
+    }
+
+    #[test]
+    fn round_trip_write_then_read() {
+        let path = unique_temp_path("round-trip");
+        write_drive_letter_file(&path, "p:").expect("write");
+        assert_eq!(read_drive_letter_file(&path), Some("P:".to_string()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_returns_none_for_missing_file() {
+        let path = unique_temp_path("missing");
+        assert_eq!(read_drive_letter_file(&path), None);
+    }
+
+    #[test]
+    fn read_returns_none_for_garbage_contents() {
+        let path = unique_temp_path("garbage");
+        std::fs::write(&path, "not-a-drive-letter").expect("write garbage");
+        assert_eq!(read_drive_letter_file(&path), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn remove_leaves_file_when_letter_does_not_match() {
+        let path = unique_temp_path("mismatch");
+        write_drive_letter_file(&path, "O:").expect("write");
+        remove_drive_letter_file_if_matches(&path, "W:");
+        assert_eq!(read_drive_letter_file(&path), Some("O:".to_string()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn remove_deletes_file_when_letter_matches() {
+        let path = unique_temp_path("match");
+        write_drive_letter_file(&path, "O:").expect("write");
+        remove_drive_letter_file_if_matches(&path, "O:");
+        assert!(!path.exists());
+    }
+}
+
 #[cfg(windows)]
 mod imp {
-    use super::VirtualDriveError;
+    use super::{VirtualDriveError, normalize_drive_letter};
     use std::ffi::OsStr;
     use std::iter;
     use std::os::windows::ffi::OsStrExt;
@@ -196,6 +301,16 @@ mod imp {
                 drive_root, err
             ))
         })?;
+
+        let drive_letter_file = crate::runtime_paths::drive_letter_file_path();
+        tracing::info!(
+            path = %drive_letter_file.display(),
+            letter = %device_name,
+            "writing mounted drive letter"
+        );
+        if let Err(err) = super::write_drive_letter_file(&drive_letter_file, &device_name) {
+            tracing::warn!("failed to write drive letter file: {err}");
+        }
 
         Ok(())
     }
@@ -257,6 +372,14 @@ mod imp {
                 )));
             }
         }
+
+        let drive_letter_file = crate::runtime_paths::drive_letter_file_path();
+        tracing::info!(
+            path = %drive_letter_file.display(),
+            letter = %device_name,
+            "removing mounted drive letter if it matches"
+        );
+        super::remove_drive_letter_file_if_matches(&drive_letter_file, &device_name);
 
         Ok(())
     }
@@ -341,28 +464,6 @@ mod imp {
         }
 
         Ok(())
-    }
-
-    fn normalize_drive_letter(drive_letter: &str) -> Result<String, VirtualDriveError> {
-        let trimmed = drive_letter
-            .trim()
-            .trim_end_matches('\\')
-            .trim_end_matches('/');
-        let core = trimmed.strip_suffix(':').unwrap_or(trimmed);
-
-        if core.len() != 1 {
-            return Err(VirtualDriveError::InvalidDriveLetter);
-        }
-
-        let letter = core
-            .chars()
-            .next()
-            .ok_or(VirtualDriveError::InvalidDriveLetter)?;
-        if !letter.is_ascii_alphabetic() {
-            return Err(VirtualDriveError::InvalidDriveLetter);
-        }
-
-        Ok(format!("{}:", letter.to_ascii_uppercase()))
     }
 
     fn drive_letter_available(letter: char, used_mask: u32) -> bool {

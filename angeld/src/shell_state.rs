@@ -1,5 +1,5 @@
 use crate::runtime_paths::RuntimePaths;
-use crate::{shell_integration, virtual_drive};
+use crate::virtual_drive;
 use serde::Serialize;
 use std::env;
 use std::fmt;
@@ -16,7 +16,6 @@ static SHELL_MODE_HINT: AtomicU8 = AtomicU8::new(SHELL_MODE_UNKNOWN);
 pub enum ShellStateError {
     Io(std::io::Error),
     VirtualDrive(virtual_drive::VirtualDriveError),
-    ShellIntegration(shell_integration::ShellIntegrationError),
 }
 
 impl fmt::Display for ShellStateError {
@@ -24,7 +23,6 @@ impl fmt::Display for ShellStateError {
         match self {
             Self::Io(err) => write!(f, "shell state i/o error: {err}"),
             Self::VirtualDrive(err) => write!(f, "virtual drive error: {err}"),
-            Self::ShellIntegration(err) => write!(f, "shell integration error: {err}"),
         }
     }
 }
@@ -40,12 +38,6 @@ impl From<std::io::Error> for ShellStateError {
 impl From<virtual_drive::VirtualDriveError> for ShellStateError {
     fn from(value: virtual_drive::VirtualDriveError) -> Self {
         Self::VirtualDrive(value)
-    }
-}
-
-impl From<shell_integration::ShellIntegrationError> for ShellStateError {
-    fn from(value: shell_integration::ShellIntegrationError) -> Self {
-        Self::ShellIntegration(value)
     }
 }
 
@@ -139,8 +131,8 @@ pub fn audit_shell_state() -> ShellStateSnapshot {
     )
     .is_some();
     let context_menu_registered = read_registry_string(
-        r"HKCU\Software\Classes\Directory\shell\OmniDrive",
-        Some("MUIVerb"),
+        r"Software\Classes\CLSID\{8D437341-B89B-4D14-9983-5A50529A88B4}\InprocServer32",
+        None,
     )
     .is_some();
 
@@ -220,7 +212,6 @@ pub fn repair_explorer_integration() -> Result<ShellRepairReport, ShellStateErro
         active_drive_letter_for_target(&preferred_drive_letter, &expected_target)
             .unwrap_or(preferred_drive_letter.clone());
     let icon_path = virtual_drive_icon_path();
-    let api_base = shell_api_base();
     let mut actions = Vec::new();
 
     virtual_drive::configure_virtual_drive_appearance(
@@ -230,12 +221,6 @@ pub fn repair_explorer_integration() -> Result<ShellRepairReport, ShellStateErro
     )?;
     actions.push(format!(
         "configured virtual drive appearance for {}",
-        active_drive_letter
-    ));
-
-    shell_integration::register_explorer_context_menu(&active_drive_letter, &api_base, &icon_path)?;
-    actions.push(format!(
-        "registered explorer context menu for {}",
         active_drive_letter
     ));
 
@@ -348,15 +333,6 @@ fn virtual_drive_icon_path() -> PathBuf {
     }
 
     PathBuf::from("icons").join("omnidrive.ico")
-}
-
-fn shell_api_base() -> String {
-    let bind = env::var("OMNIDRIVE_API_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
-    let host_port = bind
-        .strip_prefix("0.0.0.0:")
-        .map(|port| format!("127.0.0.1:{port}"))
-        .unwrap_or(bind);
-    format!("http://{host_port}")
 }
 
 fn drive_key(drive_letter: &str) -> char {

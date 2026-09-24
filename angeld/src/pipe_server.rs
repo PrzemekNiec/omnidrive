@@ -13,7 +13,7 @@ use crate::smart_sync;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::NamedPipeServer;
 use tracing::{error, info, warn};
 use windows::Win32::Foundation::{HANDLE, HLOCAL, LocalFree};
@@ -23,11 +23,17 @@ use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
-    CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows::core::PCWSTR;
 
 const PIPE_NAME: &str = r"\\.\pipe\omnidrive_shellcmd";
+
+/// `PIPE_UNLIMITED_INSTANCES` would let any process holding `FILE_CREATE_PIPE_INSTANCE`
+/// (implied by the `GENERIC_WRITE` the DACL grants the current user) spin up extra
+/// instances of this pipe. A fixed pool created once at startup closes that gap: once all
+/// `PIPE_INSTANCES` exist, NPFS refuses every further `CreateNamedPipeW` on this name.
+const PIPE_INSTANCES: u32 = 4;
 
 #[derive(Deserialize)]
 struct ShellCommand {
@@ -143,7 +149,7 @@ fn create_pipe_instance(pipe_name: &str, first: bool) -> Result<NamedPipeServer,
             PCWSTR(pipe_name_w.as_ptr()),
             open_mode,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            PIPE_UNLIMITED_INSTANCES,
+            PIPE_INSTANCES,
             4096, // out buffer
             4096, // in buffer
             0,    // default timeout
@@ -187,38 +193,47 @@ async fn serve(pool: SqlitePool, pipe_name: &str) {
     info!("pipe server starting on {pipe_name}");
     let system_root = system_root();
 
-    let mut server = next_pipe_instance(pipe_name, true).await;
+    let mut instances = Vec::with_capacity(PIPE_INSTANCES as usize);
+    instances.push(next_pipe_instance(pipe_name, true).await);
+    for _ in 1..PIPE_INSTANCES {
+        instances.push(next_pipe_instance(pipe_name, false).await);
+    }
 
+    for server in instances {
+        let pool = pool.clone();
+        let system_root = system_root.clone();
+        tokio::spawn(serve_instance(server, pool, system_root));
+    }
+
+    std::future::pending::<()>().await;
+}
+
+async fn serve_instance(mut server: NamedPipeServer, pool: SqlitePool, system_root: String) {
     loop {
-        // Wait for a client (shell extension DLL) to connect.
+        // Wait for a client (shell extension DLL) to connect to this pool slot.
         if let Err(e) = server.connect().await {
             error!("pipe accept error: {e}");
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let _ = server.disconnect();
             continue;
         }
 
-        // Hand off the connected pipe to a spawned task.
-        let connected = server;
+        if let Err(e) = handle_connection(&mut server, &pool, &system_root).await {
+            warn!("pipe client error: {e}");
+        }
 
-        // Immediately create a new pipe instance for the next client.
-        server = next_pipe_instance(pipe_name, false).await;
-
-        let pool = pool.clone();
-        let system_root = system_root.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(connected, &pool, &system_root).await {
-                warn!("pipe client error: {e}");
-            }
-        });
+        if let Err(e) = server.disconnect() {
+            warn!("pipe disconnect error: {e}");
+        }
     }
 }
 
 async fn handle_connection(
-    pipe: tokio::net::windows::named_pipe::NamedPipeServer,
+    pipe: &mut NamedPipeServer,
     pool: &SqlitePool,
     system_root: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let trusted = match client_image_path(&pipe) {
+    let trusted = match client_image_path(pipe) {
         Ok(path) if is_trusted_client(&path, system_root) => true,
         Ok(path) => {
             warn!("rejected pipe client: untrusted image path \"{path}\"");
@@ -230,20 +245,19 @@ async fn handle_connection(
         }
     };
 
-    let (reader, mut writer) = tokio::io::split(pipe);
-
     if !trusted {
         let mut resp_bytes = serde_json::to_vec(&ShellResponse::fail("untrusted client"))?;
         resp_bytes.push(b'\n');
-        writer.write_all(&resp_bytes).await?;
-        writer.shutdown().await?;
+        pipe.write_all(&resp_bytes).await?;
+        wait_for_client_close(pipe).await;
         return Ok(());
     }
 
-    let mut buf_reader = BufReader::new(reader);
-
     let mut line = String::new();
-    let bytes_read = buf_reader.read_line(&mut line).await?;
+    let bytes_read = {
+        let mut buf_reader = BufReader::new(&mut *pipe);
+        buf_reader.read_line(&mut line).await?
+    };
     if bytes_read == 0 {
         return Ok(()); // client disconnected without sending
     }
@@ -255,10 +269,28 @@ async fn handle_connection(
 
     let mut resp_bytes = serde_json::to_vec(&response)?;
     resp_bytes.push(b'\n');
-    writer.write_all(&resp_bytes).await?;
-    writer.shutdown().await?;
+    pipe.write_all(&resp_bytes).await?;
+    wait_for_client_close(pipe).await;
 
     Ok(())
+}
+
+/// `DisconnectNamedPipe` drops any bytes the client has not yet read, so the response
+/// written above would be lost if we disconnected immediately. Waiting for the client to
+/// close its handle (read returns 0 or errors) guarantees delivery before the instance is
+/// recycled for the next connection.
+async fn wait_for_client_close(pipe: &mut NamedPipeServer) {
+    let mut buf = [0u8; 64];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match pipe.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+    })
+    .await;
 }
 
 async fn dispatch_command(cmd: ShellCommand, pool: &SqlitePool) -> ShellResponse {
@@ -401,7 +433,9 @@ fn normalize_path(raw_path: &str) -> Option<String> {
         return None;
     }
 
-    let drive_letter = std::env::var("OMNIDRIVE_DRIVE_LETTER").unwrap_or_else(|_| "O:".to_string());
+    let drive_letter = crate::virtual_drive::mounted_drive_letter()
+        .or_else(|| std::env::var("OMNIDRIVE_DRIVE_LETTER").ok())
+        .unwrap_or_else(|| "O:".to_string());
     let drive_prefix = format!(
         "{}\\",
         drive_letter
@@ -526,6 +560,108 @@ mod tests {
             "C:\\Windows\\explorer.exe",
             "C:\\Windows\\"
         ));
+    }
+
+    #[tokio::test]
+    async fn second_instance_from_same_user_is_refused() {
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        let pipe_name = test_pipe_name();
+        let server_name = pipe_name.clone();
+        tokio::spawn(async move {
+            serve(pool, &server_name).await;
+        });
+
+        let wait_client_path = pipe_name.clone();
+        tokio::task::spawn_blocking(move || {
+            for _ in 0..50 {
+                if let Ok(file) = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&wait_client_path)
+                {
+                    drop(file);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            panic!("pipe never became available");
+        })
+        .await
+        .unwrap();
+
+        let pipe_name_w: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
+
+        use windows::Win32::System::Pipes::PIPE_UNLIMITED_INSTANCES;
+        for max_instances in [PIPE_UNLIMITED_INSTANCES, 4] {
+            let handle = unsafe {
+                CreateNamedPipeW(
+                    PCWSTR(pipe_name_w.as_ptr()),
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                    max_instances,
+                    4096,
+                    4096,
+                    0,
+                    None,
+                )
+            };
+            assert_eq!(
+                handle,
+                HANDLE(-1isize as *mut _),
+                "expected INVALID_HANDLE_VALUE for nMaxInstances={max_instances}"
+            );
+            let err = std::io::Error::last_os_error();
+            println!(
+                "second_instance_from_same_user_is_refused: nMaxInstances={max_instances} err={err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn pool_instances_are_reused_after_disconnect() {
+        let pool = db::init_db("sqlite::memory:").await.unwrap();
+        let pipe_name = test_pipe_name();
+        let server_name = pipe_name.clone();
+        tokio::spawn(async move {
+            serve(pool, &server_name).await;
+        });
+
+        for i in 0..6 {
+            let client_path = pipe_name.clone();
+            let response = tokio::task::spawn_blocking(move || -> String {
+                use std::io::{BufRead, BufReader, Write};
+
+                let mut file = None;
+                for _ in 0..50 {
+                    match std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&client_path)
+                    {
+                        Ok(f) => {
+                            file = Some(f);
+                            break;
+                        }
+                        Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                    }
+                }
+                let mut file = file.expect("failed to open test pipe as client");
+                let _ = file.write_all(b"{\"action\":\"free_space\",\"path\":\"O:\\\\x\"}\n");
+                let mut reader = BufReader::new(file);
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read response");
+                line
+            })
+            .await
+            .unwrap();
+
+            let parsed: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+            assert_eq!(parsed["ok"], false, "client {i}: response={response}");
+            assert_eq!(
+                parsed["error"], "untrusted client",
+                "client {i}: response={response}"
+            );
+        }
     }
 
     #[tokio::test]

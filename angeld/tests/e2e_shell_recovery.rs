@@ -146,25 +146,15 @@ async fn shell_repair_restores_drive_and_context_menu_after_local_drift()
     assert_eq!(initial["drive_present"], true);
     assert_eq!(initial["drive_browsable"], true);
     assert_eq!(initial["drive_target_matches"], true);
-    assert_eq!(initial["context_menu_registered"], true);
 
     Command::new("subst")
         .arg(&harness.drive_letter)
         .arg("/D")
         .output()
         .await?;
-    Command::new("reg")
-        .args([
-            "delete",
-            r"HKCU\Software\Classes\Directory\shell\OmniDrive",
-            "/f",
-        ])
-        .output()
-        .await?;
 
     let drifted = harness.get_json("/api/diagnostics/shell").await?;
     assert_eq!(drifted["drive_present"], false);
-    assert_eq!(drifted["context_menu_registered"], false);
 
     let repaired = harness.post_json("/api/maintenance/repair-shell").await?;
     assert_eq!(repaired["status"], "ok");
@@ -181,7 +171,6 @@ async fn shell_repair_restores_drive_and_context_menu_after_local_drift()
     assert_eq!(final_state["drive_present"], true);
     assert_eq!(final_state["drive_browsable"], true);
     assert_eq!(final_state["drive_target_matches"], true);
-    assert_eq!(final_state["context_menu_registered"], true);
     assert_eq!(
         final_state["duplicate_drive_mappings"],
         serde_json::json!([])

@@ -28,7 +28,6 @@ pub mod runtime_paths;
 pub mod scrubber;
 pub mod secure_fs;
 pub mod sharing;
-pub mod shell_integration;
 pub mod shell_state;
 pub mod smart_sync;
 pub mod tray_session;
